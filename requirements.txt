@@ -6,3 +6,11 @@ ollama>=0.3.0
 # Sensory layer (Windows window-title capture).
 # pywin32 only installs on Windows; on other OSes Alpacca falls back automatically.
 pywin32>=306; platform_system == "Windows"
+
+# --- Optional extras (uncomment what you want) -------------------------------
+# Voice-tone sense (ALPACCA_VOICE=1): mic-level reads, no recording.
+# sounddevice>=0.4.6
+# Talk mode (scripts/run_talk.py): local STT/TTS voice conversation.
+# pipecat-ai[whisper,silero,local]>=1.3.0
+# kokoro-onnx
+# requests

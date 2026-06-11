@@ -24,6 +24,7 @@ import uvicorn
 from config import HOST, PORT
 from alpacca.mind import CoreMind
 from alpacca.sensory import WindowSensor
+from alpacca.voice import VoiceSensor
 from alpacca.introspection import identity_card
 from alpacca import state as state_store
 
@@ -33,6 +34,15 @@ WEB_DIR = Path(__file__).parent / "web"
 # while you're not typing, by folding in a fresh observation on every tick.
 mind = CoreMind()
 sensor = WindowSensor()
+# Voice-tone sense: opt-in (ALPACCA_VOICE=1) and quietly inert otherwise.
+voice_sensor = VoiceSensor()
+
+
+def _observe():
+    """One full sensory snapshot: window title + (if enabled) voice tone."""
+    obs = sensor.observe()
+    voice_sensor.annotate(obs)
+    return obs
 
 # CoreMind state is shared between the background drift loop and any number of
 # WebSocket connections, all of which mutate the mood and the rolling history.
@@ -58,7 +68,7 @@ async def lifespan(app: FastAPI):
         while True:
             try:
                 async with mind_lock:
-                    mind.perceive(sensor.observe())
+                    mind.perceive(_observe())
             except Exception:
                 pass  # never let a bad tick kill the companion
             await asyncio.sleep(DRIFT_INTERVAL)
@@ -72,6 +82,7 @@ async def lifespan(app: FastAPI):
             await task
         except (asyncio.CancelledError, Exception):
             pass
+        voice_sensor.close()
 
 
 app = FastAPI(title="Alpacca", lifespan=lifespan)
@@ -184,7 +195,7 @@ async def ws(socket: WebSocket) -> None:
             # across perceive+chat so a background drift tick can't slip in
             # between them and reshape the state we're about to read.
             async with mind_lock:
-                obs = sensor.observe()
+                obs = _observe()
                 mind.perceive(obs)
                 situation = obs.window_title or ""
                 result = mind.chat(user_text, situation=situation)

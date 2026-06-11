@@ -17,6 +17,7 @@ fall back to a small templated voice so the whole loop is still exercisable
 from __future__ import annotations
 
 import random
+import re
 import time
 
 from config import OLLAMA_MODEL, OLLAMA_HOST
@@ -28,6 +29,20 @@ from alpacca import prompts
 from alpacca import introspection
 from alpacca import appearance as appearance_mod
 from alpacca.portrait import PortraitWorker
+
+
+# Qwen3 hybrid models reason out loud inside <think>...</think> before the real
+# reply. That deliberation is internal monologue, not something Alpacca should
+# say to the person -- so we strip it. Also handles a truncated, never-closed
+# think block (we drop to end-of-string rather than leak half a chain of
+# thought). If stripping leaves nothing we return the original text untouched,
+# which can only happen on degenerate output anyway.
+_THINK_RE = re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL)
+
+
+def strip_think(text: str) -> str:
+    cleaned = _THINK_RE.sub("", text).strip()
+    return cleaned or text.strip()
 
 
 class _LLM:
@@ -55,7 +70,7 @@ class _LLM:
         messages.append({"role": "user", "content": user_msg})
         try:
             resp = self._client.chat(model=OLLAMA_MODEL, messages=messages)
-            return resp["message"]["content"].strip()
+            return strip_think(resp["message"]["content"])
         except Exception as exc:
             # Model not pulled, server down mid-call, etc. -- stay alive.
             return self._fallback(system_prompt, user_msg, error=str(exc))

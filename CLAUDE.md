@@ -66,9 +66,10 @@ place; tests and reasoning depend on this.
 
 ```bash
 pip install -r requirements.txt
-ollama pull qwen2.5:7b-instruct      # for real replies; optional for dev
+ollama pull qwen3:8b                 # for real replies; optional for dev
 python server.py                     # http://127.0.0.1:8765
 python scripts/run_telemetry.py      # background sense (Milestone 1)
+python scripts/run_talk.py           # voice conversation (needs pipecat extras)
 python tests/test_core.py            # or: python -m pytest -q
 ```
 
@@ -123,10 +124,16 @@ Ollama or Windows.**
 - 🟡 Phase 4 (Expansion): OpenClaw channel bridge built — `POST /channel/inbound`
   runs the full chat loop for messages from Telegram/Discord/etc., outbound
   replies via the `openclaw` CLI (`alpacca/openclaw_bridge.py`; install hook from
-  `integrations/openclaw-inbound-hook/`). Android sensors and voice-tone parsing
-  still scaffolded via the `Observation` interface, not built.
-- All 31 core tests pass; full loop, introspection, appearance, portrait
-  prompts, and channel bridge verified end-to-end.
+  `integrations/openclaw-inbound-hook/`). Voice-tone sensing built
+  (`alpacca/voice.py`): opt-in mic-level sense (`ALPACCA_VOICE=1`) feeding
+  `raised_voice` → Compassion and sudden-sound spikes → Fear; coarse loudness
+  numbers only, never audio or words. Experimental talk mode
+  (`scripts/run_talk.py`): local Whisper STT → `/channel/inbound` → local
+  Kokoro TTS via Pipecat. Android sensors still scaffolded, not built.
+- Reasoning model default is now Qwen3 (`qwen3:8b`); `<think>` blocks from
+  hybrid Qwen3 variants are stripped in `mind.strip_think` before replies.
+- All 38 core tests pass; full loop, introspection, appearance, portrait
+  prompts, channel bridge, and voice-tone analysis verified end-to-end.
 
 Note on the dev environment: this sandbox's Linux file mount intermittently
 truncates large files *on read* (a mount cache artifact). The canonical files are

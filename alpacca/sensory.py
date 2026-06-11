@@ -41,6 +41,11 @@ class Observation:
     app: str = ""
     idle_seconds: float = 0.0
     timestamp: float = field(default_factory=time.time)
+    # Voice-tone sense (alpacca/voice.py), all zero when the mic sensor is off.
+    # Coarse loudness numbers only -- never audio, never words.
+    voice_activity: float = 0.0   # how much talking was heard this window
+    voice_loudness: float = 0.0   # how loud the talking was, 0..1
+    voice_spike: float = 0.0      # 1.0 if something abrupt broke a quiet stretch
 
     # --- Derived reads the emotional model cares about ---------------------
 
@@ -60,11 +65,15 @@ class Observation:
         # Session fatigue ramps in over ~90 minutes, then saturates.
         long_session = min(1.0, session_minutes / 90.0)
         just_returned = 1.0 if self.idle_seconds > 300 else 0.0
+        # Sustained loud talking reads as stress. Brief or quiet speech doesn't
+        # register -- we only pass loudness through when there was real talking.
+        raised_voice = self.voice_loudness if self.voice_activity > 0.3 else 0.0
         return {
             "late_night": late,
             "long_session": long_session,
             "error_context": self.is_error_context(),
             "idle_return": just_returned,
+            "raised_voice": raised_voice,
         }
 
 
@@ -131,4 +140,7 @@ def prediction_error(prev: Observation | None, curr: Observation) -> float:
         surprise += 0.5
     if curr.app and prev.app and curr.app != prev.app:
         surprise += 0.2
+    # A sudden loud sound after quiet (a slam, a shout) is the most literal
+    # violated-expectation the senses can deliver.
+    surprise += 0.5 * curr.voice_spike
     return min(1.0, surprise)

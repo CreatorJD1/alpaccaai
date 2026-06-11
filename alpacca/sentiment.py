@@ -108,7 +108,7 @@ def reward(text: str) -> float:
     return max(0.0, min(1.0, 0.55 + 0.45 * s))
 
 
-def score_llm(text: str, client=None, model: str = "qwen2.5:7b-instruct") -> float | None:
+def score_llm(text: str, client=None, model: str | None = None) -> float | None:
     """Optional: ask a local Ollama model to rate sentiment in [-1, 1].
 
     Returns None on any failure so callers can fall back to the lexicon. This is
@@ -116,6 +116,11 @@ def score_llm(text: str, client=None, model: str = "qwen2.5:7b-instruct") -> flo
     messages the lexicon can miss.
     """
     try:
+        if model is None:
+            # Reuse the configured reasoning model so this never drifts from
+            # whatever the rest of Alpacca is running on.
+            from config import OLLAMA_MODEL
+            model = OLLAMA_MODEL
         if client is None:
             import ollama
             client = ollama.Client()

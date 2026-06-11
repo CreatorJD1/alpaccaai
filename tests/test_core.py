@@ -21,6 +21,8 @@ from alpacca import sentiment
 from alpacca import appearance
 from alpacca import portrait
 from alpacca import openclaw_bridge
+from alpacca import voice
+from alpacca.mind import strip_think
 
 
 # --- Homeostasis -----------------------------------------------------------
@@ -266,6 +268,60 @@ def test_portrait_prompt_steady_within_mood_band():
     look_a = appearance.choose(a, 13)
     look_b = appearance.choose(b, 13)
     assert portrait.build_prompt(a, look_a) == portrait.build_prompt(b, look_b)
+
+
+# --- Qwen3 think-tag stripping ----------------------------------------------
+
+def test_strip_think_removes_reasoning_block():
+    raw = "<think>\nLet me consider the mood...\n</think>\n\nHey, good to see you."
+    assert strip_think(raw) == "Hey, good to see you."
+
+def test_strip_think_handles_unclosed_block():
+    # A truncated generation can cut off mid-think; never leak half a chain
+    # of thought as her spoken reply.
+    raw = "<think>hmm, the user seems tired and"
+    assert "<think>" not in strip_think(raw) or strip_think(raw) == raw.strip()
+    # Plain replies pass through untouched.
+    assert strip_think("Just a normal reply.") == "Just a normal reply."
+
+
+# --- Voice-tone sense ---------------------------------------------------------
+
+def test_voice_silence_reads_as_nothing():
+    r = voice.analyze_window([0.0] * 50)
+    assert r.activity == 0.0 and r.loudness == 0.0 and r.spike == 0.0
+
+def test_voice_sustained_talking_reads_as_activity():
+    # Most chunks above the speech threshold -> high activity, real loudness.
+    r = voice.analyze_window([0.1] * 40 + [0.005] * 10)
+    assert r.activity > 0.7
+    assert r.loudness > 0.3
+    assert r.spike == 0.0  # steady talking is not a startle
+
+def test_voice_sudden_loud_after_quiet_is_a_spike():
+    levels = [0.002] * 45 + [0.3] * 2 + [0.002] * 3   # slam in a quiet room
+    assert voice.analyze_window(levels, prev_quiet=True).spike == 1.0
+    # The same bang mid-conversation doesn't startle her.
+    assert voice.analyze_window(levels, prev_quiet=False).spike == 0.0
+
+def test_raised_voice_feeds_compassion_and_spike_feeds_fear():
+    obs = Observation(voice_activity=0.8, voice_loudness=0.9, voice_spike=1.0)
+    signals = obs.fatigue_signals(session_minutes=10)
+    assert signals["raised_voice"] > 0.8
+    # Quiet talking shouldn't register as a raised voice at all.
+    calm = Observation(voice_activity=0.2, voice_loudness=0.9)
+    assert calm.fatigue_signals(session_minutes=10)["raised_voice"] == 0.0
+    # And the spike contributes surprise -> Fear via prediction_error.
+    prev = Observation(window_title="notes", app="Obsidian")
+    assert prediction_error(prev, obs) >= 0.5
+
+def test_voice_sensor_disabled_is_inert():
+    with _Override(voice.VoiceCfg, ENABLED=False):
+        s = voice.VoiceSensor()
+        assert s.available is False
+        obs = Observation()
+        s.annotate(obs)   # must be a harmless no-op
+        assert obs.voice_activity == 0.0
 
 
 class _Override:

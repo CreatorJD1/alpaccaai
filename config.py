@@ -21,8 +21,15 @@ DB_PATH = HOME / "alpacca.db"             # homeostasis state + memories
 TELEMETRY_LOG = HOME / "telemetry.jsonl"  # raw sensory stream
 
 # --- Local model (Ollama) --------------------------------------------------
-# The reasoning model. Pull it once with: `ollama pull qwen2.5:7b-instruct`
-OLLAMA_MODEL = os.environ.get("ALPACCA_MODEL", "qwen2.5:7b-instruct")
+# The reasoning model. Pull it once with: `ollama pull qwen3:8b`
+# Qwen3 is markedly better than Qwen2.5 at the things a companion needs --
+# human-preference alignment, role-play, multi-turn dialogue -- so it's the
+# default. Qwen3 hybrid models may emit <think>...</think> blocks; mind.py
+# strips those from replies, so thinking variants also work. For lower latency
+# on small GPUs, ALPACCA_MODEL=qwen3:4b-instruct-2507 is a good pick (the
+# instruct-2507 line never thinks). qwen2.5:7b-instruct still works if that's
+# what you have pulled.
+OLLAMA_MODEL = os.environ.get("ALPACCA_MODEL", "qwen3:8b")
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 
 # --- Emotional model coefficients -----------------------------------------
@@ -41,6 +48,7 @@ class Emotion:
         "long_session": 0.9,   # many minutes without a break
         "error_context": 1.1,  # error-y window titles (stack traces, "failed")
         "idle_return": -0.6,   # just came back from a break -> less tired
+        "raised_voice": 0.7,   # sustained loud talking nearby -> stress read
     }
     COMPASSION_BIAS = -0.8     # baseline so an average moment sits low
 
@@ -60,6 +68,26 @@ MEMORY_SALIENCE_THRESHOLD = 0.3   # below this we don't bother storing a memory
 # --- Server ----------------------------------------------------------------
 HOST = os.environ.get("ALPACCA_SERVER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ALPACCA_SERVER_PORT", "8765"))
+
+
+# --- Voice-tone sense (Phase 4) ---------------------------------------------
+# A mic-level sensor that lets Alpacca *hear the room*: how much voice activity
+# there is, how loud it is, and whether something sudden just happened. It does
+# NOT record or transcribe anything -- only coarse loudness numbers ever leave
+# the audio callback, and nothing is written to disk. Even so, a microphone is
+# more intimate than a window title, so this is opt-in: set ALPACCA_VOICE=1.
+class Voice:
+    ENABLED = os.environ.get("ALPACCA_VOICE", "0") not in ("", "0", "false", "False")
+    SAMPLE_RATE = 16000
+    BLOCK_SECONDS = 0.03       # per-callback chunk; ~30ms is standard for VAD
+    # RMS level (0..1) above which a chunk counts as "someone's talking".
+    SPEECH_THRESHOLD = 0.02
+    # Mean active level that maps to loudness 1.0 (a raised voice, not a jet).
+    LOUD_REFERENCE = 0.2
+    # A peak this many times the window's median -- after a quiet stretch --
+    # reads as a startle (door slam, shout) and feeds prediction error.
+    SPIKE_RATIO = 6.0
+    SPIKE_MIN_LEVEL = 0.08
 
 
 # --- Self-portrait via ComfyClaw / ComfyUI --------------------------------
