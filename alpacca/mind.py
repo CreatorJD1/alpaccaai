@@ -169,6 +169,9 @@ class CoreMind:
         self._sight: str = ""
         # When she last spoke unprompted, for the proactive cooldown.
         self._last_volunteer_ts: float = 0.0
+        # When the person last said something -- idle chatter waits for quiet.
+        # Starts at "now" so she doesn't pounce the moment the server boots.
+        self._last_user_ts: float = time.time()
         # Her granted reach into the machine (empty allowlist = no actuator).
         self.actuator = Actuator()
         # Self-portrait renderer (ComfyClaw subprocess wrapper). It checks the
@@ -252,6 +255,7 @@ class CoreMind:
         `image_desc` is what the vision model saw in an image the person
         attached this turn (or None). It's woven into the prompt as something
         she actually saw, and remembered like any other shared moment."""
+        self._last_user_ts = time.time()
         # Recall relevant memories for this message.
         memories = memory_store.recall(user_msg)
 
@@ -308,17 +312,33 @@ class CoreMind:
     # --- Proactive speech: she starts the conversation ---------------------
 
     def volunteer_reason(self) -> str | None:
-        """Check (cheaply, under the caller's lock) whether something in her is
-        worth voicing unprompted. Claims the cooldown slot on a hit so two
-        ticks can't both decide to speak."""
+        """Check (cheaply, under the caller's lock) whether something is worth
+        voicing unprompted -- a real mood shift first, otherwise maybe plain
+        conversation during a quiet stretch. Claims the cooldown slot on a hit
+        so two ticks can't both decide to speak."""
         if not ProactiveCfg.ENABLED:
             return None
+        now = time.time()
         reason = proactive_mod.should_speak(
             self.state, state_store.mood_history(limit=40), self._last_volunteer_ts
         )
         if reason:
-            self._last_volunteer_ts = time.time()
-        return reason
+            self._last_volunteer_ts = now
+            return reason
+        # No mood shift -- but she can still just start a conversation.
+        if proactive_mod.should_chatter(now, self._last_user_ts,
+                                        self._last_volunteer_ts, random.random()):
+            recent = memory_store.recent(limit=8)
+            memory = random.choice(recent)["content"] if recent else ""
+            seeds = proactive_mod.chatter_reasons(
+                situation=self._sight or self._last_situation,
+                memory=memory,
+                hour=time.localtime(now).tm_hour,
+                mood=self.state.mood_label(),
+            )
+            self._last_volunteer_ts = now
+            return random.choice(seeds)
+        return None
 
     def compose_volunteer(self, reason: str) -> str:
         """Turn a grounded reason into her own short unprompted words. Safe to
@@ -329,10 +349,10 @@ class CoreMind:
         self_report = self.introspect()
         system_prompt = prompts.build_system_prompt(
             self.state, [], "", self_narration=self_report.narrate()
-        ) + ("\n\nNo one has said anything to you. You're speaking up on your own "
-             f"because of something real you noticed in yourself: {reason}. Say one "
-             "or two short natural sentences about it -- gentle, not dramatic, no "
-             "preamble.")
+        ) + ("\n\nNo one has said anything to you. You're speaking up on your own. "
+             f"What prompted you: {reason}. Say one or two short natural sentences "
+             "-- gentle, curious, no preamble, and don't mention that you were "
+             "prompted by anything.")
         reply = self.llm.generate(system_prompt, "(say it in your own words)")
         self._history.append({"role": "assistant", "content": reply})
         return reply

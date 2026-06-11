@@ -120,6 +120,17 @@ class Proactive:
     SHIFT_THRESHOLD = 0.15    # mood drift vs recent baseline that counts as real
     FEAR_FLOOR = 0.6          # acute unease speaks regardless of trend
 
+    # Idle chatter: beyond mood-shift remarks, she may simply start a
+    # conversation during a quiet stretch -- about what she senses you doing,
+    # something she remembers, or just to say hello. ALPACCA_CHATTER=0 turns
+    # only this off (mood-shift remarks stay governed by ENABLED above).
+    CHATTER_ENABLED = os.environ.get("ALPACCA_CHATTER", "1") not in ("", "0", "false", "False")
+    CHATTER_SILENCE_S = 3 * 60   # you must have been quiet at least this long
+    CHATTER_MIN_GAP_S = 10 * 60  # and she won't chatter more often than this
+    # Once eligible, each background tick fires with this probability, so her
+    # timing feels like a person glancing over, not a cron job.
+    CHATTER_CHANCE = 0.04
+
 
 # --- App actions -------------------------------------------------------------
 # "She can interact with apps if given access." Access is the allowlist below

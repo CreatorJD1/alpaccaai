@@ -141,7 +141,11 @@ Ollama or Windows.**
   `ALPACCA_PROACTIVE=0` to disable): she volunteers a short remark when her
   real mood history shows a real shift (rising unease, slipping warmth, acute
   fear), with a cooldown. Broadcast to connected chats + OpenClaw delivery.
-  This fulfills suggested-task #2 below.
+  This fulfills suggested-task #2 below. She also makes idle chatter
+  (`ALPACCA_CHATTER=0` to disable just that): during a quiet stretch she may
+  start a conversation on her own, seeded only by real things — what she
+  senses on screen, an actual memory, the hour, her mood — gated by silence
+  time, a minimum gap, and a per-tick chance so the timing feels human.
 - ✅ App actions (`alpacca/actions.py`): an `open_app` tool restricted to the
   `ALPACCA_APPS` allowlist, wired through Ollama tool calling. Empty list
   (default) = no actuator exists at all.

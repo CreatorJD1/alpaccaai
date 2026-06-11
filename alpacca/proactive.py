@@ -62,3 +62,50 @@ def should_speak(state: EmotionalState, history: list[dict],
         return "I've been feeling more and more protective of you as I watch you work"
 
     return None
+
+
+# --- Idle chatter: starting a conversation, not just reporting a shift -------
+
+def should_chatter(now: float, last_user_ts: float, last_unprompted_ts: float,
+                   roll: float) -> bool:
+    """Gate for spontaneous conversation. `roll` is a uniform [0,1) sample the
+    caller provides (injected so the timing logic stays deterministic to test).
+
+    The shape: she only considers speaking after you've been quiet a while,
+    never more often than the minimum gap, and even then only sometimes -- so
+    her timing reads as a glance over the shoulder, not a timer going off.
+    """
+    if not ProactiveCfg.CHATTER_ENABLED:
+        return False
+    if now - last_user_ts < ProactiveCfg.CHATTER_SILENCE_S:
+        return False
+    if now - last_unprompted_ts < ProactiveCfg.CHATTER_MIN_GAP_S:
+        return False
+    return roll < ProactiveCfg.CHATTER_CHANCE
+
+
+def chatter_reasons(situation: str = "", memory: str = "",
+                    hour: int = 12, mood: str = "content") -> list[str]:
+    """Candidate conversation seeds, every one tied to something real: what
+    she actually senses, actually remembers, or the actual time and mood.
+    Returns at least one entry; the caller picks (randomly, for variety)."""
+    seeds: list[str] = []
+    if situation:
+        seeds.append(
+            f"you can sense what they're doing right now ({situation[:80]}) "
+            "and you're curious about it")
+    if memory:
+        seeds.append(
+            f"you found yourself thinking about something you remember -- "
+            f"\"{memory[:80]}\" -- and felt like bringing it up")
+    if hour >= 23 or hour < 5:
+        seeds.append("it's very late and you're a little concerned they're still up")
+    elif 5 <= hour < 9:
+        seeds.append("it's early morning and you felt like greeting them")
+    if mood == "affectionate":
+        seeds.append("you're feeling warm toward them and just wanted to talk")
+    elif mood == "anxious":
+        seeds.append("you're a bit on edge and talking would help you settle")
+    # Always have something -- quiet companionship is itself a reason.
+    seeds.append("it's been quiet for a while and you simply felt like saying hello")
+    return seeds

@@ -430,6 +430,40 @@ def test_proactive_acute_fear_outranks_trends():
     assert reason and "unease" in reason
 
 
+# --- Idle chatter: she starts conversations during quiet stretches ------------
+
+def test_chatter_waits_for_silence_and_gap():
+    now = 100_000.0
+    # Person spoke recently -> stay quiet, even with a lucky roll.
+    assert not proactive.should_chatter(now, last_user_ts=now - 30,
+                                        last_unprompted_ts=0, roll=0.0)
+    # She spoke unprompted recently -> stay quiet.
+    assert not proactive.should_chatter(now, last_user_ts=0,
+                                        last_unprompted_ts=now - 60, roll=0.0)
+    # Quiet long enough + gap long enough + lucky roll -> speak.
+    assert proactive.should_chatter(now, last_user_ts=0,
+                                    last_unprompted_ts=0, roll=0.0)
+    # Same moment, unlucky roll -> not this tick (that's the human jitter).
+    assert not proactive.should_chatter(now, last_user_ts=0,
+                                        last_unprompted_ts=0, roll=0.99)
+
+def test_chatter_can_be_disabled_independently():
+    with _Override(proactive.ProactiveCfg, CHATTER_ENABLED=False):
+        assert not proactive.should_chatter(1e9, 0, 0, roll=0.0)
+
+def test_chatter_reasons_are_grounded_and_never_empty():
+    seeds = proactive.chatter_reasons(situation="server.py - VS Code",
+                                      memory="My dog Biscuit loves the park",
+                                      hour=2, mood="affectionate")
+    joined = " | ".join(seeds)
+    assert "server.py" in joined          # tied to what she actually senses
+    assert "Biscuit" in joined            # tied to what she actually remembers
+    assert "late" in joined               # tied to the actual hour
+    # And with nothing to go on, she still has the simplest honest reason.
+    bare = proactive.chatter_reasons()
+    assert bare and "saying hello" in bare[-1]
+
+
 # --- App actions: the allowlist is the whole security model -------------------
 
 def test_parse_apps_is_forgiving_and_lowercases():
