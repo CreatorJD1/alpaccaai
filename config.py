@@ -175,6 +175,30 @@ class Actions:
     APPS_SPEC = os.environ.get("ALPECCA_APPS", "")
 
 
+# --- Computer use: she sees the screen and drives mouse/keyboard -------------
+# Her own eyes (the local vision model) plus pyautogui, in a screenshot ->
+# reason -> act loop. Fully local: screenshots are analyzed on-machine and
+# never leave it -- the same privacy line as every other sense. Off by default
+# because handing any program the mouse is a real grant; ALPECCA_COMPUTER_USE=1
+# turns it on. Even then, anything consequential (send / delete / buy / post /
+# install / overwrite) pauses for the person's confirmation -- the autonomy
+# tier the owner chose.
+class Computer:
+    ENABLED = os.environ.get("ALPECCA_COMPUTER_USE", "0") not in ("", "0", "false", "False")
+    MAX_STEPS = int(os.environ.get("ALPECCA_COMPUTER_MAX_STEPS", "12"))
+    # Long edge the screenshot is downscaled to before her vision model reads
+    # it; her returned coordinates are scaled back up to the real screen.
+    VIEW_LONG_EDGE = 1280
+    # Words that mark an action as consequential regardless of the model's own
+    # judgment -- the keyword safety net under her self-declared flag.
+    CONSEQUENTIAL_HINTS = (
+        "send", "delete", "remove", "buy", "purchase", "pay", "order", "post",
+        "publish", "submit", "confirm", "transfer", "install", "uninstall",
+        "overwrite", "format", "shutdown", "restart", "sign out", "log out",
+        "unsubscribe", "trash", "discard", "wipe", "erase",
+    )
+
+
 # --- Self-portrait via ComfyClaw / ComfyUI --------------------------------
 # Alpecca can render herself as an actual image by shelling out to ComfyClaw
 # (a small ComfyUI workflow runner). Disabled by default so the companion still

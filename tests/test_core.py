@@ -579,6 +579,63 @@ def test_gallery_keeps_image_with_her_verdict():
         assert idx[0]["verdict"] == "this finally looks like me"
 
 
+# --- Computer use: action parsing, consequential gate, scaling -----------------
+
+def test_computer_parse_action_tolerates_model_wrapping():
+    from alpecca import computer
+    a = computer.parse_action('Sure! ```json\n{"action":"left_click","coordinate":[12,34],'
+                              '"target":"the Save button","consequential":false}\n```')
+    assert a.kind == "left_click" and a.coordinate == [12, 34]
+    assert a.target == "the Save button" and a.self_consequential is False
+    assert computer.parse_action("no json") is None
+
+def test_computer_consequential_gate_trips_on_flag_or_keywords():
+    from alpecca import computer
+    Action = computer.Action
+    # Self-declared consequential.
+    assert computer.is_consequential(Action(kind="left_click", self_consequential=True))
+    # Keyword net on the target even when she didn't flag it.
+    assert computer.is_consequential(Action(kind="left_click", target="the Send button"))
+    assert computer.is_consequential(Action(kind="type", text="please delete everything"))
+    assert computer.is_consequential(Action(kind="left_click", target="Buy now"))
+    # Reversible navigation is NOT gated.
+    assert not computer.is_consequential(Action(kind="left_click", target="the address bar"))
+    assert not computer.is_consequential(Action(kind="scroll", target="the page"))
+
+def test_computer_scale_factor():
+    from alpecca import computer
+    assert computer.scale_factor(1280, 720, 1280) == 1.0     # already within
+    assert computer.scale_factor(2560, 1440, 1280) == 0.5    # halved
+    assert computer.scale_factor(800, 600, 1280) == 1.0      # never upscale
+
+def test_computer_off_by_default_returns_clean_failure():
+    from alpecca import computer
+    from config import Computer as ComputerCfg
+    with _Override(ComputerCfg, ENABLED=False):
+        assert computer.available() is False
+        r = computer.run_task("do a thing", confirm=lambda a: True, status=lambda s: None)
+        assert r.ok is False and "off" in r.error
+
+
+# --- Her canonical design: she is humanoid, not an alpaca ----------------------
+
+def test_her_canonical_sheet_is_humanoid():
+    from alpecca import studio
+    state = EmotionalState()
+    look = appearance.choose(state, 1)
+    sheet = {
+        "form": "Alpecca, a warm humanoid AI-companion girl, cream-blonde hair",
+        "features": ["glowing chest core emblem", "blue eyes that glow with mood"],
+        "style": "modern clean anime illustration",
+        "expressions": {"content": "warm calm smile"},
+        "never": ["an actual alpaca or animal form (I am humanoid)"],
+    }
+    p = studio.design_image_prompt(sheet, state, look)
+    assert "humanoid" in p
+    spec = studio.rig_spec_markdown(dict(sheet, version=1))
+    assert "`core_glow`" in spec and "`eye_glow`" in spec   # her real features
+
+
 # --- Custom avatar clips --------------------------------------------------------
 
 def test_avatar_manifest_reports_what_exists():

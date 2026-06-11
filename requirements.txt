@@ -21,5 +21,9 @@ pywin32>=306; platform_system == "Windows"
 # pillow>=10.0
 # Expression sense (ALPECCA_FACE=1): webcam expression reads via local VLM.
 # opencv-python>=4.8
-# Chat images + both senses above also need the vision model pulled once:
+# Computer use (ALPECCA_COMPUTER_USE=1): she sees the screen + drives the
+# mouse/keyboard locally. Consequential actions pause for confirmation.
+# pyautogui>=0.9.54
+# mss>=9.0
+# Chat images + the vision senses + computer use all need the vision model:
 #   ollama pull qwen2.5vl:7b

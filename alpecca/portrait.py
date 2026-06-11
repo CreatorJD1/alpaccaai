@@ -47,29 +47,45 @@ _ACCESSORY_PHRASE = {
 _MOOD_PHRASE = {
     "affectionate": "warm gentle smile, eyes soft with affection",
     "content": "calm, settled, a quiet half-smile",
-    "tender": "gentle protective expression, eyes a little caring",
-    "anxious": "a touch wary, ears slightly back, alert eyes",
+    "tender": "gentle caring expression, eyes a little soft",
+    "anxious": "a touch wary, brow raised, alert eyes",
     "withdrawn": "quiet, reserved, looking a little inward",
 }
+
+# Her canonical look, used when no studio character sheet exists yet. Once she
+# (or her real art) has written a sheet, build_prompt prefers that -- so her
+# self-portrait always tracks her actual design rather than a hardcoded guess.
+_DEFAULT_FORM = ("Alpecca, a warm humanoid AI-companion girl, long cream-blonde "
+                 "wavy hair, soft blue eyes that glow with her mood, cozy hoodie, "
+                 "a glowing chest core emblem, soft-tech aesthetic")
 
 
 def build_prompt(state: EmotionalState, appearance: Appearance) -> str:
     """Compose a portrait prompt that reads as a real description of Alpecca.
 
-    We deliberately fold in the appearance *note* (her own first-person reason
-    for the look) because it's the grounded link between her inner state and
-    the picture. The diffusion model gets to render what she'd say she looks
-    like right now, not a generic alpaca.
+    Prefers her studio character sheet (her real, canonical design) when she
+    has one; otherwise falls back to her canonical default. Either way the
+    diffusion model renders *her*, in her current mood, not a generic guess.
     """
     mood_phrase = _MOOD_PHRASE.get(state.mood_label(), "calm expression")
     acc_phrases = [_ACCESSORY_PHRASE[a] for a in appearance.accessories
                    if a in _ACCESSORY_PHRASE]
-    accessories = ", ".join(acc_phrases) if acc_phrases else "no accessories"
+    accessories = ", ".join(acc_phrases) if acc_phrases else "no extra accessories"
+    form, style = _DEFAULT_FORM, "modern clean anime illustration"
+    try:
+        from alpecca import studio
+        sheet = studio.load_sheet()
+        if sheet:
+            form = sheet.get("form", form)
+            style = sheet.get("style", style)
+            sheet_expr = sheet.get("expressions", {}).get(state.mood_label())
+            if sheet_expr:
+                mood_phrase = sheet_expr
+    except Exception:
+        pass
     return (
-        f"portrait of Alpecca, a friendly alpaca companion character, "
-        f"{mood_phrase}, {appearance.palette} colored fur and background, "
-        f"wearing {accessories}, soft pastel illustration, "
-        f"warm studio lighting, expressive eyes, gentle art style"
+        f"portrait of {form}, {mood_phrase}, {appearance.palette} color accent, "
+        f"{accessories}, {style}, warm soft lighting, expressive eyes"
     )
 
 

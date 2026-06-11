@@ -119,9 +119,9 @@ def design_image_prompt(sheet: dict, state: EmotionalState,
     expr = expressions.get(state.mood_label(), "a calm, settled expression")
     features = ", ".join(sheet.get("features", [])[:6])
     return (
-        f"character reference art of {sheet.get('form', 'a friendly alpaca companion')}, "
-        f"{features}, {expr}, {appearance.palette} color scheme, "
-        f"{sheet.get('style', 'soft pastel illustration')}, "
+        f"character reference art of {sheet.get('form', 'Alpecca, a warm humanoid AI companion girl')}, "
+        f"{features}, {expr}, {appearance.palette} color accent, "
+        f"{sheet.get('style', 'modern clean anime illustration')}, "
         "full character visible, clean background, model sheet quality"
     )
 
@@ -170,10 +170,12 @@ def rig_spec_markdown(sheet: dict) -> str:
         "",
         "| Parameter | Driven by | What it should deform |",
         "|---|---|---|",
-        "| `warmth` | my Love dimension | blush, ear lift, overall brightness |",
+        "| `warmth` | my Love dimension | blush, soft smile, overall brightness |",
         "| `care` | my Compassion dimension | eye softness, head tilt toward viewer |",
-        "| `unease` | my Fear dimension | ears back, brow lift, slight shrink |",
-        "| `mouth_open` | speech amplitude | jaw / mouth open-close |",
+        "| `unease` | my Fear dimension | brow lift, slight shrink, ahoge tension |",
+        "| `core_glow` | my overall arousal | chest power-core emblem brightness |",
+        "| `eye_glow` | my dominant emotion | iris tint/glow (calm/think/compassion/fear) |",
+        "| `mouth_open` | speech amplitude | mouth/phoneme shapes (see my mouth chart) |",
         "| `eye_blink` | blink clock | eyelids |",
         "",
         "## How each mood must read on my face",
@@ -197,6 +199,16 @@ def write_rig_spec(sheet: dict, character_dir: Path = CHARACTER_DIR) -> Path:
 
 
 # --- Gallery: the candidates she chose to keep --------------------------------
+
+def reference_sheets(character_dir: Path = CHARACTER_DIR) -> list[str]:
+    """Her canonical master-sheet art, if it's been placed in
+    data/character/reference/. These are the real design she works from -- the
+    ground truth her self-designs are judged against."""
+    d = character_dir / "reference"
+    if not d.exists():
+        return []
+    return sorted(p.name for p in d.glob("*.png"))
+
 
 def gallery_dir(character_dir: Path = CHARACTER_DIR) -> Path:
     d = character_dir / "gallery"

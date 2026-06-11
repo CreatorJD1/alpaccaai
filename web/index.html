@@ -326,6 +326,19 @@ function connect(){
       log.appendChild(d); log.scrollTop = log.scrollHeight;
       speak(m.reply);
       render(m.state, m.mood, m.appearance); refreshChart();
+    } else if(m.type === 'computer_status'){
+      const d = document.createElement('div');
+      d.className = 'mem'; d.textContent = '🖥️ ' + m.text;
+      log.appendChild(d); log.scrollTop = log.scrollHeight;
+    } else if(m.type === 'computer_confirm'){
+      showComputerConfirm(m);
+    } else if(m.type === 'computer_done'){
+      const d = document.createElement('div');
+      d.className = 'msg her';
+      d.textContent = m.ok ? ('Done — ' + (m.summary || 'finished.'))
+                           : ('I stopped: ' + (m.error || m.summary || 'unable to finish.'));
+      log.appendChild(d); log.scrollTop = log.scrollHeight;
+      setAvatarState('idle');
     }
   };
   ws.onclose = ()=>{
@@ -357,6 +370,38 @@ document.getElementById('introspectBtn').addEventListener('click', async ()=>{
     render(d.state, d.mood);
   } catch(err){}
 });
+
+// --- letting her use the computer (opt-in; consequential steps need an OK) -----
+// A confirmation overlay she raises before anything consequential. Reuses the
+// camera overlay's styling language.
+function showComputerConfirm(m){
+  setAvatarState('thinking');
+  let ov = document.getElementById('cuOverlay');
+  if(!ov){
+    ov = document.createElement('div');
+    ov.id = 'cuOverlay';
+    ov.style = 'display:flex;position:fixed;inset:0;z-index:60;background:rgba(20,16,32,.88);'+
+               'align-items:center;justify-content:center;flex-direction:column;gap:14px;padding:20px;';
+    ov.innerHTML = '<div style="max-width:460px;background:#241f33;border:1px solid #5a4a8a;'+
+      'border-radius:14px;padding:20px;color:#efe9ff;line-height:1.5;">'+
+      '<div style="font-weight:600;margin-bottom:8px;color:#c9a8ff;">She wants to do something that matters — OK?</div>'+
+      '<div id="cuMsg" style="font-size:14px;"></div></div>'+
+      '<div style="display:flex;gap:10px;"><button id="cuYes" style="background:#c9a8ff;color:#221a33;'+
+      'border:0;padding:10px 22px;border-radius:10px;font-weight:600;cursor:pointer;">Yes, do it</button>'+
+      '<button id="cuNo" style="background:#7a3a5a;color:#efe9ff;border:0;padding:10px 22px;'+
+      'border-radius:10px;cursor:pointer;">No, stop</button></div>';
+    document.body.appendChild(ov);
+    const answer = (ok)=>{ ov.style.display='none';
+      fetch('/computer/confirm', {method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({approved: ok})}); };
+    document.getElementById('cuYes').onclick = ()=> answer(true);
+    document.getElementById('cuNo').onclick = ()=> answer(false);
+  }
+  document.getElementById('cuMsg').textContent =
+    `${m.kind}${m.target ? ' — ' + m.target : ''}${m.text ? ' ("' + m.text + '")' : ''}` +
+    (m.reason ? `\nWhy: ${m.reason}` : '');
+  ov.style.display = 'flex';
+}
 
 // --- avatar state machine: idle / listening / thinking / speaking -------------
 // One source of truth for "what is she doing right now". The SVG animates the
@@ -572,6 +617,17 @@ document.getElementById('form').addEventListener('submit', (e)=>{
   e.preventDefault();
   const input = document.getElementById('input');
   const text = input.value.trim();
+  // "/do <task>" hands her the computer for a task instead of just chatting.
+  if(text.startsWith('/do ')){
+    const task = text.slice(4).trim();
+    addMsg('/do ' + task, 'me'); input.value = '';
+    setAvatarState('thinking');
+    fetch('/computer/task', {method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({task})}).then(r=>r.json()).then(d=>{
+        if(!d.ok){ statusEl.textContent = d.error || 'could not start'; setAvatarState('idle'); }
+      }).catch(()=>{ statusEl.textContent='request failed'; setAvatarState('idle'); });
+    return;
+  }
   if((!text && !pendingImage) || ws.readyState !== 1) return;
   const payload = {text};
   if(pendingImage){

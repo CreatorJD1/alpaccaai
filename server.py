@@ -32,6 +32,7 @@ from alpecca import state as state_store
 from alpecca import values
 from alpecca import hearing
 from alpecca import avatar as avatar_mod
+from alpecca import computer as computer_mod
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -170,7 +171,75 @@ def state() -> dict:
                 "screen_sight": screen_sight.available,
                 "expressions": face_sense.available,
                 "actions": mind.actuator.enabled,
+                "computer_use": computer_mod.available(),
             }}
+
+
+# Computer use runs one task at a time. The driver runs off-thread; when it
+# hits a consequential action it blocks on _confirm_event while the UI is asked.
+import threading as _threading
+_computer_lock = _threading.Lock()
+_confirm_event = _threading.Event()
+_confirm_decision = {"approved": False}
+
+
+@app.post("/computer/task")
+async def computer_task(req: Request) -> dict:
+    """Hand Alpecca a task she carries out by seeing the screen and working the
+    mouse/keyboard locally. Consequential steps pause for your confirmation
+    (delivered over the WebSocket; answered at /computer/confirm)."""
+    try:
+        body = await req.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be JSON")
+    task = (body.get("task") or "").strip()
+    if not task:
+        raise HTTPException(status_code=400, detail="task required")
+    if not computer_mod.available():
+        return {"ok": False, "error": "computer use is off (set ALPECCA_COMPUTER_USE=1)"}
+    if not _computer_lock.acquire(blocking=False):
+        return {"ok": False, "error": "she's already working on something on the computer"}
+
+    loop = asyncio.get_running_loop()
+
+    def status(msg: str) -> None:
+        asyncio.run_coroutine_threadsafe(
+            _broadcast({"type": "computer_status", "text": msg}), loop)
+
+    def confirm(action) -> bool:
+        _confirm_event.clear()
+        _confirm_decision["approved"] = False
+        asyncio.run_coroutine_threadsafe(_broadcast({
+            "type": "computer_confirm",
+            "target": action.target, "reason": action.reason,
+            "kind": action.kind, "text": action.text,
+        }), loop)
+        # Block the worker thread until the person answers (or times out -> no).
+        got = _confirm_event.wait(timeout=120)
+        return bool(got and _confirm_decision["approved"])
+
+    async def run() -> None:
+        try:
+            result = await asyncio.to_thread(computer_mod.run_task, task, confirm, status)
+            await _broadcast({"type": "computer_done", "ok": result.ok,
+                              "summary": result.summary, "error": result.error})
+        finally:
+            _computer_lock.release()
+
+    asyncio.create_task(run())
+    return {"ok": True, "started": True}
+
+
+@app.post("/computer/confirm")
+async def computer_confirm(req: Request) -> dict:
+    """Answer a pending consequential-action confirmation."""
+    try:
+        body = await req.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be JSON")
+    _confirm_decision["approved"] = bool(body.get("approved"))
+    _confirm_event.set()
+    return {"ok": True}
 
 
 @app.get("/character")
@@ -184,8 +253,22 @@ def character() -> dict:
     return {
         "sheet": sheet,
         "gallery": studio.gallery_index(),
+        "reference": studio.reference_sheets(),
         "rig_spec": spec.read_text(encoding="utf-8") if spec.exists() else None,
     }
+
+
+@app.get("/character/reference/{name}")
+def character_reference(name: str) -> FileResponse:
+    """Serve one of her canonical master sheets from data/character/reference."""
+    import re
+    from config import CHARACTER_DIR
+    if not re.fullmatch(r"[A-Za-z0-9_-]+\.png", name):
+        raise HTTPException(status_code=404, detail="no such sheet")
+    path = CHARACTER_DIR / "reference" / name
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="no such sheet")
+    return FileResponse(path, media_type="image/png")
 
 
 @app.get("/character/image/{name}")
