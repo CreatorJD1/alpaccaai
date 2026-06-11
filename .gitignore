@@ -8,6 +8,8 @@ data/
 # Python
 __pycache__/
 *.pyc
+# Dedicated Python 3.12 venv for talk mode (pyaudio has no 3.14 wheels).
+.venv-talk/
 
 # Local machine-specific Claude Code settings.
 .claude/settings.local.json

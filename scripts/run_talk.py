@@ -10,13 +10,19 @@ This is a *separate process* from the Alpecca server, the same pattern as
 run_telemetry.py: her mind stays in one place (server.py) and this script is
 just another sense-and-actuator pair plugged into it over HTTP.
 
-Setup (one-time):
-    pip install "pipecat-ai[whisper,silero,local]" kokoro-onnx requests
-    python server.py          # Alpecca herself must be running
-    python scripts/run_talk.py
+Setup (one-time). NOTE: pyaudio (pulled in by pipecat's local-audio extra)
+has no Python 3.14 wheels yet, so this script runs from a dedicated 3.12
+venv -- it's a separate process talking to the server over HTTP, so the two
+Pythons never mix:
+
+    py -3.12 -m venv .venv-talk
+    .venv-talk\\Scripts\\pip install "pipecat-ai[whisper,silero,local]" kokoro-onnx requests
+    python scripts/run_full.py                    # Alpecca herself (3.14)
+    .venv-talk\\Scripts\\python scripts/run_talk.py   # her voice loop (3.12)
 
 First run downloads the Whisper + Kokoro models; after that it's fully
-offline. Ctrl+C to stop.
+offline. Ctrl+C to stop. (For most people the 🎤 push-to-talk button in the
+web UI does the same job with no extra setup.)
 """
 from __future__ import annotations
 

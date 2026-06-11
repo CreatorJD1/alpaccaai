@@ -144,10 +144,30 @@
               style="background:#3a3158;color:var(--ink);padding:0 12px;">🔇</button>
       <button type="button" id="attachBtn" title="Show Alpecca an image"
               style="background:#3a3158;color:var(--ink);padding:0 12px;">📎</button>
+      <button type="button" id="camBtn" title="Show Alpecca something through your camera"
+              style="background:#3a3158;color:var(--ink);padding:0 12px;">📷</button>
       <button type="button" id="introspectBtn" title="Ask Alpecca to examine its own state"
               style="background:#3a3158;color:var(--ink);padding:0 12px;">self?</button>
       <button type="submit">Send</button>
     </form>
+  </div>
+
+  <!-- Camera mode: a live preview so you can frame what you're showing her. -->
+  <div id="camOverlay" style="display:none; position:fixed; inset:0; z-index:50;
+       background:rgba(20,16,32,.85); align-items:center; justify-content:center;
+       flex-direction:column; gap:12px;">
+    <video id="camVideo" autoplay playsinline
+           style="max-width:min(640px,92vw); border-radius:14px;
+                  box-shadow:0 16px 60px rgba(0,0,0,.6);"></video>
+    <div style="display:flex; gap:10px;">
+      <button type="button" id="camSnap"
+              style="background:var(--accent);color:#221a33;border:0;
+                     padding:10px 22px;border-radius:10px;font-weight:600;cursor:pointer;">
+        Show her</button>
+      <button type="button" id="camCancel"
+              style="background:#3a3158;color:var(--ink);border:0;
+                     padding:10px 22px;border-radius:10px;cursor:pointer;">Cancel</button>
+    </div>
   </div>
 
   <div class="chartwrap">
@@ -384,6 +404,46 @@ micBtn.addEventListener('click', async ()=>{
   } catch(e){
     statusEl.textContent = 'microphone unavailable or permission denied';
   }
+});
+
+// --- camera mode: show her something live ------------------------------------
+const camOverlay = document.getElementById('camOverlay');
+const camVideo = document.getElementById('camVideo');
+let camStream = null;
+function closeCam(){
+  if(camStream){ camStream.getTracks().forEach(t => t.stop()); camStream = null; }
+  camVideo.srcObject = null;
+  camOverlay.style.display = 'none';
+}
+document.getElementById('camBtn').addEventListener('click', async ()=>{
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({video: {width: {ideal: 1280}}});
+    camVideo.srcObject = camStream;
+    camOverlay.style.display = 'flex';
+  } catch(e){
+    statusEl.textContent = 'camera unavailable or permission denied';
+  }
+});
+document.getElementById('camCancel').addEventListener('click', closeCam);
+document.getElementById('camSnap').addEventListener('click', ()=>{
+  if(!camStream || ws.readyState !== 1){ closeCam(); return; }
+  const canvas = document.createElement('canvas');
+  const scale = Math.min(1, 768 / Math.max(camVideo.videoWidth, camVideo.videoHeight));
+  canvas.width = Math.round(camVideo.videoWidth * scale);
+  canvas.height = Math.round(camVideo.videoHeight * scale);
+  canvas.getContext('2d').drawImage(camVideo, 0, 0, canvas.width, canvas.height);
+  const shot = canvas.toDataURL('image/jpeg', 0.85);
+  closeCam();
+  const input = document.getElementById('input');
+  const text = input.value.trim();
+  const d = document.createElement('div');
+  d.className = 'msg me';
+  if(text) d.textContent = text;
+  const im = document.createElement('img'); im.src = shot;
+  d.appendChild(im);
+  log.appendChild(d); log.scrollTop = log.scrollHeight;
+  ws.send(JSON.stringify({text, image: shot, source: 'camera'}));
+  input.value = '';
 });
 
 // --- showing her images ------------------------------------------------------

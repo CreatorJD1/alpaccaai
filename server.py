@@ -299,7 +299,9 @@ async def ws(socket: WebSocket) -> None:
                     "you couldn't make the image out -- your vision model isn't "
                     "available right now")
             if not user_text:
-                user_text = "(they sent an image without any words)"
+                user_text = ("(they're showing you something through the camera "
+                             "right now)" if msg.get("source") == "camera"
+                             else "(they sent an image without any words)")
 
             # Let the senses update the mood right before responding, so what
             # you're doing on the machine colors the reply. Hold the mind lock
