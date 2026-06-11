@@ -63,6 +63,23 @@ class _LLM:
     def online(self) -> bool:
         return self._client is not None
 
+    def _chat(self, messages: list[dict], tools: list[dict] | None = None):
+        """One Ollama chat call with thinking disabled.
+
+        Qwen3 hybrids think out loud by default, which is great for math and
+        terrible for companionship -- a reply that takes forty seconds isn't a
+        conversation. We ask for no-think first and quietly retry plain for
+        models/servers that reject the parameter; strip_think still catches
+        any <think> blocks that slip through either way.
+        """
+        kwargs: dict = {"model": OLLAMA_MODEL, "messages": messages}
+        if tools:
+            kwargs["tools"] = tools
+        try:
+            return self._client.chat(**kwargs, think=False)
+        except Exception:
+            return self._client.chat(**kwargs)
+
     def generate(self, system_prompt: str, user_msg: str,
                  history: list[dict] | None = None,
                  tools: list[dict] | None = None,
@@ -80,11 +97,10 @@ class _LLM:
         try:
             if tools and on_tool:
                 try:
-                    resp = self._client.chat(model=OLLAMA_MODEL, messages=messages,
-                                             tools=tools)
+                    resp = self._chat(messages, tools=tools)
                 except Exception:
                     # Older client/model without tool support -- plain chat.
-                    resp = self._client.chat(model=OLLAMA_MODEL, messages=messages)
+                    resp = self._chat(messages)
                 msg = resp["message"]
                 calls = msg.get("tool_calls") or []
                 if calls:
@@ -93,10 +109,10 @@ class _LLM:
                         fn = call.get("function", {})
                         result = on_tool(fn.get("name", ""), fn.get("arguments") or {})
                         messages.append({"role": "tool", "content": str(result)})
-                    resp = self._client.chat(model=OLLAMA_MODEL, messages=messages)
+                    resp = self._chat(messages)
                     msg = resp["message"]
                 return strip_think(msg["content"])
-            resp = self._client.chat(model=OLLAMA_MODEL, messages=messages)
+            resp = self._chat(messages)
             return strip_think(resp["message"]["content"])
         except Exception as exc:
             # Model not pulled, server down mid-call, etc. -- stay alive.
