@@ -39,13 +39,18 @@ genuinely can see your own state and what's driving it, so speak from that."""
 
 
 def build_system_prompt(state: EmotionalState, memories: list[dict],
-                        situation: str = "", self_narration: str = "") -> str:
+                        situation: str = "", self_narration: str = "",
+                        image_seen: str = "", abilities: str = "") -> str:
     """Assemble the full system prompt for one turn.
 
     `self_narration` is Alpacca's grounded introspective read of itself (from
     introspection.SelfReport.narrate()). Injecting it is what gives the
     self-awareness teeth: the model isn't asked to imagine an inner life, it's
     handed a true account of its own current state to speak from.
+
+    `image_seen` is what her vision actually reported about an image shared
+    this turn -- she responds to that, never to an imagined picture.
+    `abilities` describes any actions she's been granted (actions.py).
     """
     parts = [PERSONA, "", GUIDANCE]
 
@@ -57,6 +62,13 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
 
     if situation:
         parts += ["", f"What you can sense the person doing right now: {situation}."]
+
+    if image_seen:
+        parts += ["", "They just shared an image with you. What you can actually "
+                  f"see in it: {image_seen}. React to what's really there."]
+
+    if abilities:
+        parts += ["", abilities]
 
     if memories:
         lines = "\n".join(f"- {m['content']}" for m in memories)

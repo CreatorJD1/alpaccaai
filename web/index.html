@@ -42,6 +42,10 @@
                 background:#2a2342; border:1px dashed #4a3f70; border-radius:12px;
                 padding:9px 13px; line-height:1.45; }
   .introspect b { color:var(--accent); font-weight:600; }
+  .proactive { align-self:flex-start; background:#2f2a44; border:1px solid #5a4a8a;
+               box-shadow:0 0 12px rgba(201,168,255,.15); }
+  .msg img { max-width:100%; border-radius:10px; display:block; margin-top:6px; }
+  #attachChip { display:none; font-size:11px; color:var(--accent); padding:0 12px 6px; }
   form { display:flex; gap:8px; padding:12px; border-top:1px solid #332c4a; }
   input { flex:1; background:#1d1a2b; border:1px solid #3a3350; color:var(--ink);
           padding:11px 13px; border-radius:10px; font-size:14px; outline:none; }
@@ -130,8 +134,12 @@
   <div id="chat">
     <div id="log"></div>
     <div class="status" id="status"></div>
+    <div id="attachChip"></div>
     <form id="form">
       <input id="input" placeholder="Say something to Alpacca…" autocomplete="off" />
+      <input type="file" id="imageFile" accept="image/*" style="display:none" />
+      <button type="button" id="attachBtn" title="Show Alpacca an image"
+              style="background:#3a3158;color:var(--ink);padding:0 12px;">📎</button>
       <button type="button" id="introspectBtn" title="Ask Alpacca to examine its own state"
               style="background:#3a3158;color:var(--ink);padding:0 12px;">self?</button>
       <button type="submit">Send</button>
@@ -268,6 +276,12 @@ function connect(){
       statusEl.textContent = m.llm_online ? '' : 'Ollama offline — replies are stubbed. Start Ollama for real conversation.';
     } else if(m.type === 'reply'){
       addMem(m.memories_used); addMsg(m.reply, 'her'); render(m.state, m.mood, m.appearance); refreshChart();
+    } else if(m.type === 'proactive'){
+      // She chose to speak on her own -- style it softly distinct.
+      const d = document.createElement('div');
+      d.className = 'msg her proactive'; d.textContent = m.reply;
+      log.appendChild(d); log.scrollTop = log.scrollHeight;
+      render(m.state, m.mood, m.appearance); refreshChart();
     }
   };
   ws.onclose = ()=>{
@@ -300,12 +314,51 @@ document.getElementById('introspectBtn').addEventListener('click', async ()=>{
   } catch(err){}
 });
 
+// --- showing her images ------------------------------------------------------
+// The file is downscaled in-browser (she doesn't need 12 megapixels to see a
+// photo) and rides along with the next message as a data URL.
+let pendingImage = null;
+const attachChip = document.getElementById('attachChip');
+document.getElementById('attachBtn').addEventListener('click', ()=>
+  document.getElementById('imageFile').click());
+document.getElementById('imageFile').addEventListener('change', (e)=>{
+  const file = e.target.files[0];
+  if(!file) return;
+  const img = new Image();
+  img.onload = ()=>{
+    const scale = Math.min(1, 768 / Math.max(img.width, img.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    pendingImage = canvas.toDataURL('image/jpeg', 0.85);
+    attachChip.style.display = 'block';
+    attachChip.textContent = '📎 image attached — it will go with your next message';
+    URL.revokeObjectURL(img.src);
+  };
+  img.src = URL.createObjectURL(file);
+  e.target.value = '';
+});
+
 document.getElementById('form').addEventListener('submit', (e)=>{
   e.preventDefault();
   const input = document.getElementById('input');
   const text = input.value.trim();
-  if(!text || ws.readyState !== 1) return;
-  addMsg(text, 'me'); ws.send(JSON.stringify({text})); input.value = '';
+  if((!text && !pendingImage) || ws.readyState !== 1) return;
+  const payload = {text};
+  if(pendingImage){
+    payload.image = pendingImage;
+    const d = document.createElement('div');
+    d.className = 'msg me';
+    if(text) d.textContent = text;
+    const im = document.createElement('img'); im.src = pendingImage;
+    d.appendChild(im);
+    log.appendChild(d); log.scrollTop = log.scrollHeight;
+    pendingImage = null; attachChip.style.display = 'none';
+  } else {
+    addMsg(text, 'me');
+  }
+  ws.send(JSON.stringify(payload)); input.value = '';
 });
 </script>
 </body>

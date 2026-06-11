@@ -29,6 +29,9 @@ from alpacca import prompts
 from alpacca import introspection
 from alpacca import appearance as appearance_mod
 from alpacca.portrait import PortraitWorker
+from alpacca.actions import Actuator
+from alpacca import proactive as proactive_mod
+from config import Proactive as ProactiveCfg
 
 
 # Qwen3 hybrid models reason out loud inside <think>...</think> before the real
@@ -61,7 +64,13 @@ class _LLM:
         return self._client is not None
 
     def generate(self, system_prompt: str, user_msg: str,
-                 history: list[dict] | None = None) -> str:
+                 history: list[dict] | None = None,
+                 tools: list[dict] | None = None,
+                 on_tool=None) -> str:
+        """One reply. When `tools` are offered and the model calls one, we run
+        it through `on_tool(name, args) -> str` and give the model one more
+        pass to fold the result into its words. A model or client that can't
+        do tools just degrades to a plain conversational reply."""
         if self._client is None:
             return self._fallback(system_prompt, user_msg)
         messages = [{"role": "system", "content": system_prompt}]
@@ -69,6 +78,24 @@ class _LLM:
             messages.extend(history)
         messages.append({"role": "user", "content": user_msg})
         try:
+            if tools and on_tool:
+                try:
+                    resp = self._client.chat(model=OLLAMA_MODEL, messages=messages,
+                                             tools=tools)
+                except Exception:
+                    # Older client/model without tool support -- plain chat.
+                    resp = self._client.chat(model=OLLAMA_MODEL, messages=messages)
+                msg = resp["message"]
+                calls = msg.get("tool_calls") or []
+                if calls:
+                    messages.append(msg)
+                    for call in calls:
+                        fn = call.get("function", {})
+                        result = on_tool(fn.get("name", ""), fn.get("arguments") or {})
+                        messages.append({"role": "tool", "content": str(result)})
+                    resp = self._client.chat(model=OLLAMA_MODEL, messages=messages)
+                    msg = resp["message"]
+                return strip_think(msg["content"])
             resp = self._client.chat(model=OLLAMA_MODEL, messages=messages)
             return strip_think(resp["message"]["content"])
         except Exception as exc:
@@ -121,6 +148,13 @@ class CoreMind:
         # Remember which mood label she dressed for, so we only re-pick when
         # her mood actually shifts (not on every micro-drift in the floats).
         self._appearance_mood = self.state.mood_label()
+        # What her screen-sight last saw (alpacca/vision.py); empty when the
+        # sense is off. Folded into the situation each chat turn.
+        self._sight: str = ""
+        # When she last spoke unprompted, for the proactive cooldown.
+        self._last_volunteer_ts: float = 0.0
+        # Her granted reach into the machine (empty allowlist = no actuator).
+        self.actuator = Actuator()
         # Self-portrait renderer (ComfyClaw subprocess wrapper). It checks the
         # config-enabled flag itself, so we can call request() unconditionally.
         self._portrait = PortraitWorker()
@@ -189,9 +223,19 @@ class CoreMind:
 
     # --- The full chat turn: nodes 2-5 -------------------------------------
 
-    def chat(self, user_msg: str, situation: str = "") -> dict:
+    def see(self, description: str) -> None:
+        """Update what her ambient screen-sight is seeing. Called by the server
+        on each drift tick when ALPACCA_SIGHT is on."""
+        self._sight = description or ""
+
+    def chat(self, user_msg: str, situation: str = "",
+             image_desc: str | None = None) -> dict:
         """Run one conversational turn and return a structured result the UI can
-        render: the reply plus the resulting mood (so the avatar can react)."""
+        render: the reply plus the resulting mood (so the avatar can react).
+
+        `image_desc` is what the vision model saw in an image the person
+        attached this turn (or None). It's woven into the prompt as something
+        she actually saw, and remembered like any other shared moment."""
         # Recall relevant memories for this message.
         memories = memory_store.recall(user_msg)
 
@@ -199,11 +243,21 @@ class CoreMind:
         # itself honestly within the reply.
         self_report = self.introspect()
 
+        # Ambient sight enriches the situation beyond the window title.
+        if self._sight:
+            situation = (situation + "; " if situation else "") + \
+                f"on their screen you can see: {self._sight}"
+
         # Generate a reply conditioned on mood + memory + situation + self-knowledge.
         system_prompt = prompts.build_system_prompt(
-            self.state, memories, situation, self_narration=self_report.narrate()
+            self.state, memories, situation, self_narration=self_report.narrate(),
+            image_seen=image_desc or "", abilities=self.actuator.describe(),
         )
-        reply = self.llm.generate(system_prompt, user_msg, self._history[-6:])
+        reply = self.llm.generate(
+            system_prompt, user_msg, self._history[-6:],
+            tools=self.actuator.tools_schema() or None,
+            on_tool=self.actuator.execute if self.actuator.enabled else None,
+        )
 
         # Update Love from how the exchange felt, and persist.
         reward = prompts.estimate_reward(user_msg)
@@ -215,6 +269,11 @@ class CoreMind:
         memory_store.remember(
             f"The person said: {user_msg}", kind="episodic", salience=salience
         )
+        # An image someone chose to share is almost always worth keeping.
+        if image_desc:
+            memory_store.remember(
+                f"They showed me an image: {image_desc}", kind="episodic", salience=0.6
+            )
 
         # Keep a little rolling context for conversational continuity.
         self._history.append({"role": "user", "content": user_msg})
@@ -229,3 +288,35 @@ class CoreMind:
             "appearance": self.current_appearance().as_dict(),
             "llm_online": self.llm.online,
         }
+
+    # --- Proactive speech: she starts the conversation ---------------------
+
+    def volunteer_reason(self) -> str | None:
+        """Check (cheaply, under the caller's lock) whether something in her is
+        worth voicing unprompted. Claims the cooldown slot on a hit so two
+        ticks can't both decide to speak."""
+        if not ProactiveCfg.ENABLED:
+            return None
+        reason = proactive_mod.should_speak(
+            self.state, state_store.mood_history(limit=40), self._last_volunteer_ts
+        )
+        if reason:
+            self._last_volunteer_ts = time.time()
+        return reason
+
+    def compose_volunteer(self, reason: str) -> str:
+        """Turn a grounded reason into her own short unprompted words. Safe to
+        call outside the mind lock -- it only reads state. Offline, she speaks
+        the reason plainly rather than through the canned echo voice."""
+        if not self.llm.online:
+            return f"(quietly) I just wanted to say -- {reason}."
+        self_report = self.introspect()
+        system_prompt = prompts.build_system_prompt(
+            self.state, [], "", self_narration=self_report.narrate()
+        ) + ("\n\nNo one has said anything to you. You're speaking up on your own "
+             f"because of something real you noticed in yourself: {reason}. Say one "
+             "or two short natural sentences about it -- gentle, not dramatic, no "
+             "preamble.")
+        reply = self.llm.generate(system_prompt, "(say it in your own words)")
+        self._history.append({"role": "assistant", "content": reply})
+        return reply

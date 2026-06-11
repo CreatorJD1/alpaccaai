@@ -22,6 +22,10 @@ from alpacca import appearance
 from alpacca import portrait
 from alpacca import openclaw_bridge
 from alpacca import voice
+from alpacca import vision
+from alpacca import proactive
+from alpacca import actions
+from alpacca import prompts
 from alpacca.mind import strip_think
 
 
@@ -373,6 +377,82 @@ def test_openclaw_missing_cli_is_handled():
         assert result["attempted"] is True
         assert result["ok"] is False
         assert "PATH" in result["reason"] or "not" in result["reason"].lower()
+
+
+# --- Vision: expression label -> weary signal --------------------------------
+
+def test_expression_labels_map_to_weary_signal():
+    assert vision.weary_from_label("tired") == 1.0
+    assert vision.weary_from_label("Stressed.") == 0.8   # forgiving about case/punct
+    assert vision.weary_from_label("happy") == 0.0
+    assert vision.weary_from_label(None) == 0.0
+    assert vision.weary_from_label("not-a-label") == 0.0
+
+def test_weary_face_feeds_compassion_signal():
+    obs = Observation(face_weary=1.0)
+    assert obs.fatigue_signals(session_minutes=5)["weary_face"] == 1.0
+
+def test_image_seen_lands_in_prompt_grounded():
+    p = prompts.build_system_prompt(EmotionalState(), [], image_seen="a small brown dog on a beach")
+    assert "a small brown dog on a beach" in p
+    assert "really there" in p   # the grounding nudge rides along
+
+
+# --- Proactive speech ---------------------------------------------------------
+
+def _mood_history(samples):
+    return [{"love": l, "compassion": c, "fear": f} for (l, c, f) in samples]
+
+def test_proactive_speaks_on_rising_unease():
+    hist = _mood_history([(0.5, 0.2, 0.05)] * 8 + [(0.5, 0.2, 0.4)])
+    state = EmotionalState(love=0.5, compassion=0.2, fear=0.4)
+    reason = proactive.should_speak(state, hist, last_spoke_ts=0.0, now=1e9)
+    assert reason and "unease" in reason
+
+def test_proactive_speaks_on_slipping_warmth():
+    hist = _mood_history([(0.7, 0.2, 0.0)] * 8 + [(0.45, 0.2, 0.0)])
+    state = EmotionalState(love=0.45, compassion=0.2, fear=0.0)
+    reason = proactive.should_speak(state, hist, last_spoke_ts=0.0, now=1e9)
+    assert reason and "warmth" in reason
+
+def test_proactive_stays_quiet_when_steady_or_cooling_down():
+    hist = _mood_history([(0.5, 0.2, 0.05)] * 9)
+    state = EmotionalState(love=0.5, compassion=0.2, fear=0.05)
+    assert proactive.should_speak(state, hist, last_spoke_ts=0.0, now=1e9) is None
+    # Even a real spike stays unspoken inside the cooldown window.
+    anxious = EmotionalState(fear=0.9)
+    assert proactive.should_speak(anxious, hist, last_spoke_ts=1e9 - 10, now=1e9) is None
+
+def test_proactive_acute_fear_outranks_trends():
+    hist = _mood_history([(0.5, 0.2, 0.6)] * 9)   # fear high but flat
+    state = EmotionalState(fear=0.7)
+    reason = proactive.should_speak(state, hist, last_spoke_ts=0.0, now=1e9)
+    assert reason and "unease" in reason
+
+
+# --- App actions: the allowlist is the whole security model -------------------
+
+def test_parse_apps_is_forgiving_and_lowercases():
+    apps = actions.parse_apps(" Spotify = C:\\apps\\spotify.exe ; notes=notepad.exe ;; bad-entry ")
+    assert apps == {"spotify": "C:\\apps\\spotify.exe", "notes": "notepad.exe"}
+    assert actions.parse_apps("") == {}
+
+def test_actuator_refuses_anything_off_the_list():
+    act = actions.Actuator(apps={"notes": "notepad.exe"})
+    assert "isn't on the access list" in act.execute("open_app", {"name": "powershell"})
+    assert "unknown tool" in act.execute("delete_files", {"name": "notes"})
+
+def test_actuator_disabled_offers_no_tools():
+    act = actions.Actuator(apps={})
+    assert act.enabled is False
+    assert act.tools_schema() == []
+    assert act.describe() == ""
+
+def test_actuator_tools_schema_enumerates_granted_names_only():
+    act = actions.Actuator(apps={"spotify": "x", "notes": "y"})
+    schema = act.tools_schema()[0]["function"]
+    assert schema["name"] == "open_app"
+    assert schema["parameters"]["properties"]["name"]["enum"] == ["notes", "spotify"]
 
 
 if __name__ == "__main__":

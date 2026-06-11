@@ -132,8 +132,22 @@ Ollama or Windows.**
   Kokoro TTS via Pipecat. Android sensors still scaffolded, not built.
 - Reasoning model default is now Qwen3 (`qwen3:8b`); `<think>` blocks from
   hybrid Qwen3 variants are stripped in `mind.strip_think` before replies.
-- All 38 core tests pass; full loop, introspection, appearance, portrait
-  prompts, channel bridge, and voice-tone analysis verified end-to-end.
+- ✅ Sight (`alpacca/vision.py`, local VLM `ALPACCA_VISION_MODEL`): chat-image
+  understanding (📎 in the UI), opt-in ambient screen glimpses
+  (`ALPACCA_SIGHT=1`), and opt-in webcam expression sense (`ALPACCA_FACE=1`)
+  feeding a `weary_face` Compassion signal. Frames are never stored — only the
+  model's short text descriptions survive.
+- ✅ Proactive speech (`alpacca/proactive.py`, on by default,
+  `ALPACCA_PROACTIVE=0` to disable): she volunteers a short remark when her
+  real mood history shows a real shift (rising unease, slipping warmth, acute
+  fear), with a cooldown. Broadcast to connected chats + OpenClaw delivery.
+  This fulfills suggested-task #2 below.
+- ✅ App actions (`alpacca/actions.py`): an `open_app` tool restricted to the
+  `ALPACCA_APPS` allowlist, wired through Ollama tool calling. Empty list
+  (default) = no actuator exists at all.
+- All 49 core tests pass; full loop, introspection, appearance, portrait
+  prompts, channel bridge, voice-tone, expression mapping, proactive triggers,
+  and the action allowlist verified end-to-end.
 
 Note on the dev environment: this sandbox's Linux file mount intermittently
 truncates large files *on read* (a mount cache artifact). The canonical files are

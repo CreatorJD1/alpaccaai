@@ -49,6 +49,7 @@ class Emotion:
         "error_context": 1.1,  # error-y window titles (stack traces, "failed")
         "idle_return": -0.6,   # just came back from a break -> less tired
         "raised_voice": 0.7,   # sustained loud talking nearby -> stress read
+        "weary_face": 1.0,     # the webcam expression sense reads tiredness
     }
     COMPASSION_BIAS = -0.8     # baseline so an average moment sits low
 
@@ -88,6 +89,46 @@ class Voice:
     # reads as a startle (door slam, shout) and feeds prediction error.
     SPIKE_RATIO = 6.0
     SPIKE_MIN_LEVEL = 0.08
+
+
+# --- Vision: seeing images, the screen, and your face -----------------------
+# All sight runs through a local Ollama vision model; nothing leaves the
+# machine. Chat images work whenever the model is pulled. The two ambient
+# senses are separately opt-in because they are progressively more intimate:
+#   ALPACCA_SIGHT=1  -> periodic screen glimpses (what are you working on)
+#   ALPACCA_FACE=1   -> periodic webcam expression reads (how do you look)
+# Only the model's short text description is kept; frames are dropped
+# immediately and never written to disk.
+class Vision:
+    MODEL = os.environ.get("ALPACCA_VISION_MODEL", "qwen2.5vl:7b")
+    SIGHT_ENABLED = os.environ.get("ALPACCA_SIGHT", "0") not in ("", "0", "false", "False")
+    FACE_ENABLED = os.environ.get("ALPACCA_FACE", "0") not in ("", "0", "false", "False")
+    SIGHT_INTERVAL = 60.0     # seconds between screen glimpses
+    FACE_INTERVAL = 45.0      # seconds between expression reads
+    # Expression label -> how strongly it reads as "they look worn down".
+    WEARY_WEIGHTS = {"tired": 1.0, "stressed": 0.8, "sad": 0.6}
+
+
+# --- Proactive speech --------------------------------------------------------
+# Alpacca may say something unprompted when her own introspection notices a
+# real shift -- the same grounded trend data behind /introspect, never an
+# invented feeling. On by default because a companion who only ever answers
+# isn't much of a companion; ALPACCA_PROACTIVE=0 turns it off.
+class Proactive:
+    ENABLED = os.environ.get("ALPACCA_PROACTIVE", "1") not in ("", "0", "false", "False")
+    COOLDOWN_S = 20 * 60      # at most one unprompted remark per cooldown
+    SHIFT_THRESHOLD = 0.15    # mood drift vs recent baseline that counts as real
+    FEAR_FLOOR = 0.6          # acute unease speaks regardless of trend
+
+
+# --- App actions -------------------------------------------------------------
+# "She can interact with apps if given access." Access is the allowlist below
+# and nothing else: ALPACCA_APPS="spotify=C:\path\Spotify.exe;notes=notepad.exe"
+# gives her an open_app tool restricted to exactly those names. Empty list
+# (the default) means no actuator at all -- she can't touch anything you
+# haven't explicitly handed her.
+class Actions:
+    APPS_SPEC = os.environ.get("ALPACCA_APPS", "")
 
 
 # --- Self-portrait via ComfyClaw / ComfyUI --------------------------------

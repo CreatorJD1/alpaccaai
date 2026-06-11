@@ -46,6 +46,9 @@ class Observation:
     voice_activity: float = 0.0   # how much talking was heard this window
     voice_loudness: float = 0.0   # how loud the talking was, 0..1
     voice_spike: float = 0.0      # 1.0 if something abrupt broke a quiet stretch
+    # Expression sense (alpacca/vision.py FaceSense): how worn down the person
+    # looks on the webcam right now, 0 when that sense is off.
+    face_weary: float = 0.0
 
     # --- Derived reads the emotional model cares about ---------------------
 
@@ -74,6 +77,7 @@ class Observation:
             "error_context": self.is_error_context(),
             "idle_return": just_returned,
             "raised_voice": raised_voice,
+            "weary_face": self.face_weary,
         }
 
 

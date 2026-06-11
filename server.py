@@ -13,6 +13,7 @@ then open http://127.0.0.1:8765
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -25,6 +26,7 @@ from config import HOST, PORT
 from alpacca.mind import CoreMind
 from alpacca.sensory import WindowSensor
 from alpacca.voice import VoiceSensor
+from alpacca import vision
 from alpacca.introspection import identity_card
 from alpacca import state as state_store
 
@@ -36,13 +38,31 @@ mind = CoreMind()
 sensor = WindowSensor()
 # Voice-tone sense: opt-in (ALPACCA_VOICE=1) and quietly inert otherwise.
 voice_sensor = VoiceSensor()
+# Ambient sight (ALPACCA_SIGHT=1) and expression sense (ALPACCA_FACE=1) --
+# both run their own slow glimpse threads and are inert unless opted into.
+screen_sight = vision.ScreenSight()
+face_sense = vision.FaceSense()
+
+# Connected chat clients, so Alpacca can speak to whoever is listening when
+# she has something to say unprompted.
+ws_clients: set[WebSocket] = set()
 
 
 def _observe():
-    """One full sensory snapshot: window title + (if enabled) voice tone."""
+    """One full sensory snapshot: window title + whichever ambient senses are on."""
     obs = sensor.observe()
     voice_sensor.annotate(obs)
+    face_sense.annotate(obs)
     return obs
+
+
+async def _broadcast(payload: dict) -> None:
+    """Best-effort fan-out to every connected chat client."""
+    for client in list(ws_clients):
+        try:
+            await client.send_json(payload)
+        except Exception:
+            ws_clients.discard(client)
 
 # CoreMind state is shared between the background drift loop and any number of
 # WebSocket connections, all of which mutate the mood and the rolling history.
@@ -68,7 +88,29 @@ async def lifespan(app: FastAPI):
         while True:
             try:
                 async with mind_lock:
+                    mind.see(screen_sight.latest)
                     mind.perceive(_observe())
+                    # Cheap check: did her introspection notice something worth
+                    # voicing? (Claims the cooldown slot if so.)
+                    reason = mind.volunteer_reason()
+                if reason:
+                    from alpacca import openclaw_bridge
+                    from config import OpenClaw as OpenClawCfg
+                    reachable = bool(ws_clients) or (
+                        OpenClawCfg.ENABLED and OpenClawCfg.DEFAULT_TARGET)
+                    if reachable:
+                        # Compose outside the lock -- the LLM call can take
+                        # seconds and chat shouldn't stall behind her musing.
+                        text = await asyncio.to_thread(mind.compose_volunteer, reason)
+                        if text:
+                            await _broadcast({
+                                "type": "proactive", "reply": text,
+                                "mood": mind.state.mood_label(),
+                                "state": mind.state.as_dict(),
+                                "appearance": mind.current_appearance().as_dict(),
+                            })
+                            # And reach her person on their channel if she has one.
+                            await asyncio.to_thread(openclaw_bridge.try_deliver, text)
             except Exception:
                 pass  # never let a bad tick kill the companion
             await asyncio.sleep(DRIFT_INTERVAL)
@@ -83,6 +125,8 @@ async def lifespan(app: FastAPI):
         except (asyncio.CancelledError, Exception):
             pass
         voice_sensor.close()
+        screen_sight.close()
+        face_sense.close()
 
 
 app = FastAPI(title="Alpacca", lifespan=lifespan)
@@ -170,9 +214,19 @@ async def channel_inbound(req: Request) -> dict:
     return {**result, "delivered": delivered}
 
 
+def _decode_image(data_url: str) -> bytes | None:
+    """Pull raw bytes out of a data-URL ('data:image/jpeg;base64,...')."""
+    try:
+        _, _, b64 = data_url.partition(",")
+        return base64.b64decode(b64) if b64 else None
+    except Exception:
+        return None
+
+
 @app.websocket("/ws")
 async def ws(socket: WebSocket) -> None:
     await socket.accept()
+    ws_clients.add(socket)
     # Greet with the current state so the avatar renders immediately.
     await socket.send_json({"type": "state", "state": mind.state.as_dict(),
                             "mood": mind.state.mood_label(),
@@ -187,8 +241,23 @@ async def ws(socket: WebSocket) -> None:
                 # A malformed frame shouldn't tear down the conversation.
                 continue
             user_text = (msg.get("text") or "").strip()
-            if not user_text:
+            image_url = msg.get("image") or ""
+            if not user_text and not image_url:
                 continue
+
+            # If an image rode along, let her actually look at it first. The
+            # vision call can take seconds, so it happens before we take the
+            # mind lock. An unreadable image yields an honest "couldn't see".
+            image_desc = None
+            if image_url:
+                img = _decode_image(image_url)
+                if img:
+                    image_desc = await asyncio.to_thread(vision.describe_image, img)
+                image_desc = image_desc or (
+                    "you couldn't make the image out -- your vision model isn't "
+                    "available right now")
+            if not user_text:
+                user_text = "(they sent an image without any words)"
 
             # Let the senses update the mood right before responding, so what
             # you're doing on the machine colors the reply. Hold the mind lock
@@ -198,10 +267,13 @@ async def ws(socket: WebSocket) -> None:
                 obs = _observe()
                 mind.perceive(obs)
                 situation = obs.window_title or ""
-                result = mind.chat(user_text, situation=situation)
+                result = mind.chat(user_text, situation=situation,
+                                   image_desc=image_desc)
             await socket.send_json({"type": "reply", **result})
     except WebSocketDisconnect:
         pass
+    finally:
+        ws_clients.discard(socket)
 
 
 if __name__ == "__main__":
