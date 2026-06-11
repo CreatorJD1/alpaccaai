@@ -67,6 +67,16 @@ class Emotion:
     FEAR_GAIN = 1.2
     FEAR_DECAY = 0.15          # fear fades fairly quickly once things settle
 
+    # Energy / arousal: rises when she's actively engaged with the person and
+    # decays toward a drowsy floor when left alone -- this is what makes her get
+    # sleepy after a long stretch of no interaction, and lively when you're here.
+    ENERGY_BASELINE = 0.5
+    ENERGY_ACTIVE = 0.9        # target when the person is actively interacting
+    ENERGY_RISE = 0.30         # how fast she perks up when engaged
+    ENERGY_DECAY = 0.05        # how fast she winds down when ignored
+    ENERGY_FLOOR = 0.10        # how drowsy she gets after long solitude
+    ENERGY_ACTIVE_WINDOW = 120  # seconds since last interaction still counts as "with her"
+
     # Global clamp so every dimension stays in [0, 1].
     MIN, MAX = 0.0, 1.0
 

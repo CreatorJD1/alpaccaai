@@ -63,8 +63,10 @@ def params_for_state(state: EmotionalState) -> dict:
         "ParamAngleZ": round(_clamp(care * 6.0, -30.0, 30.0), 4),
         # And draws back a little when uneasy.
         "ParamBodyAngleX": round(_clamp(-fear * 4.0, -10.0, 10.0), 4),
-        # Eyes soften (narrow slightly) with care; blink overrides this in JS.
-        "ParamEyeForm": round(_clamp(care * 0.5 - fear * 0.3, -1.0, 1.0), 4),
+        # Eyes soften with care and droop when her energy is low (drowsy);
+        # blink overrides the open/close in JS.
+        "ParamEyeForm": round(_clamp(care * 0.5 - fear * 0.3 - (1.0 - state.energy) * 0.4,
+                                     -1.0, 1.0), 4),
         # Custom: her chest power-core brightness tracks overall arousal.
         "Param_CoreGlow": round(_clamp(0.3 + love * 0.4 + fear * 0.4, 0.0, 1.0), 4),
         # Custom: iris/eye glow leans toward the intense end with unease+care.

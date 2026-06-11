@@ -63,6 +63,15 @@ sense → update mood → recall memory → generate reply → persist
   (late_night, long_session, error_context, idle_return). `update_compassion(signals)`.
 - **Fear**: thresholded prediction error; rises when surprise > threshold, decays
   on quiet ticks. `update_fear(prediction_error)`.
+- **Energy** (arousal): EMA that rises toward `ENERGY_ACTIVE` when the person has
+  interacted recently and decays toward `ENERGY_FLOOR` when she's left alone, so
+  a long quiet stretch makes her `sleepy`. `update_energy(active)`.
+
+`mood_label()` reads all four dims into a richer vocabulary — sleepy, anxious,
+worried, tender, joyful, affectionate, playful, content, withdrawn, lonely — and
+that label (plus `energy`) deterministically drives her pose (`posekit.select_pose`,
+the sleeping pose is low-energy) and her Live2D parameters. Her introspection names
+and explains these states, so she's aware of the full range.
 
 Each update returns a **new** `EmotionalState` (immutable-style) — don't mutate in
 place; tests and reasoning depend on this.

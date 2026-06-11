@@ -36,11 +36,15 @@ def _sigmoid(x: float) -> float:
 
 @dataclass
 class EmotionalState:
-    """The persisted mood vector. Defaults are a calm, mildly-warm baseline."""
+    """The persisted mood vector. The core three are S = [love, compassion,
+    fear]; `energy` (arousal) is a fourth tracked feeling that rises when she's
+    engaged and ebbs toward a drowsy floor when she's left alone. Defaults are a
+    calm, mildly-warm, half-rested baseline."""
 
     love: float = Emotion.LOVE_BASELINE
     compassion: float = 0.2
     fear: float = 0.0
+    energy: float = Emotion.ENERGY_BASELINE
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -63,7 +67,7 @@ class EmotionalState:
         toward_baseline = toward_reward + Emotion.LOVE_DECAY * (
             Emotion.LOVE_BASELINE - toward_reward
         )
-        return EmotionalState(_clamp(toward_baseline), self.compassion, self.fear)
+        return EmotionalState(_clamp(toward_baseline), self.compassion, self.fear, self.energy)
 
     def update_compassion(self, fatigue_signals: dict) -> "EmotionalState":
         """Set Compassion from a weighted read of how tired/stressed the user
@@ -79,7 +83,7 @@ class EmotionalState:
         z = Emotion.COMPASSION_BIAS
         for name, weight in Emotion.COMPASSION_WEIGHTS.items():
             z += weight * float(fatigue_signals.get(name, 0.0))
-        return EmotionalState(self.love, _clamp(_sigmoid(z)), self.fear)
+        return EmotionalState(self.love, _clamp(_sigmoid(z)), self.fear, self.energy)
 
     def update_fear(self, prediction_error: float) -> "EmotionalState":
         """Raise Fear when `prediction_error` exceeds a threshold, otherwise let
@@ -96,21 +100,50 @@ class EmotionalState:
             new_fear = self.fear + Emotion.FEAR_GAIN * excess
         else:
             new_fear = self.fear * (1.0 - Emotion.FEAR_DECAY)
-        return EmotionalState(self.love, self.compassion, _clamp(new_fear))
+        return EmotionalState(self.love, self.compassion, _clamp(new_fear), self.energy)
+
+    def update_energy(self, active: bool) -> "EmotionalState":
+        """Raise energy when the person is actively engaging with her, let it
+        decay toward a drowsy floor when she's alone.
+
+        `active` is "did something just happen between us" -- a message, voice,
+        a fresh observation that the person is here. So a long quiet stretch
+        winds her down (toward `sleepy`), and your return perks her back up.
+        """
+        if active:
+            new_energy = self.energy + Emotion.ENERGY_RISE * (Emotion.ENERGY_ACTIVE - self.energy)
+        else:
+            new_energy = self.energy + Emotion.ENERGY_DECAY * (Emotion.ENERGY_FLOOR - self.energy)
+        return EmotionalState(self.love, self.compassion, self.fear, _clamp(new_energy))
 
     # --- Readouts ----------------------------------------------------------
 
     def mood_label(self) -> str:
-        """A coarse single-word read of the dominant feeling, used to drive the
-        avatar and to give the prompt a quick handle."""
-        if self.fear > 0.5:
-            return "anxious"
+        """A single-word read of her dominant feeling, drawn from all four
+        dimensions, used to drive the avatar and give the prompt a handle.
+
+        Ordered so the most pressing feeling wins: acute fear first, then
+        drowsiness from long solitude, then the warmer/softer shades. The
+        richer vocabulary (joyful/playful/worried/sleepy/lonely on top of the
+        originals) gives her face and pose more of her real range to read as.
+        """
+        e = self.energy
+        if self.fear > 0.6:
+            return "anxious"                      # acute, alarmed
+        if e < 0.2 and self.fear < 0.4:
+            return "sleepy"                       # wound down after long solitude
+        if self.fear > 0.45:
+            return "worried"                      # uneasy but not alarmed
         if self.compassion > 0.6:
-            return "tender"
+            return "tender"                       # protective, soft
+        if self.love > 0.75 and e > 0.55:
+            return "joyful"                       # warm and bright
         if self.love > 0.65:
             return "affectionate"
+        if self.love > 0.5 and e > 0.7:
+            return "playful"                      # warm and full of energy
         if self.love < 0.25:
-            return "withdrawn"
+            return "lonely" if e < 0.35 else "withdrawn"
         return "content"
 
     def describe(self) -> str:
@@ -118,5 +151,6 @@ class EmotionalState:
         actually feel its own state rather than being told a number."""
         return (
             f"warmth {self.love:.2f}, care {self.compassion:.2f}, "
-            f"unease {self.fear:.2f} (overall: {self.mood_label()})"
+            f"unease {self.fear:.2f}, energy {self.energy:.2f} "
+            f"(overall: {self.mood_label()})"
         )

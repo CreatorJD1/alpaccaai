@@ -77,15 +77,23 @@ def init_db(db_path: Path = DB_PATH) -> None:
         state_cols = {r["name"] for r in conn.execute("PRAGMA table_info(state)")}
         if "appearance_seed" not in state_cols:
             conn.execute("ALTER TABLE state ADD COLUMN appearance_seed INTEGER")
+        if "energy" not in state_cols:
+            conn.execute("ALTER TABLE state ADD COLUMN energy REAL")
 
 
 def load_state(db_path: Path = DB_PATH) -> EmotionalState:
     """Return the persisted mood, or a fresh baseline on first ever run."""
     with _connect(db_path) as conn:
-        row = conn.execute("SELECT love, compassion, fear FROM state WHERE id = 1").fetchone()
+        row = conn.execute(
+            "SELECT love, compassion, fear, energy FROM state WHERE id = 1"
+        ).fetchone()
     if row is None:
         return EmotionalState()
-    return EmotionalState(row["love"], row["compassion"], row["fear"])
+    # energy is a newer column; older rows have NULL -> fall back to baseline.
+    energy = row["energy"]
+    if energy is None:
+        return EmotionalState(row["love"], row["compassion"], row["fear"])
+    return EmotionalState(row["love"], row["compassion"], row["fear"], energy)
 
 
 def save_state(state: EmotionalState, trigger: str = "", db_path: Path = DB_PATH) -> None:
@@ -96,15 +104,16 @@ def save_state(state: EmotionalState, trigger: str = "", db_path: Path = DB_PATH
     with _connect(db_path) as conn:
         conn.execute(
             """
-            INSERT INTO state (id, love, compassion, fear, updated_at)
-            VALUES (1, ?, ?, ?, ?)
+            INSERT INTO state (id, love, compassion, fear, energy, updated_at)
+            VALUES (1, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 love=excluded.love,
                 compassion=excluded.compassion,
                 fear=excluded.fear,
+                energy=excluded.energy,
                 updated_at=excluded.updated_at
             """,
-            (state.love, state.compassion, state.fear, now),
+            (state.love, state.compassion, state.fear, state.energy, now),
         )
         conn.execute(
             "INSERT INTO state_log (ts, love, compassion, fear, trigger) VALUES (?, ?, ?, ?, ?)",

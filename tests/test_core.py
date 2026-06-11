@@ -69,6 +69,29 @@ def test_mood_labels():
     assert EmotionalState(love=0.8).mood_label() == "affectionate"
     assert EmotionalState(love=0.1).mood_label() == "withdrawn"
 
+def test_energy_rises_with_engagement_and_decays_when_alone():
+    s = EmotionalState(energy=0.5)
+    for _ in range(20):
+        s = s.update_energy(active=True)
+    assert s.energy > 0.85                       # perks up when she's engaged
+    for _ in range(60):
+        s = s.update_energy(active=False)
+    assert s.energy < 0.2                         # winds down alone -> drowsy
+
+def test_richer_emotional_states():
+    # Drowsy after a long stretch alone.
+    assert EmotionalState(love=0.4, energy=0.1).mood_label() == "sleepy"
+    # Warm and wide awake reads as joyful / playful, not just "affectionate".
+    assert EmotionalState(love=0.85, energy=0.8).mood_label() == "joyful"
+    assert EmotionalState(love=0.6, energy=0.85).mood_label() == "playful"
+    # Mild unease is "worried"; acute is "anxious".
+    assert EmotionalState(fear=0.5).mood_label() == "worried"
+    assert EmotionalState(fear=0.8).mood_label() == "anxious"
+    # Warmth gone AND drained reads as lonely rather than merely withdrawn.
+    assert EmotionalState(love=0.1, energy=0.2).mood_label() == "lonely"
+    # A real exchange shouldn't read as sleepy even at low energy if she's uneasy.
+    assert EmotionalState(fear=0.7, energy=0.05).mood_label() == "anxious"
+
 
 # --- Persistence -----------------------------------------------------------
 
@@ -639,6 +662,22 @@ def test_her_canonical_sheet_is_humanoid():
 
 
 # --- Her puppet: she drives her own animation ----------------------------------
+
+def test_pose_selection_is_deterministic_and_state_driven():
+    from alpecca import posekit
+    lib = posekit.DEFAULT_LIBRARY
+    # Drowsy (very low energy) -> she falls into the sleeping/rest pose.
+    sleepy = EmotionalState(love=0.4, energy=0.08)
+    assert sleepy.mood_label() == "sleepy"
+    assert posekit.select_pose(sleepy, "idle", lib) == "rest.png"
+    # Deterministic: same state always yields the same pose (no randomness).
+    assert posekit.select_pose(sleepy, "idle", lib) == posekit.select_pose(sleepy, "idle", lib)
+    # Warm + energetic while speaking -> an animated, high-energy pose, not rest.
+    lively = EmotionalState(love=0.85, energy=0.85)
+    assert posekit.select_pose(lively, "speaking", lib) in ("reach.png", "walk.png")
+    # Anxious -> her reticent pose.
+    assert posekit.select_pose(EmotionalState(fear=0.8), "idle", lib) == "shy.png"
+
 
 def test_puppet_live_pose_is_grounded_in_her_state():
     from alpecca import puppet

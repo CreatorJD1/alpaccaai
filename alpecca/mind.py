@@ -20,7 +20,7 @@ import random
 import re
 import time
 
-from config import OLLAMA_MODEL, OLLAMA_HOST
+from config import OLLAMA_MODEL, OLLAMA_HOST, Emotion
 from alpecca.homeostasis import EmotionalState
 from alpecca import state as state_store
 from alpecca import memory as memory_store
@@ -197,6 +197,11 @@ class CoreMind:
         signals = obs.fatigue_signals(session_minutes)
         self.state = self.state.update_compassion(signals)
         self.state = self.state.update_fear(prediction_error(self._prev_obs, obs))
+        # Energy: she perks up when the person has interacted recently and winds
+        # down toward drowsy when left alone -- so a long quiet stretch makes her
+        # sleepy. "Active" = a real exchange within the last couple of minutes.
+        active = (time.time() - self._last_user_ts) < Emotion.ENERGY_ACTIVE_WINDOW
+        self.state = self.state.update_energy(active)
         self._prev_obs = obs
         # Remember what drove this update so Alpecca can introspect on the "why".
         self._last_signals = signals
@@ -261,6 +266,8 @@ class CoreMind:
         attached this turn (or None). It's woven into the prompt as something
         she actually saw, and remembered like any other shared moment."""
         self._last_user_ts = time.time()
+        # A real exchange perks her up right away (she wakes from drowsy).
+        self.state = self.state.update_energy(active=True)
         # Recall relevant memories for this message.
         memories = memory_store.recall(user_msg)
 

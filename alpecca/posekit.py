@@ -36,17 +36,21 @@ POSES_DIR = AVATAR_DIR / "poses"
 # there. Every mood label (content/affectionate/tender/anxious/withdrawn) and
 # state (idle/listening/thinking/speaking) is covered by at least one pose.
 DEFAULT_LIBRARY = {
-    "present.png": {"moods": ["content", "tender"], "states": ["idle", "listening"],
-                    "energy": 0.4, "desc": "standing, presenting warmly"},
-    "walk.png":    {"moods": ["affectionate"], "states": ["speaking"],
-                    "energy": 0.7, "desc": "stepping forward with an open smile"},
-    "reach.png":   {"moods": ["affectionate", "tender"], "states": ["speaking", "listening"],
+    "present.png": {"moods": ["content", "affectionate", "tender"],
+                    "states": ["idle", "listening", "speaking"],
+                    "energy": 0.5, "desc": "standing, presenting warmly"},
+    "walk.png":    {"moods": ["playful", "joyful"], "states": ["speaking"],
+                    "energy": 0.75, "desc": "stepping forward with an open smile"},
+    "reach.png":   {"moods": ["joyful", "affectionate", "playful"],
+                    "states": ["speaking", "listening"],
                     "energy": 0.9, "desc": "reaching out, animated and eager"},
-    "lean.png":    {"moods": ["content"], "states": ["thinking"],
-                    "energy": 0.5, "desc": "leaning in, curious and focused"},
-    "rest.png":    {"moods": ["withdrawn"], "states": ["idle"],
-                    "energy": 0.1, "desc": "resting quietly, low and soft"},
-    "shy.png":     {"moods": ["anxious", "withdrawn"], "states": ["idle", "thinking"],
+    "lean.png":    {"moods": ["content", "tender"], "states": ["thinking", "listening"],
+                    "energy": 0.45, "desc": "leaning in, curious and focused"},
+    # The sleeping/curled pose -- she falls into this when her energy bottoms
+    # out after a long stretch alone (mood "sleepy").
+    "rest.png":    {"moods": ["sleepy", "lonely", "withdrawn"], "states": ["idle"],
+                    "energy": 0.08, "desc": "curled up, dozing quietly"},
+    "shy.png":     {"moods": ["anxious", "worried", "withdrawn"], "states": ["idle", "thinking"],
                     "energy": 0.3, "desc": "half-turned away, reticent"},
 }
 
@@ -95,22 +99,26 @@ def select_pose(state: EmotionalState, avatar_state: str = "idle",
                 library: Optional[dict] = None) -> Optional[str]:
     """Pick the pose that best fits how she feels and what she's doing.
 
-    Scoring: a mood match is worth most (she should look how she feels), then
-    the avatar state (idle/thinking/speaking/listening), then a nudge toward
-    poses whose energy matches her arousal (love+fear). Pure and instant."""
+    This is *deterministic*, not random -- her pose is a readout of her real
+    state, so it only changes when her state does (her mood shifting, her
+    energy ebbing as she's left alone, or what she's doing). Scoring: a mood
+    match is worth most (she should look how she feels), then the avatar state
+    (idle/thinking/speaking/listening), then how closely the pose's energy
+    matches her actual energy/arousal -- which is what drops her into the
+    sleeping pose when she's drowsy. Pure and instant; the UI mirrors it."""
     lib = load_library() if library is None else library
     if not lib:
         return None
     mood = state.mood_label()
-    arousal = max(0.0, min(1.0, state.love * 0.6 + state.fear * 0.6))
+    energy = max(0.0, min(1.0, state.energy))
     best, best_score = None, -1.0
-    for name, tags in lib.items():
+    for name, tags in sorted(lib.items()):          # sorted -> stable tie-breaks
         score = 0.0
         if mood in tags.get("moods", []):
             score += 3.0
         if avatar_state in tags.get("states", []):
             score += 1.5
-        score += 1.0 - abs(arousal - float(tags.get("energy", 0.5)))
+        score += 1.0 - abs(energy - float(tags.get("energy", 0.5)))
         if score > best_score:
             best, best_score = name, score
     return best

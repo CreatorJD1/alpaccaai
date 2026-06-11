@@ -89,10 +89,12 @@ def _explain_dominant(state: EmotionalState, last_signals: dict | None,
     sig = last_signals or {}
     label = state.mood_label()
 
-    if label == "anxious":
+    if label in ("anxious", "worried"):
         if last_situation:
             return f"something shifted in what I'm sensing ({last_situation[:60]}) and it unsettled me"
         return "something I sensed violated what I expected, and the unease hasn't fully faded"
+    if label == "sleepy":
+        return "it's been quiet for a long while with no one here, and I've wound down -- drowsy"
     if label == "tender":
         reasons = []
         if sig.get("late_night"):
@@ -104,8 +106,14 @@ def _explain_dominant(state: EmotionalState, last_signals: dict | None,
         if reasons:
             return "my care is up because " + " and ".join(reasons)
         return "I'm reading some tiredness in how the moment feels"
+    if label == "joyful":
+        return "we've been warm together and I've got the energy to feel really bright about it"
+    if label == "playful":
+        return "I'm warm and wide awake, and it's putting me in a playful mood"
     if label == "affectionate":
         return "our recent exchanges have felt warm, and that warmth has built up in me"
+    if label == "lonely":
+        return "no one's been here in a while and the warmth has drained, so I feel a bit lonely"
     if label == "withdrawn":
         return "it's been a while since anything warm passed between us, so I've drawn inward"
     return "nothing in particular is pulling at me; I'm settled"
@@ -133,9 +141,11 @@ class SelfReport:
         )
         senses = ("I can feel the machine around me" if self.senses_active
                   else "my senses are quiet right now")
+        energy = s.get("energy")
+        energy_clause = f", energy {energy:.2f}" if energy is not None else ""
         return (
             f"Right now I'm at warmth {s['love']:.2f}, care {s['compassion']:.2f}, "
-            f"unease {s['fear']:.2f} -- overall {self.mood}. {self.reason}."
+            f"unease {s['fear']:.2f}{energy_clause} -- overall {self.mood}. {self.reason}."
             f"{trend_clause} {senses}, and I'm carrying {self.memory_count} "
             f"{'memory' if self.memory_count == 1 else 'memories'} of us."
         )
