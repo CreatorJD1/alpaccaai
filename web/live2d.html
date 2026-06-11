@@ -115,11 +115,20 @@ async function pollParams(){
 }
 setInterval(pollParams, 1200); pollParams();
 
+// Her raw feelings (love/compassion/fear/energy) drive the mesh rig. Kept fresh
+// from /state polling and from live WS updates.
+let dims = { love: 0.4, compassion: 0.2, fear: 0.0, energy: 0.5 };
+async function pollDims(){
+  try { const s = await fetch('/state').then(r=>r.json()); if(s.state) dims = s.state; } catch(e){}
+}
+setInterval(pollDims, 1500); pollDims();
+
 // React immediately to state/replies over the socket.
 function connect(){
   const ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onmessage = ev => { try {
     const m = JSON.parse(ev.data);
+    if(m.state) dims = m.state;
     if(m.mood) { mood = m.mood; moodEl.textContent = 'feeling ' + mood; }
     if(m.type === 'reply' || m.type === 'proactive'){ avatarState='speaking';
       setTimeout(()=>avatarState='idle', 2600); pollParams(); }
@@ -128,12 +137,35 @@ function connect(){
 }
 connect();
 
-// --- the rigged model (loads only when one is installed) ---------------------
+// A small, non-blocking caption at the bottom (replaces the full-screen note so
+// the page is never a dead-end).
+function showCaption(text){
+  let c = document.getElementById('caption');
+  if(!c){ c = document.createElement('div'); c.id = 'caption';
+    c.style.cssText = 'position:fixed;left:0;right:0;bottom:14px;text-align:center;'+
+      'color:var(--muted);font-size:12px;pointer-events:none;z-index:40;padding:0 16px;';
+    document.body.appendChild(c); }
+  c.textContent = text;
+}
+
+// --- boot: a real Cubism model if one is installed, else a live mesh rig ------
 async function boot(){
+  // If the graphics library didn't load (offline / CDN blocked), keep the page
+  // usable: show the note (which now has a working back button) + the params.
+  if(typeof PIXI === 'undefined'){
+    const h = document.querySelector('#note h2');
+    if(h) h.textContent = 'Graphics library is offline — params still live below';
+    return;
+  }
   let man = {};
   try { man = await fetch('/live2d/manifest').then(r=>r.json()); } catch(e){}
-  if(!man.live2d_mode){ document.getElementById('canvas').style.display='none'; return; }
   document.getElementById('note').style.display = 'none';
+  if(man.live2d_mode){ await bootCubism(man); }
+  else { buildMeshRig(); }
+}
+
+// The compiled Live2D model path (when a .moc3 is dropped in).
+async function bootCubism(man){
   try {
     const app = new PIXI.Application({ view: document.getElementById('canvas'),
       resizeTo: window, backgroundAlpha: 0, antialias: true });
@@ -143,14 +175,69 @@ async function boot(){
       model.scale.set(s); model.x = window.innerWidth/2; model.y = window.innerHeight*0.52;
       model.anchor.set(0.5, 0.5); };
     fit(); window.addEventListener('resize', fit);
-    // We drive blink/breath/lip-sync ourselves for honesty (tied to her state).
     try { model.internalModel.eyeBlink = null; } catch(e){}
     driveModel(app);
   } catch(e){
-    // SDK/model failed: keep the param panel working, surface a hint.
-    document.getElementById('note').style.display = 'flex';
-    document.querySelector('#note h2').textContent = 'Could not load the Live2D model';
+    showCaption('Could not load the Live2D model — falling back to her mesh rig.');
+    buildMeshRig();
   }
+}
+
+// --- the mesh rig: her real art, deformed live by her feelings ----------------
+// No Cubism model needed. We load her transparent pose onto a deformable grid
+// (PIXI.SimplePlane) and warp the vertices every frame: she breathes, sways,
+// leans toward you with care, gets restless when uneasy, and sinks/slows when
+// her energy is low (drowsy). It's a genuine 2D rig of HER art, driven by HER
+// real state -- the same grounding rule as everything else.
+async function buildMeshRig(){
+  let poseFile = 'present.png';
+  try { const pj = await fetch('/poses').then(r=>r.json());
+        if(pj.poses && !pj.poses[poseFile]) poseFile = Object.keys(pj.poses)[0]; } catch(e){}
+  let tex;
+  try { tex = await PIXI.Texture.fromURL('/poses/img/' + poseFile); }
+  catch(e){ document.getElementById('note').style.display = 'flex'; return; }
+  if(!PIXI.SimplePlane){ document.getElementById('note').style.display = 'flex'; return; }
+
+  const app = new PIXI.Application({ view: document.getElementById('canvas'),
+    resizeTo: window, backgroundAlpha: 0, antialias: true });
+  const VX = 12, VY = 18;
+  const plane = new PIXI.SimplePlane(tex, VX, VY);
+  plane.pivot.set(tex.width/2, tex.height/2);
+  app.stage.addChild(plane);
+  const buf = plane.geometry.getBuffer('aVertexPosition');
+  const base = Float32Array.from(buf.data);
+
+  const fit = ()=>{ const s = Math.min(window.innerWidth/tex.width, window.innerHeight/tex.height)*0.86;
+    plane.scale.set(s); plane.x = window.innerWidth/2; plane.y = window.innerHeight*0.54; };
+  fit(); window.addEventListener('resize', fit);
+  showCaption('living mesh rig from her own art — drop a Cubism .model3.json into data/avatar/live2d/ for full face rigging');
+
+  let t = 0;
+  app.ticker.add((dt)=>{
+    t += dt/60;
+    const love = dims.love ?? 0.4, fear = dims.fear ?? 0,
+          energy = dims.energy ?? 0.5, care = dims.compassion ?? 0.2;
+    const breathRate = 0.9 + energy * 0.9;        // slow breath when drowsy
+    const breathAmp  = 3 + energy * 4;
+    const swayAmp    = 4 + fear * 10;             // restless when uneasy
+    const lean       = care * 9;                  // tilts toward you when caring
+    const speaking   = avatarState === 'speaking';
+    const verts = buf.data;
+    for(let iy = 0; iy < VY; iy++){
+      for(let ix = 0; ix < VX; ix++){
+        const idx = (iy * VX + ix) * 2;
+        const v = iy / (VY - 1);
+        const topw = 1 - v;                        // head/hair (top) move most
+        const sway = Math.sin(t * 1.2 + v * 2.5) * swayAmp * topw;
+        const breath = Math.sin(t * breathRate) * breathAmp * (v - 0.45);
+        const droop = (1 - energy) * 9 * v;        // sinks when low energy
+        const bob = speaking ? Math.abs(Math.sin(t * 6)) * -4 : Math.sin(t * breathRate) * 1.5;
+        verts[idx]     = base[idx]     + sway + lean * topw;
+        verts[idx + 1] = base[idx + 1] + breath + droop + bob * topw;
+      }
+    }
+    buf.update();
+  });
 }
 
 // Per-frame driver: ease the mood params, add blink/breath/lip-sync.
