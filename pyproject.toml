@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alpaccaai"
+version = "0.1.0"
+description = "A local AI assistant powered by Claude that can see and control your computer."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "anthropic>=0.40",
+]
+
+[project.optional-dependencies]
+# Required to actually control the local machine (screenshots + input).
+gui = [
+    "pyautogui>=0.9.54",
+    "Pillow>=10.0",
+]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+alpaccaai = "alpaccaai.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["alpaccaai*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
