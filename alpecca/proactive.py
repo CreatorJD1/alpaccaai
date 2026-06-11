@@ -1,4 +1,4 @@
-"""Proactive speech: Alpacca decides, on her own, that something is worth
+"""Proactive speech: Alpecca decides, on her own, that something is worth
 saying.
 
 A companion who only ever answers is a vending machine. This module is the
@@ -17,7 +17,7 @@ import time
 from typing import Optional
 
 from config import Proactive as ProactiveCfg
-from alpacca.homeostasis import EmotionalState
+from alpecca.homeostasis import EmotionalState
 
 
 def _shift(current: float, history: list[float]) -> float:
@@ -31,7 +31,7 @@ def _shift(current: float, history: list[float]) -> float:
 
 def should_speak(state: EmotionalState, history: list[dict],
                  last_spoke_ts: float, now: Optional[float] = None) -> Optional[str]:
-    """Decide whether something in Alpacca is worth voicing unprompted.
+    """Decide whether something in Alpecca is worth voicing unprompted.
 
     `history` is the recent mood log (oldest first, same shape as
     state.mood_history). Returns a short first-person reason string when a

@@ -10,7 +10,7 @@ understands the things that flip or amplify sentiment in real messages:
   - dampeners  ("kind of", "a little") scale it down,
   - emphasis   (ALL CAPS, exclamation marks) nudges magnitude.
 
-It's deliberately self-contained (no model download, runs offline) so Alpacca's
+It's deliberately self-contained (no model download, runs offline) so Alpecca's
 emotional learning works out of the box. For higher fidelity you can flip on the
 Ollama path (`score_llm`) which asks the local model to rate sentiment; we keep
 the lexicon as the always-available default and graceful fallback.
@@ -118,7 +118,7 @@ def score_llm(text: str, client=None, model: str | None = None) -> float | None:
     try:
         if model is None:
             # Reuse the configured reasoning model so this never drifts from
-            # whatever the rest of Alpacca is running on.
+            # whatever the rest of Alpecca is running on.
             from config import OLLAMA_MODEL
             model = OLLAMA_MODEL
         if client is None:

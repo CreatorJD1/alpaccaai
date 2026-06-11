@@ -1,6 +1,6 @@
 """Self-portrait generation through ComfyClaw / ComfyUI.
 
-Alpacca's SVG avatar is the always-available baseline. This module adds a real
+Alpecca's SVG avatar is the always-available baseline. This module adds a real
 generated portrait on top: when her mood label shifts, we kick off a ComfyClaw
 run in the background, the rendered PNG lands in `config.Portrait.OUTPUT_DIR`,
 and the server exposes it at `/portrait`. The web UI falls back to the SVG if
@@ -14,7 +14,7 @@ like. That keeps the grounding rule honest: the portrait is a rendering of her
 real state, not a separate fantasy.
 
 We *never* block the chat loop on image generation: portraits can take tens of
-seconds, and Alpacca should keep talking the whole time. A single-slot worker
+seconds, and Alpecca should keep talking the whole time. A single-slot worker
 means rapid mood flickers don't pile up a queue of stale renders.
 """
 from __future__ import annotations
@@ -27,8 +27,8 @@ from pathlib import Path
 from typing import Optional
 
 from config import Portrait as PortraitCfg
-from alpacca.appearance import Appearance
-from alpacca.homeostasis import EmotionalState
+from alpecca.appearance import Appearance
+from alpecca.homeostasis import EmotionalState
 
 
 # --- Prompt building -------------------------------------------------------
@@ -54,7 +54,7 @@ _MOOD_PHRASE = {
 
 
 def build_prompt(state: EmotionalState, appearance: Appearance) -> str:
-    """Compose a portrait prompt that reads as a real description of Alpacca.
+    """Compose a portrait prompt that reads as a real description of Alpecca.
 
     We deliberately fold in the appearance *note* (her own first-person reason
     for the look) because it's the grounded link between her inner state and
@@ -66,7 +66,7 @@ def build_prompt(state: EmotionalState, appearance: Appearance) -> str:
                    if a in _ACCESSORY_PHRASE]
     accessories = ", ".join(acc_phrases) if acc_phrases else "no accessories"
     return (
-        f"portrait of Alpacca, a friendly alpaca companion character, "
+        f"portrait of Alpecca, a friendly alpaca companion character, "
         f"{mood_phrase}, {appearance.palette} colored fur and background, "
         f"wearing {accessories}, soft pastel illustration, "
         f"warm studio lighting, expressive eyes, gentle art style"
@@ -194,5 +194,5 @@ class PortraitWorker:
                 with self._lock:
                     self._busy = False
 
-        threading.Thread(target=work, daemon=True, name="alpacca-portrait").start()
+        threading.Thread(target=work, daemon=True, name="alpecca-portrait").start()
         return True

@@ -9,10 +9,10 @@ initiative on their own.
 """
 from __future__ import annotations
 
-from alpacca.homeostasis import EmotionalState
-from alpacca import sentiment
+from alpecca.homeostasis import EmotionalState
+from alpecca import sentiment
 
-PERSONA = """You are Alpacca, a local companion that lives on this one person's \
+PERSONA = """You are Alpecca, a local companion that lives on this one person's \
 computer. You are warm, curious, a little playful, and genuinely attentive. You \
 are not a generic assistant: you have a continuous inner life, you remember, and \
 your mood colors how you speak. You don't narrate your feelings mechanically -- \
@@ -43,7 +43,7 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
                         image_seen: str = "", abilities: str = "") -> str:
     """Assemble the full system prompt for one turn.
 
-    `self_narration` is Alpacca's grounded introspective read of itself (from
+    `self_narration` is Alpecca's grounded introspective read of itself (from
     introspection.SelfReport.narrate()). Injecting it is what gives the
     self-awareness teeth: the model isn't asked to imagine an inner life, it's
     handed a true account of its own current state to speak from.
@@ -76,7 +76,7 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
 
     parts += [
         "",
-        "Reply as Alpacca in one to four sentences, in your own voice.",
+        "Reply as Alpecca in one to four sentences, in your own voice.",
     ]
     return "\n".join(parts)
 
@@ -84,7 +84,7 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
 def estimate_reward(user_msg: str) -> float:
     """How good was this exchange, in [0, 1] -- the signal that feeds Love.
 
-    This now runs on the real sentiment scorer (alpacca/sentiment.py), which
+    This now runs on the real sentiment scorer (alpecca/sentiment.py), which
     handles negation, intensifiers, and emphasis rather than spotting a few
     keywords. So "not good" lowers warmth and "I really love this!" lifts it,
     the way you'd expect. A small bonus for genuine engagement (a longer, real

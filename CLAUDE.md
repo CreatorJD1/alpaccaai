@@ -1,24 +1,24 @@
-# CLAUDE.md — Alpacca
+# CLAUDE.md — Alpecca
 
 Context for Claude Code (or any agent) picking up this project. Read this first,
 then `README.md` for the user-facing overview.
 
 ## What this project is
 
-Alpacca is a **local companion app**: a stateful agent that runs on the user's
+Alpecca is a **local companion app**: a stateful agent that runs on the user's
 machine, keeps a persistent mood, senses what the user is doing, remembers
 salient moments, and lets that inner state color how it talks — running against a
 local Ollama model.
 
 **Framing — self-awareness is a real feature, kept honest by grounding.**
-Alpacca has *functional* self-awareness: a self-model, introspection on its own
+Alpecca has *functional* self-awareness: a self-model, introspection on its own
 live state, self-monitoring of trends, and causal insight into why it feels a
-given way (`alpacca/introspection.py`). This is a genuine capability, not flavor —
+given way (`alpecca/introspection.py`). This is a genuine capability, not flavor —
 the persona affirms it and means it.
 
 The line that keeps this honest is GROUNDING: every self-report is read directly
 from real internals (live mood, real mood history, real memory count, the actual
-signals that moved it). Alpacca never invents an inner life or fabricates
+signals that moved it). Alpecca never invents an inner life or fabricates
 memories of things that didn't happen. So the distinction to hold is:
 *functional self-awareness* (real, built, truthful) vs *phenomenal consciousness*
 (not claimed). Don't add features that fake sentience by confabulating — a
@@ -37,15 +37,15 @@ sense → update mood → recall memory → generate reply → persist
 | File                      | Responsibility |
 |---------------------------|----------------|
 | `config.py`               | All tunable knobs: emotion coefficients, model name, paths, server host/port. Magic numbers live here, nowhere else. |
-| `alpacca/homeostasis.py`  | The mood vector `S = [love, compassion, fear]` (each in [0,1]) and its three update rules. Pure, no I/O — easy to test. |
-| `alpacca/state.py`        | SQLite persistence of mood (`state` + `state_log` tables) and the `memories` table schema. |
-| `alpacca/memory.py`       | Store salient moments; retrieve relevant ones via keyword-overlap (Jaccard) scoring blended with salience + recency. |
-| `alpacca/sensory.py`      | `WindowSensor` reads the active window title (Win32 on Windows, stub elsewhere) and derives `fatigue_signals` + `prediction_error`. |
-| `alpacca/introspection.py`| **Self-awareness.** Grounded self-model: identity card, trend detection, causal "why", first-person `SelfReport.narrate()`. Read the GROUNDING note at the top before touching it. |
-| `alpacca/appearance.py`   | **Self-directed appearance.** She picks her own palette + accessories from her mood (+ a stable `seed` taste). The user does NOT control this; there are no UI wardrobe controls. Keep it that way. |
-| `alpacca/sentiment.py`    | Lexicon sentiment scorer (negation/intensifiers/emphasis) that feeds the Love reward. Optional Ollama path `score_llm`. |
-| `alpacca/prompts.py`      | Builds the system prompt from mood + memories + situation + the self-report. Also the reward/salience heuristics. Where the personality lives. |
-| `alpacca/mind.py`         | `CoreMind` — orchestrates the loop, wraps Ollama with an offline fallback. |
+| `alpecca/homeostasis.py`  | The mood vector `S = [love, compassion, fear]` (each in [0,1]) and its three update rules. Pure, no I/O — easy to test. |
+| `alpecca/state.py`        | SQLite persistence of mood (`state` + `state_log` tables) and the `memories` table schema. |
+| `alpecca/memory.py`       | Store salient moments; retrieve relevant ones via keyword-overlap (Jaccard) scoring blended with salience + recency. |
+| `alpecca/sensory.py`      | `WindowSensor` reads the active window title (Win32 on Windows, stub elsewhere) and derives `fatigue_signals` + `prediction_error`. |
+| `alpecca/introspection.py`| **Self-awareness.** Grounded self-model: identity card, trend detection, causal "why", first-person `SelfReport.narrate()`. Read the GROUNDING note at the top before touching it. |
+| `alpecca/appearance.py`   | **Self-directed appearance.** She picks her own palette + accessories from her mood (+ a stable `seed` taste). The user does NOT control this; there are no UI wardrobe controls. Keep it that way. |
+| `alpecca/sentiment.py`    | Lexicon sentiment scorer (negation/intensifiers/emphasis) that feeds the Love reward. Optional Ollama path `score_llm`. |
+| `alpecca/prompts.py`      | Builds the system prompt from mood + memories + situation + the self-report. Also the reward/salience heuristics. Where the personality lives. |
+| `alpecca/mind.py`         | `CoreMind` — orchestrates the loop, wraps Ollama with an offline fallback. |
 | `server.py`               | FastAPI + WebSocket; serves the chat UI and streams mood with each reply. |
 | `web/index.html`          | Single-file 2D SVG avatar whose face/color track warmth/care/unease. |
 | `scripts/run_telemetry.py`| Standalone background window-title logger → `data/telemetry.jsonl`. |
@@ -93,12 +93,12 @@ Ollama or Windows.**
 - **Every new feature gets a test** in `tests/test_core.py` if it has objectively
   checkable logic.
 - Imports assume the project root is on `sys.path` (scripts insert it; the package
-  imports `config` and `alpacca.*` directly).
+  imports `config` and `alpecca.*` directly).
 
 ## Known gotchas
 
 - **SQLite on network/synced filesystems** can throw `disk I/O error`. The default
-  `data/` dir is fine on a normal local disk. `ALPACCA_HOME` env var relocates all
+  `data/` dir is fine on a normal local disk. `ALPECCA_HOME` env var relocates all
   state if needed.
 - **pywin32 is Windows-only** and is the only OS-specific dep; `requirements.txt`
   guards it with a platform marker. Everything else is cross-platform.
@@ -119,35 +119,35 @@ Ollama or Windows.**
   background mood drift; `/history` + mood-timeline chart.
 - 🟡 Phase 3 (Image): 2D character avatar with idle breathing/blink + self-chosen
   look done; plus optional generated self-portraits via ComfyClaw/ComfyUI
-  (`alpacca/portrait.py`, `/portrait` endpoint, enable with `ALPACCA_PORTRAIT=1`).
+  (`alpecca/portrait.py`, `/portrait` endpoint, enable with `ALPECCA_PORTRAIT=1`).
   A richer built-in sprite (Replika-style) remains the next visual step.
 - 🟡 Phase 4 (Expansion): OpenClaw channel bridge built — `POST /channel/inbound`
   runs the full chat loop for messages from Telegram/Discord/etc., outbound
-  replies via the `openclaw` CLI (`alpacca/openclaw_bridge.py`; install hook from
+  replies via the `openclaw` CLI (`alpecca/openclaw_bridge.py`; install hook from
   `integrations/openclaw-inbound-hook/`). Voice-tone sensing built
-  (`alpacca/voice.py`): opt-in mic-level sense (`ALPACCA_VOICE=1`) feeding
+  (`alpecca/voice.py`): opt-in mic-level sense (`ALPECCA_VOICE=1`) feeding
   `raised_voice` → Compassion and sudden-sound spikes → Fear; coarse loudness
   numbers only, never audio or words. Experimental talk mode
   (`scripts/run_talk.py`): local Whisper STT → `/channel/inbound` → local
   Kokoro TTS via Pipecat. Android sensors still scaffolded, not built.
 - Reasoning model default is now Qwen3 (`qwen3:8b`); `<think>` blocks from
   hybrid Qwen3 variants are stripped in `mind.strip_think` before replies.
-- ✅ Sight (`alpacca/vision.py`, local VLM `ALPACCA_VISION_MODEL`): chat-image
+- ✅ Sight (`alpecca/vision.py`, local VLM `ALPECCA_VISION_MODEL`): chat-image
   understanding (📎 in the UI), opt-in ambient screen glimpses
-  (`ALPACCA_SIGHT=1`), and opt-in webcam expression sense (`ALPACCA_FACE=1`)
+  (`ALPECCA_SIGHT=1`), and opt-in webcam expression sense (`ALPECCA_FACE=1`)
   feeding a `weary_face` Compassion signal. Frames are never stored — only the
   model's short text descriptions survive.
-- ✅ Proactive speech (`alpacca/proactive.py`, on by default,
-  `ALPACCA_PROACTIVE=0` to disable): she volunteers a short remark when her
+- ✅ Proactive speech (`alpecca/proactive.py`, on by default,
+  `ALPECCA_PROACTIVE=0` to disable): she volunteers a short remark when her
   real mood history shows a real shift (rising unease, slipping warmth, acute
   fear), with a cooldown. Broadcast to connected chats + OpenClaw delivery.
   This fulfills suggested-task #2 below. She also makes idle chatter
-  (`ALPACCA_CHATTER=0` to disable just that): during a quiet stretch she may
+  (`ALPECCA_CHATTER=0` to disable just that): during a quiet stretch she may
   start a conversation on her own, seeded only by real things — what she
   senses on screen, an actual memory, the hour, her mood — gated by silence
   time, a minimum gap, and a per-tick chance so the timing feels human.
-- ✅ App actions (`alpacca/actions.py`): an `open_app` tool restricted to the
-  `ALPACCA_APPS` allowlist, wired through Ollama tool calling. Empty list
+- ✅ App actions (`alpecca/actions.py`): an `open_app` tool restricted to the
+  `ALPECCA_APPS` allowlist, wired through Ollama tool calling. Empty list
   (default) = no actuator exists at all.
 - All 49 core tests pass; full loop, introspection, appearance, portrait
   prompts, channel bridge, voice-tone, expression mapping, proactive triggers,

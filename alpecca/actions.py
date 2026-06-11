@@ -1,6 +1,6 @@
-"""App actions: Alpacca can interact with apps -- exactly the ones you hand her.
+"""App actions: Alpecca can interact with apps -- exactly the ones you hand her.
 
-The security model is an allowlist and nothing else. ALPACCA_APPS names the
+The security model is an allowlist and nothing else. ALPECCA_APPS names the
 apps she may open ("spotify=C:\\path\\Spotify.exe;notes=notepad.exe"); those
 names become an `open_app` tool the LLM can call mid-reply, and anything not
 on the list is refused with a plain explanation she can relay. No shell

@@ -87,7 +87,7 @@ class EmotionalState:
 
         `prediction_error` in [0, 1] is "how surprised am I" -- normally near
         zero. It spikes when the world violates expectations: an unfamiliar
-        process touching Alpacca's files, a sudden context it has no model for.
+        process touching Alpecca's files, a sudden context it has no model for.
         Only surprise above FEAR_THRESHOLD registers (small surprises are just
         life), and fear fades on quiet ticks so it doesn't get stuck on.
         """

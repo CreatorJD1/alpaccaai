@@ -2,7 +2,7 @@
 
 Run this in the background and it quietly captures what window has focus on a
 fixed interval, timestamps it, and appends a line to telemetry.jsonl. That log
-is both Alpacca's raw memory of your day and the input that keeps its mood in
+is both Alpecca's raw memory of your day and the input that keeps its mood in
 touch with reality.
 
 Usage:
@@ -26,18 +26,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import TELEMETRY_LOG
-from alpacca.sensory import WindowSensor
+from alpecca.sensory import WindowSensor
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Alpacca background telemetry logger")
+    ap = argparse.ArgumentParser(description="Alpecca background telemetry logger")
     ap.add_argument("--interval", type=float, default=5.0,
                     help="seconds between samples (default 5)")
     args = ap.parse_args()
 
     sensor = WindowSensor()
     mode = "Windows window titles" if sensor.available else "stub (no pywin32 / non-Windows)"
-    print(f"Alpacca telemetry running -- mode: {mode}")
+    print(f"Alpecca telemetry running -- mode: {mode}")
     print(f"Writing to: {TELEMETRY_LOG}")
     print("Ctrl+C to stop.\n")
 

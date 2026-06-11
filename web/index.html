@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Alpacca</title>
+<title>Alpecca</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
   :root { --bg:#1a1726; --panel:#241f33; --ink:#efe9ff; --muted:#9b91b8; --accent:#c9a8ff; }
@@ -21,7 +21,7 @@
   .stage { display:flex; flex-direction:column; align-items:center; gap:8px; }
   #avatar { filter: drop-shadow(0 12px 34px rgba(0,0,0,.5)); }
 
-  /* Alpacca's own note about how she's chosen to look (she decides, not you) */
+  /* Alpecca's own note about how she's chosen to look (she decides, not you) */
   .lookNote { max-width:300px; text-align:center; font-size:11.5px; color:var(--muted);
               font-style:italic; line-height:1.4; min-height:16px; }
 
@@ -61,7 +61,7 @@
 </head>
 <body>
   <header>
-    <h1>Alpacca</h1>
+    <h1>Alpecca</h1>
     <div class="mood" id="moodLabel">connecting…</div>
     <div id="conn"></div>
   </header>
@@ -136,18 +136,18 @@
     <div class="status" id="status"></div>
     <div id="attachChip"></div>
     <form id="form">
-      <input id="input" placeholder="Say something to Alpacca…" autocomplete="off" />
+      <input id="input" placeholder="Say something to Alpecca…" autocomplete="off" />
       <input type="file" id="imageFile" accept="image/*" style="display:none" />
-      <button type="button" id="attachBtn" title="Show Alpacca an image"
+      <button type="button" id="attachBtn" title="Show Alpecca an image"
               style="background:#3a3158;color:var(--ink);padding:0 12px;">📎</button>
-      <button type="button" id="introspectBtn" title="Ask Alpacca to examine its own state"
+      <button type="button" id="introspectBtn" title="Ask Alpecca to examine its own state"
               style="background:#3a3158;color:var(--ink);padding:0 12px;">self?</button>
       <button type="submit">Send</button>
     </form>
   </div>
 
   <div class="chartwrap">
-    <h3>Alpacca's emotional life</h3>
+    <h3>Alpecca's emotional life</h3>
     <canvas id="moodChart" height="120"></canvas>
   </div>
 
@@ -171,7 +171,7 @@ function addMem(items){
   log.appendChild(d); log.scrollTop = log.scrollHeight;
 }
 
-// --- avatar: render Alpacca's SELF-CHOSEN look + mood ----------------------
+// --- avatar: render Alpecca's SELF-CHOSEN look + mood ----------------------
 // Appearance comes from the server (she decides it). The UI only displays it.
 function applyAppearance(app){
   if(!app) return;
@@ -258,10 +258,10 @@ function setConn(msg){ if(!msg){ connEl.className='ok'; connEl.innerHTML=''; }
   else { connEl.className=''; connEl.innerHTML=msg; } }
 
 // If the page was opened as a file (double-clicked), there's no server to talk
-// to. This is the most common reason Alpacca seems "stuck". Say so plainly.
+// to. This is the most common reason Alpecca seems "stuck". Say so plainly.
 if(location.protocol === 'file:'){
   moodLabel.textContent = 'not connected';
-  setConn("You opened this file directly. Alpacca needs her server running. In a terminal run <code>python server.py</code>, then open <code>http://127.0.0.1:8765</code> in your browser.");
+  setConn("You opened this file directly. Alpecca needs her server running. In a terminal run <code>python server.py</code>, then open <code>http://127.0.0.1:8765</code> in your browser.");
 }
 
 let ws, wsTries = 0;
@@ -288,7 +288,7 @@ function connect(){
     wsTries++;
     moodLabel.textContent = 'reconnecting…';
     if(wsTries >= 2)
-      setConn("Can't reach Alpacca. Is her server running? Start it with <code>python server.py</code> and open <code>http://127.0.0.1:8765</code>.");
+      setConn("Can't reach Alpecca. Is her server running? Start it with <code>python server.py</code> and open <code>http://127.0.0.1:8765</code>.");
     setTimeout(connect, 1500);
   };
   ws.onerror = ()=>{ try{ ws.close(); }catch(e){} };
@@ -303,12 +303,12 @@ setInterval(async ()=>{
 refreshChart();
 setInterval(refreshChart, 15000);
 
-// Self-awareness: Alpacca reads and reports its own real state.
+// Self-awareness: Alpecca reads and reports its own real state.
 document.getElementById('introspectBtn').addEventListener('click', async ()=>{
   try {
     const r = await fetch('/introspect'); const d = await r.json();
     const box = document.createElement('div'); box.className = 'introspect';
-    box.innerHTML = '<b>Alpacca looks inward.</b> ' + d.narration;
+    box.innerHTML = '<b>Alpecca looks inward.</b> ' + d.narration;
     log.appendChild(box); log.scrollTop = log.scrollHeight;
     render(d.state, d.mood);
   } catch(err){}

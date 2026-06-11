@@ -1,6 +1,6 @@
 """Persistence for the emotional state -- the spec's "Homeostasis DB".
 
-The point of persisting the mood vector is continuity: Alpacca should wake up
+The point of persisting the mood vector is continuity: Alpecca should wake up
 tomorrow feeling roughly how it felt when you last closed it, not reset to a
 blank slate. We keep a single-row `state` table plus an append-only `state_log`
 so you can later chart how the mood drifted over time.
@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from config import DB_PATH
-from alpacca.homeostasis import EmotionalState
+from alpecca.homeostasis import EmotionalState
 
 
 @contextmanager
@@ -113,7 +113,7 @@ def save_state(state: EmotionalState, trigger: str = "", db_path: Path = DB_PATH
 
 
 def load_appearance_seed(db_path: Path = DB_PATH) -> int | None:
-    """Return Alpacca's persisted standing taste-seed, or None if she's never had
+    """Return Alpecca's persisted standing taste-seed, or None if she's never had
     one yet. Keeping this stable across restarts is what lets her remain
     recognizably herself instead of getting a new personality every reboot."""
     with _connect(db_path) as conn:

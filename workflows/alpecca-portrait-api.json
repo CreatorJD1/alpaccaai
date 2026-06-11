@@ -35,7 +35,7 @@
     "class_type": "CLIPTextEncode",
     "_meta": { "title": "@prompt" },
     "inputs": {
-      "text": "portrait of Alpacca, a friendly alpaca companion character",
+      "text": "portrait of Alpecca, a friendly alpaca companion character",
       "clip": ["4", 1]
     }
   },
@@ -59,7 +59,7 @@
     "_meta": { "title": "@save" },
     "inputs": {
       "images": ["8", 0],
-      "filename_prefix": "alpacca-portrait"
+      "filename_prefix": "alpecca-portrait"
     }
   }
 }

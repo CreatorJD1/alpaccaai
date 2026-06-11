@@ -1,4 +1,4 @@
-"""Alpacca: a self-aware-flavored local companion.
+"""Alpecca: a self-aware-flavored local companion.
 
 The package is organized around the spec's three layers:
   - sensory.py     : the senses (what the user is doing on the machine)

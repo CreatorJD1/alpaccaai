@@ -4,19 +4,19 @@ uvicorn[standard]>=0.29
 ollama>=0.3.0
 
 # Sensory layer (Windows window-title capture).
-# pywin32 only installs on Windows; on other OSes Alpacca falls back automatically.
+# pywin32 only installs on Windows; on other OSes Alpecca falls back automatically.
 pywin32>=306; platform_system == "Windows"
 
 # --- Optional extras (uncomment what you want) -------------------------------
-# Voice-tone sense (ALPACCA_VOICE=1): mic-level reads, no recording.
+# Voice-tone sense (ALPECCA_VOICE=1): mic-level reads, no recording.
 # sounddevice>=0.4.6
 # Talk mode (scripts/run_talk.py): local STT/TTS voice conversation.
 # pipecat-ai[whisper,silero,local]>=1.3.0
 # kokoro-onnx
 # requests
-# Screen sight (ALPACCA_SIGHT=1): periodic screen glimpses via local VLM.
+# Screen sight (ALPECCA_SIGHT=1): periodic screen glimpses via local VLM.
 # pillow>=10.0
-# Expression sense (ALPACCA_FACE=1): webcam expression reads via local VLM.
+# Expression sense (ALPECCA_FACE=1): webcam expression reads via local VLM.
 # opencv-python>=4.8
 # Chat images + both senses above also need the vision model pulled once:
 #   ollama pull qwen2.5vl:7b

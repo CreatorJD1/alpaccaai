@@ -12,21 +12,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from alpacca.homeostasis import EmotionalState
-from alpacca import state as state_store
-from alpacca import memory as memory_store
-from alpacca.sensory import Observation, prediction_error
-from alpacca import introspection
-from alpacca import sentiment
-from alpacca import appearance
-from alpacca import portrait
-from alpacca import openclaw_bridge
-from alpacca import voice
-from alpacca import vision
-from alpacca import proactive
-from alpacca import actions
-from alpacca import prompts
-from alpacca.mind import strip_think
+from alpecca.homeostasis import EmotionalState
+from alpecca import state as state_store
+from alpecca import memory as memory_store
+from alpecca.sensory import Observation, prediction_error
+from alpecca import introspection
+from alpecca import sentiment
+from alpecca import appearance
+from alpecca import portrait
+from alpecca import openclaw_bridge
+from alpecca import voice
+from alpecca import vision
+from alpecca import proactive
+from alpecca import actions
+from alpecca import prompts
+from alpecca.mind import strip_think
 
 
 # --- Homeostasis -----------------------------------------------------------
@@ -158,7 +158,7 @@ def test_self_report_narration_is_grounded_in_real_numbers():
 
 def test_identity_card_is_truthful_about_being_a_program():
     card = introspection.identity_card()
-    assert "Alpacca" in card and "program" in card
+    assert "Alpecca" in card and "program" in card
 
 
 # --- Sentiment -------------------------------------------------------------
@@ -256,7 +256,7 @@ def test_portrait_prompt_mentions_mood_palette_and_accessories():
     state = EmotionalState(love=0.8, compassion=0.2, fear=0.0)  # affectionate
     look = appearance.choose(state, 1)
     prompt = portrait.build_prompt(state, look)
-    assert "Alpacca" in prompt
+    assert "Alpecca" in prompt
     assert look.palette in prompt              # her chosen color appears
     # Accessories she picked should be reflected somewhere in the prompt.
     for a in look.accessories:

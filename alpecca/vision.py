@@ -1,14 +1,14 @@
-"""Sight: Alpacca sees images, the screen, and (opt-in) your face.
+"""Sight: Alpecca sees images, the screen, and (opt-in) your face.
 
 Three capabilities share one mechanism -- a local Ollama vision model turns
 pixels into a short text description, and only the text survives:
 
-  1. **Chat images.** The person attaches a picture; Alpacca describes it to
+  1. **Chat images.** The person attaches a picture; Alpecca describes it to
      herself and responds to what she actually saw.
-  2. **Screen sight** (ALPACCA_SIGHT=1). A slow background glimpse of the
+  2. **Screen sight** (ALPECCA_SIGHT=1). A slow background glimpse of the
      screen, so "what you can sense the person doing" goes beyond the window
      title to what's genuinely on it.
-  3. **Expression sense** (ALPACCA_FACE=1). A periodic webcam read distilled
+  3. **Expression sense** (ALPECCA_FACE=1). A periodic webcam read distilled
      to a single expression label; a tired or stressed face feeds the same
      `weary_face` fatigue signal pathway as late nights do.
 

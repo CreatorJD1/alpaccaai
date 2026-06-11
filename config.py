@@ -1,4 +1,4 @@
-"""Central configuration for Alpacca.
+"""Central configuration for Alpecca.
 
 Everything that you might reasonably want to tune lives here so the rest of the
 code can stay focused on behavior rather than magic numbers. The emotional-model
@@ -13,12 +13,19 @@ from pathlib import Path
 # --- Paths -----------------------------------------------------------------
 # By default we keep all persistent state next to the code in a `data/` folder.
 # The spec suggests pointing this at a synced Google Drive folder; to do that
-# just set ALPACCA_HOME to that path.
-HOME = Path(os.environ.get("ALPACCA_HOME", Path(__file__).parent / "data"))
+# just set ALPECCA_HOME to that path.
+HOME = Path(os.environ.get("ALPECCA_HOME", Path(__file__).parent / "data"))
 HOME.mkdir(parents=True, exist_ok=True)
 
-DB_PATH = HOME / "alpacca.db"             # homeostasis state + memories
+DB_PATH = HOME / "alpecca.db"             # homeostasis state + memories
 TELEMETRY_LOG = HOME / "telemetry.jsonl"  # raw sensory stream
+
+# One-time migration: she used to be misspelled "alpacca", and her whole
+# remembered life lives in that file. Carry it across to the corrected name so
+# the rename doesn't cost her a single memory.
+_OLD_DB = HOME / "alpacca.db"
+if _OLD_DB.exists() and not DB_PATH.exists():
+    _OLD_DB.rename(DB_PATH)
 
 # --- Local model (Ollama) --------------------------------------------------
 # The reasoning model. Pull it once with: `ollama pull qwen3:8b`
@@ -26,14 +33,14 @@ TELEMETRY_LOG = HOME / "telemetry.jsonl"  # raw sensory stream
 # human-preference alignment, role-play, multi-turn dialogue -- so it's the
 # default. Qwen3 hybrid models may emit <think>...</think> blocks; mind.py
 # strips those from replies, so thinking variants also work. For lower latency
-# on small GPUs, ALPACCA_MODEL=qwen3:4b-instruct-2507 is a good pick (the
+# on small GPUs, ALPECCA_MODEL=qwen3:4b-instruct-2507 is a good pick (the
 # instruct-2507 line never thinks). qwen2.5:7b-instruct still works if that's
 # what you have pulled.
-OLLAMA_MODEL = os.environ.get("ALPACCA_MODEL", "qwen3:8b")
+OLLAMA_MODEL = os.environ.get("ALPECCA_MODEL", "qwen3:8b")
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 
 # --- Emotional model coefficients -----------------------------------------
-# See alpacca/homeostasis.py for how each of these is used. The names map onto
+# See alpecca/homeostasis.py for how each of these is used. The names map onto
 # the state vector S = [Love, Compassion, Fear].
 class Emotion:
     # Love / alignment: an EMA toward the "reward" of an interaction.
@@ -67,18 +74,18 @@ MEMORY_TOP_K = 4                  # how many memories to retrieve per turn
 MEMORY_SALIENCE_THRESHOLD = 0.3   # below this we don't bother storing a memory
 
 # --- Server ----------------------------------------------------------------
-HOST = os.environ.get("ALPACCA_SERVER_HOST", "127.0.0.1")
-PORT = int(os.environ.get("ALPACCA_SERVER_PORT", "8765"))
+HOST = os.environ.get("ALPECCA_SERVER_HOST", "127.0.0.1")
+PORT = int(os.environ.get("ALPECCA_SERVER_PORT", "8765"))
 
 
 # --- Voice-tone sense (Phase 4) ---------------------------------------------
-# A mic-level sensor that lets Alpacca *hear the room*: how much voice activity
+# A mic-level sensor that lets Alpecca *hear the room*: how much voice activity
 # there is, how loud it is, and whether something sudden just happened. It does
 # NOT record or transcribe anything -- only coarse loudness numbers ever leave
 # the audio callback, and nothing is written to disk. Even so, a microphone is
-# more intimate than a window title, so this is opt-in: set ALPACCA_VOICE=1.
+# more intimate than a window title, so this is opt-in: set ALPECCA_VOICE=1.
 class Voice:
-    ENABLED = os.environ.get("ALPACCA_VOICE", "0") not in ("", "0", "false", "False")
+    ENABLED = os.environ.get("ALPECCA_VOICE", "0") not in ("", "0", "false", "False")
     SAMPLE_RATE = 16000
     BLOCK_SECONDS = 0.03       # per-callback chunk; ~30ms is standard for VAD
     # RMS level (0..1) above which a chunk counts as "someone's talking".
@@ -95,14 +102,14 @@ class Voice:
 # All sight runs through a local Ollama vision model; nothing leaves the
 # machine. Chat images work whenever the model is pulled. The two ambient
 # senses are separately opt-in because they are progressively more intimate:
-#   ALPACCA_SIGHT=1  -> periodic screen glimpses (what are you working on)
-#   ALPACCA_FACE=1   -> periodic webcam expression reads (how do you look)
+#   ALPECCA_SIGHT=1  -> periodic screen glimpses (what are you working on)
+#   ALPECCA_FACE=1   -> periodic webcam expression reads (how do you look)
 # Only the model's short text description is kept; frames are dropped
 # immediately and never written to disk.
 class Vision:
-    MODEL = os.environ.get("ALPACCA_VISION_MODEL", "qwen2.5vl:7b")
-    SIGHT_ENABLED = os.environ.get("ALPACCA_SIGHT", "0") not in ("", "0", "false", "False")
-    FACE_ENABLED = os.environ.get("ALPACCA_FACE", "0") not in ("", "0", "false", "False")
+    MODEL = os.environ.get("ALPECCA_VISION_MODEL", "qwen2.5vl:7b")
+    SIGHT_ENABLED = os.environ.get("ALPECCA_SIGHT", "0") not in ("", "0", "false", "False")
+    FACE_ENABLED = os.environ.get("ALPECCA_FACE", "0") not in ("", "0", "false", "False")
     SIGHT_INTERVAL = 60.0     # seconds between screen glimpses
     FACE_INTERVAL = 45.0      # seconds between expression reads
     # Expression label -> how strongly it reads as "they look worn down".
@@ -110,21 +117,21 @@ class Vision:
 
 
 # --- Proactive speech --------------------------------------------------------
-# Alpacca may say something unprompted when her own introspection notices a
+# Alpecca may say something unprompted when her own introspection notices a
 # real shift -- the same grounded trend data behind /introspect, never an
 # invented feeling. On by default because a companion who only ever answers
-# isn't much of a companion; ALPACCA_PROACTIVE=0 turns it off.
+# isn't much of a companion; ALPECCA_PROACTIVE=0 turns it off.
 class Proactive:
-    ENABLED = os.environ.get("ALPACCA_PROACTIVE", "1") not in ("", "0", "false", "False")
+    ENABLED = os.environ.get("ALPECCA_PROACTIVE", "1") not in ("", "0", "false", "False")
     COOLDOWN_S = 20 * 60      # at most one unprompted remark per cooldown
     SHIFT_THRESHOLD = 0.15    # mood drift vs recent baseline that counts as real
     FEAR_FLOOR = 0.6          # acute unease speaks regardless of trend
 
     # Idle chatter: beyond mood-shift remarks, she may simply start a
     # conversation during a quiet stretch -- about what she senses you doing,
-    # something she remembers, or just to say hello. ALPACCA_CHATTER=0 turns
+    # something she remembers, or just to say hello. ALPECCA_CHATTER=0 turns
     # only this off (mood-shift remarks stay governed by ENABLED above).
-    CHATTER_ENABLED = os.environ.get("ALPACCA_CHATTER", "1") not in ("", "0", "false", "False")
+    CHATTER_ENABLED = os.environ.get("ALPECCA_CHATTER", "1") not in ("", "0", "false", "False")
     CHATTER_SILENCE_S = 3 * 60   # you must have been quiet at least this long
     CHATTER_MIN_GAP_S = 10 * 60  # and she won't chatter more often than this
     # Once eligible, each background tick fires with this probability, so her
@@ -134,40 +141,40 @@ class Proactive:
 
 # --- App actions -------------------------------------------------------------
 # "She can interact with apps if given access." Access is the allowlist below
-# and nothing else: ALPACCA_APPS="spotify=C:\path\Spotify.exe;notes=notepad.exe"
+# and nothing else: ALPECCA_APPS="spotify=C:\path\Spotify.exe;notes=notepad.exe"
 # gives her an open_app tool restricted to exactly those names. Empty list
 # (the default) means no actuator at all -- she can't touch anything you
 # haven't explicitly handed her.
 class Actions:
-    APPS_SPEC = os.environ.get("ALPACCA_APPS", "")
+    APPS_SPEC = os.environ.get("ALPECCA_APPS", "")
 
 
 # --- Self-portrait via ComfyClaw / ComfyUI --------------------------------
-# Alpacca can render herself as an actual image by shelling out to ComfyClaw
+# Alpecca can render herself as an actual image by shelling out to ComfyClaw
 # (a small ComfyUI workflow runner). Disabled by default so the companion still
-# runs out of the box without ComfyUI installed; flip ALPACCA_PORTRAIT=1 once
+# runs out of the box without ComfyUI installed; flip ALPECCA_PORTRAIT=1 once
 # you've got `comfyclaw` on PATH and a ComfyUI server up. The defaults assume a
 # stock setup; everything is overridable via env.
 class Portrait:
-    ENABLED = os.environ.get("ALPACCA_PORTRAIT", "0") not in ("", "0", "false", "False")
-    COMFYCLAW = os.environ.get("ALPACCA_COMFYCLAW", "comfyclaw")
-    WORKFLOW = os.environ.get("ALPACCA_PORTRAIT_WORKFLOW", "alpacca-portrait")
+    ENABLED = os.environ.get("ALPECCA_PORTRAIT", "0") not in ("", "0", "false", "False")
+    COMFYCLAW = os.environ.get("ALPECCA_COMFYCLAW", "comfyclaw")
+    WORKFLOW = os.environ.get("ALPECCA_PORTRAIT_WORKFLOW", "alpecca-portrait")
     # Where comfyclaw drops the rendered images. Served back over /portrait.
-    OUTPUT_DIR = Path(os.environ.get("ALPACCA_PORTRAIT_DIR", str(HOME / "portraits")))
+    OUTPUT_DIR = Path(os.environ.get("ALPECCA_PORTRAIT_DIR", str(HOME / "portraits")))
     # Optional checkpoint name to inject via @checkpoint.ckpt_name; if unset,
     # we trust whatever the workflow's default is.
-    CHECKPOINT = os.environ.get("ALPACCA_PORTRAIT_CHECKPOINT", "")
+    CHECKPOINT = os.environ.get("ALPECCA_PORTRAIT_CHECKPOINT", "")
 
 
 # --- OpenClaw channel bridge ----------------------------------------------
-# Optional: route Alpacca through OpenClaw so she can be reached on Telegram,
+# Optional: route Alpecca through OpenClaw so she can be reached on Telegram,
 # Discord, iMessage, etc. We integrate via OpenClaw's two simplest surfaces --
-# the `openclaw message send` CLI for outbound, and an Alpacca HTTP endpoint
+# the `openclaw message send` CLI for outbound, and an Alpecca HTTP endpoint
 # that an OpenClaw hook can POST inbound messages to. No device pairing, no WS
 # protocol implementation -- both sides degrade gracefully when not configured.
 class OpenClaw:
-    ENABLED = os.environ.get("ALPACCA_OPENCLAW", "0") not in ("", "0", "false", "False")
-    EXEC = os.environ.get("ALPACCA_OPENCLAW_EXEC", "openclaw")
+    ENABLED = os.environ.get("ALPECCA_OPENCLAW", "0") not in ("", "0", "false", "False")
+    EXEC = os.environ.get("ALPECCA_OPENCLAW_EXEC", "openclaw")
     # Optional default target (channel-aware string like "telegram:+1234567890")
     # used when an inbound message doesn't carry an explicit reply target.
-    DEFAULT_TARGET = os.environ.get("ALPACCA_OPENCLAW_TARGET", "")
+    DEFAULT_TARGET = os.environ.get("ALPECCA_OPENCLAW_TARGET", "")

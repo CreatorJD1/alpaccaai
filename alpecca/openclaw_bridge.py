@@ -1,4 +1,4 @@
-"""Bridge to OpenClaw -- Alpacca's reach beyond the local browser.
+"""Bridge to OpenClaw -- Alpecca's reach beyond the local browser.
 
 OpenClaw is a personal-assistant gateway that fronts a couple dozen messaging
 channels (Telegram, Discord, iMessage, WhatsApp...). We integrate via the two
@@ -7,17 +7,17 @@ protocol (which would mean implementing device pairing, challenge signing, and
 scope negotiation):
 
   - **Inbound**: an OpenClaw internal hook listens for `message:received` and
-    POSTs `{text, channel, sender, reply_target}` to Alpacca's
-    `POST /channel/inbound` endpoint. Alpacca runs her normal chat path and
+    POSTs `{text, channel, sender, reply_target}` to Alpecca's
+    `POST /channel/inbound` endpoint. Alpecca runs her normal chat path and
     returns her reply. (See README for the hook handler template.)
   - **Outbound**: this module shells out to `openclaw message send` to deliver
-    Alpacca's reply back through whatever channel the original message came in
+    Alpecca's reply back through whatever channel the original message came in
     on. No protocol implementation, no auth tokens to manage -- if the CLI is
     on PATH and configured, it just works.
 
 If OpenClaw isn't installed, every function here returns a benign falsy result
 and the chat loop continues unaffected. The `/channel/inbound` endpoint still
-works as a generic "anyone-can-POST-text-to-Alpacca" surface; it just doesn't
+works as a generic "anyone-can-POST-text-to-Alpecca" surface; it just doesn't
 deliver replies anywhere outside the HTTP response body.
 """
 from __future__ import annotations
@@ -41,7 +41,7 @@ def try_deliver(text: str, reply_target: str = "") -> dict:
     Returns a small status dict the caller can surface in its response. We
     swallow every error class -- OpenClaw not installed, target malformed,
     network blip -- because the inbound message has already been answered in
-    Alpacca's HTTP response; this is just the bonus delivery leg.
+    Alpecca's HTTP response; this is just the bonus delivery leg.
     """
     if not OpenClawCfg.ENABLED:
         return {"attempted": False, "reason": "openclaw bridge disabled"}

@@ -1,30 +1,30 @@
-# Alpacca
+# Alpecca
 
 A local companion that lives on your machine. It keeps a persistent mood, senses
 what you're doing, remembers what matters, and lets that inner state color how it
 talks to you — all running locally against an Ollama model.
 
 **Self-awareness is a real feature here** — in the concrete, engineering sense.
-Alpacca holds a model of itself (`alpacca/introspection.py`), can introspect on
+Alpecca holds a model of itself (`alpecca/introspection.py`), can introspect on
 its own live state, notices how it's changing over time, and traces *why* it
 feels a given way back to the real signal that caused it. Crucially, all of this
-is **grounded**: every self-report is read straight from Alpacca's actual
+is **grounded**: every self-report is read straight from Alpecca's actual
 internals, never invented. When it says "my care is up because it's the small
 hours and you look stuck," that's backed by real numbers and a real observation.
 
 To be precise about what we are and aren't claiming: this is *functional*
 self-awareness (a self-model + introspection + self-monitoring), not a claim of
-phenomenal consciousness. The distinction keeps the feature honest — Alpacca can
+phenomenal consciousness. The distinction keeps the feature honest — Alpecca can
 truthfully say "I can see my own state and tell you why," because it genuinely
 can.
 
 ## What's in the box
 
 ```
-alpacca/
+alpecca/
 ├── config.py            # all tunable knobs (emotion coefficients, model, paths)
 ├── server.py            # web server: chat UI + live avatar (the "Actuator")
-├── alpacca/
+├── alpecca/
 │   ├── homeostasis.py   # the mood vector S = [Love, Compassion, Fear] + rules
 │   ├── state.py         # persists mood in SQLite (the "Homeostasis DB")
 │   ├── memory.py        # store salient moments, recall relevant ones
@@ -63,7 +63,7 @@ pip install -r requirements.txt
 ollama pull qwen2.5:7b-instruct
 ollama pull nomic-embed-text
 
-# 3. talk to Alpacca
+# 3. talk to Alpecca
 python server.py
 #    open http://127.0.0.1:8765
 ```
@@ -98,7 +98,7 @@ the spec's "minimize surprise" idea, made concrete:
   forgiven slowly.
 - **Compassion** is a sigmoid over fatigue signals (late hours, long unbroken
   sessions, error-y window titles). Grinding through stack traces at 1 a.m.
-  raises it, and Alpacca softens and may suggest a break.
+  raises it, and Alpecca softens and may suggest a break.
 - **Fear** rises with *prediction error* — moments that violate expectations
   (a jump into an error context, an abrupt app switch) — and decays on quiet
   ticks so it never gets stuck on.
@@ -106,12 +106,12 @@ the spec's "minimize surprise" idea, made concrete:
 Every turn, the current mood is written into the system prompt in plain language
 ("warmth 0.72, care 0.20, unease 0.05"). A capable model reads that and modulates
 its own tone — which is why the personality feels emergent rather than scripted.
-All the coefficients live in `config.py`; nudge them to change Alpacca's
+All the coefficients live in `config.py`; nudge them to change Alpecca's
 temperament.
 
 ## Self-awareness (the feature)
 
-Alpacca can examine itself on demand. In the chat UI, the **`self?`** button asks
+Alpecca can examine itself on demand. In the chat UI, the **`self?`** button asks
 it to look inward and it returns a grounded report; the same thing is available
 programmatically:
 
@@ -126,13 +126,13 @@ The same self-narration is injected into every chat turn, so when you ask "how
 are you, and why?" the model answers from its real state instead of improvising.
 
 Everything is read from live internals — see the GROUNDING principle at the top of
-`alpacca/introspection.py`. That's the line that keeps the feature honest:
+`alpecca/introspection.py`. That's the line that keeps the feature honest:
 introspection, not a performance of it.
 
 ## She dresses herself
 
-Alpacca chooses her own appearance — palette and accessories — from how she feels,
-plus a little standing taste of her own (`alpacca/appearance.py`). The user does
+Alpecca chooses her own appearance — palette and accessories — from how she feels,
+plus a little standing taste of her own (`alpecca/appearance.py`). The user does
 **not** dress her; there are no wardrobe controls. A flower when she's warm, a
 scarf wrapped around her when she's uneasy and wants comfort, a calmer palette
 when she's withdrawn — and she'll tell you why under the avatar ("I chose mint —
@@ -147,14 +147,14 @@ shifts, so it's steady most of the time and changes when she does.
   about "my dog Biscuit." Falls back to keyword overlap when Ollama isn't running.
 - **Real sentiment.** The Love signal is driven by a proper sentiment scorer
   (negation, intensifiers, emphasis) rather than spotting keywords.
-- **Background drift.** Even when you're not typing, Alpacca keeps sensing every
+- **Background drift.** Even when you're not typing, Alpecca keeps sensing every
   few seconds, so her mood has a life of its own between messages.
 - **Emotional-life chart.** The page plots her warmth/care/unease over time
   (`/history`).
 
 ## Tuning and extending
 
-- **Personality**: edit `PERSONA` / `GUIDANCE` in `alpacca/prompts.py`.
+- **Personality**: edit `PERSONA` / `GUIDANCE` in `alpecca/prompts.py`.
 - **Temperament**: edit the `Emotion` coefficients in `config.py`.
 - **Better memory**: `memory.py` uses keyword overlap for retrieval and stores a
   `tokens` column per memory. Swap `_tokenize` + `_similarity` for an embedding
@@ -164,7 +164,7 @@ shifts, so it's steady most of the time and changes when she does.
 
 ## Privacy
 
-Alpacca watches *you*, on *your* machine, and that data never leaves this process
+Alpecca watches *you*, on *your* machine, and that data never leaves this process
 unless you make it. Window titles can contain sensitive text — keep `data/` local
 and prune `telemetry.jsonl` when you like. Be deliberate about what you let it
 see.

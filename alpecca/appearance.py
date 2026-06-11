@@ -1,7 +1,7 @@
-"""Alpacca dresses herself.
+"""Alpecca dresses herself.
 
 A companion you dress up is a doll. A companion who chooses how she wants to
-look is someone. So appearance here is *self-directed*: Alpacca picks her own
+look is someone. So appearance here is *self-directed*: Alpecca picks her own
 palette and accessories based on how she feels and a little standing preference
 of her own, and she can tell you why she chose it. The user doesn't control this
 -- it's hers.
@@ -17,7 +17,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, asdict
 
-from alpacca.homeostasis import EmotionalState
+from alpecca.homeostasis import EmotionalState
 
 # Palettes she can reach for. Names are how she refers to them.
 PALETTES = {
@@ -47,10 +47,10 @@ class Appearance:
 
 
 def choose(state: EmotionalState, preference_seed: int = 0) -> Appearance:
-    """Let Alpacca pick her look from her current state.
+    """Let Alpecca pick her look from her current state.
 
     `preference_seed` is her own stable taste -- two companions in the same mood
-    won't necessarily dress alike, and a given Alpacca stays recognizably herself.
+    won't necessarily dress alike, and a given Alpecca stays recognizably herself.
     Accessories are chosen for what they *mean to her*: a scarf when she's uneasy
     and wants comfort, a flower when she's full of warmth, glasses when she's
     settled and curious.

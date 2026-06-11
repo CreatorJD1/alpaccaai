@@ -21,21 +21,21 @@ import re
 import time
 
 from config import OLLAMA_MODEL, OLLAMA_HOST
-from alpacca.homeostasis import EmotionalState
-from alpacca import state as state_store
-from alpacca import memory as memory_store
-from alpacca.sensory import Observation, prediction_error
-from alpacca import prompts
-from alpacca import introspection
-from alpacca import appearance as appearance_mod
-from alpacca.portrait import PortraitWorker
-from alpacca.actions import Actuator
-from alpacca import proactive as proactive_mod
+from alpecca.homeostasis import EmotionalState
+from alpecca import state as state_store
+from alpecca import memory as memory_store
+from alpecca.sensory import Observation, prediction_error
+from alpecca import prompts
+from alpecca import introspection
+from alpecca import appearance as appearance_mod
+from alpecca.portrait import PortraitWorker
+from alpecca.actions import Actuator
+from alpecca import proactive as proactive_mod
 from config import Proactive as ProactiveCfg
 
 
 # Qwen3 hybrid models reason out loud inside <think>...</think> before the real
-# reply. That deliberation is internal monologue, not something Alpacca should
+# reply. That deliberation is internal monologue, not something Alpecca should
 # say to the person -- so we strip it. Also handles a truncated, never-closed
 # think block (we drop to end-of-string rather than leak half a chain of
 # thought). If stripping leaves nothing we return the original text untouched,
@@ -153,7 +153,7 @@ class CoreMind:
         self._session_start = time.time()
         self._history: list[dict] = []  # short rolling chat context for the LLM
         # Her own standing taste in how she likes to look. Persisted so she
-        # stays the same Alpacca across restarts rather than getting a new
+        # stays the same Alpecca across restarts rather than getting a new
         # personality every time the process starts.
         seed = state_store.load_appearance_seed()
         if seed is None:
@@ -164,7 +164,7 @@ class CoreMind:
         # Remember which mood label she dressed for, so we only re-pick when
         # her mood actually shifts (not on every micro-drift in the floats).
         self._appearance_mood = self.state.mood_label()
-        # What her screen-sight last saw (alpacca/vision.py); empty when the
+        # What her screen-sight last saw (alpecca/vision.py); empty when the
         # sense is off. Folded into the situation each chat turn.
         self._sight: str = ""
         # When she last spoke unprompted, for the proactive cooldown.
@@ -186,24 +186,24 @@ class CoreMind:
 
     def perceive(self, obs: Observation) -> None:
         """Fold an environmental observation into the mood. Called both on a
-        background telemetry tick and right before a chat turn, so Alpacca's
+        background telemetry tick and right before a chat turn, so Alpecca's
         feelings reflect what you're doing, not just what you say."""
         session_minutes = (time.time() - self._session_start) / 60.0
         signals = obs.fatigue_signals(session_minutes)
         self.state = self.state.update_compassion(signals)
         self.state = self.state.update_fear(prediction_error(self._prev_obs, obs))
         self._prev_obs = obs
-        # Remember what drove this update so Alpacca can introspect on the "why".
+        # Remember what drove this update so Alpecca can introspect on the "why".
         self._last_signals = signals
         self._last_situation = obs.window_title or ""
         state_store.save_state(self.state, trigger="telemetry")
 
-    # --- Self-awareness: Alpacca examining its own real state --------------
+    # --- Self-awareness: Alpecca examining its own real state --------------
 
     def introspect(self) -> introspection.SelfReport:
-        """Produce a grounded self-report by reading Alpacca's actual internals --
+        """Produce a grounded self-report by reading Alpecca's actual internals --
         live mood, real mood history, memory count, and the senses/signals that
-        last moved it. This is the feature that lets Alpacca genuinely know and
+        last moved it. This is the feature that lets Alpecca genuinely know and
         speak about itself, rather than perform an inner life."""
         return introspection.build_self_report(
             state=self.state,
@@ -214,7 +214,7 @@ class CoreMind:
             senses_active=self._prev_obs is not None and bool(self._prev_obs.window_title),
         )
 
-    # --- Self-presentation: Alpacca decides how she wants to look ----------
+    # --- Self-presentation: Alpecca decides how she wants to look ----------
 
     def current_appearance(self) -> appearance_mod.Appearance:
         """Her self-chosen look. She only reconsiders it when her mood label
@@ -244,7 +244,7 @@ class CoreMind:
 
     def see(self, description: str) -> None:
         """Update what her ambient screen-sight is seeing. Called by the server
-        on each drift tick when ALPACCA_SIGHT is on."""
+        on each drift tick when ALPECCA_SIGHT is on."""
         self._sight = description or ""
 
     def chat(self, user_msg: str, situation: str = "",
@@ -259,7 +259,7 @@ class CoreMind:
         # Recall relevant memories for this message.
         memories = memory_store.recall(user_msg)
 
-        # Alpacca reads its own real state before speaking, so it can reflect on
+        # Alpecca reads its own real state before speaking, so it can reflect on
         # itself honestly within the reply.
         self_report = self.introspect()
 

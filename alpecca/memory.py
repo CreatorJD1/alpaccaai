@@ -9,7 +9,7 @@ Retrieval is **semantic by default**: each memory is embedded with a local model
 (Ollama `nomic-embed-text`) and recalled by cosine similarity, so "how's the pup"
 can surface a memory about "my dog Biscuit" even with no shared words. If no
 embedder is available (Ollama not running, model not pulled), we fall back to the
-old keyword-overlap score so Alpacca still works offline -- it just recalls a bit
+old keyword-overlap score so Alpecca still works offline -- it just recalls a bit
 more literally. The `tokens` column is kept for exactly that fallback.
 
 Embeddings are pluggable via an `embed_fn(text) -> list[float] | None` argument,
@@ -164,7 +164,7 @@ def recall(query: str, top_k: int = MEMORY_TOP_K, db_path: Path = DB_PATH,
 
 
 def count(db_path: Path = DB_PATH) -> int:
-    """How many memories Alpacca is currently holding -- used by introspection so
+    """How many memories Alpecca is currently holding -- used by introspection so
     it can truthfully say how much of 'us' it carries."""
     with _connect(db_path) as conn:
         return conn.execute("SELECT COUNT(*) AS n FROM memories").fetchone()["n"]

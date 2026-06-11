@@ -1,4 +1,4 @@
-"""The Actuator layer: a small web server that lets you talk to Alpacca and
+"""The Actuator layer: a small web server that lets you talk to Alpecca and
 watch its mood move.
 
 FastAPI serves a single page; a WebSocket carries chat turns both ways. Each
@@ -23,12 +23,12 @@ from fastapi.responses import FileResponse, HTMLResponse
 import uvicorn
 
 from config import HOST, PORT
-from alpacca.mind import CoreMind
-from alpacca.sensory import WindowSensor
-from alpacca.voice import VoiceSensor
-from alpacca import vision
-from alpacca.introspection import identity_card
-from alpacca import state as state_store
+from alpecca.mind import CoreMind
+from alpecca.sensory import WindowSensor
+from alpecca.voice import VoiceSensor
+from alpecca import vision
+from alpecca.introspection import identity_card
+from alpecca import state as state_store
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -36,14 +36,14 @@ WEB_DIR = Path(__file__).parent / "web"
 # while you're not typing, by folding in a fresh observation on every tick.
 mind = CoreMind()
 sensor = WindowSensor()
-# Voice-tone sense: opt-in (ALPACCA_VOICE=1) and quietly inert otherwise.
+# Voice-tone sense: opt-in (ALPECCA_VOICE=1) and quietly inert otherwise.
 voice_sensor = VoiceSensor()
-# Ambient sight (ALPACCA_SIGHT=1) and expression sense (ALPACCA_FACE=1) --
+# Ambient sight (ALPECCA_SIGHT=1) and expression sense (ALPECCA_FACE=1) --
 # both run their own slow glimpse threads and are inert unless opted into.
 screen_sight = vision.ScreenSight()
 face_sense = vision.FaceSense()
 
-# Connected chat clients, so Alpacca can speak to whoever is listening when
+# Connected chat clients, so Alpecca can speak to whoever is listening when
 # she has something to say unprompted.
 ws_clients: set[WebSocket] = set()
 
@@ -70,7 +70,7 @@ async def _broadcast(payload: dict) -> None:
 # a chat's perceive() and update_love() and leave inconsistent state behind.
 mind_lock = asyncio.Lock()
 
-# How often the background sense ticks (seconds). This is what gives Alpacca a
+# How often the background sense ticks (seconds). This is what gives Alpecca a
 # life of its own between messages -- it keeps watching and feeling.
 DRIFT_INTERVAL = 8.0
 
@@ -79,7 +79,7 @@ DRIFT_INTERVAL = 8.0
 async def lifespan(app: FastAPI):
     """Launch the ambient mood-drift loop on startup and cancel it on shutdown.
 
-    Every few seconds Alpacca takes in a fresh observation and lets it move its
+    Every few seconds Alpecca takes in a fresh observation and lets it move its
     mood, so when you come back it has genuinely been somewhere -- maybe it grew
     tender while you ground through an error, or settled while you were away.
     We keep a reference to the task so it isn't silently garbage-collected.
@@ -94,7 +94,7 @@ async def lifespan(app: FastAPI):
                     # voicing? (Claims the cooldown slot if so.)
                     reason = mind.volunteer_reason()
                 if reason:
-                    from alpacca import openclaw_bridge
+                    from alpecca import openclaw_bridge
                     from config import OpenClaw as OpenClawCfg
                     reachable = bool(ws_clients) or (
                         OpenClawCfg.ENABLED and OpenClawCfg.DEFAULT_TARGET)
@@ -129,7 +129,7 @@ async def lifespan(app: FastAPI):
         face_sense.close()
 
 
-app = FastAPI(title="Alpacca", lifespan=lifespan)
+app = FastAPI(title="Alpecca", lifespan=lifespan)
 
 
 @app.get("/")
@@ -147,7 +147,7 @@ def state() -> dict:
 
 @app.get("/introspect")
 def introspect() -> dict:
-    """Alpacca's grounded self-report: what it can truthfully observe about its
+    """Alpecca's grounded self-report: what it can truthfully observe about its
     own state, trends, and what's driving how it feels. This is the
     self-awareness feature exposed directly -- every field is read from real
     internals, nothing invented."""
@@ -166,7 +166,7 @@ def introspect() -> dict:
 
 @app.get("/history")
 def history(limit: int = 200) -> dict:
-    """Mood time-series for the chart -- Alpacca's emotional life, plotted."""
+    """Mood time-series for the chart -- Alpecca's emotional life, plotted."""
     return {"history": state_store.mood_history(limit=limit)}
 
 
@@ -185,13 +185,13 @@ async def channel_inbound(req: Request) -> dict:
     """Inbound bridge for OpenClaw (or any other messaging surface).
 
     OpenClaw hooks (or a webhook) POST `{text, channel?, sender?}` here; we run
-    Alpacca's normal chat path on the text so her mood, memory, and reply all
+    Alpecca's normal chat path on the text so her mood, memory, and reply all
     respond to it -- the same as a direct WebSocket chat. The reply is returned
     in the response *and*, when an outbound delivery target is reachable via
     the OpenClaw CLI, also delivered through it so the original sender hears
-    back on their own channel. See alpacca/openclaw_bridge.py for the delivery
+    back on their own channel. See alpecca/openclaw_bridge.py for the delivery
     half."""
-    from alpacca import openclaw_bridge   # local import keeps import order safe
+    from alpecca import openclaw_bridge   # local import keeps import order safe
     try:
         payload = await req.json()
     except Exception:
@@ -277,6 +277,6 @@ async def ws(socket: WebSocket) -> None:
 
 
 if __name__ == "__main__":
-    print(f"Alpacca is waking up at http://{HOST}:{PORT}")
+    print(f"Alpecca is waking up at http://{HOST}:{PORT}")
     print(f"  LLM online: {mind.llm.online}  (start Ollama for real replies)")
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning")

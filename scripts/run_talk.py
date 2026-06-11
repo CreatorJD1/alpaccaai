@@ -1,18 +1,18 @@
-"""Talk mode: speak with Alpacca out loud (Phase 4, tier 2 -- experimental).
+"""Talk mode: speak with Alpecca out loud (Phase 4, tier 2 -- experimental).
 
 A Pipecat pipeline that listens on your default microphone, transcribes
-locally with Whisper, runs each utterance through Alpacca's full chat loop
+locally with Whisper, runs each utterance through Alpecca's full chat loop
 (mood, memory, introspection -- via the same `/channel/inbound` endpoint the
 OpenClaw bridge uses), and speaks her reply through local Kokoro TTS.
 Everything runs on this machine; no audio or text leaves it.
 
-This is a *separate process* from the Alpacca server, the same pattern as
+This is a *separate process* from the Alpecca server, the same pattern as
 run_telemetry.py: her mind stays in one place (server.py) and this script is
 just another sense-and-actuator pair plugged into it over HTTP.
 
 Setup (one-time):
     pip install "pipecat-ai[whisper,silero,local]" kokoro-onnx requests
-    python server.py          # Alpacca herself must be running
+    python server.py          # Alpecca herself must be running
     python scripts/run_talk.py
 
 First run downloads the Whisper + Kokoro models; after that it's fully
@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import HOST, PORT
 
-ALPACCA_URL = f"http://{HOST}:{PORT}"
+ALPECCA_URL = f"http://{HOST}:{PORT}"
 
 # Pipecat and friends are optional, heavyweight deps -- guard the import and
 # explain exactly what to install instead of stack-tracing at the user.
@@ -55,14 +55,14 @@ except ImportError as exc:
     sys.exit(2)
 
 
-class AlpaccaTurn(FrameProcessor):
-    """Bridges a finished transcription into Alpacca's chat loop.
+class AlpeccaTurn(FrameProcessor):
+    """Bridges a finished transcription into Alpecca's chat loop.
 
     On each TranscriptionFrame we POST the text to `/channel/inbound` (channel
     "voice"), which runs the full sense->mood->memory->reply cycle inside the
     server, then push her reply downstream as a TTSSpeakFrame for Kokoro to
     voice. The HTTP hop is what keeps her mind single-instance: talk mode sees
-    the same Alpacca, with the same mood and memories, as the browser chat.
+    the same Alpecca, with the same mood and memories, as the browser chat.
     """
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -71,36 +71,36 @@ class AlpaccaTurn(FrameProcessor):
         if isinstance(frame, TranscriptionFrame) and frame.text.strip():
             print(f"  you: {frame.text}")
             reply = await asyncio.get_running_loop().run_in_executor(
-                None, self._ask_alpacca, frame.text
+                None, self._ask_alpecca, frame.text
             )
             if reply:
-                print(f"  alpacca: {reply}")
+                print(f"  alpecca: {reply}")
                 await self.push_frame(TTSSpeakFrame(reply))
             return  # the transcription itself doesn't need to travel further
 
         await self.push_frame(frame, direction)
 
     @staticmethod
-    def _ask_alpacca(text: str) -> str:
+    def _ask_alpecca(text: str) -> str:
         try:
             resp = requests.post(
-                f"{ALPACCA_URL}/channel/inbound",
+                f"{ALPECCA_URL}/channel/inbound",
                 json={"text": text, "channel": "voice", "sender": "voice"},
                 timeout=120,   # a slow local LLM is normal; don't give up early
             )
             resp.raise_for_status()
             return (resp.json().get("reply") or "").strip()
         except Exception as exc:
-            print(f"  [couldn't reach Alpacca at {ALPACCA_URL}: {exc}]")
+            print(f"  [couldn't reach Alpecca at {ALPECCA_URL}: {exc}]")
             return ""
 
 
 async def main() -> None:
-    # Make sure Alpacca is actually awake before we open the mic.
+    # Make sure Alpecca is actually awake before we open the mic.
     try:
-        requests.get(f"{ALPACCA_URL}/state", timeout=5).raise_for_status()
+        requests.get(f"{ALPECCA_URL}/state", timeout=5).raise_for_status()
     except Exception:
-        print(f"Alpacca isn't reachable at {ALPACCA_URL} -- start `python server.py` first.")
+        print(f"Alpecca isn't reachable at {ALPECCA_URL} -- start `python server.py` first.")
         sys.exit(1)
 
     transport = LocalAudioTransport(
@@ -111,12 +111,12 @@ async def main() -> None:
         transport.input(),
         VADProcessor(vad_analyzer=SileroVADAnalyzer()),
         WhisperSTTService(),
-        AlpaccaTurn(),
+        AlpeccaTurn(),
         KokoroTTSService(),
         transport.output(),
     ])
 
-    print("Talk mode: listening. Say something to Alpacca. Ctrl+C to stop.")
+    print("Talk mode: listening. Say something to Alpecca. Ctrl+C to stop.")
     worker = PipelineWorker(pipeline)
     runner = WorkerRunner(handle_sigint=False if sys.platform == "win32" else True)
     await runner.add_workers(worker)

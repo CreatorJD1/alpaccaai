@@ -1,9 +1,9 @@
-// Forward inbound OpenClaw messages to Alpacca and surface her reply on the
+// Forward inbound OpenClaw messages to Alpecca and surface her reply on the
 // same conversation. We only react to message:received; everything else is a
-// no-op so the hook can stay registered without spamming Alpacca's endpoint.
+// no-op so the hook can stay registered without spamming Alpecca's endpoint.
 
-const ALPACCA_URL = process.env.ALPACCA_URL || "http://127.0.0.1:8765";
-const TIMEOUT_MS = Number(process.env.ALPACCA_TIMEOUT_MS || "15000");
+const ALPECCA_URL = process.env.ALPECCA_URL || "http://127.0.0.1:8765";
+const TIMEOUT_MS = Number(process.env.ALPECCA_TIMEOUT_MS || "15000");
 
 type AnyEvent = {
   type: string;
@@ -26,7 +26,7 @@ const handler = async (event: AnyEvent): Promise<void> => {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
   try {
-    const res = await fetch(`${ALPACCA_URL}/channel/inbound`, {
+    const res = await fetch(`${ALPECCA_URL}/channel/inbound`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ text, channel, sender }),
@@ -35,12 +35,12 @@ const handler = async (event: AnyEvent): Promise<void> => {
     if (!res.ok) return;
     const json: any = await res.json();
     const reply: string = (json?.reply || "").trim();
-    // Push Alpacca's reply onto the event so OpenClaw delivers it back on the
+    // Push Alpecca's reply onto the event so OpenClaw delivers it back on the
     // same channel. message:received is a "replyable" surface per the hook
     // spec, so this is the supported delivery path.
     if (reply && Array.isArray(event.messages)) event.messages.push(reply);
   } catch {
-    // Alpacca offline / timeout / malformed JSON: stay silent. OpenClaw will
+    // Alpecca offline / timeout / malformed JSON: stay silent. OpenClaw will
     // fall back to whatever its default agent would have done.
   } finally {
     clearTimeout(timer);

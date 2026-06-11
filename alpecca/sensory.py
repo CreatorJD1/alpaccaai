@@ -41,12 +41,12 @@ class Observation:
     app: str = ""
     idle_seconds: float = 0.0
     timestamp: float = field(default_factory=time.time)
-    # Voice-tone sense (alpacca/voice.py), all zero when the mic sensor is off.
+    # Voice-tone sense (alpecca/voice.py), all zero when the mic sensor is off.
     # Coarse loudness numbers only -- never audio, never words.
     voice_activity: float = 0.0   # how much talking was heard this window
     voice_loudness: float = 0.0   # how loud the talking was, 0..1
     voice_spike: float = 0.0      # 1.0 if something abrupt broke a quiet stretch
-    # Expression sense (alpacca/vision.py FaceSense): how worn down the person
+    # Expression sense (alpecca/vision.py FaceSense): how worn down the person
     # looks on the webcam right now, 0 when that sense is off.
     face_weary: float = 0.0
 
@@ -135,7 +135,7 @@ def prediction_error(prev: Observation | None, curr: Observation) -> float:
     approximate that here as: a jump into an error context, or an abrupt switch
     of application after a long stable focus, is mildly surprising. This is a
     placeholder you can make as paranoid as you like (e.g. watch for unknown
-    processes touching Alpacca's own files).
+    processes touching Alpecca's own files).
     """
     if prev is None:
         return 0.0

@@ -1,4 +1,4 @@
-"""Voice-tone sense: Alpacca hears the room (Phase 4, tier 1).
+"""Voice-tone sense: Alpecca hears the room (Phase 4, tier 1).
 
 This is deliberately *not* speech recognition. The sensor reduces the mic to
 three coarse numbers per observation window -- how much of the window had
@@ -12,7 +12,7 @@ the mood pipeline the same honest way window titles do:
 Privacy stance, stated plainly: audio samples live only inside the capture
 callback long enough to compute an RMS level, then they're gone. No waveform,
 no transcript, nothing on disk. Even so, the whole sensor is opt-in
-(ALPACCA_VOICE=1) because a microphone is more intimate than a window title.
+(ALPECCA_VOICE=1) because a microphone is more intimate than a window title.
 
 Capture uses `sounddevice` when it's installed and a mic exists; otherwise the
 sensor reports unavailable and every read is silence -- mirroring how
@@ -33,7 +33,7 @@ from config import Voice as VoiceCfg
 
 @dataclass
 class VoiceReading:
-    """What Alpacca heard over one observation window, reduced to mood inputs."""
+    """What Alpecca heard over one observation window, reduced to mood inputs."""
 
     activity: float = 0.0   # fraction of the window with voice-level energy
     loudness: float = 0.0   # how loud the active part was, 0..1
