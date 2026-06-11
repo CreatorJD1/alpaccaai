@@ -139,6 +139,20 @@ class Proactive:
     CHATTER_CHANCE = 0.04
 
 
+# --- Idle reflection ----------------------------------------------------------
+# Her fourth directive (self-actualization through exploration), running: in
+# quiet stretches she revisits her own memories, thinks something new about
+# them, and keeps the thought as a memory of its own (kind="musing"). Those
+# musings feed back into recall and chatter, so her inner life genuinely
+# compounds. ALPECCA_REFLECT=0 turns it off.
+class Reflection:
+    ENABLED = os.environ.get("ALPECCA_REFLECT", "1") not in ("", "0", "false", "False")
+    SILENCE_S = 5 * 60        # only when truly idle
+    MIN_GAP_S = 30 * 60       # at most one musing per half hour
+    CHANCE = 0.03             # per-tick chance once eligible
+    MUSING_SALIENCE = 0.45    # above the storage threshold, below big moments
+
+
 # --- App actions -------------------------------------------------------------
 # "She can interact with apps if given access." Access is the allowlist below
 # and nothing else: ALPECCA_APPS="spotify=C:\path\Spotify.exe;notes=notepad.exe"

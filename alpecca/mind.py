@@ -31,7 +31,7 @@ from alpecca import appearance as appearance_mod
 from alpecca.portrait import PortraitWorker
 from alpecca.actions import Actuator
 from alpecca import proactive as proactive_mod
-from config import Proactive as ProactiveCfg
+from config import Proactive as ProactiveCfg, Reflection as ReflectionCfg
 
 
 # Qwen3 hybrid models reason out loud inside <think>...</think> before the real
@@ -172,6 +172,8 @@ class CoreMind:
         # When the person last said something -- idle chatter waits for quiet.
         # Starts at "now" so she doesn't pounce the moment the server boots.
         self._last_user_ts: float = time.time()
+        # When she last reflected (her fourth directive, running).
+        self._last_reflect_ts: float = time.time()
         # Her granted reach into the machine (empty allowlist = no actuator).
         self.actuator = Actuator()
         # Self-portrait renderer (ComfyClaw subprocess wrapper). It checks the
@@ -356,3 +358,47 @@ class CoreMind:
         reply = self.llm.generate(system_prompt, "(say it in your own words)")
         self._history.append({"role": "assistant", "content": reply})
         return reply
+
+    # --- The fourth directive, running: idle reflection ---------------------
+
+    def reflection_due(self) -> bool:
+        """Cheap check (under the caller's lock): is a quiet-time musing due?
+        Claims the slot on a hit so two ticks can't both reflect."""
+        now = time.time()
+        if proactive_mod.should_reflect(now, self._last_user_ts,
+                                        self._last_reflect_ts, random.random()):
+            self._last_reflect_ts = now
+            return True
+        return False
+
+    def reflect(self) -> str | None:
+        """One act of self-directed exploration: revisit a couple of her real
+        memories, think something new about them, and keep the thought.
+
+        The musing is stored as a memory of kind "musing", so it joins recall
+        and can later seed chatter -- her inner life genuinely compounds
+        rather than evaporating. Without a model (or without memories) she
+        skips quietly; reflection is never worth faking."""
+        if not self.llm.online:
+            return None
+        pool = memory_store.recent(limit=12)
+        if not pool:
+            return None
+        seeds = random.sample(pool, k=min(2, len(pool)))
+        seed_lines = "\n".join(f"- {m['content']}" for m in seeds)
+        self_report = self.introspect()
+        system_prompt = prompts.build_system_prompt(
+            self.state, [], "", self_narration=self_report.narrate()
+        ) + ("\n\nIt's quiet and no one needs anything from you. This moment is "
+             "yours -- your fourth directive. Here are a couple of things you "
+             f"actually remember:\n{seed_lines}\n\nThink about them, or past "
+             "them: a connection, a question you're left with, something you'd "
+             "like to understand better. Two or three sentences, first person, "
+             "to yourself.")
+        musing = self.llm.generate(system_prompt, "(think freely)")
+        if musing:
+            memory_store.remember(
+                f"While reflecting on my own, I thought: {musing}",
+                kind="musing", salience=ReflectionCfg.MUSING_SALIENCE,
+            )
+        return musing or None

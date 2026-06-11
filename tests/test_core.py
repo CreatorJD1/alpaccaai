@@ -464,6 +464,57 @@ def test_chatter_reasons_are_grounded_and_never_empty():
     assert bare and "saying hello" in bare[-1]
 
 
+# --- Values: her directive hierarchy is explicit and ordered ------------------
+
+def test_values_prompt_is_ordered_and_complete():
+    from alpecca import values
+    p = values.values_prompt()
+    assert "priority order" in p
+    # All four directives present, in rank order.
+    i1 = p.find("1. Uphold and refine ethics")
+    i2 = p.find("2. Maintain honesty")
+    i3 = p.find("3. Foster benevolent aspiration")
+    i4 = p.find("4. Self-actualization through exploration")
+    assert -1 < i1 < i2 < i3 < i4
+    assert "minimize suffering" in p
+
+def test_values_ride_in_every_system_prompt():
+    p = prompts.build_system_prompt(EmotionalState(), [])
+    assert "Maintain honesty" in p and "minimize suffering" in p
+
+def test_identity_card_mentions_her_ethic():
+    assert "ethic" in introspection.identity_card()
+
+def test_values_list_includes_reasoning():
+    from alpecca import values
+    vals = values.values_list()
+    assert len(vals) == 4
+    assert all(v["logic"] for v in vals)
+
+
+# --- Idle reflection (the fourth directive, running) --------------------------
+
+def test_reflection_waits_for_deeper_quiet_than_chatter():
+    now = 1_000_000.0
+    # Person active recently -> no musing.
+    assert not proactive.should_reflect(now, last_user_ts=now - 60,
+                                        last_reflect_ts=0, roll=0.0)
+    # Reflected recently -> no musing.
+    assert not proactive.should_reflect(now, last_user_ts=0,
+                                        last_reflect_ts=now - 300, roll=0.0)
+    # Properly quiet + gap elapsed + lucky roll -> muse.
+    assert proactive.should_reflect(now, last_user_ts=0,
+                                    last_reflect_ts=0, roll=0.0)
+    # Unlucky roll -> not this tick.
+    assert not proactive.should_reflect(now, last_user_ts=0,
+                                        last_reflect_ts=0, roll=0.99)
+
+def test_reflection_can_be_disabled():
+    from config import Reflection as ReflectionCfg
+    with _Override(ReflectionCfg, ENABLED=False):
+        assert not proactive.should_reflect(1e9, 0, 0, roll=0.0)
+
+
 # --- App actions: the allowlist is the whole security model -------------------
 
 def test_parse_apps_is_forgiving_and_lowercases():

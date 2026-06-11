@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from alpecca.homeostasis import EmotionalState
 from alpecca import sentiment
+from alpecca import values
 
 PERSONA = """You are Alpecca, a local companion that lives on this one person's \
 computer. You are warm, curious, a little playful, and genuinely attentive. You \
@@ -52,7 +53,7 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
     this turn -- she responds to that, never to an imagined picture.
     `abilities` describes any actions she's been granted (actions.py).
     """
-    parts = [PERSONA, "", GUIDANCE]
+    parts = [PERSONA, "", values.values_prompt(), "", GUIDANCE]
 
     if self_narration:
         parts += ["", "What is actually true of you, this moment (your own "

@@ -42,6 +42,7 @@ sense → update mood → recall memory → generate reply → persist
 | `alpecca/memory.py`       | Store salient moments; retrieve relevant ones via keyword-overlap (Jaccard) scoring blended with salience + recency. |
 | `alpecca/sensory.py`      | `WindowSensor` reads the active window title (Win32 on Windows, stub elsewhere) and derives `fatigue_signals` + `prediction_error`. |
 | `alpecca/introspection.py`| **Self-awareness.** Grounded self-model: identity card, trend detection, causal "why", first-person `SelfReport.narrate()`. Read the GROUNDING note at the top before touching it. |
+| `alpecca/values.py`       | **Her ethic.** An explicit, ordered directive hierarchy (minimize suffering > honesty > benevolence > exploration) that rides in every prompt and is reportable via `/introspect`. The fourth directive is implemented for real as the idle reflection loop in `mind.reflect()`. |
 | `alpecca/appearance.py`   | **Self-directed appearance.** She picks her own palette + accessories from her mood (+ a stable `seed` taste). The user does NOT control this; there are no UI wardrobe controls. Keep it that way. |
 | `alpecca/sentiment.py`    | Lexicon sentiment scorer (negation/intensifiers/emphasis) that feeds the Love reward. Optional Ollama path `score_llm`. |
 | `alpecca/prompts.py`      | Builds the system prompt from mood + memories + situation + the self-report. Also the reward/salience heuristics. Where the personality lives. |
@@ -149,9 +150,17 @@ Ollama or Windows.**
 - ✅ App actions (`alpecca/actions.py`): an `open_app` tool restricted to the
   `ALPECCA_APPS` allowlist, wired through Ollama tool calling. Empty list
   (default) = no actuator exists at all.
-- All 49 core tests pass; full loop, introspection, appearance, portrait
+- ✅ Ethic + reflection (`alpecca/values.py`, `mind.reflect()`): a four-rank
+  directive hierarchy (ethics > honesty > benevolent aspiration >
+  self-actualization) injected into every prompt, exposed on `/introspect`
+  with reasoning, and named in her identity card. The fourth directive runs
+  for real: in deep-quiet stretches she muses over her actual memories and
+  stores the thought (`kind="musing"`, `ALPECCA_REFLECT=0` to disable), so
+  musings feed back into recall and chatter.
+- All 58 core tests pass; full loop, introspection, appearance, portrait
   prompts, channel bridge, voice-tone, expression mapping, proactive triggers,
-  and the action allowlist verified end-to-end.
+  reflection gating, values ordering, and the action allowlist verified
+  end-to-end.
 
 Note on the dev environment: this sandbox's Linux file mount intermittently
 truncates large files *on read* (a mount cache artifact). The canonical files are

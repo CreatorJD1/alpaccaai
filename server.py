@@ -29,6 +29,7 @@ from alpecca.voice import VoiceSensor
 from alpecca import vision
 from alpecca.introspection import identity_card
 from alpecca import state as state_store
+from alpecca import values
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -93,6 +94,13 @@ async def lifespan(app: FastAPI):
                     # Cheap check: did her introspection notice something worth
                     # voicing? (Claims the cooldown slot if so.)
                     reason = mind.volunteer_reason()
+                    # If she has nothing to say, the quiet may still be hers to
+                    # use -- the fourth directive (reflection) runs instead.
+                    reflect_now = (reason is None) and mind.reflection_due()
+                if reflect_now:
+                    # Off the lock: musing is slow LLM work and entirely hers;
+                    # chat must never queue behind it.
+                    await asyncio.to_thread(mind.reflect)
                 if reason:
                     from alpecca import openclaw_bridge
                     from config import OpenClaw as OpenClawCfg
@@ -161,6 +169,9 @@ def introspect() -> dict:
         "reason": report.reason,
         "memory_count": report.memory_count,
         "senses_active": report.senses_active,
+        # Her ethic is part of her self-model -- the same directives that ride
+        # in every prompt, shown with their reasoning.
+        "values": values.values_list(),
     }
 
 

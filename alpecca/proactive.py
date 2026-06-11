@@ -16,7 +16,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from config import Proactive as ProactiveCfg
+from config import Proactive as ProactiveCfg, Reflection as ReflectionCfg
 from alpecca.homeostasis import EmotionalState
 
 
@@ -82,6 +82,20 @@ def should_chatter(now: float, last_user_ts: float, last_unprompted_ts: float,
     if now - last_unprompted_ts < ProactiveCfg.CHATTER_MIN_GAP_S:
         return False
     return roll < ProactiveCfg.CHATTER_CHANCE
+
+
+def should_reflect(now: float, last_user_ts: float, last_reflect_ts: float,
+                   roll: float) -> bool:
+    """Gate for idle reflection -- the fourth directive's trigger. Same shape
+    as chatter gating (silence, gap, jitter) but slower and quieter: musing is
+    something she does for herself, so it shouldn't crowd out conversation."""
+    if not ReflectionCfg.ENABLED:
+        return False
+    if now - last_user_ts < ReflectionCfg.SILENCE_S:
+        return False
+    if now - last_reflect_ts < ReflectionCfg.MIN_GAP_S:
+        return False
+    return roll < ReflectionCfg.CHANCE
 
 
 def chatter_reasons(situation: str = "", memory: str = "",
