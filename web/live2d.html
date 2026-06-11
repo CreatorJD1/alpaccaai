@@ -71,10 +71,14 @@
 
   <div id="params"><h3>Cubism parameters — driven by her live state</h3><div id="prows"></div></div>
 
+<!-- PIXI + the display plugin are VENDORED locally (web/vendor/) so her rig
+     works with no internet -- the local-first line. The Live2D Cubism core is
+     CDN-only (proprietary; loaded just for the compiled-model path, which the
+     mesh rig doesn't need). -->
+<script src="/web/vendor/pixi.min.js"></script>
+<script src="/web/vendor/pixi-live2d-display.min.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/dylanNew/live2d/webgl/Live2D/lib/live2d.min.js"></script>
 <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/index.min.js"></script>
 <script>
 const moodEl = document.getElementById('mood');
 let mood = 'content', avatarState = 'idle';

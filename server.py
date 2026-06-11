@@ -404,6 +404,21 @@ def character_image(name: str) -> FileResponse:
     return FileResponse(path)
 
 
+@app.get("/web/{path:path}")
+def web_asset(path: str) -> FileResponse:
+    """Serve vendored front-end assets (PIXI etc.) from web/, traversal-safe.
+    Vendoring keeps the avatar renderer working with no internet -- the
+    local-first line: nothing she needs should depend on a CDN."""
+    safe = (WEB_DIR / path).resolve()
+    try:
+        safe.relative_to(WEB_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=404, detail="not found")
+    if not safe.is_file():
+        raise HTTPException(status_code=404, detail="not found")
+    return FileResponse(safe)
+
+
 @app.get("/live2d")
 def live2d_page() -> HTMLResponse:
     """Full-window rigged Live2D avatar, driven live by her real state. Shows a
