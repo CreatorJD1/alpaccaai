@@ -265,6 +265,45 @@ def character() -> dict:
     }
 
 
+@app.get("/puppet")
+def puppet() -> dict:
+    """Her puppet state for the avatar player: live grounded channel values
+    (from her real mood) and the library of animations SHE authored. The UI
+    renders this; it doesn't choreograph her."""
+    return mind.puppet_state()
+
+
+@app.post("/puppet/author")
+async def puppet_author(req: Request) -> dict:
+    """Ask Alpecca to choreograph one of her own animations now, while you
+    watch. Optional {name}; otherwise she takes the next from her wishlist.
+    Steps stream as `studio_status`; result as `puppet_authored`."""
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    name = str(body.get("name", "")).strip()
+    if not _studio_lock.acquire(blocking=False):
+        return {"ok": False, "error": "she's already working in the studio"}
+    loop = asyncio.get_running_loop()
+
+    def status(msg: str) -> None:
+        asyncio.run_coroutine_threadsafe(
+            _broadcast({"type": "studio_status", "text": msg}), loop)
+
+    async def run() -> None:
+        try:
+            async with mind_lock:
+                seq = await asyncio.to_thread(mind.author_animation, name, status)
+            await _broadcast({"type": "puppet_authored",
+                              "sequence": seq, "ok": bool(seq)})
+        finally:
+            _studio_lock.release()
+
+    asyncio.create_task(run())
+    return {"ok": True, "started": True}
+
+
 _studio_lock = _threading.Lock()
 
 

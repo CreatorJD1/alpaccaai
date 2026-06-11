@@ -636,6 +636,54 @@ def test_her_canonical_sheet_is_humanoid():
     assert "`core_glow`" in spec and "`eye_glow`" in spec   # her real features
 
 
+# --- Her puppet: she drives her own animation ----------------------------------
+
+def test_puppet_live_pose_is_grounded_in_her_state():
+    from alpecca import puppet
+    pose = puppet.live_pose(EmotionalState(love=0.7, compassion=0.3, fear=0.1))
+    assert pose["warmth"] == 0.7 and pose["care"] == 0.3 and pose["unease"] == 0.1
+    # Restlessness rises with unease; buoyancy with warmth.
+    calm = puppet.live_pose(EmotionalState(fear=0.0))
+    anxious = puppet.live_pose(EmotionalState(fear=0.9))
+    assert anxious["sway_intensity"] > calm["sway_intensity"]
+
+def test_puppet_validate_sequence_clamps_and_whitelists():
+    from alpecca import puppet
+    seq = puppet.validate_sequence({
+        "name": "Shy Wave!", "duration_ms": 99999, "intent": "hello",
+        "keyframes": [
+            {"t": 0.5, "bob": -999, "tilt": 8, "evil": 1, "lean": 2.0},
+            {"t": 0.2, "sway": 5},
+        ],
+    })
+    assert seq["name"] == "shy_wave"                 # slugged
+    assert seq["duration_ms"] == 4000                # clamped to max
+    assert seq["keyframes"][0]["t"] == 0.0           # padded to start at rest
+    assert seq["keyframes"][-1]["t"] == 1.0          # padded to end at rest
+    # frames sorted; clamps applied; unknown channel dropped.
+    mid = [f for f in seq["keyframes"] if f.get("bob") is not None][0]
+    assert mid["bob"] == -20.0 and "evil" not in mid
+    assert all(f.get("lean", 0) <= 1.0 for f in seq["keyframes"])
+
+def test_puppet_rejects_unusable_sequences():
+    from alpecca import puppet
+    assert puppet.validate_sequence({}) is None
+    assert puppet.validate_sequence({"name": "x", "keyframes": []}) is None
+    assert puppet.parse_authored("not json") is None
+    assert puppet.parse_authored('{"name":"wave","keyframes":[{"t":0.5,"bob":-5}]}')["name"] == "wave"
+
+def test_puppet_wishlist_progression():
+    from alpecca import puppet
+    with tempfile.TemporaryDirectory() as d:
+        cdir = Path(d)
+        assert puppet.next_unwritten(cdir) == puppet.WISHLIST[0]
+        seq = puppet.validate_sequence(
+            {"name": puppet.WISHLIST[0], "keyframes": [{"t":0.5,"bob":-4}]})
+        puppet.save_sequence(seq, cdir)
+        assert puppet.next_unwritten(cdir) == puppet.WISHLIST[1]   # moved on
+        assert puppet.WISHLIST[0] in puppet.load_library(cdir)
+
+
 # --- Custom avatar clips --------------------------------------------------------
 
 def test_avatar_manifest_reports_what_exists():

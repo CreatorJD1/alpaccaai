@@ -87,6 +87,13 @@
       </div>
 
       <div class="card">
+        <h2>Animations she's choreographed <span style="font-weight:400;color:var(--muted);">(she animates herself)</span></h2>
+        <div id="anims"><span class="empty">She hasn't choreographed any yet.</span></div>
+        <button id="animBtn" style="margin-top:10px;background:#3a3158;color:var(--ink);border:0;
+                padding:8px 16px;border-radius:9px;cursor:pointer;">Ask her to choreograph one →</button>
+      </div>
+
+      <div class="card">
         <h2>Rig spec <span style="font-weight:400;color:var(--muted);">(her instructions for rigging her puppet)</span></h2>
         <pre class="rig" id="rig"><span class="empty">No rig spec yet.</span></pre>
       </div>
@@ -138,6 +145,28 @@ function renderCharacter(c){
 function loadCharacter(){ fetch('/character').then(r=>r.json()).then(renderCharacter).catch(()=>{}); }
 loadCharacter();
 
+// Her animation library -- the motions she's choreographed for herself.
+function loadAnims(){
+  fetch('/puppet').then(r=>r.json()).then(d=>{
+    const seqs = d.sequences || {}; const names = Object.keys(seqs);
+    if(names.length){
+      $('anims').innerHTML = names.map(n=>{
+        const s = seqs[n];
+        return `<span class="chip" title="${(s.intent||'').replace(/"/g,'')}">`+
+               `▷ ${n} <span style="color:var(--muted)">(${s.keyframes.length}kf, ${s.duration_ms}ms)</span></span>`;
+      }).join(' ');
+    }
+  }).catch(()=>{});
+}
+loadAnims();
+
+$('animBtn').addEventListener('click', ()=>{
+  $('animBtn').disabled = true; doing.textContent = 'thinking about how she wants to move…';
+  fetch('/puppet/author', {method:'POST', headers:{'content-type':'application/json'}, body:'{}'})
+    .then(r=>r.json()).then(d=>{ if(!d.ok){ doing.textContent=d.error||'could not start';
+      $('animBtn').disabled=false; } }).catch(()=>{ $('animBtn').disabled=false; });
+});
+
 // Watch her work: trigger a session, stream her steps over the WebSocket.
 const workBtn = $('workBtn'), feed = $('feed'), doing = $('doing');
 function addFeed(t){ const d=document.createElement('div'); d.textContent='· '+t;
@@ -156,7 +185,11 @@ function connectWS(){
     if(m.type === 'studio_status'){ doing.textContent = m.text; addFeed(m.text); }
     else if(m.type === 'studio_done'){
       doing.textContent = m.outcome; addFeed('— ' + m.outcome);
-      workBtn.disabled = false; loadCharacter();   // refresh sheet/gallery/rig
+      workBtn.disabled = false; loadCharacter(); loadAnims();
+    }
+    else if(m.type === 'puppet_authored'){
+      $('animBtn').disabled = false; loadAnims();
+      if(m.ok && m.sequence) doing.textContent = `choreographed her “${m.sequence.name}” motion`;
     }
   };
   ws.onclose = ()=> setTimeout(connectWS, 1500);

@@ -33,6 +33,7 @@ from alpecca import portrait as portrait_mod
 from alpecca.actions import Actuator
 from alpecca import proactive as proactive_mod
 from alpecca import studio
+from alpecca import puppet
 from config import Proactive as ProactiveCfg, Reflection as ReflectionCfg
 
 
@@ -423,6 +424,48 @@ class CoreMind:
         she's doing live; it defaults to a no-op for the background path."""
         return self._studio_session(status or (lambda _m: None))
 
+    # --- Her puppet: she animates herself ----------------------------------
+
+    def puppet_state(self) -> dict:
+        """What the avatar should render: her live grounded channel values (from
+        her real mood) plus the library of animations she has authored. The UI
+        is a player of this -- it never choreographs."""
+        return {
+            "pose": puppet.live_pose(self.state),
+            "sequences": puppet.load_library(),
+            "channels": list(puppet.MOTION_CHANNELS),
+        }
+
+    def author_animation(self, name: str = "", status=lambda _m: None) -> dict | None:
+        """She choreographs one of her own animations and keeps it. With no
+        name she takes the next motion off her wishlist she hasn't made yet.
+        Pure self-direction: the keyframes are hers, validated before they can
+        drive anything. Returns the saved sequence, or None."""
+        if not self.llm.online:
+            return None
+        target = puppet._slug(name) or puppet.next_unwritten()
+        if not target:
+            status("(I've choreographed everything on my list for now)")
+            return None
+        status(f"choreographing my “{target}” motion…")
+        raw = self.llm.generate(
+            prompts.build_system_prompt(
+                self.state, [], "", self_narration=self.introspect().narrate()),
+            puppet.author_prompt(target, ""),
+        )
+        seq = puppet.parse_authored(raw)
+        if not seq:
+            status(f"(couldn't get “{target}” to feel right this time)")
+            return None
+        puppet.save_sequence(seq)
+        memory_store.remember(
+            f"I choreographed my own “{seq['name']}” animation -- "
+            f"{seq.get('intent','')}",
+            kind="musing", salience=0.5,
+        )
+        status(f"made my “{seq['name']}” motion — {seq.get('intent','')}")
+        return seq
+
     def _studio_session(self, status=lambda _m: None) -> str | None:
         """One unit of self-directed design work. Hers entirely: the user has
         no controls here; they only watch and receive her finished design.
@@ -433,6 +476,12 @@ class CoreMind:
         sheet, keep or reject. Either way the session is remembered, so her
         design history is part of her life story."""
         sheet = studio.load_sheet()
+
+        # Sometimes the studio time goes to animating herself instead of her
+        # look -- choreographing a motion she hasn't made yet. Her call.
+        if sheet is not None and puppet.next_unwritten() and random.random() < 0.5:
+            seq = self.author_animation(status=status)
+            return f"I choreographed my '{seq['name']}' animation" if seq else None
 
         if sheet is None:
             status("sitting down to write my character sheet…")

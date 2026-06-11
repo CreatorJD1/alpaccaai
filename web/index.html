@@ -511,21 +511,47 @@ function animTarget(){
   return null;  // SVG mode runs its own idle()/blink()
 }
 
-// Sequences: each maps progress p in [0,1] -> transform deltas layered over idle.
+// Fallback procedural sequences -- used ONLY until she has authored her own.
+// Once her puppet library has a motion of the same name, hers wins: the
+// choreography is hers, not hardcoded here.
 const SEQUENCES = {
-  // a little lean-in + side tilt, like a wave hello
   greet:  p => ({ y:-6*Math.sin(p*Math.PI), rot: 4*Math.sin(p*Math.PI*2), s: 0.01*Math.sin(p*Math.PI) }),
-  // two quick nods (she acknowledges / starts to speak)
   nod:    p => ({ y: 5*Math.abs(Math.sin(p*Math.PI*2)), rot: 0, s: 0 }),
-  // a buoyant double bounce when she's warm/affectionate
   happy:  p => ({ y:-12*Math.abs(Math.sin(p*Math.PI*2)), rot: 2*Math.sin(p*Math.PI*4), s: 0.02*Math.sin(p*Math.PI*2) }),
-  // small restless shifts when her unease is up
   fidget: p => ({ y: 0, rot: 3*Math.sin(p*Math.PI*6), s: 0 }),
 };
-let activeSeq = null, seqStart = 0, seqDur = 0;
+
+// Her own authored animations (from /puppet) -- the real choreography.
+let herSequences = {};
+function loadPuppet(){
+  fetch('/puppet').then(r=>r.json()).then(d=>{ herSequences = d.sequences || {}; }).catch(()=>{});
+}
+loadPuppet();
+
+// Sample one of HER keyframe sequences at progress p -> motion deltas. Linear
+// interpolation between the surrounding keyframes, missing channels = rest(0).
+function sampleHer(seq, p){
+  const f = seq.keyframes; const out = {bob:0,sway:0,tilt:0,scale:0,lean:0,glow:0};
+  let a = f[0], b = f[f.length-1];
+  for(let i=0;i<f.length-1;i++){ if(p>=f[i].t && p<=f[i+1].t){ a=f[i]; b=f[i+1]; break; } }
+  const span = (b.t - a.t) || 1; const u = Math.min(1, Math.max(0, (p - a.t)/span));
+  for(const ch of Object.keys(out)){
+    const av = a[ch]||0, bv = b[ch]||0; out[ch] = av + (bv-av)*u;
+  }
+  return out;
+}
+
+let activeSeq = null;     // built-in fallback name
+let activeHer = null;     // her authored sequence object
+let seqStart = 0, seqDur = 0;
 function playSequence(name, durMs){
-  if(!SEQUENCES[name]) return;
-  activeSeq = name; seqDur = durMs || 1400; seqStart = performance.now();
+  if(herSequences[name]){          // prefer HER choreography
+    activeHer = herSequences[name]; activeSeq = null;
+    seqDur = activeHer.duration_ms || durMs || 1400;
+  } else if(SEQUENCES[name]){      // fall back to built-in until she's authored it
+    activeSeq = name; activeHer = null; seqDur = durMs || 1400;
+  } else { return; }
+  seqStart = performance.now();
 }
 
 let animT = 0, lastTs = 0;
@@ -546,10 +572,15 @@ function animateAvatar(ts){
     if(avatarState === 'speaking'){ extraY = Math.abs(Math.sin(animT*6)) * -4; extraS = 1 + Math.sin(animT*6)*0.008; }
     else if(avatarState === 'listening'){ extraY = -5; extraS = 1.02; }
     else if(avatarState === 'thinking'){ tilt += 3 + Math.sin(animT*1.4)*1.5; }
-    // Active one-shot sequence, eased.
+    // Active one-shot sequence -- HER authored choreography if any, else the
+    // built-in fallback. Both layer over the grounded idle motion above.
     let sx = 0, sy = 0, sr = 0, ss = 0;
-    if(activeSeq){
-      const p = (ts - seqStart) / seqDur;
+    const p = (ts - seqStart) / seqDur;
+    if(activeHer){
+      if(p >= 1){ activeHer = null; }
+      else { const d = sampleHer(activeHer, p);
+        sx = d.sway; sy = d.bob - d.lean*5; sr = d.tilt; ss = d.scale + d.lean*0.01; }
+    } else if(activeSeq){
       if(p >= 1){ activeSeq = null; }
       else { const d = SEQUENCES[activeSeq](p); sy = d.y; sr = d.rot; ss = d.s; }
     }
