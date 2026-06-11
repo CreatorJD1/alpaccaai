@@ -515,6 +515,34 @@ def test_reflection_can_be_disabled():
         assert not proactive.should_reflect(1e9, 0, 0, roll=0.0)
 
 
+# --- Custom avatar clips --------------------------------------------------------
+
+def test_avatar_manifest_reports_what_exists():
+    from alpecca import avatar
+    with tempfile.TemporaryDirectory() as d:
+        adir = Path(d)
+        m = avatar.manifest(adir)
+        assert m["video_mode"] is False
+        assert all(v is False for v in m["clips"].values())
+        (adir / "standby.mp4").write_bytes(b"x")
+        (adir / "thinking.mp4").write_bytes(b"x")
+        m = avatar.manifest(adir)
+        assert m["video_mode"] is True
+        assert m["clips"]["standby"] and m["clips"]["thinking"]
+        assert not m["clips"]["speaking"]
+
+def test_avatar_clip_path_is_whitelisted():
+    from alpecca import avatar
+    with tempfile.TemporaryDirectory() as d:
+        adir = Path(d)
+        (adir / "standby.mp4").write_bytes(b"x")
+        (adir / "secrets.txt").write_bytes(b"x")
+        assert avatar.clip_path("standby", adir) is not None
+        assert avatar.clip_path("speaking", adir) is None     # known name, no file
+        assert avatar.clip_path("secrets", adir) is None      # not on the whitelist
+        assert avatar.clip_path("../alpecca.db", adir) is None # no traversal
+
+
 # --- App actions: the allowlist is the whole security model -------------------
 
 def test_parse_apps_is_forgiving_and_lowercases():

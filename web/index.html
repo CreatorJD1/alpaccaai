@@ -20,6 +20,15 @@
 
   .stage { display:flex; flex-direction:column; align-items:center; gap:8px; }
   #avatar { filter: drop-shadow(0 12px 34px rgba(0,0,0,.5)); }
+  /* Custom-art video avatar (data/avatar/*.mp4) -- hidden until clips exist. */
+  #avatarVideo { display:none; width:220px; height:240px; object-fit:cover;
+                 border-radius:24px; filter: drop-shadow(0 12px 34px rgba(0,0,0,.5)); }
+  /* Listening: a soft attention ring around whichever avatar is showing. */
+  .stage.listening #avatar, .stage.listening #avatarVideo {
+    filter: drop-shadow(0 12px 34px rgba(0,0,0,.5)) drop-shadow(0 0 18px rgba(201,168,255,.55)); }
+  /* Thinking: a little thought bubble over the SVG. */
+  #thoughtDots { opacity:0; transition:opacity .3s; }
+  .stage.thinking #thoughtDots { opacity:1; }
 
   /* Alpecca's own note about how she's chosen to look (she decides, not you) */
   .lookNote { max-width:300px; text-align:center; font-size:11.5px; color:var(--muted);
@@ -66,7 +75,10 @@
     <div id="conn"></div>
   </header>
 
-  <div class="stage">
+  <div class="stage" id="stage">
+    <!-- Custom character art: looping clips from data/avatar/, switched by
+         avatar state. Hidden unless clips exist (see /avatar/manifest). -->
+    <video id="avatarVideo" autoplay loop muted playsinline></video>
     <!-- A character avatar (Replika-style customizable companion). Idle
          breathing + blinking run on a clock; mood drives the expression. -->
     <svg id="avatar" width="220" height="240" viewBox="0 0 220 240" xmlns="http://www.w3.org/2000/svg">
@@ -118,6 +130,12 @@
           <!-- mouth -->
           <path id="mouth" d="M92 122 Q110 134 128 122" stroke="#3a2f55"
                 stroke-width="4" fill="none" stroke-linecap="round"/>
+          <!-- thought bubble (thinking state) -->
+          <g id="thoughtDots" fill="#9b91b8">
+            <circle cx="166" cy="46" r="3"/>
+            <circle cx="176" cy="36" r="4.5"/>
+            <circle cx="189" cy="24" r="6"/>
+          </g>
         </g>
       </g>
     </svg>
@@ -340,6 +358,69 @@ document.getElementById('introspectBtn').addEventListener('click', async ()=>{
   } catch(err){}
 });
 
+// --- avatar state machine: idle / listening / thinking / speaking -------------
+// One source of truth for "what is she doing right now". The SVG animates the
+// states by default; when custom clips exist (data/avatar/*.mp4) the video
+// avatar takes over, switched by the same states -- so her real character art
+// drops in without touching any of this logic.
+const stage = document.getElementById('stage');
+const avatarVideo = document.getElementById('avatarVideo');
+let avatarState = 'idle';
+let videoClips = null;          // /avatar/manifest result, or null = SVG mode
+let mouthTimer = null;
+
+function clipForState(s){
+  if(!videoClips) return null;
+  const want = {idle:'standby', listening:'listening', thinking:'thinking', speaking:'speaking'}[s];
+  const have = videoClips.clips[want] ? want :
+               (videoClips.clips.standby ? 'standby' : null);
+  return have ? `/avatar/clip/${have}` : null;
+}
+
+function setAvatarState(s){
+  if(s === avatarState) return;
+  avatarState = s;
+  stage.classList.toggle('listening', s === 'listening');
+  stage.classList.toggle('thinking', s === 'thinking');
+
+  // Video mode: swap the loop, with a poster of the current frame so the
+  // transition never flashes black (Alice's frame-capture trick).
+  const clip = clipForState(s);
+  if(clip && !avatarVideo.src.endsWith(clip)){
+    try {
+      const c = document.createElement('canvas');
+      c.width = avatarVideo.videoWidth || 220; c.height = avatarVideo.videoHeight || 240;
+      c.getContext('2d').drawImage(avatarVideo, 0, 0, c.width, c.height);
+      avatarVideo.poster = c.toDataURL('image/jpeg', 0.7);
+    } catch(e){}
+    avatarVideo.src = clip;
+  }
+
+  // SVG mode: speaking gets a talking mouth.
+  if(mouthTimer){ clearInterval(mouthTimer); mouthTimer = null; }
+  if(s === 'speaking' && !videoClips){
+    let t = 0;
+    mouthTimer = setInterval(()=>{
+      t += 0.45;
+      const open = 6 + Math.abs(Math.sin(t)) * 9;
+      document.getElementById('mouth').setAttribute(
+        'd', `M94 122 Q110 ${122 + open} 126 122`);
+    }, 70);
+  } else if(!videoClips){
+    render(current, currentMood, lastAppearance);  // restore mood mouth
+  }
+}
+
+// Bootstrap: discover custom clips; fall back to the SVG quietly.
+fetch('/avatar/manifest').then(r => r.json()).then(m => {
+  if(m.video_mode){
+    videoClips = m;
+    document.getElementById('avatar').style.display = 'none';
+    avatarVideo.style.display = 'block';
+    avatarVideo.src = clipForState('idle');
+  }
+}).catch(()=>{});
+
 // --- her voice: spoken replies via the OS speech engine (fully local) ---------
 let speakOn = localStorage.getItem('alpeccaSpeak') === '1';
 const speakBtn = document.getElementById('speakBtn');
@@ -361,10 +442,18 @@ function pickVoice(){
 pickVoice();
 speechSynthesis.onvoiceschanged = pickVoice;
 function speak(text){
-  if(!speakOn || !text) return;
+  if(!speakOn || !text){
+    // Not speaking aloud: flash the speaking state briefly so the avatar
+    // still visibly "says" her reply, then settle.
+    setAvatarState('speaking');
+    setTimeout(()=>{ if(avatarState === 'speaking') setAvatarState('idle'); }, 1600);
+    return;
+  }
   const u = new SpeechSynthesisUtterance(text);
   if(herVoice) u.voice = herVoice;
   u.rate = 1.0; u.pitch = 1.05;
+  u.onstart = ()=> setAvatarState('speaking');
+  u.onend = ()=>{ if(!speechSynthesis.pending) setAvatarState('idle'); };
   speechSynthesis.speak(u);
 }
 
@@ -386,6 +475,7 @@ micBtn.addEventListener('click', async ()=>{
       micBtn.textContent = '🎤'; micBtn.style.background = '#3a3158';
       const blob = new Blob(chunks, {type: recorder.mimeType});
       statusEl.textContent = 'listening to what you said…';
+      setAvatarState('thinking');
       try {
         const r = await fetch('/listen', {method: 'POST', body: blob});
         const d = await r.json();
@@ -395,12 +485,17 @@ micBtn.addEventListener('click', async ()=>{
           addMsg(d.text, 'me');
           if(ws.readyState === 1) ws.send(JSON.stringify({text: d.text}));
         } else {
+          setAvatarState('idle');
           statusEl.textContent = "couldn't make that out — try again a little closer to the mic";
         }
-      } catch(e){ statusEl.textContent = 'transcription failed — is the server running?'; }
+      } catch(e){
+        setAvatarState('idle');
+        statusEl.textContent = 'transcription failed — is the server running?';
+      }
     };
     recorder.start();
     micBtn.textContent = '⏹'; micBtn.style.background = '#7a3a5a';
+    setAvatarState('listening');
   } catch(e){
     statusEl.textContent = 'microphone unavailable or permission denied';
   }
@@ -444,6 +539,7 @@ document.getElementById('camSnap').addEventListener('click', ()=>{
   log.appendChild(d); log.scrollTop = log.scrollHeight;
   ws.send(JSON.stringify({text, image: shot, source: 'camera'}));
   input.value = '';
+  setAvatarState('thinking');
 });
 
 // --- showing her images ------------------------------------------------------
@@ -491,6 +587,7 @@ document.getElementById('form').addEventListener('submit', (e)=>{
     addMsg(text, 'me');
   }
   ws.send(JSON.stringify(payload)); input.value = '';
+  setAvatarState('thinking');
 });
 </script>
 </body>

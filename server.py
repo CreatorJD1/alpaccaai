@@ -31,6 +31,7 @@ from alpecca.introspection import identity_card
 from alpecca import state as state_store
 from alpecca import values
 from alpecca import hearing
+from alpecca import avatar as avatar_mod
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -170,6 +171,23 @@ def state() -> dict:
                 "expressions": face_sense.available,
                 "actions": mind.actuator.enabled,
             }}
+
+
+@app.get("/avatar/manifest")
+def avatar_manifest() -> dict:
+    """Which custom avatar clips exist (data/avatar/*.mp4). The UI switches to
+    video mode when at least standby.mp4 is present; otherwise it animates the
+    built-in SVG. This is the slot her real character art drops into."""
+    return avatar_mod.manifest()
+
+
+@app.get("/avatar/clip/{name}")
+def avatar_clip(name: str) -> FileResponse:
+    """Serve one whitelisted avatar clip. Unknown names and missing files 404."""
+    path = avatar_mod.clip_path(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="no such clip")
+    return FileResponse(path, media_type="video/mp4")
 
 
 @app.post("/listen")

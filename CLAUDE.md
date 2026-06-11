@@ -121,7 +121,13 @@ Ollama or Windows.**
 - 🟡 Phase 3 (Image): 2D character avatar with idle breathing/blink + self-chosen
   look done; plus optional generated self-portraits via ComfyClaw/ComfyUI
   (`alpecca/portrait.py`, `/portrait` endpoint, enable with `ALPECCA_PORTRAIT=1`).
-  A richer built-in sprite (Replika-style) remains the next visual step.
+  The UI now runs an avatar **state machine** (idle / listening / thinking /
+  speaking) wired to every interaction: thought-bubble + talking-mouth
+  animations on the SVG, and drop-in custom art via `data/avatar/*.mp4`
+  (`alpecca/avatar.py`, `/avatar/manifest`, `/avatar/clip/{name}`; standby/
+  listening/thinking/speaking clips, Alice-style). Her rigged Inochi2D puppet
+  is the planned next renderer behind the same states — rig its parameters to
+  her real internals (warmth/care/unease + mouth_open/blink).
 - 🟡 Phase 4 (Expansion): OpenClaw channel bridge built — `POST /channel/inbound`
   runs the full chat loop for messages from Telegram/Discord/etc., outbound
   replies via the `openclaw` CLI (`alpecca/openclaw_bridge.py`; install hook from
