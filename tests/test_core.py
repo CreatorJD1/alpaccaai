@@ -684,6 +684,45 @@ def test_puppet_wishlist_progression():
         assert puppet.WISHLIST[0] in puppet.load_library(cdir)
 
 
+# --- Her pose kit: real-art poses selected by mood/state ------------------------
+
+_POSE_LIB = {
+    "present.png": {"moods": ["content", "affectionate"], "states": ["idle"], "energy": 0.4},
+    "lean.png":    {"moods": ["content"], "states": ["thinking"], "energy": 0.5},
+    "rest.png":    {"moods": ["withdrawn"], "states": ["idle"], "energy": 0.1},
+    "walk.png":    {"moods": ["affectionate"], "states": ["speaking"], "energy": 0.7},
+}
+
+def test_posekit_selects_by_mood_then_state():
+    from alpecca import posekit
+    # Affectionate + speaking -> the warm, active pose.
+    s = posekit.select_pose(EmotionalState(love=0.85), "speaking", library=_POSE_LIB)
+    assert s == "walk.png"
+    # Withdrawn -> the quiet resting pose, whatever the state.
+    s2 = posekit.select_pose(EmotionalState(love=0.1), "idle", library=_POSE_LIB)
+    assert s2 == "rest.png"
+    # Thinking while content -> the lean pose wins on the state bonus.
+    s3 = posekit.select_pose(EmotionalState(love=0.45, compassion=0.2, fear=0.0),
+                             "thinking", library=_POSE_LIB)
+    assert s3 == "lean.png"
+
+def test_posekit_empty_library_is_safe():
+    from alpecca import posekit
+    assert posekit.select_pose(EmotionalState(), "idle", library={}) is None
+
+def test_posekit_tag_pose_parses_vision_json(monkeypatch=None):
+    from alpecca import posekit
+    from alpecca import vision
+    orig = vision.describe_image
+    vision.describe_image = lambda *a, **k: 'sure: {"desc":"waving","energy":0.8,"moods":["affectionate"],"states":["speaking"]}'
+    try:
+        tags = posekit.tag_pose(b"fake")
+        assert tags["energy"] == 0.8 and "affectionate" in tags["moods"]
+        assert tags["states"] == ["speaking"]
+    finally:
+        vision.describe_image = orig
+
+
 # --- Custom avatar clips --------------------------------------------------------
 
 def test_avatar_manifest_reports_what_exists():

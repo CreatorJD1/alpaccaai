@@ -273,6 +273,49 @@ def puppet() -> dict:
     return mind.puppet_state()
 
 
+@app.get("/poses")
+def poses() -> dict:
+    """Her pose library: each real-art pose tagged with what it expresses, so
+    the UI can show whichever pose fits her mood + what she's doing."""
+    from alpecca import posekit
+    return posekit.manifest()
+
+
+@app.get("/poses/img/{name}")
+def pose_image(name: str) -> FileResponse:
+    """Serve one pose from her library (library names only -- no arbitrary
+    file access)."""
+    from alpecca import posekit
+    path = posekit.pose_path(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="no such pose")
+    return FileResponse(path, media_type="image/png")
+
+
+@app.post("/poses/retag")
+async def poses_retag() -> dict:
+    """Have her vision model re-tag every pose -- she looks at each render and
+    says what it expresses. This is the AI that connects her art to her state.
+    Falls back to seeded tags for any pose vision can't read."""
+    from alpecca import posekit
+    lib = posekit.load_library()
+
+    async def run() -> None:
+        for name in list(lib):
+            path = posekit.pose_path(name)
+            if not path:
+                continue
+            tags = await asyncio.to_thread(posekit.tag_pose, path.read_bytes())
+            if tags:
+                lib[name] = tags
+                posekit.save_library(lib)
+                await _broadcast({"type": "pose_tagged", "name": name, "tags": tags})
+        await _broadcast({"type": "poses_retagged", "count": len(lib)})
+
+    asyncio.create_task(run())
+    return {"ok": True, "started": True, "count": len(lib)}
+
+
 @app.post("/puppet/author")
 async def puppet_author(req: Request) -> dict:
     """Ask Alpecca to choreograph one of her own animations now, while you

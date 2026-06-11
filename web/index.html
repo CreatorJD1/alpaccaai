@@ -35,6 +35,21 @@
   #thoughtDots { opacity:0; transition:opacity .3s; }
   .stage.thinking #thoughtDots { opacity:1; }
 
+  /* --- her life: CSS-driven so it never freezes (no requestAnimationFrame).
+     A gentle breathing/sway runs always; state classes change the tempo; her
+     mood scales it via --idle-dur / --idle-rot, set from JS (not per-frame). */
+  @keyframes alpeccaIdle {
+    0%,100% { transform: translateY(0) rotate(calc(var(--idle-rot,0.7deg) * -1)) scale(1); }
+    50%     { transform: translateY(-6px) rotate(var(--idle-rot,0.7deg)) scale(1.013); }
+  }
+  #avatarPortrait, #avatarVideo {
+    animation: alpeccaIdle var(--idle-dur,4.4s) ease-in-out infinite;
+    transition: opacity .22s ease;
+  }
+  .stage.speaking #avatarPortrait, .stage.speaking #avatarVideo { animation-duration: 1.2s; }
+  .stage.thinking #avatarPortrait { animation-duration: 5.6s; }
+  .stage.listening #avatarPortrait { animation-duration: 3.4s; }
+
   /* Alpecca's own note about how she's chosen to look (she decides, not you) */
   .lookNote { max-width:300px; text-align:center; font-size:11.5px; color:var(--muted);
               font-style:italic; line-height:1.4; min-height:16px; }
@@ -460,16 +475,19 @@ function setAvatarState(s){
     avatarVideo.src = clip;
   }
 
-  // Portrait mode: swap the still pose (her real character art).
-  const pose = portraitForState(s);
-  if(pose && !avatarPortrait.src.endsWith(pose)) avatarPortrait.src = pose;
+  // Pose mode: re-pick the pose that fits her new state (mood folded in).
+  if(typeof poseLib !== 'undefined' && poseLib){ showPose(); }
+  else {  // portrait-by-state fallback when there's no pose library
+    const pose = portraitForState(s);
+    if(pose && !avatarPortrait.src.endsWith(pose)) avatarPortrait.src = pose;
+  }
 
   // A small nod as she starts to speak -- a beat of acknowledgement.
   if(s === 'speaking' && typeof playSequence === 'function') playSequence('nod', 900);
 
   // SVG mode: speaking gets a talking mouth.
   if(mouthTimer){ clearInterval(mouthTimer); mouthTimer = null; }
-  const svgMode = !videoClips && !portraitClips;
+  const svgMode = !videoClips && !portraitClips && !(typeof poseLib !== 'undefined' && poseLib);
   if(s === 'speaking' && svgMode){
     let t = 0;
     mouthTimer = setInterval(()=>{
@@ -483,126 +501,113 @@ function setAvatarState(s){
   }
 }
 
-// Bootstrap: prefer video clips > her real still portraits > the SVG.
-fetch('/avatar/manifest').then(r => r.json()).then(m => {
-  if(m.video_mode){
-    videoClips = m;
-    document.getElementById('avatar').style.display = 'none';
-    avatarVideo.style.display = 'block';
-    avatarVideo.src = clipForState('idle');
-  } else if(m.portrait_mode){
-    portraitClips = m;
+// === Her avatar: real-art poses (AI-selected) + CSS life (no rAF) ============
+// She uses her ACTUAL character renders -- a library of poses, each tagged with
+// what it expresses. Her mood + what she's doing pick the pose; the UI cross-
+// fades to it. Breathing/sway is pure CSS (GPU, never freezes -- the old
+// requestAnimationFrame engine stalled in background tabs). Sequences she
+// authored play as one-shot CSS animations built from her own keyframes.
+
+let poseLib = null;        // her tagged pose library {file: {moods,states,energy}}, or null
+let herSequences = {};     // her authored animations, by name
+
+// Pick the pose that best fits her mood + state -- mirrors posekit.select_pose.
+function selectPose(){
+  if(!poseLib) return null;
+  const mood = currentMood || 'content';
+  const arousal = Math.max(0, Math.min(1, (current.love||0)*0.6 + (current.fear||0)*0.6));
+  let best = null, bs = -1;
+  for(const [name, t] of Object.entries(poseLib)){
+    let s = 0;
+    if((t.moods||[]).includes(mood)) s += 3;
+    if((t.states||[]).includes(avatarState)) s += 1.5;
+    s += 1 - Math.abs(arousal - (t.energy ?? 0.5));
+    if(s > bs){ bs = s; best = name; }
+  }
+  return best;
+}
+let shownPose = null;
+function showPose(){
+  const name = selectPose();
+  if(!name || name === shownPose) return;
+  shownPose = name;
+  avatarPortrait.style.opacity = 0;                       // brief cross-fade
+  setTimeout(()=>{ avatarPortrait.src = '/poses/img/' + name; avatarPortrait.style.opacity = 1; }, 200);
+}
+
+// Her mood scales the CSS idle tempo/lean: restless and quick when uneasy,
+// slow and settled when calm. Set as CSS vars (event-driven, not per-frame).
+function applyMoodMotion(){
+  const fear = (current && current.fear) || 0;
+  avatarPortrait.style.setProperty('--idle-dur', (5.2 - fear*2.4).toFixed(2) + 's');
+  avatarPortrait.style.setProperty('--idle-rot', (0.6 + fear*1.6).toFixed(2) + 'deg');
+}
+
+// Sequences as one-shot CSS animations. HER authored keyframes win; a couple of
+// simple built-ins cover greet/nod until she's choreographed her own.
+const FALLBACK_SEQ = {
+  greet:  [{t:0},{t:0.5,bob:-8,tilt:4,lean:0.4},{t:1}],
+  nod:    [{t:0},{t:0.4,bob:6},{t:0.7,bob:2},{t:1}],
+  happy:  [{t:0},{t:0.3,bob:-12,scale:0.02},{t:0.6,bob:-4},{t:1}],
+  fidget: [{t:0},{t:0.3,sway:-4},{t:0.6,sway:4},{t:1}],
+};
+let seqStyleEl = null;
+function frameTransform(f){
+  const bob=(f.bob||0)-(f.lean||0)*5, sway=f.sway||0, tilt=f.tilt||0,
+        sc=1+(f.scale||0)+(f.lean||0)*0.01;
+  return `translate(${sway}px, ${bob}px) rotate(${tilt}deg) scale(${sc})`;
+}
+function playSequence(name, durMs){
+  const el = avatarPortrait.style.display !== 'none' ? avatarPortrait
+           : (avatarVideo.style.display !== 'none' ? avatarVideo : null);
+  if(!el) return;                                  // SVG mode handles itself
+  const seq = herSequences[name];                  // prefer HER choreography
+  const frames = seq ? seq.keyframes : FALLBACK_SEQ[name];
+  if(!frames) return;
+  const dur = (seq && seq.duration_ms) || durMs || 1200;
+  const anim = 'seq_' + name + '_' + Math.floor(performance.now());
+  const rules = frames.map(f => `${Math.round((f.t||0)*100)}% { transform: ${frameTransform(f)}; }`).join(' ');
+  if(!seqStyleEl){ seqStyleEl = document.createElement('style'); document.head.appendChild(seqStyleEl); }
+  seqStyleEl.textContent = `@keyframes ${anim} { ${rules} }`;
+  el.style.animation = `${anim} ${dur}ms ease-in-out`;     // overrides idle for one shot
+  const done = ()=>{ el.style.animation = ''; el.removeEventListener('animationend', done); };
+  el.addEventListener('animationend', done);
+}
+
+// Bootstrap: her poses (real art, AI-tagged) > video clips > still portraits > SVG.
+function bootstrapAvatarFallback(){
+  fetch('/avatar/manifest').then(r => r.json()).then(m => {
+    if(m.video_mode){ videoClips = m; document.getElementById('avatar').style.display='none';
+      avatarVideo.style.display='block'; avatarVideo.src = clipForState('idle'); }
+    else if(m.portrait_mode){ portraitClips = m; document.getElementById('avatar').style.display='none';
+      avatarPortrait.style.display='block'; avatarPortrait.src = portraitForState('idle'); }
+  }).catch(()=>{});
+}
+fetch('/poses').then(r=>r.json()).then(d=>{
+  if(d.pose_mode){
+    poseLib = d.poses;
     document.getElementById('avatar').style.display = 'none';
     avatarPortrait.style.display = 'block';
-    avatarPortrait.src = portraitForState('idle');
-  }
-}).catch(()=>{});
+    applyMoodMotion(); showPose();
+  } else { bootstrapAvatarFallback(); }
+}).catch(bootstrapAvatarFallback);
 
-// --- bringing her to life: procedural motion + choreographed sequences --------
-// Her art is single poses, not aligned frames, so life comes from MOTION on the
-// pose rather than flipping between dissimilar drawings. A base idle loop
-// (breathing, sway, float) runs always; its agitation scales with her real
-// mood (more sway when her unease is high, more lift when warm) so her body
-// language is a true readout of her state. On top of that, short *sequences*
-// (greet, nod, happy bounce, fidget) play on events and ease back to idle.
-function animTarget(){
-  if(portraitClips) return avatarPortrait;
-  if(videoClips) return avatarVideo;
-  return null;  // SVG mode runs its own idle()/blink()
-}
+// Her authored animation library (she choreographs these herself).
+fetch('/puppet').then(r=>r.json()).then(d=>{ herSequences = d.sequences || {}; }).catch(()=>{});
 
-// Fallback procedural sequences -- used ONLY until she has authored her own.
-// Once her puppet library has a motion of the same name, hers wins: the
-// choreography is hers, not hardcoded here.
-const SEQUENCES = {
-  greet:  p => ({ y:-6*Math.sin(p*Math.PI), rot: 4*Math.sin(p*Math.PI*2), s: 0.01*Math.sin(p*Math.PI) }),
-  nod:    p => ({ y: 5*Math.abs(Math.sin(p*Math.PI*2)), rot: 0, s: 0 }),
-  happy:  p => ({ y:-12*Math.abs(Math.sin(p*Math.PI*2)), rot: 2*Math.sin(p*Math.PI*4), s: 0.02*Math.sin(p*Math.PI*2) }),
-  fidget: p => ({ y: 0, rot: 3*Math.sin(p*Math.PI*6), s: 0 }),
-};
-
-// Her own authored animations (from /puppet) -- the real choreography.
-let herSequences = {};
-function loadPuppet(){
-  fetch('/puppet').then(r=>r.json()).then(d=>{ herSequences = d.sequences || {}; }).catch(()=>{});
-}
-loadPuppet();
-
-// Sample one of HER keyframe sequences at progress p -> motion deltas. Linear
-// interpolation between the surrounding keyframes, missing channels = rest(0).
-function sampleHer(seq, p){
-  const f = seq.keyframes; const out = {bob:0,sway:0,tilt:0,scale:0,lean:0,glow:0};
-  let a = f[0], b = f[f.length-1];
-  for(let i=0;i<f.length-1;i++){ if(p>=f[i].t && p<=f[i+1].t){ a=f[i]; b=f[i+1]; break; } }
-  const span = (b.t - a.t) || 1; const u = Math.min(1, Math.max(0, (p - a.t)/span));
-  for(const ch of Object.keys(out)){
-    const av = a[ch]||0, bv = b[ch]||0; out[ch] = av + (bv-av)*u;
-  }
-  return out;
-}
-
-let activeSeq = null;     // built-in fallback name
-let activeHer = null;     // her authored sequence object
-let seqStart = 0, seqDur = 0;
-function playSequence(name, durMs){
-  if(herSequences[name]){          // prefer HER choreography
-    activeHer = herSequences[name]; activeSeq = null;
-    seqDur = activeHer.duration_ms || durMs || 1400;
-  } else if(SEQUENCES[name]){      // fall back to built-in until she's authored it
-    activeSeq = name; activeHer = null; seqDur = durMs || 1400;
-  } else { return; }
-  seqStart = performance.now();
-}
-
-let animT = 0, lastTs = 0;
-function animateAvatar(ts){
-  const el = animTarget();
-  if(el){
-    const dt = lastTs ? (ts - lastTs)/1000 : 0.016; lastTs = ts;
-    animT += dt;
-    const fear = (current && current.fear) || 0;
-    const love = (current && current.love) || 0.4;
-    // Base idle: breathing, mood-scaled sway, gentle float.
-    const breathe = 1 + Math.sin(animT*1.6) * 0.012;
-    const sway = Math.sin(animT*0.8) * (1.5 + fear*5);          // restless when uneasy
-    const floatY = Math.sin(animT*1.1) * (2 + love*1.5);        // buoyant when warm
-    let tilt = Math.sin(animT*0.5) * (0.6 + fear*1.6);
-    let extraY = 0, extraS = 1;
-    // State flavor.
-    if(avatarState === 'speaking'){ extraY = Math.abs(Math.sin(animT*6)) * -4; extraS = 1 + Math.sin(animT*6)*0.008; }
-    else if(avatarState === 'listening'){ extraY = -5; extraS = 1.02; }
-    else if(avatarState === 'thinking'){ tilt += 3 + Math.sin(animT*1.4)*1.5; }
-    // Active one-shot sequence -- HER authored choreography if any, else the
-    // built-in fallback. Both layer over the grounded idle motion above.
-    let sx = 0, sy = 0, sr = 0, ss = 0;
-    const p = (ts - seqStart) / seqDur;
-    if(activeHer){
-      if(p >= 1){ activeHer = null; }
-      else { const d = sampleHer(activeHer, p);
-        sx = d.sway; sy = d.bob - d.lean*5; sr = d.tilt; ss = d.scale + d.lean*0.01; }
-    } else if(activeSeq){
-      if(p >= 1){ activeSeq = null; }
-      else { const d = SEQUENCES[activeSeq](p); sy = d.y; sr = d.rot; ss = d.s; }
-    }
-    el.style.transform =
-      `translate(${sway+sx}px, ${floatY+extraY+sy}px) ` +
-      `rotate(${tilt*0.15 + sr*0.15}deg) scale(${(breathe*extraS)+ss})`;
-  }
-  requestAnimationFrame(animateAvatar);
-}
-requestAnimationFrame(animateAvatar);
-
-// Idle "life ticks": once in a while she shifts on her own, more if anxious.
+// Idle life ticks: every so often she stirs on her own, more when uneasy.
 setInterval(()=>{
-  if(!animTarget() || activeSeq || avatarState !== 'idle') return;
+  if(avatarState !== 'idle') return;
   const fear = (current && current.fear) || 0;
-  if(fear > 0.5 && Math.random() < 0.5) playSequence('fidget', 1200);
-  else if(Math.random() < 0.25) playSequence('nod', 900);
+  if(fear > 0.5 && Math.random() < 0.5) playSequence('fidget', 1300);
+  else if(Math.random() < 0.22) playSequence('nod', 900);
 }, 9000);
 
-// React to mood changes with a fitting little sequence.
+// A mood shift re-picks her pose, retunes her idle tempo, and plays a fitting beat.
 let prevMoodSeq = '';
 function moodSequence(mood){
+  applyMoodMotion();
+  if(poseLib) showPose();
   if(mood === prevMoodSeq) return;
   prevMoodSeq = mood;
   if(mood === 'affectionate') playSequence('happy', 1500);
