@@ -52,7 +52,12 @@
   <a class="back" href="/">← chat</a>
   <header><h1>Alpecca</h1><div class="mood" id="mood">live avatar</div></header>
   <button id="ptoggle">params</button>
-  <div id="stage"><canvas id="canvas"></canvas></div>
+  <div id="stage">
+    <canvas id="canvas"></canvas>
+    <!-- Talking Head Anime frames overlay the canvas when that process is live. -->
+    <img id="thaFrame" style="display:none; position:absolute; inset:0; width:100%;
+         height:100%; object-fit:contain; z-index:5;" alt="Alpecca" />
+  </div>
 
   <div id="note"><div class="card">
     <h2>Her rigged Live2D model isn't installed yet</h2>
@@ -118,6 +123,44 @@ async function pollParams(){
   } catch(e){}
 }
 setInterval(pollParams, 1200); pollParams();
+
+// --- Talking Head Anime tier: neural face frames overlay the base renderer ---
+// When the THA3 process (scripts/run_talkinghead.py) is feeding fresh frames,
+// her neural face takes over -- the top tier of all. When it stops, we fall
+// back to whatever rig was already rendering. Checked by polling so it can come
+// and go without a reload.
+let thaActive = false;
+function enterTHA(){
+  document.getElementById('canvas').style.display = 'none';
+  document.getElementById('thaFrame').style.display = 'block';
+  showCaption('Talking Head Anime — her face animated live by her state');
+  streamTHA();
+}
+function exitTHA(){
+  document.getElementById('thaFrame').style.display = 'none';
+  document.getElementById('canvas').style.display = 'block';
+}
+async function streamTHA(){
+  if(!thaActive) return;
+  try {
+    const r = await fetch('/talkinghead/frame', { cache: 'no-store' });
+    if(r.ok){
+      const url = URL.createObjectURL(await r.blob());
+      const img = document.getElementById('thaFrame');
+      const old = img.src; img.src = url;
+      if(old && old.startsWith('blob:')) URL.revokeObjectURL(old);
+    }
+  } catch(e){}
+  setTimeout(streamTHA, 50);                 // ~20 fps
+}
+async function thaPoll(){
+  try {
+    const m = await fetch('/talkinghead/manifest').then(r=>r.json());
+    if(m.talkinghead_mode && !thaActive){ thaActive = true; enterTHA(); }
+    else if(!m.talkinghead_mode && thaActive){ thaActive = false; exitTHA(); }
+  } catch(e){}
+}
+setInterval(thaPoll, 1500); thaPoll();
 
 // Her raw feelings (love/compassion/fear/energy) drive the mesh rig. Kept fresh
 // from /state polling and from live WS updates.

@@ -805,6 +805,34 @@ def test_live2d_manifest_off_without_model():
     assert m["halo_states"]["thinking"] == "processing"
 
 
+# --- Talking Head Anime tier: pose mapping + frame buffer ----------------------
+
+def test_talkinghead_pose_is_grounded_in_mood():
+    from alpecca import talkinghead
+    warm = talkinghead.pose_for_state(EmotionalState(love=0.9, compassion=0.5, fear=0.0))
+    uneasy = talkinghead.pose_for_state(EmotionalState(love=0.3, fear=0.9))
+    assert warm["eyebrow_happy"] > 0.7 and warm["mouth_smile"] > 0.4
+    assert warm["mouth_frown"] == 0                          # warm -> no frown
+    assert uneasy["eyebrow_troubled"] > 0.7 and uneasy["mouth_frown"] > 0.4
+    assert uneasy["mouth_smile"] == 0                        # uneasy -> no smile
+    assert warm["eye_relaxed"] > uneasy["eye_relaxed"]      # softer eyes when caring
+    # head tilts toward the viewer with care
+    assert talkinghead.pose_for_state(EmotionalState(compassion=0.9))["head_y"] > 0
+
+def test_talkinghead_frame_buffer_and_freshness():
+    from alpecca import talkinghead
+    talkinghead._latest.update({"bytes": None, "ts": 0.0, "n": 0})   # reset
+    assert talkinghead.is_active() is False
+    assert talkinghead.manifest()["talkinghead_mode"] is False
+    n = talkinghead.set_frame(b"jpegbytes")
+    data, n2 = talkinghead.get_frame()
+    assert data == b"jpegbytes" and n2 == n == 1
+    assert talkinghead.is_active() is True               # fresh
+    # a stale frame (older than FRESH_S) reads as inactive
+    talkinghead._latest["ts"] = 0.0
+    assert talkinghead.is_active() is False
+
+
 # --- Layered rig: decomposed art -> roles --------------------------------------
 
 def test_rig_role_mapping_is_forgiving():

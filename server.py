@@ -426,6 +426,47 @@ def live2d_page() -> HTMLResponse:
     return HTMLResponse((WEB_DIR / "live2d.html").read_text(encoding="utf-8"))
 
 
+@app.get("/talkinghead/manifest")
+def talkinghead_manifest() -> dict:
+    """Is the Talking Head Anime process feeding fresh frames? The /live2d page
+    polls this and makes her neural face the top tier while it's live."""
+    from alpecca import talkinghead
+    return talkinghead.manifest()
+
+
+@app.get("/talkinghead/pose")
+def talkinghead_pose() -> dict:
+    """Her current mood mapped to THA3 expressive pose params -- the runner
+    pulls this each frame and merges it with blink + lip-sync."""
+    from alpecca import talkinghead
+    return {"pose": talkinghead.pose_for_state(mind.state),
+            "speaking": False, "mood": mind.state.mood_label()}
+
+
+@app.post("/talkinghead/frame")
+async def talkinghead_push(req: Request) -> dict:
+    """The THA3 runner POSTs each generated frame (JPEG bytes) here; we keep the
+    newest in memory for the UI. Never written to disk."""
+    from alpecca import talkinghead
+    data = await req.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty frame")
+    n = talkinghead.set_frame(data)
+    return {"ok": True, "n": n}
+
+
+@app.get("/talkinghead/frame")
+def talkinghead_frame():
+    """The latest neural frame for the UI to display."""
+    from fastapi import Response
+    from alpecca import talkinghead
+    data, n = talkinghead.get_frame()
+    if data is None:
+        raise HTTPException(status_code=404, detail="no frame yet")
+    return Response(content=data, media_type="image/jpeg",
+                    headers={"X-Frame-N": str(n), "Cache-Control": "no-store"})
+
+
 @app.get("/rig/manifest")
 def rig_manifest() -> dict:
     """Whether a layered rig exists (data/avatar/rig/) + its manifest. The
