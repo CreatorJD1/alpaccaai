@@ -404,6 +404,40 @@ def character_image(name: str) -> FileResponse:
     return FileResponse(path)
 
 
+@app.get("/live2d")
+def live2d_page() -> HTMLResponse:
+    """Full-window rigged Live2D avatar, driven live by her real state. Shows a
+    'drop a model in' note until a compiled model exists in data/avatar/live2d/."""
+    return HTMLResponse((WEB_DIR / "live2d.html").read_text(encoding="utf-8"))
+
+
+@app.get("/live2d/manifest")
+def live2d_manifest() -> dict:
+    """Whether a rigged Live2D model is present, and the param map for it."""
+    from alpecca import live2d
+    return live2d.manifest()
+
+
+@app.get("/live2d/params")
+def live2d_params() -> dict:
+    """Her current mood mapped onto Cubism parameters (the slow expressive ones).
+    The renderer polls/streams this and adds blink/breath/lip-sync locally."""
+    from alpecca import live2d
+    return {"params": live2d.params_for_state(mind.state),
+            "halo": live2d.HALO_STATE.get("idle"), "mood": mind.state.mood_label()}
+
+
+@app.get("/live2d/model/{path:path}")
+def live2d_model(path: str) -> FileResponse:
+    """Serve a model asset (model3.json/moc3/textures/physics/motions) from
+    data/avatar/live2d/, traversal-blocked."""
+    from alpecca import live2d
+    f = live2d.asset_path(path)
+    if f is None:
+        raise HTTPException(status_code=404, detail="no such asset")
+    return FileResponse(f)
+
+
 @app.get("/avatar/manifest")
 def avatar_manifest() -> dict:
     """Which custom avatar clips exist (data/avatar/*.mp4). The UI switches to

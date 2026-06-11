@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Alpecca — live avatar</title>
+<style>
+  :root { --bg:#1a1726; --panel:#241f33; --ink:#efe9ff; --muted:#9b91b8; --accent:#c9a8ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+         background:radial-gradient(1200px 800px at 50% -10%, #2c2540, var(--bg));
+         color:var(--ink); min-height:100vh; overflow:hidden; }
+  #stage { position:fixed; inset:0; }
+  #canvas { width:100%; height:100%; display:block; }
+  header { position:fixed; top:0; left:0; right:0; text-align:center; padding:14px;
+           pointer-events:none; }
+  header h1 { margin:0; font-weight:600; letter-spacing:.5px; }
+  header .mood { color:var(--muted); font-size:13px; }
+  a.back { position:fixed; top:14px; left:16px; color:var(--accent); font-size:13px;
+           text-decoration:none; pointer-events:auto; }
+  /* The note shown until a compiled model is dropped in. */
+  #note { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
+  #note .card { background:var(--panel); border:1px solid #3d3658; border-radius:16px;
+                padding:22px 26px; max-width:560px; box-shadow:0 14px 50px rgba(0,0,0,.45); }
+  #note h2 { margin:0 0 8px; font-size:16px; }
+  #note p { color:var(--muted); font-size:13px; line-height:1.5; }
+  #note code { background:#1d1a2b; padding:1px 6px; border-radius:5px; color:#efe9ff; }
+  /* Live Cubism parameter panel -- proves her state drives the rig, and is the
+     debug view while rigging. Always available via the "params" toggle. */
+  #params { position:fixed; right:14px; top:54px; width:280px; max-height:78vh; overflow:auto;
+            background:rgba(36,31,51,.92); border:1px solid #3d3658; border-radius:12px;
+            padding:12px 14px; font-size:12px; display:none; pointer-events:auto; }
+  #params h3 { margin:2px 0 8px; font-size:12px; color:var(--muted); font-weight:600; }
+  .prow { display:flex; align-items:center; gap:8px; margin:5px 0; }
+  .prow .name { width:128px; color:#cfc6e6; font-family:ui-monospace,Consolas,monospace; font-size:11px; }
+  .prow .track { flex:1; height:5px; background:#3a3350; border-radius:3px; overflow:hidden; position:relative; }
+  .prow .fill { position:absolute; top:0; bottom:0; left:50%; width:0; background:var(--accent); }
+  .prow .val { width:42px; text-align:right; color:var(--muted); font-variant-numeric:tabular-nums; }
+  #ptoggle { position:fixed; right:16px; top:16px; pointer-events:auto; cursor:pointer;
+             background:#3a3158; color:var(--ink); border:0; padding:6px 12px; border-radius:9px; font-size:12px; }
+</style>
+</head>
+<body>
+  <a class="back" href="/">← chat</a>
+  <header><h1>Alpecca</h1><div class="mood" id="mood">live avatar</div></header>
+  <button id="ptoggle">params</button>
+  <div id="stage"><canvas id="canvas"></canvas></div>
+
+  <div id="note"><div class="card">
+    <h2>Her rigged Live2D model isn't installed yet</h2>
+    <p>Drop the compiled model — <code>*.model3.json</code> plus its <code>.moc3</code>,
+       textures, <code>physics3.json</code>, and motions — into
+       <code>data/avatar/live2d/</code> and reload. It renders here, full-window,
+       driven live by her real mood.</p>
+    <p>Meanwhile, open <b>params</b> (top-right): those are the Cubism parameters
+       her state is driving <i>right now</i> — the exact wiring the model will use.
+       Rig the names in her <code>RIG_SPEC.md</code> and she'll move the moment
+       she's dropped in.</p>
+  </div></div>
+
+  <div id="params"><h3>Cubism parameters — driven by her live state</h3><div id="prows"></div></div>
+
+<script src="https://cdn.jsdelivr.net/gh/dylanNew/live2d/webgl/Live2D/lib/live2d.min.js"></script>
+<script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/index.min.js"></script>
+<script>
+const moodEl = document.getElementById('mood');
+let mood = 'content', avatarState = 'idle';
+let targetParams = {};                 // mood-driven Cubism params from the server
+const smooth = {};                     // eased current values
+let model = null;
+
+// --- live parameter panel (works with or without a model) --------------------
+const PARAM_RANGE = {  // for the bar viz: [min,max] so we can show the fill
+  ParamCheek:[0,1], ParamMouthForm:[-1,1], ParamBrowLY:[-1,1], ParamBrowRY:[-1,1],
+  ParamBrowLAngle:[0,1], ParamBrowRAngle:[0,1], ParamAngleZ:[-30,30], ParamBodyAngleX:[-10,10],
+  ParamEyeForm:[-1,1], Param_CoreGlow:[0,1], Param_EyeGlow:[0,1],
+};
+function renderParams(p){
+  const rows = document.getElementById('prows');
+  rows.innerHTML = Object.entries(p).map(([k,v])=>{
+    const [lo,hi] = PARAM_RANGE[k] || [-1,1];
+    const t = Math.max(0, Math.min(1, (v - lo)/(hi - lo)));      // 0..1 across range
+    const fillL = Math.min(50, t*100), fillW = Math.abs(t*100 - 50);
+    return `<div class="prow"><span class="name">${k}</span>`+
+           `<span class="track"><span class="fill" style="left:${fillL}%;width:${fillW}%"></span></span>`+
+           `<span class="val">${v.toFixed(2)}</span></div>`;
+  }).join('');
+}
+document.getElementById('ptoggle').addEventListener('click', ()=>{
+  const el = document.getElementById('params');
+  el.style.display = el.style.display === 'block' ? 'none' : 'block';
+});
+
+// Poll her mood->param mapping (the authoritative slow params from Python).
+async function pollParams(){
+  try {
+    const d = await fetch('/live2d/params').then(r=>r.json());
+    targetParams = d.params; mood = d.mood || mood;
+    moodEl.textContent = 'feeling ' + mood;
+    renderParams(targetParams);
+  } catch(e){}
+}
+setInterval(pollParams, 1200); pollParams();
+
+// React immediately to state/replies over the socket.
+function connect(){
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = ev => { try {
+    const m = JSON.parse(ev.data);
+    if(m.mood) { mood = m.mood; moodEl.textContent = 'feeling ' + mood; }
+    if(m.type === 'reply' || m.type === 'proactive'){ avatarState='speaking';
+      setTimeout(()=>avatarState='idle', 2600); pollParams(); }
+  } catch(e){} };
+  ws.onclose = ()=> setTimeout(connect, 1500);
+}
+connect();
+
+// --- the rigged model (loads only when one is installed) ---------------------
+async function boot(){
+  let man = {};
+  try { man = await fetch('/live2d/manifest').then(r=>r.json()); } catch(e){}
+  if(!man.live2d_mode){ document.getElementById('canvas').style.display='none'; return; }
+  document.getElementById('note').style.display = 'none';
+  try {
+    const app = new PIXI.Application({ view: document.getElementById('canvas'),
+      resizeTo: window, backgroundAlpha: 0, antialias: true });
+    model = await PIXI.live2d.Live2DModel.from('/live2d/model/' + man.model_file);
+    app.stage.addChild(model);
+    const fit = ()=>{ const s = Math.min(window.innerWidth/model.width, window.innerHeight/model.height)*0.92;
+      model.scale.set(s); model.x = window.innerWidth/2; model.y = window.innerHeight*0.52;
+      model.anchor.set(0.5, 0.5); };
+    fit(); window.addEventListener('resize', fit);
+    // We drive blink/breath/lip-sync ourselves for honesty (tied to her state).
+    try { model.internalModel.eyeBlink = null; } catch(e){}
+    driveModel(app);
+  } catch(e){
+    // SDK/model failed: keep the param panel working, surface a hint.
+    document.getElementById('note').style.display = 'flex';
+    document.querySelector('#note h2').textContent = 'Could not load the Live2D model';
+  }
+}
+
+// Per-frame driver: ease the mood params, add blink/breath/lip-sync.
+function driveModel(app){
+  let t = 0, nextBlink = 1.5, blink = 1;
+  app.ticker.add((dt)=>{
+    t += dt/60;
+    const core = model && model.internalModel && model.internalModel.coreModel;
+    if(!core) return;
+    // ease toward the mood-driven targets
+    for(const [k,v] of Object.entries(targetParams)){
+      smooth[k] = (smooth[k] ?? v) + (v - (smooth[k] ?? v)) * 0.08;
+      try { core.setParameterValueById(k, smooth[k]); } catch(e){}
+    }
+    // breathing
+    try { core.setParameterValueById('ParamBreath', (Math.sin(t*1.6)*0.5+0.5)); } catch(e){}
+    // auto-blink
+    nextBlink -= dt/60;
+    if(nextBlink <= 0){ blink = 0; if(nextBlink < -0.12){ blink = 1; nextBlink = 2 + Math.random()*4; } }
+    else blink = 1;
+    try { core.setParameterValueById('ParamEyeLOpen', blink); core.setParameterValueById('ParamEyeROpen', blink); } catch(e){}
+    // lip-sync: mouth moves while she's speaking
+    const mouth = avatarState === 'speaking' ? (Math.abs(Math.sin(t*12))*0.8) : 0;
+    try { core.setParameterValueById('ParamMouthOpenY', mouth); } catch(e){}
+    // gentle idle look-around
+    try { core.setParameterValueById('ParamAngleX', Math.sin(t*0.5)*8);
+          core.setParameterValueById('ParamAngleY', Math.sin(t*0.37)*4); } catch(e){}
+  });
+}
+boot();
+</script>
+</body>
+</html>

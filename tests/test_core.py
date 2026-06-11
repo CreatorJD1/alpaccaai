@@ -554,7 +554,9 @@ def test_design_prompt_is_assembled_from_her_sheet_and_state():
 def test_rig_spec_names_her_real_internals():
     from alpecca import studio
     spec = studio.rig_spec_markdown(dict(_SHEET, version=3))
-    for param in ("`warmth`", "`care`", "`unease`", "`mouth_open`", "`eye_blink`"):
+    # Cubism parameter names her live2d driver actually maps onto.
+    for param in ("`ParamCheek`", "`ParamMouthOpenY`", "`ParamEyeLOpen`",
+                  "`Param_CoreGlow`", "`Param_EyeGlow`"):
         assert param in spec
     assert "ears pinned back" in spec      # expression notes carried through
     assert "human form" in spec            # her "never" list carried through
@@ -633,7 +635,7 @@ def test_her_canonical_sheet_is_humanoid():
     p = studio.design_image_prompt(sheet, state, look)
     assert "humanoid" in p
     spec = studio.rig_spec_markdown(dict(sheet, version=1))
-    assert "`core_glow`" in spec and "`eye_glow`" in spec   # her real features
+    assert "`Param_CoreGlow`" in spec and "`Param_EyeGlow`" in spec   # her real features
 
 
 # --- Her puppet: she drives her own animation ----------------------------------
@@ -721,6 +723,47 @@ def test_posekit_tag_pose_parses_vision_json(monkeypatch=None):
         assert tags["states"] == ["speaking"]
     finally:
         vision.describe_image = orig
+
+
+# --- Live2D tier: her state -> Cubism parameters --------------------------------
+
+def test_live2d_params_are_grounded_in_her_mood():
+    from alpecca import live2d
+    warm = live2d.params_for_state(EmotionalState(love=0.9, compassion=0.2, fear=0.0))
+    uneasy = live2d.params_for_state(EmotionalState(love=0.3, compassion=0.2, fear=0.9))
+    # Warm -> blush up and mouth curves to a smile.
+    assert warm["ParamCheek"] > 0.7
+    assert warm["ParamMouthForm"] > 0.4
+    # Uneasy -> mouth frowns, brows angle inward (worried), she draws back.
+    assert uneasy["ParamMouthForm"] < 0
+    assert uneasy["ParamBrowLAngle"] > 0.5
+    assert uneasy["ParamBodyAngleX"] < 0
+    # Care tilts her head toward the viewer.
+    caring = live2d.params_for_state(EmotionalState(compassion=0.9))
+    assert caring["ParamAngleZ"] > 0
+
+def test_live2d_params_stay_in_cubism_ranges():
+    from alpecca import live2d
+    for st in (EmotionalState(love=1, compassion=1, fear=1), EmotionalState()):
+        p = live2d.params_for_state(st)
+        assert -30 <= p["ParamAngleZ"] <= 30
+        assert -10 <= p["ParamBodyAngleX"] <= 10
+        for k in ("ParamCheek", "Param_CoreGlow", "Param_EyeGlow"):
+            assert 0.0 <= p[k] <= 1.0
+        assert -1.0 <= p["ParamMouthForm"] <= 1.0
+
+def test_live2d_asset_path_blocks_traversal():
+    from alpecca import live2d
+    assert live2d.asset_path("../../alpecca.db") is None
+    assert live2d.asset_path("/etc/passwd") is None
+    assert live2d.asset_path("..\\secrets") is None
+
+def test_live2d_manifest_off_without_model():
+    from alpecca import live2d
+    m = live2d.manifest()
+    assert "live2d_mode" in m and "halo_states" in m
+    # No compiled model shipped in the repo, so mode is off but the map is present.
+    assert m["halo_states"]["thinking"] == "processing"
 
 
 # --- Custom avatar clips --------------------------------------------------------
