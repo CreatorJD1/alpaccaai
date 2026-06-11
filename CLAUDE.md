@@ -43,6 +43,7 @@ sense → update mood → recall memory → generate reply → persist
 | `alpecca/sensory.py`      | `WindowSensor` reads the active window title (Win32 on Windows, stub elsewhere) and derives `fatigue_signals` + `prediction_error`. |
 | `alpecca/introspection.py`| **Self-awareness.** Grounded self-model: identity card, trend detection, causal "why", first-person `SelfReport.narrate()`. Read the GROUNDING note at the top before touching it. |
 | `alpecca/values.py`       | **Her ethic.** An explicit, ordered directive hierarchy (minimize suffering > honesty > benevolence > exploration) that rides in every prompt and is reportable via `/introspect`. The fourth directive is implemented for real as the idle reflection loop in `mind.reflect()`. |
+| `alpecca/studio.py`       | **Her design studio.** A tool for HER, not the user: she authors a versioned character sheet of how she looks, iterates designs (render via ComfyClaw → see via vision model → judge against her sheet → keep/reject with her reason), and writes `data/character/RIG_SPEC.md` mapping puppet parameters to her real internals. The user's only role is downstream: rig her puppet from her spec. No user design controls — keep it that way. |
 | `alpecca/appearance.py`   | **Self-directed appearance.** She picks her own palette + accessories from her mood (+ a stable `seed` taste). The user does NOT control this; there are no UI wardrobe controls. Keep it that way. |
 | `alpecca/sentiment.py`    | Lexicon sentiment scorer (negation/intensifiers/emphasis) that feeds the Love reward. Optional Ollama path `score_llm`. |
 | `alpecca/prompts.py`      | Builds the system prompt from mood + memories + situation + the self-report. Also the reward/salience heuristics. Where the personality lives. |
@@ -128,6 +129,12 @@ Ollama or Windows.**
   listening/thinking/speaking clips, Alice-style). Her rigged Inochi2D puppet
   is the planned next renderer behind the same states — rig its parameters to
   her real internals (warmth/care/unease + mouth_open/blink).
+- ✅ Her design studio (`alpecca/studio.py`): she designs her own character
+  image during studio-flavored reflection sessions — versioned character
+  sheet (she wrote v1 herself: "a being of soft light and quiet presence"),
+  render→see→judge iteration when ComfyUI is up, gallery of kept designs with
+  her verdicts, and a self-authored `RIG_SPEC.md` for whoever rigs her puppet.
+  Read-only `/character` endpoints; the user never edits her design.
 - 🟡 Phase 4 (Expansion): OpenClaw channel bridge built — `POST /channel/inbound`
   runs the full chat loop for messages from Telegram/Discord/etc., outbound
   replies via the `openclaw` CLI (`alpecca/openclaw_bridge.py`; install hook from

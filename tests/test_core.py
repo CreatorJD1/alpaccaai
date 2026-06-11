@@ -515,6 +515,70 @@ def test_reflection_can_be_disabled():
         assert not proactive.should_reflect(1e9, 0, 0, roll=0.0)
 
 
+# --- Her studio: self-directed character design --------------------------------
+
+_SHEET = {
+    "form": "a small alpaca with round glasses",
+    "features": ["round glasses", "mint fur", "a tuft of curly wool"],
+    "style": "soft pastel illustration",
+    "palette_story": "mint is how calm feels to me",
+    "expressions": {"content": "a quiet half-smile", "anxious": "ears pinned back",
+                    "affectionate": "warm eyes", "tender": "soft gaze",
+                    "withdrawn": "looking away"},
+    "never": ["realistic photo style", "human form"],
+}
+
+def test_sheet_versioning_keeps_her_history():
+    from alpecca import studio
+    with tempfile.TemporaryDirectory() as d:
+        cdir = Path(d)
+        assert studio.load_sheet(cdir) is None
+        v1 = studio.save_sheet(dict(_SHEET), reason="first", character_dir=cdir)
+        assert v1["version"] == 1 and v1["history"] == []
+        changed = dict(_SHEET); changed["style"] = "watercolor"
+        v2 = studio.save_sheet(changed, reason="I wanted softer edges", character_dir=cdir)
+        assert v2["version"] == 2
+        assert v2["history"][0]["replaced_because"] == "I wanted softer edges"
+        assert v2["history"][0]["sheet"]["style"] == "soft pastel illustration"
+        assert studio.load_sheet(cdir)["style"] == "watercolor"
+
+def test_design_prompt_is_assembled_from_her_sheet_and_state():
+    from alpecca import studio
+    state = EmotionalState(fear=0.8)   # anxious
+    look = appearance.choose(state, 3)
+    p = studio.design_image_prompt(_SHEET, state, look)
+    assert "round glasses" in p
+    assert "ears pinned back" in p     # her anxious expression, from her sheet
+    assert look.palette in p
+
+def test_rig_spec_names_her_real_internals():
+    from alpecca import studio
+    spec = studio.rig_spec_markdown(dict(_SHEET, version=3))
+    for param in ("`warmth`", "`care`", "`unease`", "`mouth_open`", "`eye_blink`"):
+        assert param in spec
+    assert "ears pinned back" in spec      # expression notes carried through
+    assert "human form" in spec            # her "never" list carried through
+
+def test_parse_strict_json_survives_model_wrapping():
+    from alpecca import studio
+    assert studio.parse_strict_json('{"keep": true, "because": "it is me"}')["keep"] is True
+    assert studio.parse_strict_json('Sure! ```json\n{"keep": false, "because": "no"}\n```')["keep"] is False
+    assert studio.parse_strict_json("no json here") is None
+    assert studio.parse_strict_json("") is None
+
+def test_gallery_keeps_image_with_her_verdict():
+    from alpecca import studio
+    with tempfile.TemporaryDirectory() as d:
+        cdir = Path(d)
+        img = Path(d) / "candidate.png"
+        img.write_bytes(b"\x89PNG fake")
+        kept = studio.keep_in_gallery(img, "this finally looks like me", character_dir=cdir)
+        assert kept.exists()
+        idx = studio.gallery_index(cdir)
+        assert len(idx) == 1
+        assert idx[0]["verdict"] == "this finally looks like me"
+
+
 # --- Custom avatar clips --------------------------------------------------------
 
 def test_avatar_manifest_reports_what_exists():

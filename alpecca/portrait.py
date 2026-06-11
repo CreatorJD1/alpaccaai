@@ -137,6 +137,15 @@ def _run_once(prompt: str) -> RenderResult:
                         error="no png produced" if img is None else "")
 
 
+def render_once(prompt: str) -> RenderResult:
+    """Synchronous single render for callers that need the result in hand --
+    her design studio uses this to make a candidate image and then actually
+    look at it. Honors the same config/degradation as the async worker."""
+    if not PortraitCfg.ENABLED:
+        return RenderResult(False, None, error="portrait pipeline disabled")
+    return _run_once(prompt)
+
+
 # --- Public API: one-slot async renderer -----------------------------------
 
 class PortraitWorker:

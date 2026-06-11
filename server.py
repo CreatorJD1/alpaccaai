@@ -173,6 +173,35 @@ def state() -> dict:
             }}
 
 
+@app.get("/character")
+def character() -> dict:
+    """Her self-authored character design: sheet, kept gallery, rig spec. All
+    read-only -- this is HER studio; the user views, never edits."""
+    from alpecca import studio
+    from config import CHARACTER_DIR
+    sheet = studio.load_sheet()
+    spec = CHARACTER_DIR / "RIG_SPEC.md"
+    return {
+        "sheet": sheet,
+        "gallery": studio.gallery_index(),
+        "rig_spec": spec.read_text(encoding="utf-8") if spec.exists() else None,
+    }
+
+
+@app.get("/character/image/{name}")
+def character_image(name: str) -> FileResponse:
+    """Serve one image from her gallery. Names are constrained to the pattern
+    the studio writes, so nothing else is reachable."""
+    import re
+    from config import CHARACTER_DIR
+    if not re.fullmatch(r"self-[0-9-]+\.(png|jpg)", name):
+        raise HTTPException(status_code=404, detail="no such image")
+    path = CHARACTER_DIR / "gallery" / name
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="no such image")
+    return FileResponse(path)
+
+
 @app.get("/avatar/manifest")
 def avatar_manifest() -> dict:
     """Which custom avatar clips exist (data/avatar/*.mp4). The UI switches to

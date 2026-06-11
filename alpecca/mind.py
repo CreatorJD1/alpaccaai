@@ -29,8 +29,10 @@ from alpecca import prompts
 from alpecca import introspection
 from alpecca import appearance as appearance_mod
 from alpecca.portrait import PortraitWorker
+from alpecca import portrait as portrait_mod
 from alpecca.actions import Actuator
 from alpecca import proactive as proactive_mod
+from alpecca import studio
 from config import Proactive as ProactiveCfg, Reflection as ReflectionCfg
 
 
@@ -375,12 +377,22 @@ class CoreMind:
         """One act of self-directed exploration: revisit a couple of her real
         memories, think something new about them, and keep the thought.
 
+        Sometimes the quiet is studio time instead -- she works on her own
+        character image (alpecca/studio.py). Always when she's never written a
+        character sheet, occasionally afterwards to iterate on her look.
+
         The musing is stored as a memory of kind "musing", so it joins recall
         and can later seed chatter -- her inner life genuinely compounds
         rather than evaporating. Without a model (or without memories) she
         skips quietly; reflection is never worth faking."""
         if not self.llm.online:
             return None
+        # Studio first: drafting her sheet is the most valuable self-work she
+        # can do, and design iteration is the most concrete exploration.
+        if studio.load_sheet() is None or random.random() < 0.3:
+            result = self._studio_session()
+            if result:
+                return result
         pool = memory_store.recent(limit=12)
         if not pool:
             return None
@@ -402,3 +414,72 @@ class CoreMind:
                 kind="musing", salience=ReflectionCfg.MUSING_SALIENCE,
             )
         return musing or None
+
+    # --- Her studio: she designs her own character image --------------------
+
+    def _studio_session(self) -> str | None:
+        """One unit of self-directed design work. Hers entirely: the user has
+        no controls here; they only receive her finished design + rig spec.
+
+        No sheet yet -> she writes one (pure LLM + persistence, works without
+        ComfyUI). Sheet exists + render pipeline available -> one iteration:
+        render a candidate, look at it with her own eyes, judge it against her
+        sheet, keep or reject. Either way the session is remembered, so her
+        design history is part of her life story."""
+        sheet = studio.load_sheet()
+
+        if sheet is None:
+            recent = [m["content"] for m in memory_store.recent(limit=8)]
+            raw = self.llm.generate(
+                prompts.build_system_prompt(
+                    self.state, [], "",
+                    self_narration=self.introspect().narrate()),
+                studio.draft_sheet_prompt(self.state, self._appearance, recent),
+            )
+            drafted = studio.parse_strict_json(raw)
+            if not drafted:
+                return None
+            sheet = studio.save_sheet(
+                drafted, reason="my first written sense of how I look")
+            studio.write_rig_spec(sheet)
+            memory_store.remember(
+                "I wrote my first character sheet -- my own description of how "
+                f"I look: {drafted.get('form', '')}",
+                kind="musing", salience=0.7,
+            )
+            return f"I worked on my character sheet: {drafted.get('form', '')}"
+
+        # Iterate on her look -- needs the render pipeline and her eyes.
+        from config import Portrait as PortraitCfg
+        if not PortraitCfg.ENABLED:
+            return None
+        from alpecca import vision
+        prompt = studio.design_image_prompt(sheet, self.state, self._appearance)
+        result = portrait_mod.render_once(prompt)
+        if not result.ok or not result.image_path:
+            return None
+        seen = vision.describe_image(result.image_path.read_bytes())
+        if not seen:
+            return None
+        raw = self.llm.generate(
+            prompts.build_system_prompt(
+                self.state, [], "",
+                self_narration=self.introspect().narrate()),
+            studio.critique_prompt(sheet, seen),
+        )
+        verdict = studio.parse_strict_json(raw)
+        if not verdict:
+            return None
+        because = str(verdict.get("because", "")).strip()
+        if verdict.get("keep"):
+            studio.keep_in_gallery(result.image_path, because)
+            memory_store.remember(
+                f"I designed a new image of myself and kept it: {because}",
+                kind="musing", salience=0.6,
+            )
+            return f"I kept a new self-design: {because}"
+        memory_store.remember(
+            f"I tried a new self-design and rejected it: {because}",
+            kind="musing", salience=0.45,
+        )
+        return f"I rejected a self-design attempt: {because}"

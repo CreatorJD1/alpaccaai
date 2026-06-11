@@ -20,6 +20,7 @@ HOME.mkdir(parents=True, exist_ok=True)
 DB_PATH = HOME / "alpecca.db"             # homeostasis state + memories
 TELEMETRY_LOG = HOME / "telemetry.jsonl"  # raw sensory stream
 AVATAR_DIR = HOME / "avatar"              # drop-in custom avatar clips (alpecca/avatar.py)
+CHARACTER_DIR = HOME / "character"        # her self-authored design studio (alpecca/studio.py)
 
 # One-time migration: she used to be misspelled "alpacca", and her whole
 # remembered life lives in that file. Carry it across to the corrected name so
