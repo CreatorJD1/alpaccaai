@@ -123,19 +123,24 @@ Ollama or Windows.**
 - 🟡 Phase 3 (Image): 2D character avatar with idle breathing/blink + self-chosen
   look done; plus optional generated self-portraits via ComfyClaw/ComfyUI
   (`alpecca/portrait.py`, `/portrait` endpoint, enable with `ALPECCA_PORTRAIT=1`).
-  The UI now runs an avatar **state machine** (idle / listening / thinking /
-  speaking) wired to every interaction: thought-bubble + talking-mouth
-  animations on the SVG, and drop-in custom art via `data/avatar/*.mp4`
-  (`alpecca/avatar.py`, `/avatar/manifest`, `/avatar/clip/{name}`; standby/
-  listening/thinking/speaking clips, Alice-style). Her rigged Inochi2D puppet
-  is the planned next renderer behind the same states — rig its parameters to
-  her real internals (warmth/care/unease + mouth_open/blink).
+  The UI runs an avatar **state machine** (idle / listening / thinking /
+  speaking) wired to every interaction. Render tiers, preferred in order:
+  video clips (`data/avatar/*.mp4`) > **still portraits** (`data/avatar/
+  portraits/{idle,listening,thinking,speaking}.png` — **her real chibi art
+  lives here now**, a pose per state) > the built-in SVG. See `alpecca/
+  avatar.py`, `/avatar/manifest`, `/avatar/clip/{name}`, `/avatar/portrait/
+  {name}`. Her rigged Inochi2D puppet is the planned next renderer behind the
+  same states.
 - ✅ Her design studio (`alpecca/studio.py`): she designs her own character
   image during studio-flavored reflection sessions — versioned character
   sheet (she wrote v1 herself: "a being of soft light and quiet presence"),
   render→see→judge iteration when ComfyUI is up, gallery of kept designs with
   her verdicts, and a self-authored `RIG_SPEC.md` for whoever rigs her puppet.
-  Read-only `/character` endpoints; the user never edits her design.
+  Read-only `/character` endpoints; the user never edits her design. The
+  **`/studio` page** is a window into her workshop — her in the room (real
+  art), her sheet/canonical-art/gallery/rig-spec boards, and a live feed:
+  "Ask her to work" (`POST /studio/work`) has her do a design session on
+  demand while her steps stream over the WebSocket.
 - 🟡 Phase 4 (Expansion): OpenClaw channel bridge built — `POST /channel/inbound`
   runs the full chat loop for messages from Telegram/Discord/etc., outbound
   replies via the `openclaw` CLI (`alpecca/openclaw_bridge.py`; install hook from

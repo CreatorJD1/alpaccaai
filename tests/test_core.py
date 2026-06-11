@@ -663,6 +663,23 @@ def test_avatar_clip_path_is_whitelisted():
         assert avatar.clip_path("secrets", adir) is None      # not on the whitelist
         assert avatar.clip_path("../alpecca.db", adir) is None # no traversal
 
+def test_avatar_portrait_mode_and_whitelist():
+    from alpecca import avatar
+    with tempfile.TemporaryDirectory() as d:
+        adir = Path(d)
+        pdir = adir / "portraits"; pdir.mkdir()
+        m = avatar.manifest(adir)
+        assert m["portrait_mode"] is False
+        (pdir / "idle.png").write_bytes(b"x")
+        (pdir / "speaking.png").write_bytes(b"x")
+        m = avatar.manifest(adir)
+        assert m["portrait_mode"] is True                       # idle present
+        assert m["portraits"]["idle"] and m["portraits"]["speaking"]
+        assert not m["portraits"]["thinking"]
+        assert avatar.portrait_path("idle", adir) is not None
+        assert avatar.portrait_path("thinking", adir) is None   # known, no file
+        assert avatar.portrait_path("../../secret", adir) is None  # off-whitelist
+
 
 # --- App actions: the allowlist is the whole security model -------------------
 

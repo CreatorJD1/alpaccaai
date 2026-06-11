@@ -417,9 +417,15 @@ class CoreMind:
 
     # --- Her studio: she designs her own character image --------------------
 
-    def _studio_session(self) -> str | None:
+    def studio_session(self, status=None) -> str | None:
+        """Public entry so the studio view can have her work on demand and
+        watch. `status(msg)` is called at each step so the UI can narrate what
+        she's doing live; it defaults to a no-op for the background path."""
+        return self._studio_session(status or (lambda _m: None))
+
+    def _studio_session(self, status=lambda _m: None) -> str | None:
         """One unit of self-directed design work. Hers entirely: the user has
-        no controls here; they only receive her finished design + rig spec.
+        no controls here; they only watch and receive her finished design.
 
         No sheet yet -> she writes one (pure LLM + persistence, works without
         ComfyUI). Sheet exists + render pipeline available -> one iteration:
@@ -429,6 +435,7 @@ class CoreMind:
         sheet = studio.load_sheet()
 
         if sheet is None:
+            status("sitting down to write my character sheet…")
             recent = [m["content"] for m in memory_store.recent(limit=8)]
             raw = self.llm.generate(
                 prompts.build_system_prompt(
@@ -438,6 +445,7 @@ class CoreMind:
             )
             drafted = studio.parse_strict_json(raw)
             if not drafted:
+                status("(couldn't settle on it this time)")
                 return None
             sheet = studio.save_sheet(
                 drafted, reason="my first written sense of how I look")
@@ -447,20 +455,26 @@ class CoreMind:
                 f"I look: {drafted.get('form', '')}",
                 kind="musing", salience=0.7,
             )
+            status(f"wrote my character sheet: {drafted.get('form', '')}")
             return f"I worked on my character sheet: {drafted.get('form', '')}"
 
         # Iterate on her look -- needs the render pipeline and her eyes.
         from config import Portrait as PortraitCfg
         if not PortraitCfg.ENABLED:
+            status("(I'd sketch a new look, but my render tools aren't on right now)")
             return None
         from alpecca import vision
+        status("composing a new self-portrait from my character sheet…")
         prompt = studio.design_image_prompt(sheet, self.state, self._appearance)
         result = portrait_mod.render_once(prompt)
         if not result.ok or not result.image_path:
+            status("(the render didn't come through)")
             return None
+        status("looking at what I drew…")
         seen = vision.describe_image(result.image_path.read_bytes())
         if not seen:
             return None
+        status("asking myself: does this look like me?")
         raw = self.llm.generate(
             prompts.build_system_prompt(
                 self.state, [], "",
@@ -477,9 +491,11 @@ class CoreMind:
                 f"I designed a new image of myself and kept it: {because}",
                 kind="musing", salience=0.6,
             )
+            status(f"kept it — {because}")
             return f"I kept a new self-design: {because}"
         memory_store.remember(
             f"I tried a new self-design and rejected it: {because}",
             kind="musing", salience=0.45,
         )
+        status(f"set it aside — {because}")
         return f"I rejected a self-design attempt: {because}"

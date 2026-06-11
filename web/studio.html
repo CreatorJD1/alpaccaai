@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Alpecca · Studio</title>
+<style>
+  :root { --bg:#1a1726; --panel:#241f33; --ink:#efe9ff; --muted:#9b91b8; --accent:#c9a8ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: radial-gradient(1200px 800px at 50% -10%, #2c2540, var(--bg));
+         color: var(--ink); min-height:100vh; }
+  header { text-align:center; padding:18px 0 6px; }
+  header h1 { margin:0; font-weight:600; letter-spacing:.5px; }
+  header .sub { color:var(--muted); font-size:13px; margin-top:2px; }
+  header a { color:var(--accent); font-size:12px; text-decoration:none; }
+  .wrap { max-width:1100px; margin:0 auto; padding:14px; display:grid;
+          grid-template-columns: 300px 1fr; gap:16px; }
+  .room { background:var(--panel); border-radius:18px; padding:18px; text-align:center;
+          box-shadow:0 10px 40px rgba(0,0,0,.4); position:sticky; top:14px; align-self:start; }
+  .room img.her { width:220px; height:auto; border-radius:16px;
+                  background:radial-gradient(120px 120px at 50% 40%, #2c2540, transparent); }
+  .room .doing { margin-top:10px; min-height:40px; font-size:13px; color:#d9ccff;
+                 font-style:italic; line-height:1.45; }
+  .room button { margin-top:12px; background:var(--accent); color:#221a33; border:0;
+                 padding:10px 18px; border-radius:10px; font-weight:600; cursor:pointer; }
+  .room button:disabled { opacity:.5; cursor:default; }
+  .feed { margin-top:12px; text-align:left; font-size:11.5px; color:var(--muted);
+          max-height:160px; overflow-y:auto; border-top:1px solid #332c4a; padding-top:8px; }
+  .feed div { margin:3px 0; }
+  .col { display:flex; flex-direction:column; gap:16px; }
+  .card { background:var(--panel); border-radius:16px; padding:16px 18px;
+          box-shadow:0 8px 28px rgba(0,0,0,.35); }
+  .card h2 { margin:0 0 10px; font-size:14px; font-weight:600; color:var(--accent); }
+  .sheet-grid { display:grid; grid-template-columns:auto 1fr; gap:6px 12px; font-size:13px; }
+  .sheet-grid .k { color:var(--muted); }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
+  .chip { background:#2f2a44; border:1px solid #3d3658; border-radius:20px;
+          padding:3px 10px; font-size:12px; }
+  .thumbs { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:10px; }
+  .thumbs a { display:block; }
+  .thumbs img { width:100%; border-radius:10px; border:1px solid #3d3658; }
+  .gallery { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:10px; }
+  .gallery figure { margin:0; }
+  .gallery img { width:100%; border-radius:10px; }
+  .gallery figcaption { font-size:11px; color:var(--muted); font-style:italic; margin-top:4px; }
+  pre.rig { white-space:pre-wrap; font-size:11.5px; color:#cfc6e6; line-height:1.5;
+            max-height:340px; overflow-y:auto; background:#1d1a2b; border-radius:10px; padding:12px; }
+  .empty { color:var(--muted); font-size:13px; font-style:italic; }
+  @media (max-width:760px){ .wrap { grid-template-columns:1fr; } .room { position:static; } }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Alpecca · Studio</h1>
+    <div class="sub">her own workshop — where she designs and rigs her character. <a href="/">← back to chat</a></div>
+  </header>
+
+  <div class="wrap">
+    <!-- The room she's in -->
+    <div class="room">
+      <img class="her" id="her" alt="Alpecca" />
+      <div class="doing" id="doing">She's here, between pieces.</div>
+      <button id="workBtn">Ask her to work →</button>
+      <div class="feed" id="feed"></div>
+    </div>
+
+    <div class="col">
+      <div class="card">
+        <h2>Her character sheet</h2>
+        <div id="sheet"><span class="empty">She hasn't written one yet.</span></div>
+      </div>
+
+      <div class="card">
+        <h2>Her canonical art</h2>
+        <div class="thumbs" id="reference"><span class="empty">No reference sheets.</span></div>
+      </div>
+
+      <div class="card">
+        <h2>Designs she's kept</h2>
+        <div class="gallery" id="gallery"><span class="empty">Nothing kept yet — watch her work.</span></div>
+      </div>
+
+      <div class="card">
+        <h2>Rig spec <span style="font-weight:400;color:var(--muted);">(her instructions for rigging her puppet)</span></h2>
+        <pre class="rig" id="rig"><span class="empty">No rig spec yet.</span></pre>
+      </div>
+    </div>
+  </div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// Her avatar in the room (real character art if present, else nothing).
+fetch('/avatar/manifest').then(r=>r.json()).then(m=>{
+  if(m.portrait_mode) $('her').src = '/avatar/portrait/idle';
+  else if(m.video_mode){ const v=document.createElement('video');
+    v.autoplay=v.loop=v.muted=v.playsInline=true; v.className='her'; v.src='/avatar/clip/standby';
+    $('her').replaceWith(v); }
+  else $('her').style.display='none';
+}).catch(()=>{});
+
+function renderCharacter(c){
+  // Sheet
+  if(c.sheet){
+    const s = c.sheet;
+    const feat = (s.features||[]).map(f=>`<span class="chip">${f}</span>`).join('');
+    const never = (s.never||[]).map(f=>`<span class="chip">⊘ ${f}</span>`).join('');
+    const expr = Object.entries(s.expressions||{}).map(([k,v])=>
+      `<span class="k">${k}</span><span>${v}</span>`).join('');
+    $('sheet').innerHTML =
+      `<div class="sheet-grid"><span class="k">form</span><span>${s.form||''}</span>`+
+      `<span class="k">style</span><span>${s.style||''}</span>`+
+      `<span class="k">colors</span><span>${s.palette_story||''}</span>${expr}</div>`+
+      `<div style="margin-top:8px;" class="k">features</div><div class="chips">${feat}</div>`+
+      `<div style="margin-top:8px;" class="k">never</div><div class="chips">${never}</div>`+
+      `<div style="margin-top:8px;font-size:11px;color:var(--muted);">sheet v${s.version}</div>`;
+  }
+  // Reference art
+  if(c.reference && c.reference.length){
+    $('reference').innerHTML = c.reference.map(n=>
+      `<a href="/character/reference/${n}" target="_blank"><img src="/character/reference/${n}" loading="lazy"/></a>`).join('');
+  }
+  // Gallery
+  if(c.gallery && c.gallery.length){
+    $('gallery').innerHTML = c.gallery.map(g=>
+      `<figure><img src="/character/image/${g.file}" loading="lazy"/>`+
+      `<figcaption>“${g.verdict||''}”</figcaption></figure>`).join('');
+  }
+  // Rig spec
+  if(c.rig_spec) $('rig').textContent = c.rig_spec;
+}
+function loadCharacter(){ fetch('/character').then(r=>r.json()).then(renderCharacter).catch(()=>{}); }
+loadCharacter();
+
+// Watch her work: trigger a session, stream her steps over the WebSocket.
+const workBtn = $('workBtn'), feed = $('feed'), doing = $('doing');
+function addFeed(t){ const d=document.createElement('div'); d.textContent='· '+t;
+  feed.prepend(d); }
+workBtn.addEventListener('click', ()=>{
+  workBtn.disabled = true; doing.textContent = 'settling in…';
+  fetch('/studio/work', {method:'POST'}).then(r=>r.json()).then(d=>{
+    if(!d.ok){ doing.textContent = d.error || 'she could not start'; workBtn.disabled=false; }
+  }).catch(()=>{ doing.textContent='request failed'; workBtn.disabled=false; });
+});
+
+function connectWS(){
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if(m.type === 'studio_status'){ doing.textContent = m.text; addFeed(m.text); }
+    else if(m.type === 'studio_done'){
+      doing.textContent = m.outcome; addFeed('— ' + m.outcome);
+      workBtn.disabled = false; loadCharacter();   // refresh sheet/gallery/rig
+    }
+  };
+  ws.onclose = ()=> setTimeout(connectWS, 1500);
+  ws.onerror = ()=>{ try{ws.close();}catch(e){} };
+}
+connectWS();
+</script>
+</body>
+</html>

@@ -157,6 +157,13 @@ def index() -> HTMLResponse:
     return HTMLResponse((WEB_DIR / "index.html").read_text(encoding="utf-8"))
 
 
+@app.get("/studio")
+def studio_page() -> HTMLResponse:
+    """Her studio -- a window into where she designs and rigs her character.
+    Read-only: you watch and can ask her to work, but never edit her design."""
+    return HTMLResponse((WEB_DIR / "studio.html").read_text(encoding="utf-8"))
+
+
 @app.get("/state")
 def state() -> dict:
     """Current mood + her self-chosen look -- the UI renders both, never sets them."""
@@ -258,6 +265,36 @@ def character() -> dict:
     }
 
 
+_studio_lock = _threading.Lock()
+
+
+@app.post("/studio/work")
+async def studio_work() -> dict:
+    """Ask Alpecca to do a unit of design work right now, while you watch. Her
+    steps stream over the WebSocket as `studio_status`; the final outcome as
+    `studio_done`. This is her studio's only control -- it asks her to work, it
+    never edits her design."""
+    if not _studio_lock.acquire(blocking=False):
+        return {"ok": False, "error": "she's already in the studio"}
+    loop = asyncio.get_running_loop()
+
+    def status(msg: str) -> None:
+        asyncio.run_coroutine_threadsafe(
+            _broadcast({"type": "studio_status", "text": msg}), loop)
+
+    async def run() -> None:
+        try:
+            async with mind_lock:
+                outcome = await asyncio.to_thread(mind.studio_session, status)
+            await _broadcast({"type": "studio_done",
+                              "outcome": outcome or "nothing came of it this time"})
+        finally:
+            _studio_lock.release()
+
+    asyncio.create_task(run())
+    return {"ok": True, "started": True}
+
+
 @app.get("/character/reference/{name}")
 def character_reference(name: str) -> FileResponse:
     """Serve one of her canonical master sheets from data/character/reference."""
@@ -300,6 +337,16 @@ def avatar_clip(name: str) -> FileResponse:
     if path is None:
         raise HTTPException(status_code=404, detail="no such clip")
     return FileResponse(path, media_type="video/mp4")
+
+
+@app.get("/avatar/portrait/{name}")
+def avatar_portrait(name: str) -> FileResponse:
+    """Serve one whitelisted avatar portrait image (her real character art,
+    one pose per state). Unknown names and missing files 404."""
+    path = avatar_mod.portrait_path(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="no such portrait")
+    return FileResponse(path, media_type="image/png")
 
 
 @app.post("/listen")

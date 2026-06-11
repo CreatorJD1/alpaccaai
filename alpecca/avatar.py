@@ -32,12 +32,31 @@ CLIPS = {
     "speaking": "speaking.mp4",
 }
 
+# Static portrait images, one per avatar state, in data/avatar/portraits/.
+# This is the middle tier between full video clips and the SVG fallback -- and
+# it's where her real character art (the chibi poses) lives today: a still
+# pose per state, swapped by the state machine. Only `idle` is required for
+# portrait mode; the others fall back to idle.
+PORTRAITS = {
+    "idle": "idle.png",
+    "listening": "listening.png",
+    "thinking": "thinking.png",
+    "speaking": "speaking.png",
+}
+
 
 def manifest(avatar_dir: Path = AVATAR_DIR) -> dict:
-    """Which clips actually exist on disk. The UI uses this to decide between
-    video mode and the SVG fallback (video mode needs at least standby)."""
-    present = {name: (avatar_dir / fname).exists() for name, fname in CLIPS.items()}
-    return {"clips": present, "video_mode": present["standby"]}
+    """What avatar assets exist on disk, and which render mode the UI should
+    use. Preference order: video clips > still portraits > built-in SVG."""
+    clips = {name: (avatar_dir / fname).exists() for name, fname in CLIPS.items()}
+    pdir = avatar_dir / "portraits"
+    portraits = {name: (pdir / fname).exists() for name, fname in PORTRAITS.items()}
+    return {
+        "clips": clips,
+        "portraits": portraits,
+        "video_mode": clips["standby"],
+        "portrait_mode": portraits["idle"],
+    }
 
 
 def clip_path(name: str, avatar_dir: Path = AVATAR_DIR) -> Optional[Path]:
@@ -47,4 +66,14 @@ def clip_path(name: str, avatar_dir: Path = AVATAR_DIR) -> Optional[Path]:
     if not fname:
         return None
     path = avatar_dir / fname
+    return path if path.exists() else None
+
+
+def portrait_path(name: str, avatar_dir: Path = AVATAR_DIR) -> Optional[Path]:
+    """Resolve a whitelisted portrait-state name to its image, or None.
+    Unknown names and missing files both return None."""
+    fname = PORTRAITS.get(name)
+    if not fname:
+        return None
+    path = avatar_dir / "portraits" / fname
     return path if path.exists() else None
