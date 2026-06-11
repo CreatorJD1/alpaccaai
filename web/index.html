@@ -511,28 +511,60 @@ function setAvatarState(s){
 let poseLib = null;        // her tagged pose library {file: {moods,states,energy}}, or null
 let herSequences = {};     // her authored animations, by name
 
-// Pick the pose that best fits her mood + state -- mirrors posekit.select_pose.
-function selectPose(){
-  if(!poseLib) return null;
+// Score every pose for how well it fits her mood + state -- mirrors
+// posekit.select_pose, but we keep the whole ranking so she can VARY among the
+// poses that fit, not freeze on the single best one.
+function scorePoses(){
   const mood = currentMood || 'content';
   const arousal = Math.max(0, Math.min(1, (current.love||0)*0.6 + (current.fear||0)*0.6));
-  let best = null, bs = -1;
-  for(const [name, t] of Object.entries(poseLib)){
+  const scored = [];
+  for(const [name, t] of Object.entries(poseLib || {})){
     let s = 0;
     if((t.moods||[]).includes(mood)) s += 3;
     if((t.states||[]).includes(avatarState)) s += 1.5;
     s += 1 - Math.abs(arousal - (t.energy ?? 0.5));
-    if(s > bs){ bs = s; best = name; }
+    scored.push([name, s]);
   }
-  return best;
+  scored.sort((a, b) => b[1] - a[1]);
+  return scored;
+}
+// Weighted pick: higher-fitting poses are likelier, but she still drifts to
+// others by how well they fit -- so within one stable mood she keeps shifting
+// pose instead of freezing on the single best. Avoids an immediate repeat so
+// every cycle is a visible change.
+function pickPose(){
+  const scored = scorePoses();
+  if(!scored.length) return null;
+  const T = 1.2;                                          // higher = more variety
+  let weights = scored.map(([n, s]) => [n, Math.exp(s / T)]);
+  const avail = weights.filter(([n]) => n !== shownPose);
+  if(avail.length) weights = avail;                       // force a change when we can
+  let total = 0; for(const w of weights) total += w[1];
+  let r = Math.random() * total;
+  for(const [n, w] of weights){ r -= w; if(r <= 0) return n; }
+  return weights[0][0];
 }
 let shownPose = null;
-function showPose(){
-  const name = selectPose();
+function showPose(name){
+  name = name || pickPose();
   if(!name || name === shownPose) return;
   shownPose = name;
   avatarPortrait.style.opacity = 0;                       // brief cross-fade
   setTimeout(()=>{ avatarPortrait.src = '/poses/img/' + name; avatarPortrait.style.opacity = 1; }, 200);
+}
+
+// Continuous life: she drifts between fitting poses on her own, even when her
+// mood holds steady -- quicker when she's animated (speaking) or uneasy, slower
+// when calm. This is what makes her feel alive rather than posed-and-frozen.
+let poseCycleTimer = null;
+function schedulePoseCycle(){
+  clearTimeout(poseCycleTimer);
+  if(!poseLib) return;
+  const fear = (current && current.fear) || 0;
+  let base = avatarState === 'speaking' ? 2600 : (avatarState === 'thinking' ? 4800 : 6500);
+  base *= (1 - fear * 0.35);                              // restless when uneasy
+  poseCycleTimer = setTimeout(()=>{ showPose(); schedulePoseCycle(); },
+                              base + Math.random() * 2200);
 }
 
 // Her mood scales the CSS idle tempo/lean: restless and quick when uneasy,
@@ -588,7 +620,7 @@ fetch('/poses').then(r=>r.json()).then(d=>{
     poseLib = d.poses;
     document.getElementById('avatar').style.display = 'none';
     avatarPortrait.style.display = 'block';
-    applyMoodMotion(); showPose();
+    applyMoodMotion(); showPose(); schedulePoseCycle();
   } else { bootstrapAvatarFallback(); }
 }).catch(bootstrapAvatarFallback);
 
