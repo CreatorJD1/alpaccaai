@@ -1,0 +1,8 @@
+# Core runtime
+fastapi>=0.110
+uvicorn[standard]>=0.29
+ollama>=0.3.0
+
+# Sensory layer (Windows window-title capture).
+# pywin32 only installs on Windows; on other OSes Alpacca falls back automatically.
+pywin32>=306; platform_system == "Windows"

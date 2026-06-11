@@ -1,0 +1,13 @@
+# Runtime state -- her mood DB, memories, and telemetry. Telemetry can contain
+# window titles (sensitive); none of this belongs in version control.
+data/
+
+# Extracted third-party handoff material (ComfyClaw / OpenClaw zips).
+.handoff/
+
+# Python
+__pycache__/
+*.pyc
+
+# Local machine-specific Claude Code settings.
+.claude/settings.local.json
