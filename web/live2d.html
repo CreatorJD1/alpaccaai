@@ -164,8 +164,77 @@ async function boot(){
   let man = {};
   try { man = await fetch('/live2d/manifest').then(r=>r.json()); } catch(e){}
   document.getElementById('note').style.display = 'none';
-  if(man.live2d_mode){ await bootCubism(man); }
+  if(man.live2d_mode){ await bootCubism(man); return; }
+  // Top fallback tier: her layered rig (real per-part motion) if her art has
+  // been decomposed; else the single-image mesh rig.
+  let rigMan = {};
+  try { rigMan = await fetch('/rig/manifest').then(r=>r.json()); } catch(e){}
+  if(rigMan.rig_mode){ buildLayeredRig(rigMan); }
   else { buildMeshRig(); }
+}
+
+// --- the layered rig: her decomposed art, each part moved on its own ----------
+// When her illustration has been split into named layers (see-through ->
+// scripts/import_rig.py), we can do what a flat image can't: blink, lip-sync,
+// turn her head, sway her hair -- each part animated independently from her
+// real state. This is the no-Cubism path to a properly rigged her.
+async function buildLayeredRig(rigMan){
+  const M = rigMan.manifest;
+  const W = M.size[0], H = M.size[1];
+  const hp = M.head_pivot || [W/2, H*0.32];
+  const app = new PIXI.Application({ view: document.getElementById('canvas'),
+    resizeTo: window, backgroundAlpha: 0, antialias: true });
+  const root = new PIXI.Container(); app.stage.addChild(root);
+  const backHair = new PIXI.Container(), body = new PIXI.Container(), head = new PIXI.Container();
+  const refs = { eyes: [], mouth: [], brows: [], front_hair: [], back_hair: [] };
+
+  for(const lyr of M.layers){
+    let tex; try { tex = await PIXI.Texture.fromURL('/rig/layer/' + lyr.file); } catch(e){ continue; }
+    const sp = new PIXI.Sprite(tex); sp.position.set(0, 0);
+    if(lyr.role === 'back_hair'){ backHair.addChild(sp); refs.back_hair.push(sp); }
+    else if(lyr.role === 'body'){ body.addChild(sp); }
+    else { head.addChild(sp); if(refs[lyr.role]) refs[lyr.role].push(sp); }
+  }
+  root.addChild(backHair, body, head);
+  head.pivot.set(hp[0], hp[1]); head.position.set(hp[0], hp[1]);
+  refs.eyes.forEach(sp => { sp.pivot.set(hp[0], hp[1]); sp.position.set(hp[0], hp[1]); });
+  const my = hp[1] + H * 0.07;
+  refs.mouth.forEach(sp => { sp.pivot.set(W/2, my); sp.position.set(W/2, my); });
+
+  const fit = ()=>{ const s = Math.min(window.innerWidth/W, window.innerHeight/H) * 0.9;
+    root.scale.set(s);
+    root.position.set(window.innerWidth/2 - W*s/2, window.innerHeight*0.52 - H*s/2); };
+  fit(); window.addEventListener('resize', fit);
+  showCaption('layered rig from her decomposed art — real blink, lip-sync, and head motion, driven by her state');
+
+  let t = 0, nextBlink = 2, blink = 1;
+  app.ticker.add((dt)=>{
+    t += dt/60;
+    const love = dims.love ?? 0.4, fear = dims.fear ?? 0,
+          energy = dims.energy ?? 0.5, care = dims.compassion ?? 0.2;
+    const speaking = avatarState === 'speaking';
+    // body breathes (slower when drowsy)
+    body.scale.y = 1 + Math.sin(t*(0.9 + energy*0.8)) * 0.012;
+    body.scale.x = 1 - (body.scale.y - 1) * 0.4;
+    // head bob, tilt toward you with care, restless sway when uneasy
+    head.rotation = Math.sin(t*0.6) * (0.02 + fear*0.05) + care*0.05;
+    head.position.set(hp[0] + Math.sin(t*1.2) * (2 + fear*4),
+                      hp[1] + (speaking ? Math.abs(Math.sin(t*6))*-6 : Math.sin(t*1.2)*2));
+    // hair sway, lagged
+    const sway = Math.sin(t*1.0 - 0.5) * (3 + fear*6);
+    refs.back_hair.forEach(sp => sp.x = sway);
+    refs.front_hair.forEach(sp => sp.x = sway * 0.6);
+    // blink
+    nextBlink -= dt/60;
+    if(nextBlink <= 0){ blink = 0; if(nextBlink < -0.1){ blink = 1; nextBlink = 2 + Math.random()*4; } }
+    else blink = 1;
+    refs.eyes.forEach(sp => sp.scale.y = blink);
+    // mouth lip-sync while speaking
+    const mo = speaking ? (1 + Math.abs(Math.sin(t*12)) * 0.9) : 1;
+    refs.mouth.forEach(sp => sp.scale.y = mo);
+    // brows ride expression (raise with warmth, knit with unease)
+    refs.brows.forEach(sp => sp.y = -fear*4 + love*2);
+  });
 }
 
 // The compiled Live2D model path (when a .moc3 is dropped in).

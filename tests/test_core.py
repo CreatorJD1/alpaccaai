@@ -805,6 +805,47 @@ def test_live2d_manifest_off_without_model():
     assert m["halo_states"]["thinking"] == "processing"
 
 
+# --- Layered rig: decomposed art -> roles --------------------------------------
+
+def test_rig_role_mapping_is_forgiving():
+    from alpecca import rig
+    assert rig.role_for("Front Bangs") == "front_hair"
+    assert rig.role_for("Back Hair (Lower)") == "back_hair"
+    assert rig.role_for("Eye Highlight 1") == "eyes"
+    assert rig.role_for("Mouth_A") == "mouth"
+    assert rig.role_for("Eyebrow Happy") == "brows"
+    assert rig.role_for("Face Base") == "head"
+    assert rig.role_for("Jacket Outer") == "body"     # clothing -> body
+    assert rig.role_for("UI Halo Ring") == "accessory"
+    assert rig.role_for("mystery_layer_47") == "body" # unknown -> body, never dropped
+
+def test_rig_manifest_sorts_by_z_and_serves_safely():
+    from alpecca import rig
+    with tempfile.TemporaryDirectory() as d:
+        rdir = Path(d)
+        for f in ("eyes.png", "body.png", "back.png"):
+            (rdir / f).write_bytes(b"\x89PNG")
+        m = rig.save_manifest(
+            [{"file": "eyes.png", "role": "eyes"},
+             {"file": "body.png", "role": "body"},
+             {"file": "back.png", "role": "back_hair"}],
+            [512, 768], rig_dir=rdir)
+        # stacked back-to-front: back_hair(0) < body(1) < eyes(4)
+        order = [l["role"] for l in m["layers"]]
+        assert order == ["back_hair", "body", "eyes"]
+        assert rig.manifest(rdir)["rig_mode"] is True
+        # only manifest-listed files are reachable; traversal blocked
+        assert rig.layer_path("eyes.png", rdir) is not None
+        assert rig.layer_path("secret.png", rdir) is None
+        assert rig.layer_path("../../alpecca.db", rdir) is None
+
+def test_rig_absent_is_off():
+    from alpecca import rig
+    with tempfile.TemporaryDirectory() as d:
+        assert rig.manifest(Path(d))["rig_mode"] is False
+        assert rig.load_manifest(Path(d)) is None
+
+
 # --- Custom avatar clips --------------------------------------------------------
 
 def test_avatar_manifest_reports_what_exists():

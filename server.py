@@ -426,6 +426,24 @@ def live2d_page() -> HTMLResponse:
     return HTMLResponse((WEB_DIR / "live2d.html").read_text(encoding="utf-8"))
 
 
+@app.get("/rig/manifest")
+def rig_manifest() -> dict:
+    """Whether a layered rig exists (data/avatar/rig/) + its manifest. The
+    /live2d page uses this as the top render tier: layered rig > mesh > note."""
+    from alpecca import rig
+    return rig.manifest()
+
+
+@app.get("/rig/layer/{name}")
+def rig_layer(name: str) -> FileResponse:
+    """Serve one rig layer PNG, restricted to files listed in the manifest."""
+    from alpecca import rig
+    p = rig.layer_path(name)
+    if p is None:
+        raise HTTPException(status_code=404, detail="no such layer")
+    return FileResponse(p, media_type="image/png")
+
+
 @app.get("/live2d/manifest")
 def live2d_manifest() -> dict:
     """Whether a rigged Live2D model is present, and the param map for it."""
