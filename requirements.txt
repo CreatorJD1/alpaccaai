@@ -27,3 +27,7 @@ pywin32>=306; platform_system == "Windows"
 # mss>=9.0
 # Chat images + the vision senses + computer use all need the vision model:
 #   ollama pull qwen2.5vl:7b
+# Inbetween clips (scripts/run_tooncrafter.py): assemble ToonCrafter frames into
+# her video avatar tier. ToonCrafter itself is cloned + run separately (GPU).
+# imageio
+# imageio-ffmpeg
