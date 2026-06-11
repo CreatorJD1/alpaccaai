@@ -117,11 +117,16 @@ Ollama or Windows.**
 - ✅ Semantic (embedding) memory with keyword fallback; real sentiment-driven Love;
   background mood drift; `/history` + mood-timeline chart.
 - 🟡 Phase 3 (Image): 2D character avatar with idle breathing/blink + self-chosen
-  look done; a richer sprite (Replika-style) is the next visual step.
-- ⬜ Phase 4 (Expansion): Android sensors, voice-tone parsing — scaffolded for via
-  the `Observation` interface, not built.
-- All 23 core tests pass; full loop, introspection, and appearance verified
-  end-to-end.
+  look done; plus optional generated self-portraits via ComfyClaw/ComfyUI
+  (`alpacca/portrait.py`, `/portrait` endpoint, enable with `ALPACCA_PORTRAIT=1`).
+  A richer built-in sprite (Replika-style) remains the next visual step.
+- 🟡 Phase 4 (Expansion): OpenClaw channel bridge built — `POST /channel/inbound`
+  runs the full chat loop for messages from Telegram/Discord/etc., outbound
+  replies via the `openclaw` CLI (`alpacca/openclaw_bridge.py`; install hook from
+  `integrations/openclaw-inbound-hook/`). Android sensors and voice-tone parsing
+  still scaffolded via the `Observation` interface, not built.
+- All 31 core tests pass; full loop, introspection, appearance, portrait
+  prompts, and channel bridge verified end-to-end.
 
 Note on the dev environment: this sandbox's Linux file mount intermittently
 truncates large files *on read* (a mount cache artifact). The canonical files are
