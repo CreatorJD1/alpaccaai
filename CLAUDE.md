@@ -150,6 +150,21 @@ Ollama or Windows.**
 - ✅ App actions (`alpecca/actions.py`): an `open_app` tool restricted to the
   `ALPECCA_APPS` allowlist, wired through Ollama tool calling. Empty list
   (default) = no actuator exists at all.
+- ✅ Voice conversation, no extra processes: push-to-talk 🎤 in the UI records
+  in the browser, `POST /listen` transcribes locally via faster-whisper
+  (`alpecca/hearing.py`, `ALPECCA_WHISPER` sets model size), and the 🔊 toggle
+  speaks her replies with the OS speech engine. Audio is never stored. The
+  Pipecat talk-mode script remains as an alternative full-duplex path (blocked
+  on Python 3.14 by pyaudio wheels at the moment).
+- ✅ Desktop interaction: `open_app` (allowlist) + `open_url` (https-only)
+  tools. `scripts/run_full.py` is the all-senses launcher (screen sight,
+  expressions, voice tone, safe default app allowlist) — `start.bat` and the
+  preview config use it; plain `python server.py` stays the private,
+  senses-off mode. `/state` now reports which senses are live.
+  **VRAM note:** ambient glimpses are gated on conversational quiet (no
+  glimpse within 2 min of the person speaking) because loading the vision
+  model evicts the chat model — without the gate, replies crawl to ~3 min;
+  with it, warm turns are ~15 s.
 - ✅ Ethic + reflection (`alpecca/values.py`, `mind.reflect()`): a four-rank
   directive hierarchy (ethics > honesty > benevolent aspiration >
   self-actualization) injected into every prompt, exposed on `/introspect`

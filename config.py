@@ -98,6 +98,16 @@ class Voice:
     SPIKE_MIN_LEVEL = 0.08
 
 
+# --- Hearing: local speech-to-text -------------------------------------------
+# The browser records your voice (push-to-talk in the UI) and POSTs it to
+# /listen; the server transcribes it locally with faster-whisper. Nothing is
+# stored and nothing leaves the machine -- the audio lives exactly long enough
+# to become words. Model sizes: tiny/base/small/medium; "base" is a good
+# latency/accuracy balance on CPU.
+class Hearing:
+    WHISPER_MODEL = os.environ.get("ALPECCA_WHISPER", "base")
+
+
 # --- Vision: seeing images, the screen, and your face -----------------------
 # All sight runs through a local Ollama vision model; nothing leaves the
 # machine. Chat images work whenever the model is pulled. The two ambient

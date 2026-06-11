@@ -50,13 +50,15 @@ class Actuator:
         """One line for the system prompt so she knows what she's been given."""
         if not self.enabled:
             return ""
-        return ("You can open these apps for the person when it genuinely helps, "
-                "via the open_app tool: " + ", ".join(sorted(self.apps)) + ". "
-                "Only open something when the moment calls for it, never to show off.")
+        return ("You can act on this computer when it genuinely helps: open one "
+                "of the granted apps (open_app tool: " + ", ".join(sorted(self.apps)) +
+                ") or open a website in their browser (open_url tool, https only). "
+                "Only act when the moment calls for it, never to show off.")
 
     def tools_schema(self) -> list[dict]:
-        """The Ollama tools list. Names are enumerated so the model can't even
-        express an out-of-list request well-formedly."""
+        """The Ollama tools list. App names are enumerated so the model can't
+        even express an out-of-list request well-formedly; URLs are free-form
+        but execute() enforces https."""
         if not self.enabled:
             return []
         return [{
@@ -76,15 +78,35 @@ class Actuator:
                     "required": ["name"],
                 },
             },
+        }, {
+            "type": "function",
+            "function": {
+                "name": "open_url",
+                "description": "Open an https website in the person's default browser.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "Full https:// address to open.",
+                        },
+                    },
+                    "required": ["url"],
+                },
+            },
         }]
 
     def execute(self, tool_name: str, args: dict) -> str:
         """Run one tool call, returning a short result string for the model.
         Every failure path returns words rather than raising -- the LLM relays
         the outcome to the person either way."""
-        if tool_name != "open_app":
-            return f"unknown tool: {tool_name}"
-        name = str(args.get("name", "")).strip().lower()
+        if tool_name == "open_app":
+            return self._open_app(str(args.get("name", "")).strip().lower())
+        if tool_name == "open_url":
+            return self._open_url(str(args.get("url", "")).strip())
+        return f"unknown tool: {tool_name}"
+
+    def _open_app(self, name: str) -> str:
         command = self.apps.get(name)
         if not command:
             granted = ", ".join(sorted(self.apps)) or "none"
@@ -97,3 +119,16 @@ class Actuator:
             return f"opened {name}"
         except Exception as exc:
             return f"couldn't open {name}: {exc}"
+
+    def _open_url(self, url: str) -> str:
+        # https only: a URL opens in the sandbox of the person's browser, which
+        # makes this the mildest action she has -- but plain http, file://, and
+        # friends stay off the table entirely.
+        if not url.lower().startswith("https://"):
+            return f"only https:// links can be opened (got: {url[:60]})"
+        try:
+            import webbrowser
+            webbrowser.open(url)
+            return f"opened {url} in their browser"
+        except Exception as exc:
+            return f"couldn't open the link: {exc}"

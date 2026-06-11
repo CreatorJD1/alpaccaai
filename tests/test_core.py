@@ -539,6 +539,33 @@ def test_actuator_tools_schema_enumerates_granted_names_only():
     assert schema["name"] == "open_app"
     assert schema["parameters"]["properties"]["name"]["enum"] == ["notes", "spotify"]
 
+def test_open_url_is_https_only():
+    act = actions.Actuator(apps={"notes": "notepad.exe"})
+    assert "only https" in act.execute("open_url", {"url": "http://example.com"})
+    assert "only https" in act.execute("open_url", {"url": "file:///C:/secrets.txt"})
+    assert "only https" in act.execute("open_url", {"url": "javascript:alert(1)"})
+
+def test_open_url_offered_alongside_open_app():
+    act = actions.Actuator(apps={"notes": "notepad.exe"})
+    names = [t["function"]["name"] for t in act.tools_schema()]
+    assert names == ["open_app", "open_url"]
+    assert "open_url" in act.describe()
+
+
+# --- Hearing degrades gracefully ----------------------------------------------
+
+def test_hearing_returns_none_on_empty_or_when_latched_off():
+    from alpecca import hearing
+    assert hearing.transcribe(b"") is None
+    # Simulate a failed model load: latched off -> every call is None.
+    old_ready, old_model = hearing._ready, hearing._model
+    try:
+        hearing._ready, hearing._model = False, None
+        assert hearing.transcribe(b"RIFFxxxx") is None
+        assert hearing.available() is False
+    finally:
+        hearing._ready, hearing._model = old_ready, old_model
+
 
 if __name__ == "__main__":
     import traceback

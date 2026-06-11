@@ -138,6 +138,10 @@
     <form id="form">
       <input id="input" placeholder="Say something to Alpecca…" autocomplete="off" />
       <input type="file" id="imageFile" accept="image/*" style="display:none" />
+      <button type="button" id="micBtn" title="Hold a conversation by voice — click to talk, click again to send"
+              style="background:#3a3158;color:var(--ink);padding:0 12px;">🎤</button>
+      <button type="button" id="speakBtn" title="Toggle Alpecca speaking her replies aloud"
+              style="background:#3a3158;color:var(--ink);padding:0 12px;">🔇</button>
       <button type="button" id="attachBtn" title="Show Alpecca an image"
               style="background:#3a3158;color:var(--ink);padding:0 12px;">📎</button>
       <button type="button" id="introspectBtn" title="Ask Alpecca to examine its own state"
@@ -275,12 +279,14 @@ function connect(){
       render(m.state, m.mood, m.appearance);
       statusEl.textContent = m.llm_online ? '' : 'Ollama offline — replies are stubbed. Start Ollama for real conversation.';
     } else if(m.type === 'reply'){
-      addMem(m.memories_used); addMsg(m.reply, 'her'); render(m.state, m.mood, m.appearance); refreshChart();
+      addMem(m.memories_used); addMsg(m.reply, 'her'); speak(m.reply);
+      render(m.state, m.mood, m.appearance); refreshChart();
     } else if(m.type === 'proactive'){
       // She chose to speak on her own -- style it softly distinct.
       const d = document.createElement('div');
       d.className = 'msg her proactive'; d.textContent = m.reply;
       log.appendChild(d); log.scrollTop = log.scrollHeight;
+      speak(m.reply);
       render(m.state, m.mood, m.appearance); refreshChart();
     }
   };
@@ -312,6 +318,72 @@ document.getElementById('introspectBtn').addEventListener('click', async ()=>{
     log.appendChild(box); log.scrollTop = log.scrollHeight;
     render(d.state, d.mood);
   } catch(err){}
+});
+
+// --- her voice: spoken replies via the OS speech engine (fully local) ---------
+let speakOn = localStorage.getItem('alpeccaSpeak') === '1';
+const speakBtn = document.getElementById('speakBtn');
+function renderSpeakBtn(){ speakBtn.textContent = speakOn ? '🔊' : '🔇'; }
+renderSpeakBtn();
+speakBtn.addEventListener('click', ()=>{
+  speakOn = !speakOn;
+  localStorage.setItem('alpeccaSpeak', speakOn ? '1' : '0');
+  if(!speakOn) speechSynthesis.cancel();
+  renderSpeakBtn();
+});
+let herVoice = null;
+function pickVoice(){
+  const vs = speechSynthesis.getVoices();
+  // Prefer a natural female English voice; fall back to anything English.
+  herVoice = vs.find(v => /female|aria|jenny|zira|libby|sonia/i.test(v.name) && v.lang.startsWith('en'))
+          || vs.find(v => v.lang.startsWith('en')) || null;
+}
+pickVoice();
+speechSynthesis.onvoiceschanged = pickVoice;
+function speak(text){
+  if(!speakOn || !text) return;
+  const u = new SpeechSynthesisUtterance(text);
+  if(herVoice) u.voice = herVoice;
+  u.rate = 1.0; u.pitch = 1.05;
+  speechSynthesis.speak(u);
+}
+
+// --- your voice: push-to-talk, transcribed locally on the server --------------
+const micBtn = document.getElementById('micBtn');
+let recorder = null, chunks = [];
+micBtn.addEventListener('click', async ()=>{
+  if(recorder && recorder.state === 'recording'){
+    recorder.stop();   // -> onstop sends it
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    chunks = [];
+    recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = e => { if(e.data.size) chunks.push(e.data); };
+    recorder.onstop = async ()=>{
+      stream.getTracks().forEach(t => t.stop());
+      micBtn.textContent = '🎤'; micBtn.style.background = '#3a3158';
+      const blob = new Blob(chunks, {type: recorder.mimeType});
+      statusEl.textContent = 'listening to what you said…';
+      try {
+        const r = await fetch('/listen', {method: 'POST', body: blob});
+        const d = await r.json();
+        statusEl.textContent = '';
+        if(d.heard && d.text){
+          // Send the words through the exact same path as typed chat.
+          addMsg(d.text, 'me');
+          if(ws.readyState === 1) ws.send(JSON.stringify({text: d.text}));
+        } else {
+          statusEl.textContent = "couldn't make that out — try again a little closer to the mic";
+        }
+      } catch(e){ statusEl.textContent = 'transcription failed — is the server running?'; }
+    };
+    recorder.start();
+    micBtn.textContent = '⏹'; micBtn.style.background = '#7a3a5a';
+  } catch(e){
+    statusEl.textContent = 'microphone unavailable or permission denied';
+  }
 });
 
 // --- showing her images ------------------------------------------------------

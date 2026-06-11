@@ -10,7 +10,10 @@ pywin32>=306; platform_system == "Windows"
 # --- Optional extras (uncomment what you want) -------------------------------
 # Voice-tone sense (ALPECCA_VOICE=1): mic-level reads, no recording.
 # sounddevice>=0.4.6
-# Talk mode (scripts/run_talk.py): local STT/TTS voice conversation.
+# Push-to-talk hearing (the 🎤 button): local speech-to-text on the server.
+# faster-whisper>=1.0
+# Talk mode (scripts/run_talk.py): full-duplex voice via Pipecat. NOTE: needs
+# pyaudio, which has no Python 3.14 wheels yet -- use the 🎤 button instead.
 # pipecat-ai[whisper,silero,local]>=1.3.0
 # kokoro-onnx
 # requests

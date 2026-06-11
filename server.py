@@ -30,6 +30,7 @@ from alpecca import vision
 from alpecca.introspection import identity_card
 from alpecca import state as state_store
 from alpecca import values
+from alpecca import hearing
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -41,8 +42,17 @@ sensor = WindowSensor()
 voice_sensor = VoiceSensor()
 # Ambient sight (ALPECCA_SIGHT=1) and expression sense (ALPECCA_FACE=1) --
 # both run their own slow glimpse threads and are inert unless opted into.
-screen_sight = vision.ScreenSight()
-face_sense = vision.FaceSense()
+# Glimpses are gated on conversational quiet: the vision model is big enough
+# that loading it evicts the chat model from VRAM, so she only looks around
+# when you haven't spoken for a couple of minutes -- keeping replies fast
+# while you're actually talking with her.
+import time as _time
+
+def _conversation_quiet() -> bool:
+    return _time.time() - mind._last_user_ts > 120
+
+screen_sight = vision.ScreenSight(gate=_conversation_quiet)
+face_sense = vision.FaceSense(gate=_conversation_quiet)
 
 # Connected chat clients, so Alpecca can speak to whoever is listening when
 # she has something to say unprompted.
@@ -150,7 +160,28 @@ def state() -> dict:
     """Current mood + her self-chosen look -- the UI renders both, never sets them."""
     return {"state": mind.state.as_dict(), "mood": mind.state.mood_label(),
             "appearance": mind.current_appearance().as_dict(),
-            "llm_online": mind.llm.online}
+            "llm_online": mind.llm.online,
+            # Which senses are actually live right now -- truthful capability
+            # report, so the UI (and the person) can see what she can sense.
+            "senses": {
+                "window": sensor.available,
+                "voice_tone": voice_sensor.available,
+                "screen_sight": screen_sight.available,
+                "expressions": face_sense.available,
+                "actions": mind.actuator.enabled,
+            }}
+
+
+@app.post("/listen")
+async def listen(req: Request) -> dict:
+    """Push-to-talk: the browser records an utterance and sends the audio here;
+    we transcribe it locally (faster-whisper) and hand the words back. The
+    audio is never stored -- it exists exactly long enough to become text."""
+    audio = await req.body()
+    if not audio:
+        raise HTTPException(status_code=400, detail="no audio")
+    text = await asyncio.to_thread(hearing.transcribe, audio)
+    return {"text": text or "", "heard": bool(text)}
 
 
 @app.get("/introspect")

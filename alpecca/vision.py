@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from config import Vision as VisionCfg, OLLAMA_HOST
 
@@ -78,10 +78,19 @@ def weary_from_label(label: Optional[str]) -> float:
 class _GlimpseThread:
     """Shared shape for the two ambient senses: capture a frame every
     `interval` seconds, reduce it through the vision model, keep only the
-    text. Construction never raises; `available` says whether it's running."""
+    text. Construction never raises; `available` says whether it's running.
 
-    def __init__(self, enabled: bool, interval: float) -> None:
+    `gate` is an optional "is now a good time?" callable. The vision model is
+    big enough that loading it evicts the chat model from VRAM, so glimpsing
+    mid-conversation makes her replies crawl. The server gates glimpses on
+    conversational quiet: while you're actively talking to her she keeps her
+    eyes on you, and catches up on the room when things go still.
+    """
+
+    def __init__(self, enabled: bool, interval: float,
+                 gate: Optional[Callable[[], bool]] = None) -> None:
         self._interval = interval
+        self._gate = gate
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.available = False
@@ -102,7 +111,8 @@ class _GlimpseThread:
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
-                self._glimpse()
+                if self._gate is None or self._gate():
+                    self._glimpse()
             except Exception:
                 pass  # a failed glimpse is a blink, not a crash
             self._stop.wait(self._interval)
@@ -114,9 +124,9 @@ class _GlimpseThread:
 class ScreenSight(_GlimpseThread):
     """What's on the screen right now, as one or two sentences."""
 
-    def __init__(self) -> None:
+    def __init__(self, gate: Optional[Callable[[], bool]] = None) -> None:
         self.latest: str = ""
-        super().__init__(VisionCfg.SIGHT_ENABLED, VisionCfg.SIGHT_INTERVAL)
+        super().__init__(VisionCfg.SIGHT_ENABLED, VisionCfg.SIGHT_INTERVAL, gate)
 
     def _probe(self) -> bool:
         try:
@@ -142,10 +152,10 @@ class FaceSense(_GlimpseThread):
     """A periodic webcam expression read, reduced to one label + the
     weary_face signal it implies."""
 
-    def __init__(self) -> None:
+    def __init__(self, gate: Optional[Callable[[], bool]] = None) -> None:
         self.expression: str = ""
         self.weary: float = 0.0
-        super().__init__(VisionCfg.FACE_ENABLED, VisionCfg.FACE_INTERVAL)
+        super().__init__(VisionCfg.FACE_ENABLED, VisionCfg.FACE_INTERVAL, gate)
 
     def _probe(self) -> bool:
         try:

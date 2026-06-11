@@ -4,7 +4,7 @@
     {
       "name": "alpecca-server",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["server.py"],
+      "runtimeArgs": ["scripts/run_full.py"],
       "port": 8765
     }
   ]
