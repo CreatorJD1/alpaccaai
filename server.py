@@ -426,6 +426,34 @@ def live2d_page() -> HTMLResponse:
     return HTMLResponse((WEB_DIR / "live2d.html").read_text(encoding="utf-8"))
 
 
+@app.get("/spine/manifest")
+def spine_manifest() -> dict:
+    """Whether her Spine rig (StretchyStudio export) exists + its skeleton and
+    animation names. The /live2d page's primary rigged tier."""
+    from alpecca import spine
+    return spine.manifest()
+
+
+@app.get("/spine/asset/{name}")
+def spine_asset(name: str) -> FileResponse:
+    """Serve a Spine asset (skeleton json / atlas / png) from data/avatar/spine/,
+    traversal-blocked. pixi-spine pulls the atlas + textures off the skeleton."""
+    from alpecca import spine
+    p = spine.asset_path(name)
+    if p is None:
+        raise HTTPException(status_code=404, detail="no such asset")
+    return FileResponse(p)
+
+
+@app.get("/spine/pose")
+def spine_pose() -> dict:
+    """Her current animation choice (base/talk/blink) for the Spine driver."""
+    from alpecca import spine
+    m = spine.manifest()
+    speaking = False
+    return spine.choose_animation(m["animations"], mind.state.mood_label(), speaking)
+
+
 @app.get("/talkinghead/manifest")
 def talkinghead_manifest() -> dict:
     """Is the Talking Head Anime process feeding fresh frames? The /live2d page

@@ -81,6 +81,7 @@
      CDN-only (proprietary; loaded just for the compiled-model path, which the
      mesh rig doesn't need). -->
 <script src="/web/vendor/pixi.min.js"></script>
+<script src="/web/vendor/pixi-spine.js"></script>
 <script src="/web/vendor/pixi-live2d-display.min.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/dylanNew/live2d/webgl/Live2D/lib/live2d.min.js"></script>
 <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
@@ -208,12 +209,71 @@ async function boot(){
   try { man = await fetch('/live2d/manifest').then(r=>r.json()); } catch(e){}
   document.getElementById('note').style.display = 'none';
   if(man.live2d_mode){ await bootCubism(man); return; }
-  // Top fallback tier: her layered rig (real per-part motion) if her art has
-  // been decomposed; else the single-image mesh rig.
+  // Tier order (THA3 neural face overlays separately on top of all of these):
+  // Spine skeletal rig > layered rig > single-image mesh.
+  let spineMan = {};
+  try { spineMan = await fetch('/spine/manifest').then(r=>r.json()); } catch(e){}
+  if(spineMan.spine_mode && typeof PIXI.spine !== 'undefined'){ buildSpineRig(spineMan); return; }
   let rigMan = {};
   try { rigMan = await fetch('/rig/manifest').then(r=>r.json()); } catch(e){}
   if(rigMan.rig_mode){ buildLayeredRig(rigMan); }
   else { buildMeshRig(); }
+}
+
+// --- the Spine rig: her StretchyStudio skeleton, her primary rigged tier ------
+// A real skeletal rig authored in free tools (See-Through -> StretchyStudio ->
+// Spine JSON), played with pixi-spine and driven by her mood: she loops her
+// mood's animation, overlays a talk animation while speaking, and (if her
+// skeleton has a head bone) tilts toward you. Cheap to play -- no GPU, unlike
+// the neural face.
+async function buildSpineRig(man){
+  const app = new PIXI.Application({ view: document.getElementById('canvas'),
+    resizeTo: window, backgroundAlpha: 0, antialias: true });
+  const loader = new PIXI.Loader();
+  loader.add('alp', '/spine/asset/' + man.skeleton);
+  loader.onError.add(()=> buildMeshRig());
+  loader.load((ldr, res)=>{
+    let spine;
+    try { spine = new PIXI.spine.Spine(res.alp.spineData); }
+    catch(e){ buildMeshRig(); return; }
+    app.stage.addChild(spine);
+    const fit = ()=>{
+      const b = spine.getLocalBounds();
+      const s = Math.min(window.innerWidth/(b.width||300), window.innerHeight/(b.height||540)) * 0.82;
+      spine.scale.set(s);
+      spine.x = window.innerWidth/2;
+      spine.y = window.innerHeight*0.5 - (b.y + b.height/2) * s;
+    };
+    fit(); window.addEventListener('resize', fit);
+    showCaption('Spine rig (StretchyStudio) — skeletal animation driven by her state');
+
+    const anims = man.animations || [];
+    const has = n => anims.includes(n);
+    function pick(){                                   // mirrors spine.choose_animation
+      const mood = currentMood || 'content';
+      const idle = [mood, mood[0].toUpperCase()+mood.slice(1), 'idle','Idle','idle_loop','breathing','loop'];
+      const base = idle.find(has) || anims[0] || null;
+      const talk = avatarState==='speaking' ? ['talk','Talk','talking','mouth','speak'].find(has) : null;
+      return { base, talk };
+    }
+    let curBase = null, curTalk = null;
+    function apply(){
+      const d = pick();
+      if(d.base && d.base !== curBase){ try { spine.state.setAnimation(0, d.base, true); } catch(e){} curBase = d.base; }
+      if(d.talk !== curTalk){
+        try { if(d.talk) spine.state.setAnimation(1, d.talk, true); else spine.state.setEmptyAnimation(1, 0.2); } catch(e){}
+        curTalk = d.talk;
+      }
+    }
+    setInterval(apply, 700); apply();
+    app.ticker.add(()=>{                               // best-effort live head tilt
+      try {
+        const head = spine.skeleton.findBone('head');
+        if(head){ const fear = dims.fear ?? 0, care = dims.compassion ?? 0.2;
+          head.rotation = Math.sin(performance.now()/800) * (1.5 + fear*5) + care*4; }
+      } catch(e){}
+    });
+  });
 }
 
 // --- the layered rig: her decomposed art, each part moved on its own ----------

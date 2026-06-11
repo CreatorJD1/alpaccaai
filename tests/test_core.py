@@ -805,6 +805,41 @@ def test_live2d_manifest_off_without_model():
     assert m["halo_states"]["thinking"] == "processing"
 
 
+# --- Spine tier: her mood -> which animation she plays -------------------------
+
+def test_spine_choose_animation_prefers_mood_then_idle():
+    from alpecca import spine
+    anims = ["idle", "talk", "blink", "joyful"]
+    # her mood's own animation wins when she has one
+    d = spine.choose_animation(anims, "joyful", speaking=False)
+    assert d["base"] == "joyful" and d["talk"] is None and d["blink"] == "blink"
+    # no mood-named animation -> idle
+    d = spine.choose_animation(anims, "tender", speaking=True)
+    assert d["base"] == "idle" and d["talk"] == "talk"     # talk overlay while speaking
+    # nothing recognizable -> her first animation, never nothing
+    d = spine.choose_animation(["wiggle"], "content", speaking=False)
+    assert d["base"] == "wiggle"
+    assert spine.choose_animation([], "content", False)["base"] is None
+
+def test_spine_manifest_and_assets(tmp_path):
+    from alpecca import spine
+    sdir = tmp_path
+    (sdir / "alpecca.json").write_text(
+        '{"skeleton":{}, "animations":{"idle":{}, "talk":{}}}', encoding="utf-8")
+    (sdir / "alpecca.atlas").write_text("atlas", encoding="utf-8")
+    (sdir / "alpecca.png").write_bytes(b"\x89PNG")
+    m = spine.manifest(sdir)
+    assert m["spine_mode"] is True and m["skeleton"] == "alpecca.json"
+    assert set(m["animations"]) == {"idle", "talk"}
+    assert spine.asset_path("alpecca.atlas", sdir) is not None
+    assert spine.asset_path("../../alpecca.db", sdir) is None   # traversal blocked
+    assert spine.asset_path("nope.png", sdir) is None
+
+def test_spine_absent_is_off(tmp_path):
+    from alpecca import spine
+    assert spine.manifest(tmp_path)["spine_mode"] is False
+
+
 # --- Talking Head Anime tier: pose mapping + frame buffer ----------------------
 
 def test_talkinghead_pose_is_grounded_in_mood():
