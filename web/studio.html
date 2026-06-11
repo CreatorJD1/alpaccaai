@@ -18,8 +18,13 @@
           grid-template-columns: 300px 1fr; gap:16px; }
   .room { background:var(--panel); border-radius:18px; padding:18px; text-align:center;
           box-shadow:0 10px 40px rgba(0,0,0,.4); position:sticky; top:14px; align-self:start; }
-  .room img.her { width:220px; height:auto; border-radius:16px;
-                  background:radial-gradient(120px 120px at 50% 40%, #2c2540, transparent); }
+  .room img.her, .room video.her { width:220px; height:auto; border-radius:16px;
+                  background:radial-gradient(120px 120px at 50% 40%, #2c2540, transparent);
+                  animation: breathe 4.5s ease-in-out infinite; }
+  @keyframes breathe {
+    0%,100% { transform: translateY(0) scale(1); }
+    50%     { transform: translateY(-4px) scale(1.012); }
+  }
   .room .doing { margin-top:10px; min-height:40px; font-size:13px; color:#d9ccff;
                  font-style:italic; line-height:1.45; }
   .room button { margin-top:12px; background:var(--accent); color:#221a33; border:0;

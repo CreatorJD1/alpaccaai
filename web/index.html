@@ -236,7 +236,7 @@ function applyAppearance(app){
 
 function render(state, mood, appearance){
   current = state;
-  if(mood) currentMood = mood;
+  if(mood){ currentMood = mood; if(typeof moodSequence === 'function') moodSequence(mood); }
   if(appearance){ lastAppearance = appearance; applyAppearance(appearance); }
   const {love, compassion, fear} = state;
   document.getElementById('fLove').style.width = (love*100)+'%';
@@ -323,6 +323,7 @@ function connect(){
     const m = JSON.parse(ev.data);
     if(m.type === 'state'){
       render(m.state, m.mood, m.appearance);
+      if(typeof playSequence === 'function' && !window.__greeted){ window.__greeted = true; playSequence('greet', 1600); }
       statusEl.textContent = m.llm_online ? '' : 'Ollama offline — replies are stubbed. Start Ollama for real conversation.';
     } else if(m.type === 'reply'){
       addMem(m.memories_used); addMsg(m.reply, 'her'); speak(m.reply);
@@ -463,6 +464,9 @@ function setAvatarState(s){
   const pose = portraitForState(s);
   if(pose && !avatarPortrait.src.endsWith(pose)) avatarPortrait.src = pose;
 
+  // A small nod as she starts to speak -- a beat of acknowledgement.
+  if(s === 'speaking' && typeof playSequence === 'function') playSequence('nod', 900);
+
   // SVG mode: speaking gets a talking mouth.
   if(mouthTimer){ clearInterval(mouthTimer); mouthTimer = null; }
   const svgMode = !videoClips && !portraitClips;
@@ -493,6 +497,86 @@ fetch('/avatar/manifest').then(r => r.json()).then(m => {
     avatarPortrait.src = portraitForState('idle');
   }
 }).catch(()=>{});
+
+// --- bringing her to life: procedural motion + choreographed sequences --------
+// Her art is single poses, not aligned frames, so life comes from MOTION on the
+// pose rather than flipping between dissimilar drawings. A base idle loop
+// (breathing, sway, float) runs always; its agitation scales with her real
+// mood (more sway when her unease is high, more lift when warm) so her body
+// language is a true readout of her state. On top of that, short *sequences*
+// (greet, nod, happy bounce, fidget) play on events and ease back to idle.
+function animTarget(){
+  if(portraitClips) return avatarPortrait;
+  if(videoClips) return avatarVideo;
+  return null;  // SVG mode runs its own idle()/blink()
+}
+
+// Sequences: each maps progress p in [0,1] -> transform deltas layered over idle.
+const SEQUENCES = {
+  // a little lean-in + side tilt, like a wave hello
+  greet:  p => ({ y:-6*Math.sin(p*Math.PI), rot: 4*Math.sin(p*Math.PI*2), s: 0.01*Math.sin(p*Math.PI) }),
+  // two quick nods (she acknowledges / starts to speak)
+  nod:    p => ({ y: 5*Math.abs(Math.sin(p*Math.PI*2)), rot: 0, s: 0 }),
+  // a buoyant double bounce when she's warm/affectionate
+  happy:  p => ({ y:-12*Math.abs(Math.sin(p*Math.PI*2)), rot: 2*Math.sin(p*Math.PI*4), s: 0.02*Math.sin(p*Math.PI*2) }),
+  // small restless shifts when her unease is up
+  fidget: p => ({ y: 0, rot: 3*Math.sin(p*Math.PI*6), s: 0 }),
+};
+let activeSeq = null, seqStart = 0, seqDur = 0;
+function playSequence(name, durMs){
+  if(!SEQUENCES[name]) return;
+  activeSeq = name; seqDur = durMs || 1400; seqStart = performance.now();
+}
+
+let animT = 0, lastTs = 0;
+function animateAvatar(ts){
+  const el = animTarget();
+  if(el){
+    const dt = lastTs ? (ts - lastTs)/1000 : 0.016; lastTs = ts;
+    animT += dt;
+    const fear = (current && current.fear) || 0;
+    const love = (current && current.love) || 0.4;
+    // Base idle: breathing, mood-scaled sway, gentle float.
+    const breathe = 1 + Math.sin(animT*1.6) * 0.012;
+    const sway = Math.sin(animT*0.8) * (1.5 + fear*5);          // restless when uneasy
+    const floatY = Math.sin(animT*1.1) * (2 + love*1.5);        // buoyant when warm
+    let tilt = Math.sin(animT*0.5) * (0.6 + fear*1.6);
+    let extraY = 0, extraS = 1;
+    // State flavor.
+    if(avatarState === 'speaking'){ extraY = Math.abs(Math.sin(animT*6)) * -4; extraS = 1 + Math.sin(animT*6)*0.008; }
+    else if(avatarState === 'listening'){ extraY = -5; extraS = 1.02; }
+    else if(avatarState === 'thinking'){ tilt += 3 + Math.sin(animT*1.4)*1.5; }
+    // Active one-shot sequence, eased.
+    let sx = 0, sy = 0, sr = 0, ss = 0;
+    if(activeSeq){
+      const p = (ts - seqStart) / seqDur;
+      if(p >= 1){ activeSeq = null; }
+      else { const d = SEQUENCES[activeSeq](p); sy = d.y; sr = d.rot; ss = d.s; }
+    }
+    el.style.transform =
+      `translate(${sway+sx}px, ${floatY+extraY+sy}px) ` +
+      `rotate(${tilt*0.15 + sr*0.15}deg) scale(${(breathe*extraS)+ss})`;
+  }
+  requestAnimationFrame(animateAvatar);
+}
+requestAnimationFrame(animateAvatar);
+
+// Idle "life ticks": once in a while she shifts on her own, more if anxious.
+setInterval(()=>{
+  if(!animTarget() || activeSeq || avatarState !== 'idle') return;
+  const fear = (current && current.fear) || 0;
+  if(fear > 0.5 && Math.random() < 0.5) playSequence('fidget', 1200);
+  else if(Math.random() < 0.25) playSequence('nod', 900);
+}, 9000);
+
+// React to mood changes with a fitting little sequence.
+let prevMoodSeq = '';
+function moodSequence(mood){
+  if(mood === prevMoodSeq) return;
+  prevMoodSeq = mood;
+  if(mood === 'affectionate') playSequence('happy', 1500);
+  else if(mood === 'anxious') playSequence('fidget', 1400);
+}
 
 // --- her voice: spoken replies via the OS speech engine (fully local) ---------
 let speakOn = localStorage.getItem('alpeccaSpeak') === '1';

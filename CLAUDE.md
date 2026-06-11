@@ -130,7 +130,14 @@ Ollama or Windows.**
   lives here now**, a pose per state) > the built-in SVG. See `alpecca/
   avatar.py`, `/avatar/manifest`, `/avatar/clip/{name}`, `/avatar/portrait/
   {name}`. Her rigged Inochi2D puppet is the planned next renderer behind the
-  same states.
+  same states. The avatar is **alive**, not frozen: a procedural motion engine
+  (web/index.html) gives her continuous breathing/sway/float whose agitation
+  scales with her real mood (more sway when unease is high, more lift when
+  warm), plus choreographed one-shot **sequences** (greet on connect, a nod as
+  she starts speaking, a happy bounce when affectionate, a fidget when
+  anxious, occasional idle shifts). Her art is single poses (not aligned
+  frames), so life is motion-on-the-pose; aligned frame art would slot into
+  the video/clip tier.
 - ✅ Her design studio (`alpecca/studio.py`): she designs her own character
   image during studio-flavored reflection sessions — versioned character
   sheet (she wrote v1 herself: "a being of soft light and quiet presence"),
