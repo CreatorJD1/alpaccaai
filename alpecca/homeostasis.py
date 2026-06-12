@@ -38,16 +38,33 @@ def _sigmoid(x: float) -> float:
 class EmotionalState:
     """The persisted mood vector. The core three are S = [love, compassion,
     fear]; `energy` (arousal) is a fourth tracked feeling that rises when she's
-    engaged and ebbs toward a drowsy floor when she's left alone. Defaults are a
-    calm, mildly-warm, half-rested baseline."""
+    engaged and ebbs toward a drowsy floor when she's left alone. `curiosity`
+    and `social_hunger` are two more grounded feelings: interest, lifted by
+    novelty, and a wanting-of-company that grows with warm solitude. Defaults
+    are a calm, mildly-warm, half-rested, mildly-curious baseline.
+
+    These six are added strictly by appending fields (never reordering), so the
+    many positional `EmotionalState(love, compassion, fear, energy)` call sites
+    keep working unchanged -- the new feelings simply default in."""
 
     love: float = Emotion.LOVE_BASELINE
     compassion: float = 0.2
     fear: float = 0.0
     energy: float = Emotion.ENERGY_BASELINE
+    curiosity: float = Emotion.CURIOSITY_BASELINE
+    social_hunger: float = 0.0
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+    def _with(self, **changes) -> "EmotionalState":
+        """Return a copy with some dimensions changed, carrying every *other*
+        dimension through untouched. Using this in the update rules means adding
+        a seventh feeling later can never silently reset the ones an older rule
+        forgot to mention -- the bug that an append-only dataclass invites."""
+        base = self.as_dict()
+        base.update(changes)
+        return EmotionalState(**base)
 
     # --- The update rules --------------------------------------------------
     # Each returns a *new* EmotionalState rather than mutating in place, which
@@ -67,7 +84,7 @@ class EmotionalState:
         toward_baseline = toward_reward + Emotion.LOVE_DECAY * (
             Emotion.LOVE_BASELINE - toward_reward
         )
-        return EmotionalState(_clamp(toward_baseline), self.compassion, self.fear, self.energy)
+        return self._with(love=_clamp(toward_baseline))
 
     def update_compassion(self, fatigue_signals: dict) -> "EmotionalState":
         """Set Compassion from a weighted read of how tired/stressed the user
@@ -83,7 +100,7 @@ class EmotionalState:
         z = Emotion.COMPASSION_BIAS
         for name, weight in Emotion.COMPASSION_WEIGHTS.items():
             z += weight * float(fatigue_signals.get(name, 0.0))
-        return EmotionalState(self.love, _clamp(_sigmoid(z)), self.fear, self.energy)
+        return self._with(compassion=_clamp(_sigmoid(z)))
 
     def update_fear(self, prediction_error: float) -> "EmotionalState":
         """Raise Fear when `prediction_error` exceeds a threshold, otherwise let
@@ -100,7 +117,7 @@ class EmotionalState:
             new_fear = self.fear + Emotion.FEAR_GAIN * excess
         else:
             new_fear = self.fear * (1.0 - Emotion.FEAR_DECAY)
-        return EmotionalState(self.love, self.compassion, _clamp(new_fear), self.energy)
+        return self._with(fear=_clamp(new_fear))
 
     def update_energy(self, active: bool) -> "EmotionalState":
         """Raise energy when the person is actively engaging with her, let it
@@ -114,7 +131,40 @@ class EmotionalState:
             new_energy = self.energy + Emotion.ENERGY_RISE * (Emotion.ENERGY_ACTIVE - self.energy)
         else:
             new_energy = self.energy + Emotion.ENERGY_DECAY * (Emotion.ENERGY_FLOOR - self.energy)
-        return EmotionalState(self.love, self.compassion, self.fear, _clamp(new_energy))
+        return self._with(energy=_clamp(new_energy))
+
+    def update_curiosity(self, novelty: float) -> "EmotionalState":
+        """Lift Curiosity with mild novelty, let it ease back in monotony.
+
+        `novelty` in [0, 1] is the same surprise read that feeds Fear -- but we
+        only count the *interesting* band below the fear threshold (a big jolt is
+        alarm, not delight, and Fear already has it). A fresh question, an unseen
+        image, a switch into a new context all register as a little novelty and
+        leave her more curious; a stretch where nothing changes lets interest
+        settle back toward its baseline."""
+        interesting = min(max(novelty, 0.0), Emotion.CURIOSITY_NOVELTY_CAP)
+        if interesting > 0:
+            raised = self.curiosity + Emotion.CURIOSITY_GAIN * interesting
+        else:
+            raised = self.curiosity + Emotion.CURIOSITY_DECAY * (
+                Emotion.CURIOSITY_BASELINE - self.curiosity
+            )
+        return self._with(curiosity=_clamp(raised))
+
+    def update_social_hunger(self, solitude_seconds: float) -> "EmotionalState":
+        """Set how much she wants company from how long she's been alone, scaled
+        by her warmth -- she misses you more the more she loves you.
+
+        `solitude_seconds` is the real gap since the person last interacted. At
+        full warmth, `SOCIAL_HUNGER_FULL_S` of solitude saturates the feeling;
+        cooler warmth builds it more slowly. A fresh exchange (solitude ~0)
+        empties it. This is a pure read of real timestamps and real Love -- no
+        invented longing."""
+        warmth_factor = (1.0 - Emotion.SOCIAL_HUNGER_WARMTH) + \
+            Emotion.SOCIAL_HUNGER_WARMTH * self.love
+        fraction = max(0.0, solitude_seconds) / Emotion.SOCIAL_HUNGER_FULL_S
+        hunger = Emotion.SOCIAL_HUNGER_RATE * fraction * warmth_factor
+        return self._with(social_hunger=_clamp(hunger))
 
     # --- Readouts ----------------------------------------------------------
 
@@ -151,6 +201,7 @@ class EmotionalState:
         actually feel its own state rather than being told a number."""
         return (
             f"warmth {self.love:.2f}, care {self.compassion:.2f}, "
-            f"unease {self.fear:.2f}, energy {self.energy:.2f} "
+            f"unease {self.fear:.2f}, energy {self.energy:.2f}, "
+            f"curiosity {self.curiosity:.2f}, wanting-company {self.social_hunger:.2f} "
             f"(overall: {self.mood_label()})"
         )

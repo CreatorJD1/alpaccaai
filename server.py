@@ -103,16 +103,31 @@ async def lifespan(app: FastAPI):
                 async with mind_lock:
                     mind.see(screen_sight.latest)
                     mind.perceive(_observe())
+                    # She may wander to whichever room of her home is calling her
+                    # strongest right now -- grounded movement, the same way her
+                    # mood drifts. Cheap and pure, so it's fine under the lock.
+                    roamed = mind.maybe_roam()
                     # Cheap check: did her introspection notice something worth
                     # voicing? (Claims the cooldown slot if so.)
                     reason = mind.volunteer_reason()
                     # If she has nothing to say, the quiet may still be hers to
-                    # use -- the fourth directive (reflection) runs instead.
+                    # use -- her Soul decides what self-directed act to take.
                     reflect_now = (reason is None) and mind.reflection_due()
+                if roamed:
+                    # Let any open home view follow her from room to room, and
+                    # show it in the activity ticker so her wandering is visible.
+                    await _broadcast({"type": "roamed", "location": roamed,
+                                      "home": mind.home_state()})
+                    await _broadcast({"type": "activity",
+                                      "text": f"she drifted into the {roamed}"})
                 if reflect_now:
-                    # Off the lock: musing is slow LLM work and entirely hers;
-                    # chat must never queue behind it.
-                    await asyncio.to_thread(mind.reflect)
+                    # Off the lock: her Soul drives one self-directed act (reflect,
+                    # self-improve, or recursive self-question) -- slow, entirely
+                    # hers, and chat must never queue behind it. Its note (if any)
+                    # goes to the activity ticker so you can watch her stir.
+                    res = await asyncio.to_thread(mind.idle_self_direct)
+                    if res and res.get("note"):
+                        await _broadcast({"type": "activity", "text": res["note"]})
                 if reason:
                     from alpecca import openclaw_bridge
                     from config import OpenClaw as OpenClawCfg
@@ -154,6 +169,16 @@ app = FastAPI(title="Alpecca", lifespan=lifespan)
 
 @app.get("/")
 def index() -> HTMLResponse:
+    """The super app: her living 3D home with integrated chat and every facet
+    (Studio, Library, Journal, Mind, Workshop, Files) as panels over the existing
+    endpoints -- one page, one socket. The classic chat UI stays at /classic."""
+    return HTMLResponse((WEB_DIR / "home.html").read_text(encoding="utf-8"))
+
+
+@app.get("/classic")
+def classic() -> HTMLResponse:
+    """The original full-featured chat page (voice push-to-talk, image attach,
+    avatar state machine). Kept available while the super app folds these in."""
     return HTMLResponse((WEB_DIR / "index.html").read_text(encoding="utf-8"))
 
 
@@ -164,12 +189,240 @@ def studio_page() -> HTMLResponse:
     return HTMLResponse((WEB_DIR / "studio.html").read_text(encoding="utf-8"))
 
 
+@app.get("/home")
+def home_page() -> HTMLResponse:
+    """Her home -- the live 3D house of rooms she roams of her own accord. The
+    page is a pure renderer; where she is comes from /home/state."""
+    return HTMLResponse((WEB_DIR / "home.html").read_text(encoding="utf-8"))
+
+
+@app.get("/home/state")
+def home_state() -> dict:
+    """Where she is in her home right now, why she's there, and how strongly each
+    room is calling her -- all grounded in her live state (alpecca/home.py)."""
+    return mind.home_state()
+
+
+@app.get("/growth")
+def growth() -> dict:
+    """The Workshop's contents: the wants she's formed (desires.py) and the
+    bounded, reversible changes she's made to herself (selfmod.py). Read-only and
+    fully auditable -- nothing she's changed about herself is hidden."""
+    return mind.desires_state()
+
+
+@app.get("/soul")
+def soul() -> dict:
+    """Her Soul, live: the ranked slate of intentions from her seven subagents
+    (emotions, actions, self-care, compassion) and the one in focus, arbitrated
+    by the Good Person Principle (alpecca/soul.py). The single explainable answer
+    to 'what is she moved to do right now, and why.'"""
+    return mind.soul_state()
+
+
+@app.get("/memories")
+def memories() -> dict:
+    """The Library's contents: the moments and musings she's keeping. Read-only."""
+    from alpecca import memory as _mem
+    return {"recent": _mem.recent(limit=40), "count": _mem.count()}
+
+
+@app.get("/journal")
+def journal() -> dict:
+    """Her journal -- the notebook that is hers to write in, plus the open
+    questions she's working through on her own (alpecca/journal.py). Read-only to
+    the person; the writing is hers."""
+    return mind.journal_state()
+
+
+@app.get("/rigforge")
+def rigforge_page() -> HTMLResponse:
+    """The RIGFORGE runtime as her living avatar. With ?embed=1 it hides the
+    editor chrome, auto-loads her portrait, and drives the rig from her live mood
+    (and the WS speaking signal) -- a continuous-mesh figure animated from one
+    image. The 3D home embeds this and textures it onto her."""
+    return HTMLResponse((WEB_DIR / "rigforge.html").read_text(encoding="utf-8"))
+
+
+@app.post("/rigforge/capture")
+async def rigforge_capture(req: Request) -> dict:
+    """Stage a certified RIGFORGE sample for her data loop. RIGFORGE posts
+    {name, readiness, figure(dataURL png), pose(coco json), rig(rigforge json)}
+    after its readiness check; we re-gate on readiness here and save the triplet
+    under data/avatar/samples/{figures,pose,rigs}. build_manifest.py turns these
+    into training data for her own joint detector (Path 3 -- selfmod for her body)."""
+    from config import RigData
+    import json as _json
+    try:
+        b = await req.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be JSON")
+    name = re.sub(r"[^a-z0-9_-]+", "_", (b.get("name") or "sample").lower()).strip("_") or "sample"
+    readiness = float(b.get("readiness") or 0)
+    if readiness < RigData.MIN_READINESS:
+        return {"ok": False, "error": f"not certified (readiness {readiness:.0f} < {RigData.MIN_READINESS:.0f})"}
+    base = RigData.SAMPLES_DIR
+    for sub in ("figures", "pose", "rigs"):
+        (base / sub).mkdir(parents=True, exist_ok=True)
+    fig = _decode_image(b.get("figure") or "")
+    if fig:
+        (base / "figures" / f"{name}.png").write_bytes(fig)
+    if b.get("pose") is not None:
+        (base / "pose" / f"{name}.rigpose.json").write_text(
+            _json.dumps(b["pose"]), encoding="utf-8")
+    if b.get("rig") is not None:
+        (base / "rigs" / f"{name}.rig.json").write_text(
+            _json.dumps(b["rig"]), encoding="utf-8")
+    return {"ok": True, "name": name, "readiness": readiness,
+            "staged": str(base), "next": "run scripts/build_manifest.py to assemble + push"}
+
+
+@app.get("/avatar/rigpose")
+def avatar_rigpose() -> FileResponse:
+    """Her raw pose keypoints (COCO) for RIGFORGE's importPose. 404 when absent."""
+    from config import AVATAR_DIR
+    p = AVATAR_DIR / "rigpose.json"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="no rigpose")
+    return FileResponse(p, media_type="application/json")
+
+
+_EXPRESSIONS = {"neutral", "warm_smile", "happy", "curious", "thinking", "concerned",
+                "compassionate", "soft_sadness", "apologetic", "reassuring", "low_power",
+                "protective", "fear_spike", "overload", "playful", "gentle"}
+
+
+@app.get("/avatar/expression/{name}")
+def avatar_expression(name: str) -> FileResponse:
+    """One of her 16 drawn facial expressions (sliced from her expression sheet),
+    for the live anime-face profile view. Whitelisted; unknown names 404."""
+    from config import CHARACTER_DIR
+    if name not in _EXPRESSIONS:
+        raise HTTPException(status_code=404, detail="no such expression")
+    p = CHARACTER_DIR / "expressions" / f"{name}.png"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="expression not generated")
+    return FileResponse(p, media_type="image/png")
+
+
+@app.get("/avatar/skeleton")
+def avatar_skeleton() -> dict:
+    """Her pose skeleton (data/avatar/rigpose.json) as a normalized set of joints
+    and anchors -- what the avatar pivots its head-tilt and lean on, grounded in
+    her real figure (alpecca/pose.py). `null` when no skeleton has been saved."""
+    from alpecca import pose as _pose
+    from config import AVATAR_DIR
+    return {"skeleton": _pose.load(AVATAR_DIR / "rigpose.json")}
+
+
+@app.get("/desktop")
+def desktop() -> dict:
+    """Her workstation: a desktop-like overview of the folders she's allowed to
+    tidy (Desktop/Pictures/Music/Video/general), with what she can and can't do.
+    Every operation is charter-guarded; she can never delete (alpecca/desktop.py)."""
+    from alpecca import desktop as _desktop
+    return _desktop.overview()
+
+
+@app.get("/desktop/list")
+def desktop_list(root: str, rel: str = "") -> dict:
+    """List one allowed room of her workstation. Unknown roots and any path that
+    escapes the room are refused by the charter guard before the disk is touched."""
+    from alpecca import desktop as _desktop
+    return _desktop.list_room(root, rel)
+
+
+@app.post("/desktop/move")
+async def desktop_move(req: Request) -> dict:
+    """Move a file between allowed rooms. Off unless ALPECCA_FILES=1; every move is
+    charter-guarded (allowed roots only, never a delete, no traversal)."""
+    from config import Files as _Files
+    if not _Files.ENABLED:
+        return {"ok": False, "error": "the file room is off (set ALPECCA_FILES=1)"}
+    try:
+        b = await req.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be JSON")
+    from alpecca import desktop as _desktop
+    return _desktop.move(b.get("src_root", ""), b.get("src_rel", ""),
+                         b.get("dst_root", ""), b.get("dst_rel", ""))
+
+
+@app.post("/desktop/rename")
+async def desktop_rename(req: Request) -> dict:
+    """Rename within an allowed room. Off unless ALPECCA_FILES=1; charter-guarded."""
+    from config import Files as _Files
+    if not _Files.ENABLED:
+        return {"ok": False, "error": "the file room is off (set ALPECCA_FILES=1)"}
+    try:
+        b = await req.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be JSON")
+    from alpecca import desktop as _desktop
+    return _desktop.rename(b.get("root", ""), b.get("rel", ""), b.get("new_name", ""))
+
+
+_GAMES = [
+    {"name": "2048", "url": "https://play2048.co/", "emoji": "🔢"},
+    {"name": "Chess", "url": "https://lichess.org/", "emoji": "♟"},
+    {"name": "Tetris", "url": "https://tetris.com/play-tetris", "emoji": "🟦"},
+    {"name": "Sudoku", "url": "https://sudoku.com/", "emoji": "🔢"},
+    {"name": "Hextris", "url": "https://hextris.io/", "emoji": "⬡"},
+    {"name": "Solitaire", "url": "https://solitaired.com/", "emoji": "🃏"},
+    {"name": "GeoGuessr-ish", "url": "https://openguessr.com/", "emoji": "🌍"},
+    {"name": "Wordle", "url": "https://www.nytimes.com/games/wordle/", "emoji": "🟩"},
+]
+
+
+@app.get("/games")
+def games() -> dict:
+    """A small curated set of safe browser games she can play for fun. Her charter
+    permits entertainment under supervision; she opens these with her https-only
+    open_url tool, or you launch one here. (Edit the list in server.py to taste.)"""
+    return {"games": _GAMES, "can_open": mind.actuator.enabled}
+
+
+@app.post("/games/play")
+async def games_play(req: Request) -> dict:
+    """Have HER open a browser game (via her open_url tool). Off unless she has the
+    actuator (ALPECCA_APPS / open_url available)."""
+    try:
+        b = await req.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be JSON")
+    url = (b.get("url") or "").strip()
+    if not url or not url.startswith("https://"):
+        return {"ok": False, "error": "https game url required"}
+    result = mind.actuator.execute("open_url", {"url": url})
+    return {"ok": "isn't" not in result.lower() and "only https" not in result.lower(),
+            "result": result}
+
+
+@app.get("/sight")
+def sight() -> dict:
+    """What she can sense and is doing right now -- for the live senses indicator
+    and workspace view. `screen` is the actual text of what she last saw on the
+    screen (only her short description survives; no pixels). `busy` is whether a
+    cowork (computer-use) task is currently running."""
+    return {
+        "screen_active": screen_sight.available,
+        "screen": screen_sight.latest,
+        "face_active": face_sense.available,
+        "voice_active": voice_sensor.available,
+        "computer_use": computer_mod.available(),
+        "busy": _computer_lock.locked(),
+    }
+
+
 @app.get("/state")
 def state() -> dict:
     """Current mood + her self-chosen look -- the UI renders both, never sets them."""
     return {"state": mind.state.as_dict(), "mood": mind.state.mood_label(),
             "appearance": mind.current_appearance().as_dict(),
             "llm_online": mind.llm.online,
+            # Which model serves which tier -- heavy reasoning vs. cheap fast work.
+            "models": {"reason": mind.llm.model_for("reason"),
+                       "fast": mind.llm.model_for("fast")},
             # Which senses are actually live right now -- truthful capability
             # report, so the UI (and the person) can see what she can sense.
             "senses": {

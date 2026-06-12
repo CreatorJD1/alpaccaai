@@ -1,0 +1,973 @@
+{
+  "character": "seethrough_output (1)",
+  "canvas": {
+    "width": 960,
+    "height": 960
+  },
+  "folders": [
+    {
+      "name": "Hair Back",
+      "parts": [
+        "Back Hair"
+      ]
+    },
+    {
+      "name": "Body",
+      "parts": [
+        "Legwear",
+        "Footwear",
+        "Bottomwear",
+        "Arm / Handwear L",
+        "Arm / Handwear R",
+        "Topwear",
+        "Neckwear"
+      ]
+    },
+    {
+      "name": "Neck",
+      "parts": [
+        "Neck"
+      ]
+    },
+    {
+      "name": "Face",
+      "parts": [
+        "Ear L",
+        "Ear R",
+        "Face",
+        "Nose"
+      ]
+    },
+    {
+      "name": "Mouth",
+      "parts": [
+        "Mouth"
+      ]
+    },
+    {
+      "name": "Eyes",
+      "parts": [
+        "Eye White L",
+        "Eye White R",
+        "Iris L",
+        "Iris R",
+        "Eyelash L",
+        "Eyelash R"
+      ]
+    },
+    {
+      "name": "Brows",
+      "parts": [
+        "Eyebrow L",
+        "Eyebrow R"
+      ]
+    },
+    {
+      "name": "Hair Front",
+      "parts": [
+        "Front Hair"
+      ]
+    },
+    {
+      "name": "Accessory",
+      "parts": [
+        "Headwear"
+      ]
+    }
+  ],
+  "drawOrder": [
+    "Back Hair",
+    "Legwear",
+    "Footwear",
+    "Bottomwear",
+    "Arm / Handwear L",
+    "Arm / Handwear R",
+    "Topwear",
+    "Neckwear",
+    "Neck",
+    "Ear L",
+    "Ear R",
+    "Face",
+    "Nose",
+    "Mouth",
+    "Eye White L",
+    "Eye White R",
+    "Iris L",
+    "Iris R",
+    "Eyelash L",
+    "Eyelash R",
+    "Eyebrow L",
+    "Eyebrow R",
+    "Front Hair",
+    "Headwear"
+  ],
+  "parameters": [
+    {
+      "id": "ParamAngleX",
+      "name": "Angle X",
+      "group": "Head",
+      "min": -30,
+      "max": 30,
+      "default": 0
+    },
+    {
+      "id": "ParamAngleY",
+      "name": "Angle Y",
+      "group": "Head",
+      "min": -30,
+      "max": 30,
+      "default": 0
+    },
+    {
+      "id": "ParamAngleZ",
+      "name": "Angle Z",
+      "group": "Head",
+      "min": -30,
+      "max": 30,
+      "default": 0
+    },
+    {
+      "id": "ParamHairBack",
+      "name": "Hair Back Sway",
+      "group": "Hair",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamBodyAngleX",
+      "name": "Body Angle X",
+      "group": "Body",
+      "min": -10,
+      "max": 10,
+      "default": 0
+    },
+    {
+      "id": "ParamLegL",
+      "name": "Leg L",
+      "group": "Body",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamLegR",
+      "name": "Leg R",
+      "group": "Body",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamBodyAngleZ",
+      "name": "Body Angle Z",
+      "group": "Body",
+      "min": -10,
+      "max": 10,
+      "default": 0
+    },
+    {
+      "id": "ParamBreath",
+      "name": "Breath",
+      "group": "Body",
+      "min": 0,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamArmLA",
+      "name": "Arm L A",
+      "group": "Body",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamArmLB",
+      "name": "Arm L B",
+      "group": "Body",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamArmRA",
+      "name": "Arm R A",
+      "group": "Body",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamArmRB",
+      "name": "Arm R B",
+      "group": "Body",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamBodyAngleY",
+      "name": "Body Angle Y",
+      "group": "Body",
+      "min": -10,
+      "max": 10,
+      "default": 0
+    },
+    {
+      "id": "ParamMouthOpenY",
+      "name": "Mouth Open",
+      "group": "Mouth",
+      "min": 0,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamMouthForm",
+      "name": "Mouth Form",
+      "group": "Mouth",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamEyeLOpen",
+      "name": "Eye Open (L)",
+      "group": "Eyes",
+      "min": 0,
+      "max": 1,
+      "default": 1
+    },
+    {
+      "id": "ParamEyeROpen",
+      "name": "Eye Open (R)",
+      "group": "Eyes",
+      "min": 0,
+      "max": 1,
+      "default": 1
+    },
+    {
+      "id": "ParamEyeBallX",
+      "name": "Eyeball X",
+      "group": "Eyes",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamEyeBallY",
+      "name": "Eyeball Y",
+      "group": "Eyes",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamEyeLSmile",
+      "name": "Eye Smile (L)",
+      "group": "Eyes",
+      "min": 0,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamEyeRSmile",
+      "name": "Eye Smile (R)",
+      "group": "Eyes",
+      "min": 0,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamBrowLY",
+      "name": "Brow Y (L)",
+      "group": "Brows",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamBrowLForm",
+      "name": "Brow Form (L)",
+      "group": "Brows",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamBrowLAngle",
+      "name": "Brow Angle (L)",
+      "group": "Brows",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamBrowRY",
+      "name": "Brow Y (R)",
+      "group": "Brows",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamBrowRForm",
+      "name": "Brow Form (R)",
+      "group": "Brows",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamBrowRAngle",
+      "name": "Brow Angle (R)",
+      "group": "Brows",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    },
+    {
+      "id": "ParamHairFront",
+      "name": "Hair Front Sway",
+      "group": "Hair",
+      "min": -1,
+      "max": 1,
+      "default": 0
+    }
+  ],
+  "parts": [
+    {
+      "id": "Back Hair",
+      "folder": "Hair Back",
+      "category": "hair_back",
+      "side": null,
+      "original": "back hair",
+      "drawOrder": 0,
+      "bbox": {
+        "left": 332,
+        "top": 33,
+        "right": 630,
+        "bottom": 380
+      },
+      "pivot": {
+        "x": 481,
+        "y": 206
+      },
+      "deformer": "Hair_Back",
+      "bind": [
+        "ParamAngleX",
+        "ParamAngleY",
+        "ParamAngleZ",
+        "ParamHairBack"
+      ],
+      "meshDensity": "high",
+      "confidence": 1.0
+    },
+    {
+      "id": "Legwear",
+      "folder": "Body",
+      "category": "legwear",
+      "side": null,
+      "original": "legwear",
+      "drawOrder": 1,
+      "bbox": {
+        "left": 408,
+        "top": 381,
+        "right": 557,
+        "bottom": 816
+      },
+      "pivot": {
+        "x": 482,
+        "y": 598
+      },
+      "deformer": "Legs",
+      "bind": [
+        "ParamBodyAngleX",
+        "ParamLegL",
+        "ParamLegR"
+      ],
+      "meshDensity": "medium",
+      "confidence": 1.0
+    },
+    {
+      "id": "Footwear",
+      "folder": "Body",
+      "category": "footwear",
+      "side": null,
+      "original": "footwear",
+      "drawOrder": 2,
+      "bbox": {
+        "left": 419,
+        "top": 780,
+        "right": 543,
+        "bottom": 896
+      },
+      "pivot": {
+        "x": 481,
+        "y": 838
+      },
+      "deformer": "Legs",
+      "bind": [
+        "ParamBodyAngleX",
+        "ParamLegL",
+        "ParamLegR"
+      ],
+      "meshDensity": "medium",
+      "confidence": 1.0
+    },
+    {
+      "id": "Bottomwear",
+      "folder": "Body",
+      "category": "bottomwear",
+      "side": null,
+      "original": "bottomwear",
+      "drawOrder": 3,
+      "bbox": {
+        "left": 411,
+        "top": 323,
+        "right": 554,
+        "bottom": 435
+      },
+      "pivot": {
+        "x": 482,
+        "y": 379
+      },
+      "deformer": "Body",
+      "bind": [
+        "ParamBodyAngleX",
+        "ParamBodyAngleZ",
+        "ParamBreath"
+      ],
+      "meshDensity": "high",
+      "confidence": 1.0
+    },
+    {
+      "id": "Arm / Handwear L",
+      "folder": "Body",
+      "category": "handwear",
+      "side": "L",
+      "original": "handwear-l",
+      "drawOrder": 4,
+      "bbox": {
+        "left": 518,
+        "top": 196,
+        "right": 830,
+        "bottom": 271
+      },
+      "pivot": {
+        "x": 674,
+        "y": 234
+      },
+      "deformer": "Arm_L",
+      "bind": [
+        "ParamArmLA",
+        "ParamArmLB",
+        "ParamBodyAngleX"
+      ],
+      "meshDensity": "high",
+      "confidence": 1.0
+    },
+    {
+      "id": "Arm / Handwear R",
+      "folder": "Body",
+      "category": "handwear",
+      "side": "R",
+      "original": "handwear-r",
+      "drawOrder": 5,
+      "bbox": {
+        "left": 129,
+        "top": 197,
+        "right": 442,
+        "bottom": 271
+      },
+      "pivot": {
+        "x": 286,
+        "y": 234
+      },
+      "deformer": "Arm_R",
+      "bind": [
+        "ParamArmRA",
+        "ParamArmRB",
+        "ParamBodyAngleX"
+      ],
+      "meshDensity": "high",
+      "confidence": 1.0
+    },
+    {
+      "id": "Topwear",
+      "folder": "Body",
+      "category": "topwear",
+      "side": null,
+      "original": "topwear",
+      "drawOrder": 6,
+      "bbox": {
+        "left": 375,
+        "top": 167,
+        "right": 589,
+        "bottom": 540
+      },
+      "pivot": {
+        "x": 482,
+        "y": 354
+      },
+      "deformer": "Body",
+      "bind": [
+        "ParamBodyAngleX",
+        "ParamBodyAngleY",
+        "ParamBodyAngleZ",
+        "ParamBreath"
+      ],
+      "meshDensity": "high",
+      "confidence": 1.0
+    },
+    {
+      "id": "Neckwear",
+      "folder": "Body",
+      "category": "neckwear",
+      "side": null,
+      "original": "neckwear",
+      "drawOrder": 7,
+      "bbox": {
+        "left": 460,
+        "top": 171,
+        "right": 505,
+        "bottom": 348
+      },
+      "pivot": {
+        "x": 482,
+        "y": 260
+      },
+      "deformer": "Body",
+      "bind": [
+        "ParamBodyAngleX",
+        "ParamBodyAngleY",
+        "ParamAngleZ",
+        "ParamBreath"
+      ],
+      "meshDensity": "medium",
+      "confidence": 1.0
+    },
+    {
+      "id": "Neck",
+      "folder": "Neck",
+      "category": "neck",
+      "side": null,
+      "original": "neck",
+      "drawOrder": 8,
+      "bbox": {
+        "left": 467,
+        "top": 136,
+        "right": 501,
+        "bottom": 188
+      },
+      "pivot": {
+        "x": 484,
+        "y": 162
+      },
+      "deformer": "Neck",
+      "bind": [
+        "ParamAngleX",
+        "ParamAngleY",
+        "ParamAngleZ",
+        "ParamBodyAngleX"
+      ],
+      "meshDensity": "medium",
+      "confidence": 0.67
+    },
+    {
+      "id": "Ear L",
+      "folder": "Face",
+      "category": "ear",
+      "side": "L",
+      "original": "ears-l",
+      "drawOrder": 9,
+      "bbox": {
+        "left": 508,
+        "top": 111,
+        "right": 535,
+        "bottom": 141
+      },
+      "pivot": {
+        "x": 522,
+        "y": 126
+      },
+      "deformer": "Ear_L",
+      "bind": [
+        "ParamAngleX",
+        "ParamAngleY"
+      ],
+      "meshDensity": "medium",
+      "confidence": 0.67
+    },
+    {
+      "id": "Ear R",
+      "folder": "Face",
+      "category": "ear",
+      "side": "R",
+      "original": "ears-r",
+      "drawOrder": 10,
+      "bbox": {
+        "left": 434,
+        "top": 111,
+        "right": 455,
+        "bottom": 140
+      },
+      "pivot": {
+        "x": 444,
+        "y": 126
+      },
+      "deformer": "Ear_R",
+      "bind": [
+        "ParamAngleX",
+        "ParamAngleY"
+      ],
+      "meshDensity": "medium",
+      "confidence": 0.67
+    },
+    {
+      "id": "Face",
+      "folder": "Face",
+      "category": "face",
+      "side": null,
+      "original": "face",
+      "drawOrder": 11,
+      "bbox": {
+        "left": 431,
+        "top": 56,
+        "right": 531,
+        "bottom": 163
+      },
+      "pivot": {
+        "x": 481,
+        "y": 110
+      },
+      "deformer": "Face",
+      "bind": [
+        "ParamAngleX",
+        "ParamAngleY",
+        "ParamAngleZ"
+      ],
+      "meshDensity": "high",
+      "confidence": 0.67
+    },
+    {
+      "id": "Nose",
+      "folder": "Face",
+      "category": "nose",
+      "side": null,
+      "original": "nose",
+      "drawOrder": 12,
+      "bbox": {
+        "left": 478,
+        "top": 127,
+        "right": 484,
+        "bottom": 134
+      },
+      "pivot": {
+        "x": 481,
+        "y": 130
+      },
+      "deformer": "Face",
+      "bind": [
+        "ParamAngleX",
+        "ParamAngleY"
+      ],
+      "meshDensity": "low",
+      "confidence": 0.67
+    },
+    {
+      "id": "Mouth",
+      "folder": "Mouth",
+      "category": "mouth",
+      "side": null,
+      "original": "mouth",
+      "drawOrder": 13,
+      "bbox": {
+        "left": 475,
+        "top": 143,
+        "right": 489,
+        "bottom": 149
+      },
+      "pivot": {
+        "x": 482,
+        "y": 146
+      },
+      "deformer": "Mouth",
+      "bind": [
+        "ParamMouthOpenY",
+        "ParamMouthForm",
+        "ParamAngleX",
+        "ParamAngleY"
+      ],
+      "meshDensity": "medium",
+      "confidence": 0.83
+    },
+    {
+      "id": "Eye White L",
+      "folder": "Eyes",
+      "category": "eyewhite",
+      "side": "L",
+      "original": "eyewhite-l",
+      "drawOrder": 14,
+      "bbox": {
+        "left": 492,
+        "top": 109,
+        "right": 513,
+        "bottom": 128
+      },
+      "pivot": {
+        "x": 502,
+        "y": 118
+      },
+      "deformer": "Eye_L",
+      "bind": [
+        "ParamEyeLOpen",
+        "ParamAngleX",
+        "ParamAngleY"
+      ],
+      "meshDensity": "medium",
+      "confidence": 1.0
+    },
+    {
+      "id": "Eye White R",
+      "folder": "Eyes",
+      "category": "eyewhite",
+      "side": "R",
+      "original": "eyewhite-r",
+      "drawOrder": 15,
+      "bbox": {
+        "left": 450,
+        "top": 110,
+        "right": 471,
+        "bottom": 128
+      },
+      "pivot": {
+        "x": 460,
+        "y": 119
+      },
+      "deformer": "Eye_R",
+      "bind": [
+        "ParamEyeROpen",
+        "ParamAngleX",
+        "ParamAngleY"
+      ],
+      "meshDensity": "medium",
+      "confidence": 1.0
+    },
+    {
+      "id": "Iris L",
+      "folder": "Eyes",
+      "category": "iris",
+      "side": "L",
+      "original": "irides-l",
+      "drawOrder": 16,
+      "bbox": {
+        "left": 494,
+        "top": 110,
+        "right": 510,
+        "bottom": 126
+      },
+      "pivot": {
+        "x": 502,
+        "y": 118
+      },
+      "deformer": "Eye_L_Ball",
+      "bind": [
+        "ParamEyeBallX",
+        "ParamEyeBallY",
+        "ParamEyeLOpen"
+      ],
+      "meshDensity": "medium",
+      "confidence": 1.0
+    },
+    {
+      "id": "Iris R",
+      "folder": "Eyes",
+      "category": "iris",
+      "side": "R",
+      "original": "irides-r",
+      "drawOrder": 17,
+      "bbox": {
+        "left": 455,
+        "top": 111,
+        "right": 470,
+        "bottom": 127
+      },
+      "pivot": {
+        "x": 462,
+        "y": 119
+      },
+      "deformer": "Eye_R_Ball",
+      "bind": [
+        "ParamEyeBallX",
+        "ParamEyeBallY",
+        "ParamEyeROpen"
+      ],
+      "meshDensity": "medium",
+      "confidence": 1.0
+    },
+    {
+      "id": "Eyelash L",
+      "folder": "Eyes",
+      "category": "eyelash",
+      "side": "L",
+      "original": "eyelash-l",
+      "drawOrder": 18,
+      "bbox": {
+        "left": 491,
+        "top": 105,
+        "right": 519,
+        "bottom": 122
+      },
+      "pivot": {
+        "x": 505,
+        "y": 114
+      },
+      "deformer": "Eye_L",
+      "bind": [
+        "ParamEyeLOpen",
+        "ParamEyeLSmile",
+        "ParamAngleX",
+        "ParamAngleY"
+      ],
+      "meshDensity": "medium",
+      "confidence": 1.0
+    },
+    {
+      "id": "Eyelash R",
+      "folder": "Eyes",
+      "category": "eyelash",
+      "side": "R",
+      "original": "eyelash-r",
+      "drawOrder": 19,
+      "bbox": {
+        "left": 444,
+        "top": 106,
+        "right": 472,
+        "bottom": 124
+      },
+      "pivot": {
+        "x": 458,
+        "y": 115
+      },
+      "deformer": "Eye_R",
+      "bind": [
+        "ParamEyeROpen",
+        "ParamEyeRSmile",
+        "ParamAngleX",
+        "ParamAngleY"
+      ],
+      "meshDensity": "medium",
+      "confidence": 1.0
+    },
+    {
+      "id": "Eyebrow L",
+      "folder": "Brows",
+      "category": "eyebrow",
+      "side": "L",
+      "original": "eyebrow-l",
+      "drawOrder": 20,
+      "bbox": {
+        "left": 491,
+        "top": 93,
+        "right": 513,
+        "bottom": 100
+      },
+      "pivot": {
+        "x": 502,
+        "y": 96
+      },
+      "deformer": "Brow_L",
+      "bind": [
+        "ParamBrowLY",
+        "ParamBrowLForm",
+        "ParamBrowLAngle",
+        "ParamAngleX",
+        "ParamAngleY"
+      ],
+      "meshDensity": "medium",
+      "confidence": 1.0
+    },
+    {
+      "id": "Eyebrow R",
+      "folder": "Brows",
+      "category": "eyebrow",
+      "side": "R",
+      "original": "eyebrow-r",
+      "drawOrder": 21,
+      "bbox": {
+        "left": 448,
+        "top": 94,
+        "right": 469,
+        "bottom": 102
+      },
+      "pivot": {
+        "x": 458,
+        "y": 98
+      },
+      "deformer": "Brow_R",
+      "bind": [
+        "ParamBrowRY",
+        "ParamBrowRForm",
+        "ParamBrowRAngle",
+        "ParamAngleX",
+        "ParamAngleY"
+      ],
+      "meshDensity": "medium",
+      "confidence": 1.0
+    },
+    {
+      "id": "Front Hair",
+      "folder": "Hair Front",
+      "category": "hair_front",
+      "side": null,
+      "original": "front hair",
+      "drawOrder": 22,
+      "bbox": {
+        "left": 422,
+        "top": 17,
+        "right": 538,
+        "bottom": 203
+      },
+      "pivot": {
+        "x": 480,
+        "y": 110
+      },
+      "deformer": "Hair_Front",
+      "bind": [
+        "ParamAngleX",
+        "ParamAngleY",
+        "ParamAngleZ",
+        "ParamHairFront"
+      ],
+      "meshDensity": "high",
+      "confidence": 1.0
+    },
+    {
+      "id": "Headwear",
+      "folder": "Accessory",
+      "category": "headwear",
+      "side": null,
+      "original": "headwear",
+      "drawOrder": 23,
+      "bbox": {
+        "left": 514,
+        "top": 71,
+        "right": 533,
+        "bottom": 93
+      },
+      "pivot": {
+        "x": 524,
+        "y": 82
+      },
+      "deformer": "Head_Accessory",
+      "bind": [
+        "ParamAngleX",
+        "ParamAngleY",
+        "ParamAngleZ"
+      ],
+      "meshDensity": "medium",
+      "confidence": 1.0
+    }
+  ]
+}

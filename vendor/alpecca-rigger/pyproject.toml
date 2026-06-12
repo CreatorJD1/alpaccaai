@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alpecca-rigger"
+version = "1.0.0"
+description = "Modular Live2D auto-rigging + posing tool for the Alpecca AI"
+requires-python = ">=3.9"
+dependencies = ["psd-tools>=1.9", "Pillow>=10.0", "numpy>=1.24"]
+
+[project.scripts]
+alpecca-rigger = "alpecca_rigger.cli:main"
+
+[tool.setuptools]
+packages = ["alpecca_rigger"]
+
+[tool.setuptools.package-data]
+alpecca_rigger = ["data/*.json"]

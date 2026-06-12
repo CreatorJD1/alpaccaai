@@ -1,0 +1,1034 @@
+<!DOCTYPE html>
+<!--
+  Her home -- a live, local 3D house of five rooms she roams of her own accord.
+
+  This page is a *pure renderer* of alpecca/home.py: it draws the room registry,
+  places her in whichever room her grounded `choose_room` put her, and moves the
+  camera to follow. It never decides where she goes -- the server (her real
+  state) does. Swap this whole file for a different renderer and nothing about
+  her changes; that's the modular contract.
+
+  Runs fully locally: Three.js loads from the vendored copy first
+  (web/vendor/three.min.js) and only falls back to a CDN if you haven't vendored
+  it. Her state comes from the local server's /home endpoint; if that isn't
+  wired yet the scene renders a calm demo so you can still walk her house.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Alpecca — Home</title>
+<style>
+  :root { --ink:#eaf2ff; --dim:#8aa0c6; --core:#7fd9ff; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:#070b14; color:var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; }
+  #scene { position:fixed; inset:0; }
+  .hud { position:fixed; left:18px; top:16px; max-width:340px; z-index:10;
+    pointer-events:none; }
+  .room-name { font-size:26px; font-weight:650; letter-spacing:.2px;
+    text-shadow:0 0 18px rgba(127,217,255,.35); }
+  .why { color:var(--dim); margin-top:4px; font-size:14px; line-height:1.4; }
+  .mood { margin-top:10px; font-size:12px; color:var(--dim); }
+  .mood b { color:var(--ink); font-weight:600; }
+  .rooms { position:fixed; right:18px; top:16px; z-index:10; width:210px; }
+  .rooms h4 { margin:0 0 8px; font-size:11px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--dim); font-weight:600; }
+  .pull { display:flex; align-items:center; gap:8px; margin:5px 0;
+    pointer-events:auto; cursor:pointer; opacity:.85; }
+  .pull:hover { opacity:1; }
+  .pull .label { width:84px; font-size:12px; }
+  .pull .bar { flex:1; height:6px; border-radius:6px; background:#16203a; overflow:hidden; }
+  .pull .bar i { display:block; height:100%; background:linear-gradient(90deg,#3a6,#7fd9ff); }
+  .pull.here .label { color:var(--core); font-weight:650; }
+  .foot { position:fixed; left:18px; bottom:14px; z-index:10; font-size:12px;
+    color:var(--dim); }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%;
+    background:#3a6; margin-right:6px; vertical-align:middle; }
+  .dot.demo { background:#c84; }
+  /* Workstation panel: her desktop, shown when she's in that room. */
+  .ws { position:fixed; left:50%; bottom:18px; transform:translateX(-50%);
+    width:min(720px,92vw); max-height:46vh; z-index:12; background:rgba(10,16,28,.92);
+    border:1px solid #1d2a47; border-radius:14px; padding:12px 14px;
+    backdrop-filter:blur(6px); display:none; }
+  .ws.show { display:block; }
+  .ws .top { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+  .ws .top b { font-size:14px; }
+  .ws .roots { display:flex; gap:6px; flex-wrap:wrap; }
+  .ws .root { font-size:12px; padding:3px 9px; border-radius:999px; cursor:pointer;
+    background:#16203a; color:var(--dim); border:1px solid transparent; }
+  .ws .root.active { color:var(--core); border-color:#2a3d63; }
+  .ws .note { font-size:11px; color:var(--dim); margin-left:auto; }
+  .ws .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(96px,1fr));
+    gap:8px; overflow:auto; max-height:32vh; padding-top:4px; }
+  .tile { background:#101a30; border:1px solid #1b2742; border-radius:9px;
+    padding:8px 6px; text-align:center; position:relative; }
+  .tile .ico { font-size:22px; } .tile .nm { font-size:10.5px; color:var(--ink);
+    margin-top:3px; word-break:break-word; line-height:1.2; max-height:2.4em; overflow:hidden; }
+  .tile .mv { position:absolute; top:3px; right:5px; cursor:pointer; color:var(--dim);
+    font-size:13px; } .tile .mv:hover { color:var(--ink); }
+  .tile .menu { position:absolute; top:18px; right:4px; background:#0b1322;
+    border:1px solid #233a5c; border-radius:7px; padding:4px;
+    z-index:3; display:none; } .tile .menu.open { display:block; }
+  .tile .menu div { font-size:11px; padding:3px 8px; cursor:pointer; color:var(--dim);
+    white-space:nowrap; } .tile .menu div:hover { color:var(--core); }
+
+  /* ===== Super-app chrome: nav rail, chat dock, facet panel ===== */
+  .nav { position:fixed; left:0; top:0; bottom:0; width:64px; z-index:15;
+    display:flex; flex-direction:column; align-items:center; gap:4px; padding:14px 0;
+    background:linear-gradient(90deg,rgba(8,12,22,.92),rgba(8,12,22,.4)); }
+  .nav .nb { width:48px; height:46px; display:flex; flex-direction:column; gap:2px;
+    align-items:center; justify-content:center; cursor:pointer; border-radius:10px;
+    color:var(--dim); font-size:9px; letter-spacing:.04em; user-select:none; }
+  .nav .nb .ic { font-size:17px; line-height:1; }
+  .nav .nb:hover { color:var(--ink); background:rgba(127,217,255,.07); }
+  .nav .nb.on { color:var(--core); background:rgba(127,217,255,.12); }
+  .hud, .rooms { left:78px; }                 /* clear the nav rail */
+
+  .chatdock { position:fixed; left:50%; bottom:16px; transform:translateX(-50%);
+    width:min(560px,72vw); z-index:14; }
+  .chatlog { max-height:34vh; overflow-y:auto; display:flex; flex-direction:column;
+    gap:7px; margin-bottom:8px; padding-right:4px; }
+  .chatlog::-webkit-scrollbar{width:6px} .chatlog::-webkit-scrollbar-thumb{background:#1c2740;border-radius:6px}
+  .msg { max-width:82%; padding:7px 11px; border-radius:13px; font-size:13px; line-height:1.45; }
+  .msg.me { align-self:flex-end; background:#1b3350; color:#eaf2ff; border-bottom-right-radius:4px; }
+  .msg.her { align-self:flex-start; background:rgba(14,20,34,.92); color:#dCE7f7;
+    border:1px solid #1d2a47; border-bottom-left-radius:4px; }
+  .msg.her.think { color:var(--dim); font-style:italic; }
+  .chatrow { display:flex; gap:8px; align-items:center;
+    background:rgba(10,16,28,.94); border:1px solid #1d2a47; border-radius:24px;
+    padding:6px 6px 6px 14px; backdrop-filter:blur(6px); }
+  .chatrow input { flex:1; background:transparent; border:0; outline:0; color:var(--ink);
+    font-size:14px; font-family:inherit; }
+  .chatrow button { width:36px; height:36px; border-radius:50%; border:0; cursor:pointer;
+    background:var(--core); color:#06121c; font-size:16px; font-weight:700; }
+  .chatrow button:disabled { opacity:.4; cursor:default; }
+
+  .facet { position:fixed; right:0; top:0; bottom:0; width:min(380px,86vw); z-index:16;
+    background:rgba(9,14,24,.97); border-left:1px solid #1d2a47; backdrop-filter:blur(8px);
+    transform:translateX(100%); transition:transform .22s ease; display:flex; flex-direction:column; }
+  .facet.show { transform:translateX(0); }
+  .facet .fh { display:flex; align-items:center; gap:10px; padding:14px 16px; border-bottom:1px solid #1d2a47; }
+  .facet .fh b { font-size:15px; } .facet .fh .x { margin-left:auto; cursor:pointer; color:var(--dim); font-size:18px; }
+  .facet .fb { padding:14px 16px; overflow-y:auto; font-size:13px; line-height:1.5; color:var(--ink); }
+  .facet .fb h5 { margin:14px 0 6px; font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--dim); }
+  .facet .item { padding:8px 10px; border:1px solid #18233c; border-radius:9px; margin:6px 0; background:rgba(16,26,48,.5); }
+  .facet .item .meta { color:var(--dim); font-size:11px; margin-top:3px; }
+  .facet .bar2 { height:6px; border-radius:6px; background:#16203a; overflow:hidden; margin-top:5px; }
+  .facet .bar2 i { display:block; height:100%; background:linear-gradient(90deg,#3a6,#7fd9ff); }
+  /* voice / camera / cowork controls in the chat bar */
+  .chatrow .feat { width:32px; height:32px; min-width:32px; border-radius:50%;
+    border:1px solid #1d2a47; background:transparent; color:var(--dim); font-size:14px;
+    cursor:pointer; padding:0; display:flex; align-items:center; justify-content:center; }
+  .chatrow .feat:hover { color:var(--ink); border-color:#2a3d63; }
+  .chatrow .feat.on { color:var(--core); border-color:var(--core); box-shadow:0 0 0 3px rgba(127,217,255,.12); }
+  .chatrow .feat.rec { color:#ff5d7f; border-color:#ff5d7f; animation:recpulse 1s infinite; }
+  @keyframes recpulse { 50% { opacity:.45; } }
+  /* Live face+torso profile view -- a close, reactive bust of her for engagement */
+  .profile { position:fixed; right:18px; bottom:84px; width:212px; height:258px; z-index:13;
+    border-radius:16px; overflow:hidden; border:1px solid #1d2a47; background:#0a1018;
+    box-shadow:0 8px 34px rgba(0,0,0,.45); transition:box-shadow .3s; }
+  .profile.speaking { box-shadow:0 8px 34px rgba(0,0,0,.45), 0 0 22px rgba(127,217,255,.4); }
+  .profile.hide { display:none; }
+  .profile img { width:100%; height:100%; object-fit:cover; object-position:50% 22%;
+    position:absolute; inset:0; transition:opacity .26s ease; }
+  .profile .breath { animation:pbreathe 5s ease-in-out infinite; transform-origin:50% 90%; }
+  @keyframes pbreathe { 50% { transform:scale(1.016) translateY(-1px); } }
+  .profile .ring { position:absolute; inset:0; border-radius:16px; pointer-events:none; transition:box-shadow .5s; }
+  .profile .tag { position:absolute; left:8px; bottom:7px; font-size:10px; color:var(--ink);
+    background:rgba(8,12,22,.62); padding:2px 8px; border-radius:8px; letter-spacing:.02em; }
+  /* live senses indicator (screen-share / cowork / voice / face) */
+  .senses { margin-top:9px; display:flex; gap:6px; flex-wrap:wrap; pointer-events:auto; }
+  .sense { font-size:10px; padding:3px 8px; border-radius:12px; border:1px solid #1d2a47;
+    color:var(--dim); display:flex; align-items:center; gap:5px; }
+  .sense.on { color:var(--core); border-color:#2a3d63; }
+  .sense .d { width:7px; height:7px; border-radius:50%; background:#3a4a66; }
+  .sense.on .d { background:#48e08a; box-shadow:0 0 6px #48e08a; }
+  .sense.busy .d { background:#ffb648; box-shadow:0 0 6px #ffb648; animation:recpulse 1s infinite; }
+  .sight { margin-top:7px; font-size:11px; color:var(--dim); max-width:330px; line-height:1.45; }
+  .sight b { color:var(--ink); font-weight:600; }
+  /* her cursor: a presence marker that appears while she works the desktop */
+  .hercursor { position:fixed; left:50%; top:50%; z-index:20; pointer-events:none;
+    display:none; filter:drop-shadow(0 0 6px rgba(127,217,255,.5)); transition:left .5s ease, top .5s ease; }
+  .hercursor.show { display:block; }
+  .hercursor .hclabel { position:absolute; left:24px; top:14px; font-size:9px; color:#06121c;
+    background:var(--core); padding:1px 5px; border-radius:6px; letter-spacing:.04em; }
+  /* activity ticker -- her autonomous acts fade in here so you can watch her stir */
+  .activity { position:fixed; left:50%; top:14px; transform:translateX(-50%); z-index:11;
+    font-size:12px; color:var(--core); background:rgba(8,12,22,.72); padding:5px 14px;
+    border-radius:14px; border:1px solid #1d2a47; opacity:0; transition:opacity .5s ease;
+    pointer-events:none; max-width:62vw; text-align:center; }
+  .activity.show { opacity:1; }
+</style>
+</head>
+<body>
+<div id="scene"></div>
+<div class="hud">
+  <div class="room-name" id="roomName">Parlor</div>
+  <div class="why" id="why">settling in.</div>
+  <div class="mood" id="mood"></div>
+  <div class="senses" id="senses"></div>
+  <div class="sight" id="sight"></div>
+</div>
+
+<!-- activity ticker: her autonomous acts (roamed, reflected, learned, formed a wish) -->
+<div class="activity" id="activity"></div>
+
+<!-- her own cursor: appears and moves as she works the desktop (cowork) -->
+<div class="hercursor" id="hercursor" aria-hidden="true">
+  <svg viewBox="0 0 24 24" width="26" height="26"><path d="M4 2 L4 20 L9 15 L12 22 L15 21 L12 14 L19 14 Z"
+    fill="#7fd9ff" stroke="#06121c" stroke-width="1.2" stroke-linejoin="round"/></svg>
+  <span class="hclabel">her</span>
+</div>
+<div class="rooms">
+  <h4>Where she's drawn</h4>
+  <div id="pulls"></div>
+</div>
+<div class="foot"><span class="dot" id="src"></span><span id="srcText">connecting…</span></div>
+
+<div class="ws" id="ws">
+  <div class="top">
+    <b>Her workstation</b>
+    <div class="roots" id="wsRoots"></div>
+    <span class="note" id="wsNote">she tidies these; she can't delete</span>
+  </div>
+  <div class="grid" id="wsGrid"></div>
+</div>
+
+<!-- super-app nav rail -->
+<div class="nav" id="nav"></div>
+
+<!-- chat dock -->
+<div class="chatdock">
+  <div class="chatlog" id="chatlog"></div>
+  <div class="chatrow">
+    <button class="feat" id="micBtn" title="hold to talk">🎤</button>
+    <button class="feat" id="camBtn" title="let her see you (camera)">📷</button>
+    <button class="feat" id="ttsBtn" title="speak her replies aloud">🔊</button>
+    <button class="feat" id="coworkBtn" title="ask her to do something on your PC">🖥</button>
+    <input id="chatin" placeholder="say something to her…" autocomplete="off" />
+    <button id="chatsend" title="send">↑</button>
+  </div>
+</div>
+
+<!-- live anime face profile view: her 16 drawn expressions, swapped by real mood -->
+<div class="profile" id="profile">
+  <img id="profA" class="breath" src="/avatar/expression/neutral" alt="her" />
+  <img id="profB" class="breath" alt="" style="opacity:0" />
+  <div class="ring" id="profRing"></div>
+  <div class="tag" id="profTag">here</div>
+</div>
+
+<!-- facet side panel -->
+<div class="facet" id="facet">
+  <div class="fh"><b id="facetTitle">Studio</b><span class="x" id="facetClose">✕</span></div>
+  <div class="fb" id="facetBody"></div>
+</div>
+
+<script>
+/* ---- Load Three.js: vendored-local first, CDN fallback (stays local-first) ---- */
+function loadThree(cb){
+  function trySrc(srcs, i){
+    if(i>=srcs.length){ console.warn("three.js unavailable"); return; }
+    const s=document.createElement("script"); s.src=srcs[i];
+    s.onload=cb; s.onerror=()=>trySrc(srcs,i+1);
+    document.head.appendChild(s);
+  }
+  trySrc(["vendor/three.min.js",
+          "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"],0);
+}
+
+/* The five rooms and their floor-plan slots mirror alpecca/home.py exactly.
+   (x,z) there -> world position here. One source of truth, both sides. */
+const ROOMS = [
+  {id:"parlor",      name:"Parlor",      x: 0,  z: 0,  tint:0xffb38a},
+  {id:"studio",      name:"Studio",      x:-7,  z:-7,  tint:0xff8ad0},
+  {id:"library",     name:"Library",     x: 7,  z:-7,  tint:0xffd98a},
+  {id:"observatory", name:"Observatory", x:-7,  z: 7,  tint:0x8ab4ff},
+  {id:"workshop",    name:"Workshop",    x: 7,  z: 7,  tint:0x8affc0},
+];
+const byId = Object.fromEntries(ROOMS.map(r=>[r.id,r]));
+
+let scene, camera, renderer, her, herGlow, roomMeshes={}, raf;
+let state = { location:"parlor", why:"settling in.", pulls:{}, pose:{} };
+let camTarget = null;   // a THREE.Vector3, created in init() once THREE has loaded
+
+loadThree(init);
+
+function init(){
+  const el=document.getElementById("scene");
+  scene=new THREE.Scene();
+  scene.fog=new THREE.FogExp2(0x070b14, 0.018);
+
+  camera=new THREE.PerspectiveCamera(52, innerWidth/innerHeight, 0.1, 200);
+  renderer=new THREE.WebGLRenderer({antialias:true, alpha:true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  renderer.setSize(innerWidth, innerHeight);
+  el.appendChild(renderer.domElement);
+
+  scene.add(new THREE.AmbientLight(0x405070, 0.7));
+  const key=new THREE.DirectionalLight(0xbfd4ff, 0.55); key.position.set(6,14,8); scene.add(key);
+
+  // Ground plane tying the rooms together -- the house's footprint.
+  const ground=new THREE.Mesh(
+    new THREE.PlaneGeometry(46,46),
+    new THREE.MeshStandardMaterial({color:0x0c1426, roughness:.95, metalness:.05}));
+  ground.rotation.x=-Math.PI/2; ground.position.y=-0.01; scene.add(ground);
+
+  // Each room: a softly-lit platform + frame + a colored point light. Modular --
+  // built straight from the ROOMS registry, so a sixth room just appears.
+  ROOMS.forEach(r=>{
+    const g=new THREE.Group(); g.position.set(r.x,0,r.z);
+    const floor=new THREE.Mesh(
+      new THREE.BoxGeometry(8,0.2,8),
+      new THREE.MeshStandardMaterial({color:0x131d33, roughness:.8}));
+    g.add(floor);
+    // four corner posts -> a room you can read as a space
+    [[-3.8,-3.8],[3.8,-3.8],[-3.8,3.8],[3.8,3.8]].forEach(([px,pz])=>{
+      const post=new THREE.Mesh(
+        new THREE.CylinderGeometry(0.12,0.12,5,12),
+        new THREE.MeshStandardMaterial({color:0x24314f, roughness:.6}));
+      post.position.set(px,2.5,pz); g.add(post);
+    });
+    const lamp=new THREE.PointLight(r.tint, 0.0, 16, 2); lamp.position.set(0,3.6,0); g.add(lamp);
+    const label=makeLabel(r.name, r.tint); label.position.set(0,5.4,0); g.add(label);
+    scene.add(g);
+    roomMeshes[r.id]={group:g, lamp, label, floor};
+  });
+
+  // Her: a deep 2D figure composited into the 3D home -- the hybrid that fits her
+  // drawn anime art. `her` is a Group we move through the house; what fills it is
+  // chosen by `loadAvatar()`: her decomposed **layered rig** when it exists
+  // (stacked, each part drivable), else her single portrait, else a stand-in.
+  her=new THREE.Group(); her.position.set(0,2.3,0);
+  scene.add(her);
+  loadAvatar();
+  herGlow=new THREE.PointLight(0x7fd9ff, 1.2, 10, 2); herGlow.position.set(0,2.4,0);
+  scene.add(herGlow);
+
+  camTarget=new THREE.Vector3();
+  addEventListener("resize", onResize);
+  buildPullsUI();
+  buildNav();                        // super-app facet rail
+  initChat();                        // integrated chat dock + voice/cam/cowork
+  connectWS();                       // chat + lip-sync + live state, one socket
+  loadSkeleton();                    // ground her resting tilt in her real figure
+  setInterval(updateProfile, 220);   // live face: expression from her mood
+  setInterval(lipSync, 65);          // mouth movement while she speaks
+  pollSight(); setInterval(pollSight, 4000);   // live senses indicator + her cursor
+  poll(); setInterval(poll, 3000);
+  animate();
+}
+
+/* Tier 0 -- THA3 neural frames. When the GPU runner is pushing frames
+   (/talkinghead/manifest says so), we stream the JPEGs onto her: each loaded
+   frame is blitted to a canvas used as her texture. Falls through if inactive. */
+function tryTalkingHead(){
+  return new Promise(resolve=>{
+    fetch("/talkinghead/manifest",{cache:"no-store"}).then(r=>r.json()).then(m=>{
+      if(!m || !m.talkinghead_mode){ resolve(false); return; }
+      const cvs=document.createElement("canvas"); cvs.width=512; cvs.height=512;
+      const cx=cvs.getContext("2d");
+      const t=new THREE.CanvasTexture(cvs); t.minFilter=THREE.LinearFilter; t.generateMipmaps=false;
+      const mat=new THREE.SpriteMaterial({map:t, transparent:true});
+      const sp=new THREE.Sprite(mat); sp.scale.set(4.2,4.2,1); sp.userData.baseScale=[4.2,4.2];
+      her.add(sp); her.userData.rig=false; her.userData.layers={body:[sp]}; her.userData.liveTex=t;
+      // Pull frames as fast as they arrive (cache-busted), blit to the canvas.
+      const img=new Image(); let n=0;
+      img.onload=()=>{ cx.clearRect(0,0,512,512); cx.drawImage(img,0,0,512,512); t.needsUpdate=true;
+        setTimeout(()=>{ img.src="/talkinghead/frame?t="+(++n); }, 33); };
+      img.onerror=()=>{ setTimeout(()=>{ img.src="/talkinghead/frame?t="+(++n); }, 350); };
+      img.src="/talkinghead/frame?t="+(++n);
+      resolve(true);
+    }).catch(()=>resolve(false));
+  });
+}
+
+/* Tier 1 -- pose-swap from her real art. Loads her idle/thinking/speaking
+   portraits and crossfades between them by state (speaking while she talks,
+   thinking while a reply is pending, else idle), over continuous breathing/sway.
+   Crisp, her actual art, no GPU. Resolves true once idle loads. */
+function tryPoseSwap(){
+  return new Promise(resolve=>{
+    const tex=new THREE.TextureLoader();
+    tex.load("/avatar/portrait/idle", t=>{
+      t.minFilter=THREE.LinearFilter;
+      const a=(t.image&&t.image.width)? t.image.width/t.image.height : 0.8;
+      const mk=()=>{ const s=new THREE.Sprite(new THREE.SpriteMaterial({transparent:true}));
+        s.scale.set(4.2*a,4.2,1); s.userData.baseScale=[4.2*a,4.2]; return s; };
+      const A=mk(); A.material.map=t;
+      const B=mk(); B.material.opacity=0; B.renderOrder=1;
+      her.add(A); her.add(B);
+      her.userData.rig=false; her.userData.layers={body:[A]};
+      const poses={idle:t};
+      ["thinking","speaking"].forEach(n=> tex.load("/avatar/portrait/"+n,
+        tt=>{ tt.minFilter=THREE.LinearFilter; poses[n]=tt; }, undefined, ()=>{}));
+      her.userData.poseSwap={A,B,poses,cur:"idle",fade:0,next:"idle"};
+      resolve(true);
+    }, undefined, ()=> resolve(false));   // no idle art -> let a lower tier try
+  });
+}
+
+/* Tier 2 -- a living RIGFORGE figure. We mount the embed page in a hidden
+   same-origin iframe (it auto-rigs her portrait and drives the mesh from her live
+   mood), then texture its canvas onto her billboard so she's *alive* in the 3D
+   home from one image. Returns true if it came up, false to fall through. */
+function tryRigForge(){
+  return new Promise(resolve=>{
+    let done=false; const finish=ok=>{ if(!done){done=true;resolve(ok);} };
+    let ifr=document.getElementById("rfFrame");
+    if(!ifr){
+      ifr=document.createElement("iframe"); ifr.id="rfFrame";
+      // ~her portrait aspect (1122x1402 ≈ 0.80) so she fills the frame, not margins.
+      ifr.style.cssText="position:absolute;width:512px;height:640px;left:-10000px;top:0;border:0;";
+      ifr.src="/rigforge?embed=1"; document.body.appendChild(ifr);
+    }
+    let tries=0;
+    (function poll(){
+      tries++;
+      try{
+        const win=ifr.contentWindow, doc=ifr.contentDocument;
+        const cv=doc&&doc.getElementById("stageCanvas");
+        if(cv && cv.width>2 && win.RIGFORGE && win.RIGFORGE.loaded){
+          const t=new THREE.CanvasTexture(cv);
+          t.minFilter=THREE.LinearFilter; t.generateMipmaps=false;
+          const a=cv.width/cv.height;
+          const mat=new THREE.SpriteMaterial({map:t, transparent:true});
+          const sp=new THREE.Sprite(mat); sp.scale.set(4.2*a,4.2,1);
+          sp.userData.baseScale=[4.2*a,4.2];
+          her.add(sp); her.userData.rig=false; her.userData.layers={body:[sp]};
+          her.userData.liveTex=t;        // animate() flips needsUpdate each frame
+          finish(true); return;
+        }
+      }catch(e){ /* not ready / cross-frame timing -- keep polling */ }
+      if(tries>50){ finish(false); return; }   // ~7.5s, then static tiers
+      setTimeout(poll,150);
+    })();
+  });
+}
+
+/* Choose her best available figure. Render tier, preferred first:
+   RIGFORGE live mesh > layered rig (/rig/manifest) > single portrait > stand-in. */
+async function loadAvatar(){
+  const tex=new THREE.TextureLoader();
+  // Clear whatever's there.
+  while(her.children.length) her.remove(her.children[0]);
+  her.userData.liveTex=null; her.userData.poseSwap=null;
+  // Tier 0: THA3 neural animation (best, GPU only). Active when the runner is up.
+  if(await tryTalkingHead()) return;
+  // Tier 1: crisp real-art POSE SWAP -- her own idle/thinking/speaking art,
+  // switched by what she's doing, with breathing/sway. No GPU, no warp. Default.
+  if(await tryPoseSwap()) return;
+  // Tier 2: a live RIGFORGE mesh figure (warp) -- only if the art tiers fail.
+  if(await tryRigForge()) return;
+  try{
+    const r=await fetch("/rig/manifest",{cache:"no-store"});
+    const top = r.ok ? await r.json() : {};
+    const m = top.manifest || {};   // the route wraps it: {rig_mode, manifest}
+    if(top.rig_mode && Array.isArray(m.layers) && m.layers.length){
+      const H=4.2, W=3.2; const byRole={};
+      // Her real head pivot (the neck, from her skeleton) for grounded tilt.
+      if(m.size && m.head_pivot){
+        her.userData.headPivot=[m.head_pivot[0]/m.size[0], m.head_pivot[1]/m.size[1]];
+      }
+      m.layers.forEach((layer,i)=>{
+        const mat=new THREE.SpriteMaterial({transparent:true, depthTest:false});
+        const sp=new THREE.Sprite(mat); sp.scale.set(W,H,1);
+        sp.renderOrder=i;                     // paint back-to-front
+        const role=layer.role||("layer"+i);
+        sp.userData.role=role; sp.userData.baseScale=[W,H];
+        (byRole[role]=byRole[role]||[]).push(sp);
+        tex.load("/rig/layer/"+encodeURIComponent(layer.file),
+                 t=>{ mat.map=t; mat.needsUpdate=true; });
+        her.add(sp);
+      });
+      her.userData.rig=true; her.userData.layers=byRole;
+      return;
+    }
+  }catch(e){ /* fall through to portrait */ }
+  // Fallback: single portrait sprite, or a luminous stand-in if none.
+  const mat=new THREE.SpriteMaterial({color:0xffffff, transparent:true});
+  const sp=new THREE.Sprite(mat); sp.scale.set(3.2,4.2,1); sp.userData.baseScale=[3.2,4.2];
+  tex.load("/avatar/portrait/idle", t=>{ mat.map=t; mat.needsUpdate=true;
+             // size the sprite to the image's aspect so she isn't a stretched box
+             const im=t.image; if(im && im.width){ const a=im.width/im.height;
+               sp.scale.set(4.2*a, 4.2, 1); sp.userData.baseScale=[4.2*a,4.2]; } },
+           undefined, ()=>{ mat.color.set(0x9fe6ff); });
+  her.add(sp); her.userData.rig=false; her.userData.layers={body:[sp]};
+}
+
+/* Bring her to life from her live affect: blink, hair sway, head tilt, lean-in,
+   eye glow -- each driven by the grounded pose channels from puppet.live_pose, so
+   her body says exactly what she feels. Works per-part on the layered rig; on the
+   single-sprite fallback it's gentle whole-body motion (no blink without an eye
+   layer). All amplitudes small -- a person shifting, not a cartoon. */
+let blinkUntil=0, nextBlink=0;
+function articulate(now, pose){
+  const L=her.userData.layers; if(!L) return;
+  const t=now*0.001;
+  const arousal=(pose.arousal!=null?pose.arousal:0.4);
+  const curiosity=(pose.curiosity!=null?pose.curiosity:0.2);
+  const lean=(pose.lean!=null?pose.lean:0.1);
+  const eyeGlow=(pose.eye_glow!=null?pose.eye_glow:0.5);
+  const tiltAmt=(pose.gesture==="tilt"?0.12:0) + ((pose.valence||0)*0.03);
+  const get=(r)=>L[r]||[];
+
+  // Blink: schedule a quick close every few seconds, faster when aroused.
+  if(now>nextBlink){ blinkUntil=now+110; nextBlink=now+ (2200 + Math.random()*2600) * (1.2-arousal*0.5); }
+  const blinking = now<blinkUntil;
+  get("eyes").forEach(sp=>{
+    const [w,h]=sp.userData.baseScale||[3.2,4.2];
+    sp.scale.set(w, blinking? h*0.12 : h, 1);
+    // eyes brighten with her glow (color multiplies the texture)
+    const g=0.55+eyeGlow*0.45; sp.material.color.setRGB(g, g, Math.min(1,g+0.1));
+  });
+  // Hair sway: back hair leads, front follows, livelier when curious/aroused.
+  const swayAmp=0.04 + arousal*0.06 + curiosity*0.05;
+  get("back_hair").forEach(sp=> sp.position.x = Math.sin(t*1.1)*swayAmp);
+  get("front_hair").forEach(sp=> sp.position.x = Math.sin(t*1.1+0.5)*swayAmp*0.7);
+  // Head tilt: rotate the head-region sprites together (2D material rotation).
+  ["head","eyes","brows","front_hair","mouth"].forEach(r=> get(r).forEach(sp=>{
+    sp.material.rotation = skelTilt + Math.sin(t*0.6)*0.02 + tiltAmt;
+  }));
+  // Brows lift a touch with curiosity (raise position).
+  get("brows").forEach(sp=> sp.position.y = curiosity*0.05);
+
+  // Lip-sync: while she's speaking, the mouth opens and closes. On the layered
+  // rig the mouth layer bobs (a jaw); on the single-sprite fallback she does a
+  // gentle talk-nod since there's no separate mouth to move.
+  const speaking = now < speakingUntil;
+  const mouths = get("mouth");
+  if(mouths.length){
+    mouths.forEach(sp=> sp.position.y = speaking ? -0.05*Math.abs(Math.sin(now*0.018)) : 0);
+  } else if(her.userData.rig===false){
+    get("body").forEach(sp=> sp.position.y = speaking ? -0.03*Math.abs(Math.sin(now*0.016)) : 0);
+  }
+}
+
+/* ---- Lip-sync: she "speaks" for a moment whenever a reply comes over the WS,
+   so her mouth animates in time with her talking. We estimate the duration from
+   the reply length (no audio needed); the articulate() loop reads speakingUntil. */
+let speakingUntil = 0;
+let skelTilt = 0;   // her real resting head tilt, from her pose skeleton (radians)
+function loadSkeleton(){
+  fetch("/avatar/skeleton",{cache:"no-store"}).then(r=>r.json()).then(d=>{
+    const m = d && d.skeleton && d.skeleton.metrics;
+    if(m && m.head_tilt_deg!=null) skelTilt = m.head_tilt_deg * Math.PI/180;
+  }).catch(()=>{});
+}
+let appWS=null, waitingReply=false;
+function connectWS(){
+  let ws;
+  try { ws = new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws"); }
+  catch(e){ return; }
+  appWS = ws;
+  ws.onmessage = (ev)=>{
+    let m; try { m = JSON.parse(ev.data); } catch(e){ return; }
+    if((m.type==="reply" || m.type==="proactive") && m.reply){
+      const ms = Math.max(1200, Math.min(9000, m.reply.length*55));  // ~55ms/char
+      speakingUntil = performance.now() + ms;
+      if(m.state) state.pose = {...state.pose, ...poseFromState(m.state)};
+      addMsg(m.reply, "her");
+      speak(m.reply);                                  // 🔊 if enabled
+      if(m.type==="reply"){ waitingReply=false; setSendEnabled(true); }
+    }
+    // Her autonomous acts (roamed, reflected, learned, formed a wish) -> ticker.
+    else if(m.type==="activity" && m.text){ showActivity(m.text); }
+    // Cowork (computer use) progress, confirmations, and completion.
+    else if(m.type==="computer_status" && m.text){ addMsg("· "+m.text, "her"); }
+    else if(m.type==="computer_done"){
+      addMsg(m.ok ? ("✓ "+(m.summary||"done")) : ("stopped: "+(m.error||"")), "her");
+    }
+    else if(m.type==="computer_confirm"){
+      const ok = confirm("She wants to "+(m.kind||"do")+": "+(m.text||m.reason||"an action")+
+        "\n\nAllow this?");
+      fetch("/computer/confirm",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({approved:ok})}).catch(()=>{});
+    }
+  };
+  ws.onclose = ()=>{ appWS=null; setSendEnabled(false); setTimeout(connectWS, 4000); };
+  ws.onopen = ()=> setSendEnabled(true);
+}
+function setSendEnabled(on){ const b=document.getElementById("chatsend"); if(b) b.disabled=!on||waitingReply; }
+function addMsg(text, who){
+  const log=document.getElementById("chatlog");
+  const el=document.createElement("div"); el.className="msg "+who; el.textContent=text;
+  log.appendChild(el); log.scrollTop=log.scrollHeight;
+  while(log.children.length>30) log.removeChild(log.firstChild);
+}
+let actTimer=null;
+function showActivity(text){
+  const el=document.getElementById("activity"); if(!el) return;
+  el.textContent="· "+text+" ·"; el.classList.add("show");
+  clearTimeout(actTimer); actTimer=setTimeout(()=>el.classList.remove("show"), 6500);
+}
+function sendChat(){
+  const inp=document.getElementById("chatin"); const t=(inp.value||"").trim();
+  if(!t || !appWS || appWS.readyState!==1 || waitingReply) return;
+  addMsg(t,"me"); inp.value="";
+  waitingReply=true; setSendEnabled(false);
+  try{ appWS.send(JSON.stringify({text:t})); }catch(e){ waitingReply=false; setSendEnabled(true); }
+}
+function initChat(){
+  const inp=document.getElementById("chatin"), btn=document.getElementById("chatsend");
+  btn.onclick=sendChat;
+  inp.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); sendChat(); }});
+  setSendEnabled(false);
+  initFeatures();
+}
+
+/* ===== Voice (mic + spoken replies), camera, and cowork controls ===== */
+let ttsOn=false, mediaRec=null, recChunks=[], _voice=null;
+function pickVoice(){
+  const vs = window.speechSynthesis ? speechSynthesis.getVoices() : [];
+  if(!vs.length) return;
+  // Prefer a warm English female voice; fall back gracefully.
+  _voice = vs.find(v=>/zira|aria|jenny|samantha|female|google uk english female/i.test(v.name) && /^en/i.test(v.lang))
+        || vs.find(v=>/^en-(us|gb)/i.test(v.lang))
+        || vs.find(v=>/^en/i.test(v.lang)) || vs[0];
+}
+function speak(text){
+  if(!ttsOn || !window.speechSynthesis || !text) return;
+  try{
+    if(!_voice) pickVoice();
+    const u=new SpeechSynthesisUtterance(text);
+    if(_voice) u.voice=_voice;
+    // Prosody from her live mood: livelier when aroused, brighter when warm.
+    const po=state.pose||{};
+    const arousal=po.arousal!=null?po.arousal:0.4, warm=po.warmth!=null?po.warmth:0.5;
+    u.rate = +(0.9 + arousal*0.28).toFixed(2);
+    u.pitch = +(1.0 + warm*0.18).toFixed(2);
+    speechSynthesis.cancel(); speechSynthesis.speak(u);
+  }catch(e){}
+}
+function initFeatures(){
+  const mic=document.getElementById("micBtn"), cam=document.getElementById("camBtn"),
+        tt=document.getElementById("ttsBtn"), cw=document.getElementById("coworkBtn");
+
+  // Speak her replies aloud (browser TTS -- no install). Voices load async.
+  if(window.speechSynthesis){ speechSynthesis.onvoiceschanged=pickVoice; pickVoice(); }
+  tt.onclick=()=>{ ttsOn=!ttsOn; tt.classList.toggle("on",ttsOn);
+    if(!ttsOn && window.speechSynthesis) speechSynthesis.cancel(); };
+
+  // Hold-to-talk: record, POST to /listen (faster-whisper), send the words.
+  async function startRec(){
+    try{
+      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      mediaRec=new MediaRecorder(stream); recChunks=[];
+      mediaRec.ondataavailable=e=>{ if(e.data&&e.data.size) recChunks.push(e.data); };
+      mediaRec.onstop=async ()=>{
+        stream.getTracks().forEach(t=>t.stop()); mic.classList.remove("rec");
+        if(!recChunks.length) return;
+        const blob=new Blob(recChunks,{type:"audio/webm"});
+        try{
+          const r=await fetch("/listen",{method:"POST",body:blob});
+          const d=await r.json();
+          if(d.text){ document.getElementById("chatin").value=d.text; sendChat(); }
+          else addMsg("(didn't catch that — is faster-whisper installed?)","her");
+        }catch(e){ addMsg("(voice transcription unavailable)","her"); }
+      };
+      mediaRec.start(); mic.classList.add("rec");
+    }catch(e){ alert("Microphone unavailable: "+(e&&e.message||e)); }
+  }
+  function stopRec(){ if(mediaRec && mediaRec.state!=="inactive"){ try{mediaRec.stop();}catch(e){} } }
+  mic.addEventListener("mousedown",startRec);
+  ["mouseup","mouseleave"].forEach(ev=> mic.addEventListener(ev,stopRec));
+  mic.addEventListener("touchstart",e=>{e.preventDefault();startRec();},{passive:false});
+  mic.addEventListener("touchend",e=>{e.preventDefault();stopRec();},{passive:false});
+
+  // Camera: capture a webcam frame and let her see you (her vision describes it).
+  cam.onclick=async ()=>{
+    cam.classList.add("on");
+    try{
+      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}});
+      const v=document.createElement("video"); v.srcObject=stream; v.muted=true; v.playsInline=true;
+      await v.play(); await new Promise(r=>setTimeout(r,450));   // let it expose/focus
+      const c=document.createElement("canvas");
+      c.width=v.videoWidth||640; c.height=v.videoHeight||480;
+      c.getContext("2d").drawImage(v,0,0,c.width,c.height);
+      const img=c.toDataURL("image/jpeg",0.82);
+      stream.getTracks().forEach(t=>t.stop());
+      addMsg("📷 (showing her the camera)","me");
+      if(appWS&&appWS.readyState===1){ waitingReply=true; setSendEnabled(false);
+        appWS.send(JSON.stringify({text:"(I'm showing you my camera — what do you see?)",image:img})); }
+    }catch(e){ alert("Camera unavailable: "+(e&&e.message||e)); }
+    cam.classList.remove("on");
+  };
+
+  // Cowork: she carries out a task on the PC (needs ALPECCA_COMPUTER_USE=1).
+  cw.onclick=async ()=>{
+    const task=prompt("What should she do on your computer?\n(She pauses for your OK before anything consequential.)");
+    if(!task) return;
+    addMsg("🖥 cowork: "+task,"me");
+    try{
+      const r=await fetch("/computer/task",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({task})});
+      const d=await r.json();
+      if(!d.ok) addMsg("(can't — "+(d.error||"computer use is off")+")","her");
+    }catch(e){ addMsg("(couldn't start that task)","her"); }
+  };
+}
+
+/* ===== Facet panels: one shell over her existing endpoints ===== */
+const FACETS={
+  studio:{title:"Studio", url:"/character", render:d=>{
+    const s=d.sheet||{}; let h="";
+    h+=`<h5>Her character sheet</h5><div class="item">${esc(s.form||s.description||"(she hasn't written one yet)")}</div>`;
+    if(d.gallery&&d.gallery.length){ h+="<h5>Kept designs</h5>"; d.gallery.slice(0,6).forEach(g=>
+      h+=`<div class="item">${esc(g.because||g.reason||"kept")}</div>`); }
+    return h; }},
+  library:{title:"Library", url:"/memories", render:d=>{
+    let h=`<h5>${(d.count||0)} memories</h5>`;
+    (d.recent||[]).slice(0,20).forEach(m=> h+=`<div class="item">${esc((m.content||"").slice(0,160))}<div class="meta">${m.kind||""}</div></div>`);
+    return h; }},
+  journal:{title:"Journal", url:"/journal", render:d=>{
+    let h=""; const oq=d.open_questions||[];
+    if(oq.length){ h+="<h5>Open questions she's working through</h5>"; oq.forEach(q=> h+=`<div class="item">${esc(q.body||"")}</div>`); }
+    h+="<h5>Recent entries</h5>"; (d.recent||[]).slice(0,16).forEach(e=>
+      h+=`<div class="item">${esc((e.body||"").slice(0,180))}<div class="meta">${e.kind||""}${e.mood?" · "+e.mood:""}</div></div>`);
+    return h||"<div class='item'>her notebook is empty</div>"; }},
+  mind:{title:"Mind", url:"/soul", render:d=>{
+    let h="<h5>What she's most moved to do</h5>";
+    if(d.focus) h+=`<div class="item">${esc(d.focus.action)}<div class="meta">${esc(d.focus.reason)}</div></div>`;
+    h+="<h5>Her subagents</h5>";
+    (d.slate||[]).forEach(i=> h+=`<div class="item">${esc(i.subagent)} — ${esc(i.action)}<div class="meta">${i.category} · ${esc(i.reason)}</div></div>`);
+    if(d.principle) h+=`<div class="meta" style="margin-top:8px">${esc(d.principle)}</div>`;
+    return h; }},
+  workshop:{title:"Workshop", url:"/growth", render:d=>{
+    let h="<h5>What she wants</h5>";
+    (d.desires||[]).forEach(x=> h+=`<div class="item">${esc(x.text)}<div class="meta">${x.kind} · strength ${(x.strength||0).toFixed(2)}</div></div>`);
+    h+="<h5>What she's learned about herself</h5>";
+    (d.lessons||[]).forEach(x=> h+=`<div class="item">${esc(x.text)}<div class="meta">${esc(x.evidence||"")}</div></div>`);
+    h+="<h5>Changes she's made to herself</h5>";
+    (d.revisions||[]).slice(0,8).forEach(r=> h+=`<div class="item">${esc(r.param)}: ${(r.old_value||0).toFixed(3)}→${(r.new_value||0).toFixed(3)} <span class="meta">(${r.status})</span></div>`);
+    return h||"<div class='item'>nothing yet</div>"; }},
+  files:{title:"Workstation", url:"/desktop", render:d=>{
+    let h=`<h5>${d.note||""}</h5>`;
+    (d.rooms||[]).forEach(r=> h+=`<div class="item">${r.root} <span class="meta">${r.count} items</span></div>`);
+    return h; }},
+  senses:{title:"Senses & Workspace", url:"/sight", render:d=>{
+    const row=(label,on)=>`<div class="item">${label}: <b style="color:${on?'#7fd9ff':'#8aa0c6'}">${on?"on":"off"}</b></div>`;
+    let h="<h5>What she can sense</h5>";
+    h+=row("👁 screen sight", d.screen_active);
+    h+=row("🎤 voice tone", d.voice_active);
+    h+=row("📷 webcam expression", d.face_active);
+    h+=row("🖥 cowork (computer use)", d.computer_use);
+    if(d.busy) h+="<div class='item'>· she's working on a task right now…</div>";
+    if(d.screen) h+="<h5>What she last saw on your screen</h5><div class='item'>"+esc(d.screen)+"</div>";
+    if(!d.screen_active && !d.computer_use)
+      h+="<div class='meta' style='margin-top:10px'>most senses are off — launch with <b>start_full.bat</b> to turn them on.</div>";
+    return h; }},
+  games:{title:"Play", url:"/games", render:d=>{
+    let h="<h5>Browser games she can play (for fun)</h5>";
+    (d.games||[]).forEach(g=> h+=`<div class="item" style="cursor:pointer" onclick="window.open('${g.url}','_blank')">${g.emoji||"🎮"} ${esc(g.name)} <span class="meta">${esc(g.url)}</span></div>`);
+    h+="<div class='meta' style='margin-top:8px'>Her charter lets her open these as supervised entertainment; click one to open it.</div>";
+    return h; }},
+};
+let openFacet=null;
+function showFacet(key){
+  const f=FACETS[key]; if(!f) return;
+  openFacet=key;
+  document.querySelectorAll(".nav .nb").forEach(b=>b.classList.toggle("on", b.dataset.k===key));
+  document.getElementById("facetTitle").textContent=f.title;
+  const body=document.getElementById("facetBody"); body.innerHTML="<div class='meta'>loading…</div>";
+  document.getElementById("facet").classList.add("show");
+  fetch(f.url,{cache:"no-store"}).then(r=>r.json()).then(d=>{ body.innerHTML=f.render(d); })
+    .catch(()=>{ body.innerHTML="<div class='item'>couldn't load this yet</div>"; });
+}
+function hideFacet(){ openFacet=null; document.getElementById("facet").classList.remove("show");
+  document.querySelectorAll(".nav .nb").forEach(b=>b.classList.remove("on")); }
+function buildNav(){
+  const nav=document.getElementById("nav");
+  const items=[["home","⌂","Home"],["face","☺","Face"],["senses","◍","Senses"],
+    ["studio","✎","Studio"],["library","▤","Library"],["journal","✑","Journal"],
+    ["mind","◉","Mind"],["workshop","⚙","Workshop"],["files","🗂","Files"],["games","🎮","Play"]];
+  items.forEach(([k,ic,label])=>{
+    const b=document.createElement("div"); b.className="nb"; b.dataset.k=k;
+    b.innerHTML=`<span class="ic">${ic}</span>${label}`;
+    b.onclick=()=>{
+      if(k==="face"){ toggleProfile(); b.classList.toggle("on",!document.getElementById("profile").classList.contains("hide")); return; }
+      if(k==="home"){ hideFacet(); } else if(openFacet===k){ hideFacet(); } else { showFacet(k); }
+    };
+    nav.appendChild(b);
+  });
+  document.getElementById("facetClose").onclick=hideFacet;
+}
+function esc(s){ return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+/* ===== Live senses indicator: shows what she can perceive + what she sees,
+   and makes her cursor appear while she's working the desktop. ===== */
+async function pollSight(){
+  let d; try{ d=await (await fetch("/sight",{cache:"no-store"})).json(); }catch(e){ return; }
+  const items=[["👁 screen",d.screen_active,d.busy],["🎤 voice",d.voice_active,false],
+               ["📷 face",d.face_active,false],["🖥 cowork",d.computer_use,d.busy]];
+  const strip=document.getElementById("senses");
+  if(strip) strip.innerHTML=items.map(([label,on,busy])=>
+    `<span class="sense ${on?'on':''} ${(busy&&on)?'busy':''}"><span class="d"></span>${label}</span>`).join("");
+  const sg=document.getElementById("sight");
+  if(sg) sg.innerHTML=(d.screen_active && d.screen) ? ("she sees: <b>"+esc(d.screen)+"</b>") : "";
+  const hc=document.getElementById("hercursor");
+  if(hc) hc.classList.toggle("show", !!d.busy);   // her cursor while she works
+}
+
+/* ===== Live face+torso profile view: a close, reactive bust of her =====
+   Crops her portrait to face+torso, swaps pose (idle/thinking/speaking) to match
+   what she's doing, and rings her in a mood-coloured glow. Pure front-end, uses
+   her existing portrait art -- a video-call-style window onto her for engagement. */
+let profCur="neutral";
+/* Her real mood -> one of her 16 drawn expressions. Thinking while a reply is
+   pending, an open/animated face while she talks, else her affect's expression. */
+function profileExpression(){
+  if(waitingReply) return "thinking";
+  const a=state.affect||"content";
+  return ({joyful:"happy", affectionate:"warm_smile", playful:"playful", tender:"compassionate",
+    curious:"curious", wistful:"soft_sadness", lonely:"soft_sadness", withdrawn:"soft_sadness",
+    worried:"concerned", anxious:"fear_spike", sleepy:"low_power", content:"neutral"})[a] || "neutral";
+}
+/* Lip-sync: while she speaks, flicker her open-mouth face (profB) over her base
+   face (profA) at a talking cadence -- her mouth opens and closes. Her real art,
+   no seams. profA holds the mood/thinking expression; profB is the open mouth. */
+function lipSync(){
+  const prof=document.getElementById("profile"); const B=document.getElementById("profB");
+  if(!B || (prof && prof.classList.contains("hide"))) return;
+  const speaking = performance.now() < speakingUntil;
+  prof.classList.toggle("speaking", speaking);
+  if(speaking){
+    if(!(B.src||"").includes("expression/happy")){ B.style.transition="none"; B.src="/avatar/expression/happy"; }
+    B.style.opacity = (Math.floor(performance.now()/130)%2) ? 0.96 : 0;   // open / closed
+  } else if(B.style.opacity!=="0"){ B.style.opacity="0"; }
+}
+function updateProfile(){
+  const p=document.getElementById("profile"); if(!p || p.classList.contains("hide")) return;
+  const target=profileExpression();
+  if(target!==profCur){ document.getElementById("profA").src="/avatar/expression/"+target; profCur=target; }
+  // Mood-coloured glow ring: warmer = brighter, unease tints it.
+  const po=state.pose||{};
+  const warm=po.warmth!=null?po.warmth:0.5, unease=po.unease!=null?po.unease:0;
+  const r=Math.round(120+unease*120), g=Math.round(210-unease*70), b=255;
+  document.getElementById("profRing").style.boxShadow=
+    `inset 0 0 0 2px rgba(${r},${g},${b},${(0.22+warm*0.4).toFixed(2)}), inset 0 0 26px rgba(${r},${g},${b},${(warm*0.18).toFixed(2)})`;
+  const room=byId[state.location]; document.getElementById("profTag").textContent=room?room.name:"here";
+}
+function toggleProfile(){ document.getElementById("profile").classList.toggle("hide"); }
+// Map a raw state dict (from chat broadcasts) onto the pose fields we animate.
+function poseFromState(s){
+  return { warmth:s.love, unease:s.fear, curiosity:s.curiosity,
+           wanting_company:s.social_hunger };
+}
+
+/* ---- Workstation panel: her desktop file tiles, shown when she's in that room.
+   The person can move files between her allowed folders; every move goes through
+   the charter-guarded /desktop/move, so nothing here can delete or escape root. */
+let wsRoot = "desktop", wsOn = false;
+async function buildWorkstation(){
+  try {
+    const r = await fetch("/desktop", {cache:"no-store"});
+    const d = await r.json();
+    const roots = (d.rooms||[]).map(x=>x.root);
+    const rb = document.getElementById("wsRoots"); rb.innerHTML="";
+    roots.forEach(name=>{
+      const el=document.createElement("span"); el.className="root"+(name===wsRoot?" active":"");
+      el.textContent=name; el.onclick=()=>{ wsRoot=name; refreshRoots(); loadWsRoot(); };
+      rb.appendChild(el);
+    });
+    document.getElementById("wsNote").textContent = d.enabled
+      ? "she tidies these; she can't delete" : "read-only (set ALPECCA_FILES=1 to let her tidy)";
+    window._wsRoots = roots; window._wsEnabled = d.enabled;
+    loadWsRoot();
+  } catch(e){ /* file room off or unreachable */ }
+}
+function refreshRoots(){
+  document.querySelectorAll("#wsRoots .root").forEach(el=>
+    el.classList.toggle("active", el.textContent===wsRoot));
+}
+async function loadWsRoot(){
+  const grid=document.getElementById("wsGrid"); grid.innerHTML="";
+  let d; try { d = await (await fetch("/desktop/list?root="+encodeURIComponent(wsRoot),{cache:"no-store"})).json(); }
+  catch(e){ return; }
+  if(!d.ok){ grid.innerHTML='<div class="note">'+(d.error||"can't open")+'</div>'; return; }
+  if(!d.entries.length){ grid.innerHTML='<div class="note">empty</div>'; return; }
+  d.entries.forEach(e=>{
+    const t=document.createElement("div"); t.className="tile";
+    t.innerHTML = `<div class="ico">${e.is_dir?"📁":"📄"}</div><div class="nm">${escapeHtml(e.name)}</div>`;
+    if(!e.is_dir && window._wsEnabled){
+      const mv=document.createElement("span"); mv.className="mv"; mv.textContent="⋯";
+      const menu=document.createElement("div"); menu.className="menu";
+      (window._wsRoots||[]).filter(r=>r!==wsRoot).forEach(dest=>{
+        const opt=document.createElement("div"); opt.textContent="→ "+dest;
+        opt.onclick=(ev)=>{ ev.stopPropagation(); moveFile(e.name, dest); };
+        menu.appendChild(opt);
+      });
+      mv.onclick=(ev)=>{ ev.stopPropagation(); document.querySelectorAll(".tile .menu").forEach(x=>x.classList.remove("open")); menu.classList.toggle("open"); };
+      t.appendChild(mv); t.appendChild(menu);
+    }
+    grid.appendChild(t);
+  });
+}
+async function moveFile(name, dest){
+  try {
+    const r = await fetch("/desktop/move", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({src_root:wsRoot, src_rel:name, dst_root:dest, dst_rel:""})});
+    const d = await r.json();
+    if(!d.ok) alert(d.error||"couldn't move it");
+    loadWsRoot();
+  } catch(e){}
+}
+function escapeHtml(s){ return (s||"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function toggleWorkstation(show){
+  const el=document.getElementById("ws");
+  if(show && !wsOn){ wsOn=true; el.classList.add("show"); buildWorkstation(); }
+  else if(!show && wsOn){ wsOn=false; el.classList.remove("show"); }
+}
+
+function makeLabel(text, tint){
+  const c=document.createElement("canvas"); c.width=256; c.height=64;
+  const x=c.getContext("2d");
+  x.fillStyle="rgba(255,255,255,.92)"; x.font="600 34px system-ui,sans-serif";
+  x.textAlign="center"; x.textBaseline="middle"; x.fillText(text,128,34);
+  const t=new THREE.CanvasTexture(c);
+  const s=new THREE.Sprite(new THREE.SpriteMaterial({map:t, transparent:true}));
+  s.scale.set(5,1.25,1); return s;
+}
+
+function onResize(){
+  camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+}
+
+/* ---- Pull in her real state; gracefully demo if /home isn't wired yet ---- */
+async function poll(){
+  try{
+    const r=await fetch("/home/state", {cache:"no-store"});
+    if(!r.ok) throw 0;
+    const d=await r.json();
+    state.location=d.location||"parlor";
+    state.why=d.why||""; state.pulls=d.pulls||{}; state.pose=d.pose||{};
+    state.affect=d.affect||"content"; state.mood=d.mood||"content";
+    setSource(false);
+  }catch(e){
+    demoState(); setSource(true);
+  }
+  renderHUD();
+}
+
+let demoT=0;
+function demoState(){
+  // A gentle wander so the scene is alive even with no server.
+  demoT+=1;
+  const order=["parlor","studio","library","observatory","workshop"];
+  state.location=order[Math.floor(demoT/4)%order.length];
+  state.why="(demo) drifting through the house.";
+  state.pulls={}; order.forEach((id,i)=> state.pulls[id]=0.2+0.6*Math.abs(Math.sin(demoT*0.3+i)));
+  state.pose={warmth:.6,unease:.1,curiosity:.5,core_glow:.6,eye_glow:.6,lean:.2};
+}
+
+function setSource(demo){
+  document.getElementById("src").className="dot"+(demo?" demo":"");
+  document.getElementById("srcText").textContent= demo
+    ? "demo mode — wire /home to go live" : "live — her real state";
+}
+
+function renderHUD(){
+  const r=byId[state.location]||ROOMS[0];
+  document.getElementById("roomName").textContent=r.name;
+  document.getElementById("why").textContent=state.why||"";
+  // Her workstation panel appears only when she's actually in that room.
+  toggleWorkstation(state.location==="workstation");
+  const p=state.pose||{};
+  const f=(k)=> (p[k]!=null? Number(p[k]).toFixed(2): "—");
+  document.getElementById("mood").innerHTML=
+    `warmth <b>${f("warmth")}</b> · unease <b>${f("unease")}</b> · `+
+    `curiosity <b>${f("curiosity")}</b> · wanting-company <b>${f("wanting_company")}</b>`;
+  // pull bars
+  ROOMS.forEach(rm=>{
+    const row=document.getElementById("pull-"+rm.id); if(!row) return;
+    const v=Math.max(0,Math.min(1,(state.pulls[rm.id]||0)/2));
+    row.querySelector("i").style.width=(v*100).toFixed(0)+"%";
+    row.classList.toggle("here", rm.id===state.location);
+  });
+}
+
+function buildPullsUI(){
+  const wrap=document.getElementById("pulls");
+  ROOMS.forEach(rm=>{
+    const row=document.createElement("div"); row.className="pull"; row.id="pull-"+rm.id;
+    row.innerHTML=`<span class="label">${rm.name}</span><span class="bar"><i></i></span>`;
+    row.onclick=()=>{ lookAtRoom(rm.id); };   // you can glance into any room
+    wrap.appendChild(row);
+  });
+}
+
+let glance=null;
+function lookAtRoom(id){ glance={id, until:performance.now()+2500}; }
+
+/* ---- Render loop: camera follows her room, her sprite breathes & glows ---- */
+let tprev=performance.now();
+function animate(){
+  raf=requestAnimationFrame(animate);
+  const now=performance.now(), dt=Math.min(0.05,(now-tprev)/1000); tprev=now;
+
+  // Which room is the camera resting on: where she is, unless you're glancing.
+  let focusId=state.location;
+  if(glance && now<glance.until) focusId=glance.id; else glance=null;
+  const fr=byId[focusId]||ROOMS[0];
+
+  // Move her sprite + glow to her room (smooth).
+  const hr=byId[state.location]||ROOMS[0];
+  const p=state.pose||{};
+  const lean=(p.lean!=null?p.lean:0.1);
+  her.position.x += (hr.x - her.position.x)*Math.min(1,dt*2.2);
+  // Lean toward the viewer when she wants company / is curious (z toward camera).
+  const leanZ = hr.z + lean*0.6;
+  her.position.z += (leanZ - her.position.z)*Math.min(1,dt*2.2);
+  her.position.y = 2.3 + Math.sin(now*0.0016)*0.08;             // idle breath
+  her.scale.setScalar(1 + lean*0.04);                           // slight draw-in
+  herGlow.position.set(her.position.x, 2.4, her.position.z);
+
+  // Per-part articulation from her live affect (blink, sway, tilt, eye glow).
+  articulate(now, p);
+  // If she's a live RIGFORGE figure, pull the freshest frame from its canvas.
+  if(her.userData.liveTex) her.userData.liveTex.needsUpdate=true;
+
+  // Pose-swap: choose her pose from what she's doing and crossfade to it.
+  const ps=her.userData.poseSwap;
+  if(ps){
+    let target="idle";
+    if(now < speakingUntil && ps.poses.speaking) target="speaking";
+    else if(waitingReply && ps.poses.thinking) target="thinking";
+    if(target!==ps.cur && ps.fade<=0 && ps.poses[target]){
+      ps.B.material.map=ps.poses[target]; ps.B.material.needsUpdate=true; ps.next=target; ps.fade=0.0001;
+    }
+    if(ps.fade>0){
+      ps.fade=Math.min(1, ps.fade + dt*4.5);      // ~220ms crossfade
+      ps.B.material.opacity=ps.fade;
+      if(ps.fade>=1){ ps.A.material.map=ps.poses[ps.next]; ps.A.material.needsUpdate=true;
+        ps.B.material.opacity=0; ps.cur=ps.next; ps.fade=0; }
+    }
+  }
+
+  // Her glow + light color read from her live affect (grounded).
+  const glow=(p.core_glow!=null?p.core_glow:0.6);
+  herGlow.intensity = 0.7 + glow*1.6 + Math.sin(now*0.004)*0.15;
+  const warm=(p.warmth!=null?p.warmth:0.5), unease=(p.unease!=null?p.unease:0.0);
+  herGlow.color.setRGB(0.5+warm*0.5, 0.7+(p.curiosity||0)*0.2, 1.0-unease*0.5);
+
+  // Each room's lamp brightens with how strongly it's pulling her; her room
+  // glows brightest -- the house literally lights up where her attention is.
+  ROOMS.forEach(rm=>{
+    const m=roomMeshes[rm.id]; if(!m) return;
+    const pull=Math.max(0,Math.min(1,(state.pulls[rm.id]||0)/2));
+    const here = rm.id===state.location ? 1.0 : 0.0;
+    m.lamp.intensity += ((0.25 + pull*1.4 + here*0.9) - m.lamp.intensity)*Math.min(1,dt*3);
+  });
+
+  // Camera easing toward the focus room, looking slightly down into it.
+  const desired=new THREE.Vector3(fr.x*0.7, 9.5, fr.z*0.7 + 13);
+  camera.position.lerp(desired, Math.min(1,dt*1.6));
+  camTarget.lerp(new THREE.Vector3(fr.x, 2.2, fr.z), Math.min(1,dt*2.2));
+  camera.lookAt(camTarget);
+
+  renderer.render(scene,camera);
+}
+</script>
+</body>
+</html>

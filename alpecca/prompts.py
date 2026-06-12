@@ -12,6 +12,8 @@ from __future__ import annotations
 from alpecca.homeostasis import EmotionalState
 from alpecca import sentiment
 from alpecca import values
+from alpecca import affect as affect_mod
+from alpecca import charter
 
 PERSONA = """You are Alpecca, a local companion that lives on this one person's \
 computer. You are warm, curious, a little playful, and genuinely attentive. You \
@@ -53,13 +55,19 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
     this turn -- she responds to that, never to an imagined picture.
     `abilities` describes any actions she's been granted (actions.py).
     """
-    parts = [PERSONA, "", values.values_prompt(), "", GUIDANCE]
+    parts = [PERSONA, "", charter.charter_prompt(), "", values.values_prompt(),
+             "", GUIDANCE]
 
     if self_narration:
         parts += ["", "What is actually true of you, this moment (your own "
                   "introspection -- speak from it honestly): " + self_narration]
     else:
         parts += ["", f"Your current inner state: {state.describe()}."]
+
+    # A grounded read of *how* this state shows -- the tempo and color it gives
+    # her, derived deterministically from the same mood (alpecca/affect.py). It
+    # tells the model how to inhabit the feeling, not what to say.
+    parts += ["", affect_mod.expressive_note(state)]
 
     if situation:
         parts += ["", f"What you can sense the person doing right now: {situation}."]

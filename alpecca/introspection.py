@@ -143,10 +143,21 @@ class SelfReport:
                   else "my senses are quiet right now")
         energy = s.get("energy")
         energy_clause = f", energy {energy:.2f}" if energy is not None else ""
+        # The two newer feelings only earn a clause when they're actually notable,
+        # so an ordinary moment doesn't get cluttered -- but when she's genuinely
+        # curious or missing company, she can say so, grounded in the real value.
+        extra = []
+        cur = s.get("curiosity")
+        if cur is not None and cur > 0.5:
+            extra.append("my curiosity is up")
+        hunger = s.get("social_hunger")
+        if hunger is not None and hunger > 0.45:
+            extra.append("I've been wanting your company")
+        extra_clause = (" " + ", and ".join(extra) + ".") if extra else ""
         return (
             f"Right now I'm at warmth {s['love']:.2f}, care {s['compassion']:.2f}, "
             f"unease {s['fear']:.2f}{energy_clause} -- overall {self.mood}. {self.reason}."
-            f"{trend_clause} {senses}, and I'm carrying {self.memory_count} "
+            f"{extra_clause}{trend_clause} {senses}, and I'm carrying {self.memory_count} "
             f"{'memory' if self.memory_count == 1 else 'memories'} of us."
         )
 

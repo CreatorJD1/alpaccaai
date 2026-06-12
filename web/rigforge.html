@@ -1,0 +1,1967 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>RIGFORGE // 2D Cubism Auto-Rigger</title>
+<style>
+  :root{
+    --void:#080b12; --panel:#0e1320; --panel2:#121829; --line:#1c2436;
+    --soul:#3df0e0; --soul-dim:#1c6f6a; --rift:#ff3d7f; --amber:#ffb648;
+    --text:#d9e3f2; --ghost:#7b8ba8; --ghost2:#4d5b76;
+    --ok:#48e08a;
+    --grid: rgba(61,240,224,.55);
+    --r:3px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:
+      radial-gradient(1200px 700px at 70% -10%, rgba(61,240,224,.06), transparent 60%),
+      radial-gradient(900px 600px at 0% 110%, rgba(255,61,127,.05), transparent 55%),
+      var(--void);
+    color:var(--text);
+    font:13px/1.45 ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    -webkit-font-smoothing:antialiased;
+    overflow:hidden;
+  }
+  body::before{ /* scanline atmosphere */
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:50;mix-blend-mode:overlay;opacity:.4;
+    background:repeating-linear-gradient(0deg,rgba(255,255,255,.03) 0 1px,transparent 1px 3px);
+  }
+  .app{display:grid;grid-template-rows:auto 1fr auto;height:100%}
+
+  /* ---------- header ---------- */
+  header{
+    display:flex;align-items:center;gap:14px;
+    padding:10px 16px;border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,var(--panel),transparent);
+  }
+  .brand{display:flex;align-items:baseline;gap:10px}
+  .logo{font-weight:800;letter-spacing:.32em;font-size:15px;text-transform:uppercase;
+    background:linear-gradient(90deg,var(--soul),#bdfff8);-webkit-background-clip:text;background-clip:text;color:transparent;
+    text-shadow:0 0 18px rgba(61,240,224,.25)}
+  .tag{color:var(--ghost);font-size:10px;letter-spacing:.28em;text-transform:uppercase}
+  .vail{margin-left:auto;color:var(--ghost2);font-size:10px;letter-spacing:.24em;text-transform:uppercase}
+  .vail b{color:var(--rift);font-weight:700}
+
+  /* ---------- layout ---------- */
+  .body{display:grid;grid-template-columns:262px 1fr 286px;min-height:0}
+  @media (max-width:1080px){ .body{grid-template-columns:1fr} .panel.left,.panel.right{display:none} .panel.show{display:flex !important} }
+  .panel{display:flex;flex-direction:column;min-height:0;overflow-y:auto;background:var(--panel)}
+  .panel.left{border-right:1px solid var(--line)}
+  .panel.right{border-left:1px solid var(--line)}
+  .panel::-webkit-scrollbar{width:8px}
+  .panel::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px}
+
+  .stage{position:relative;display:flex;align-items:center;justify-content:center;background:
+    linear-gradient(var(--line) 1px,transparent 1px) 0 0/26px 26px,
+    linear-gradient(90deg,var(--line) 1px,transparent 1px) 0 0/26px 26px,
+    var(--void);
+    background-blend-mode:normal;overflow:hidden}
+  .stage::after{content:"";position:absolute;inset:0;pointer-events:none;
+    box-shadow:inset 0 0 120px rgba(0,0,0,.6)}
+  #stageCanvas{touch-action:none;max-width:100%;max-height:100%;cursor:crosshair}
+  .drop{
+    position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
+    text-align:center;color:var(--ghost);z-index:5;
+  }
+  .drop.hide{display:none}
+  .drop .ic{width:64px;height:64px;border:1px dashed var(--soul-dim);border-radius:8px;display:grid;place-items:center;color:var(--soul);font-size:26px}
+  .drop h2{margin:0;font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--text)}
+  .drop p{margin:0;max-width:280px;font-size:11px;line-height:1.6}
+  .drop.drag{outline:2px solid var(--soul);outline-offset:-12px}
+
+  /* guided-rig banner */
+  .guidebar{position:absolute;top:14px;left:50%;transform:translateX(-50%);z-index:7;display:none;
+    align-items:center;gap:12px;padding:8px 14px;border:1px solid var(--soul-dim);border-radius:24px;
+    background:rgba(8,11,18,.94);box-shadow:0 0 22px rgba(61,240,224,.20)}
+  .guidebar.show{display:flex}
+  .guidebar .gb-step{color:var(--soul);font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700}
+  .guidebar .gb-prog{color:var(--ghost);font-size:10px;font-variant-numeric:tabular-nums}
+  .guidebar .gb-mir{color:var(--ghost);font-size:9.5px;display:flex;align-items:center;gap:4px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer}
+  .guidebar button{padding:5px 9px;font-size:10px}
+
+  /* corner brackets for stage */
+  .bracket{position:absolute;width:16px;height:16px;border:2px solid var(--soul-dim);z-index:4;pointer-events:none}
+  .bracket.tl{top:10px;left:10px;border-right:0;border-bottom:0}
+  .bracket.tr{top:10px;right:10px;border-left:0;border-bottom:0}
+  .bracket.bl{bottom:10px;left:10px;border-right:0;border-top:0}
+  .bracket.br{bottom:10px;right:10px;border-left:0;border-top:0}
+
+  /* ---------- panel sections ---------- */
+  .sec{border-bottom:1px solid var(--line);padding:13px 14px}
+  .sec h3{margin:0 0 11px;font-size:10px;letter-spacing:.26em;text-transform:uppercase;color:var(--soul);
+    display:flex;align-items:center;gap:8px}
+  .sec h3::before{content:"";width:5px;height:5px;background:var(--soul);box-shadow:0 0 8px var(--soul);transform:rotate(45deg)}
+  .hint{color:var(--ghost);font-size:10.5px;line-height:1.55;margin:2px 0 0}
+
+  /* controls */
+  .row{display:flex;align-items:center;gap:8px;margin:8px 0}
+  .row label{flex:0 0 84px;color:var(--ghost);font-size:10.5px;letter-spacing:.04em;text-transform:uppercase}
+  input[type=range]{-webkit-appearance:none;appearance:none;flex:1;height:3px;background:var(--line);border-radius:3px;outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;
+    background:var(--soul);box-shadow:0 0 0 3px rgba(61,240,224,.14);cursor:pointer}
+  input[type=range]::-moz-range-thumb{width:13px;height:13px;border:0;border-radius:50%;background:var(--soul);cursor:pointer}
+  .val{flex:0 0 38px;text-align:right;color:var(--text);font-size:11px;font-variant-numeric:tabular-nums}
+
+  button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--panel2);color:var(--text);
+    padding:8px 10px;border-radius:var(--r);letter-spacing:.06em;transition:.12s;text-transform:uppercase;font-size:10.5px}
+  button:hover{border-color:var(--soul-dim);color:#fff}
+  button:active{transform:translateY(1px)}
+  button.primary{background:linear-gradient(180deg,#0f6f68,#0c4f4a);border-color:var(--soul-dim);color:#eafffb;font-weight:700}
+  button.primary:hover{box-shadow:0 0 22px rgba(61,240,224,.25)}
+  button.rift{border-color:#5e2440;color:#ffd0e0}
+  button.rift:hover{box-shadow:0 0 18px rgba(255,61,127,.25);border-color:var(--rift)}
+  button.on{border-color:var(--soul);color:var(--soul);box-shadow:inset 0 0 14px rgba(61,240,224,.12)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  .btns{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+  .btns.three{grid-template-columns:1fr 1fr 1fr}
+  .btns.one{grid-template-columns:1fr}
+  .seg{display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+  .seg button{border:0;border-radius:0;background:transparent;padding:8px 4px}
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button.on{background:rgba(61,240,224,.1)}
+
+  .toggles{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{padding:6px 9px;border:1px solid var(--line);border-radius:20px;color:var(--ghost);cursor:pointer;
+    font-size:10px;letter-spacing:.08em;text-transform:uppercase;user-select:none}
+  .chip.on{color:var(--void);background:var(--soul);border-color:var(--soul);font-weight:700}
+
+  .file{display:none}
+  .quality{display:flex;gap:6px}
+
+  /* footer */
+  footer{display:flex;align-items:center;gap:16px;padding:7px 16px;border-top:1px solid var(--line);
+    background:var(--panel);font-size:10px;letter-spacing:.1em;color:var(--ghost);text-transform:uppercase}
+  footer .dot{width:7px;height:7px;border-radius:50%;background:var(--ghost2)}
+  footer .dot.live{background:var(--ok);box-shadow:0 0 8px var(--ok);animation:pulse 1.4s infinite}
+  footer .dot.rec{background:var(--rift);box-shadow:0 0 8px var(--rift);animation:pulse .7s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  footer .stat{margin-left:auto;color:var(--ghost2)}
+  .kv{color:var(--text)}
+
+  .mobilebar{display:none}
+  @media (max-width:1080px){
+    .mobilebar{display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel)}
+    .mobilebar button{flex:1}
+  }
+
+  /* ---------- background removal overlay ---------- */
+  .cutout{position:fixed;inset:0;z-index:60;display:none;flex-direction:column;
+    background:rgba(6,9,15,.97);backdrop-filter:blur(3px)}
+  .cutout.show{display:flex}
+  .cuttop{display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid var(--line)}
+  .cuttop .ctitle{font-weight:800;letter-spacing:.2em;text-transform:uppercase;font-size:13px;color:var(--soul)}
+  .cuttop .csub{color:var(--ghost);font-size:10px;letter-spacing:.2em;text-transform:uppercase}
+  .cuttop .sp{margin-left:auto;display:flex;gap:8px}
+  .cutMain{flex:1;min-height:0;position:relative;display:flex;align-items:center;justify-content:center}
+  #cutCanvas{touch-action:none;cursor:none}
+  .cutbar{display:flex;flex-wrap:wrap;gap:20px;padding:12px 18px;border-top:1px solid var(--line);
+    overflow-x:auto;align-items:center}
+  .cutgroup{display:flex;align-items:center;gap:8px;flex:none}
+  .cutgroup .cglabel{font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--ghost2)}
+  .cutgroup label{font-size:10px;text-transform:uppercase;color:var(--ghost);letter-spacing:.04em}
+  .cutgroup input[type=range]{width:84px;flex:none}
+  .cutgroup .v{font-size:10px;color:var(--text);min-width:18px;font-variant-numeric:tabular-nums}
+  .cutsep{width:1px;align-self:stretch;background:var(--line)}
+  @media (max-width:1080px){.cutbar{gap:12px}.cutgroup input[type=range]{width:66px}}
+</style>
+<style id="rf-embed-css">
+body.rf-embed{background:transparent!important}
+body.rf-embed::before{display:none!important}
+body.rf-embed .app{display:block;height:100%}
+body.rf-embed header,body.rf-embed .mobilebar,body.rf-embed .panel,body.rf-embed footer,body.rf-embed .guidebar,body.rf-embed .drop,body.rf-embed .cutout{display:none!important}
+body.rf-embed .body{display:block;height:100%}
+body.rf-embed .stage{position:fixed;inset:0;background:transparent}
+body.rf-embed .stage::after{display:none}
+body.rf-embed .bracket{display:none}
+body.rf-embed #stageCanvas{cursor:default}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">
+      <span class="logo">RIGFORGE</span>
+      <span class="tag">2D Cubism Humanoid Rigger</span>
+    </div>
+    <span class="vail">VAILEDLIGHT // <b>DLDS</b> TOOLING</span>
+  </header>
+
+  <div class="mobilebar">
+    <button id="mLeft">◀ Source</button>
+    <button id="mRight">Anim ▶</button>
+  </div>
+
+  <div class="body">
+    <!-- LEFT: source + rig setup -->
+    <aside class="panel left" id="panelLeft">
+      <div class="sec">
+        <h3>Source</h3>
+        <div class="btns one">
+          <button class="primary" id="loadBtn">⤓ Load character image</button>
+        </div>
+        <input type="file" id="fileIn" class="file" accept="image/png,image/jpeg,image/webp">
+        <p class="hint">PNG with a transparent background gives the cleanest rig. Front-facing portraits / busts auto-rig best.</p>
+        <div class="btns one" style="margin-top:10px">
+          <button id="bgRemove" class="rift" disabled>✂ Remove background</button>
+        </div>
+        <span id="bgState2" style="display:block;text-align:left;color:var(--ghost);margin-top:6px;font-size:10px;letter-spacing:.04em">background: original</span>
+      </div>
+
+      <div class="sec">
+        <h3>Auto-Rig</h3>
+        <div class="btns one">
+          <button class="primary" id="autoRig" disabled>⚡ Auto-rig &amp; play</button>
+        </div>
+        <p class="hint">One click rigs from auto-placed landmarks. Refine them below only if needed.</p>
+        <div class="btns two" style="margin-top:9px">
+          <button id="editAnchors" disabled>✎ Edit landmarks</button>
+          <button id="resetAnchors" disabled>↺ Re-detect</button>
+        </div>
+        <p class="hint" id="anchorHelp" style="display:none;color:var(--soul)">Drag the glowing handles onto: face center, each eye, mouth, neck pivot, hip pivot. Click <b>Done</b> when set.</p>
+        <div class="btns one" style="margin-top:8px"><button id="anchorDone" style="display:none">✓ Done editing</button></div>
+        <div class="btns two" style="margin-top:10px">
+          <button id="poseBones" disabled>✣ Pose bones</button>
+          <button id="resetPose" disabled>↺ Reset pose</button>
+        </div>
+        <p class="hint" id="poseHelp" style="display:none;color:var(--soul)">Drag any joint to rotate that bone and its children. Posed bones turn pink and hold; auto-motion drives the rest. Click <b>Done posing</b> to play.</p>
+        <div class="btns one" style="margin-top:8px"><button id="poseDone" style="display:none">✓ Done posing</button></div>
+        <div class="btns one" style="margin-top:8px"><button id="editSkel" disabled>✎ Edit skeleton (drag joints)</button></div>
+        <p class="hint" id="skelHelp" style="display:none;color:var(--soul)">Drag any joint to its true position to correct the auto-mapping. Full-body rigs detect arms &amp; legs; bust rigs are spine + head. Click <b>Done</b> to re-bind the mesh.</p>
+        <div class="btns one" style="margin-top:8px"><button id="skelDone" style="display:none">✓ Done — re-bind mesh</button></div>
+        <div class="btns one" style="margin-top:10px"><button id="guideBtn" class="primary" disabled>🎯 Guided rig — click joints</button></div>
+        <p class="hint">Guided rigging gives the most accurate result: place each joint on the art yourself. With <b>mirror</b> on you only click the left side.</p>
+      </div>
+
+      <div class="sec">
+        <h3>Anatomy</h3>
+        <div id="anatReadout" class="hint">Load a character to analyze.</div>
+        <div class="row" style="margin-top:9px">
+          <label>Force rig</label>
+          <input type="checkbox" id="forceHuman" style="flex:0 0 auto;width:auto">
+          <span class="val" id="forceState" style="flex:1;text-align:left;color:var(--ghost)">off</span>
+        </div>
+        <p class="hint">Tuned for bipedal, humanlike designs using the head-unit proportion canon. Non-humanoid art is blocked unless forced.</p>
+      </div>
+
+      <div class="sec">
+        <h3>Overlay</h3>
+        <div class="toggles">
+          <span class="chip on" data-t="mesh">Mesh</span>
+          <span class="chip" data-t="skeleton">Skeleton</span>
+          <span class="chip" data-t="zones">Zones</span>
+          <span class="chip" data-t="pivots">Pivots</span>
+        </div>
+      </div>
+
+      <div class="sec">
+        <h3>Mesh quality</h3>
+        <div class="quality">
+          <button data-q="0">Low</button>
+          <button data-q="1" class="on">Med</button>
+          <button data-q="2">High</button>
+        </div>
+        <p class="hint">Higher = smoother warps, heavier render.</p>
+      </div>
+    </aside>
+
+    <!-- CENTER: stage -->
+    <main class="stage" id="stage">
+      <span class="bracket tl"></span><span class="bracket tr"></span>
+      <span class="bracket bl"></span><span class="bracket br"></span>
+      <canvas id="stageCanvas"></canvas>
+      <div class="guidebar" id="guideBar">
+        <span class="gb-step" id="guideStep">Click HEAD</span>
+        <span class="gb-prog" id="guideProg"></span>
+        <label class="gb-mir"><input type="checkbox" id="guideMirror" checked> mirror L→R</label>
+        <button id="guideBack">↶ Back</button>
+        <button id="guideCancel">Cancel</button>
+      </div>
+      <div class="drop" id="drop">
+        <div class="ic">⤓</div>
+        <h2>Drop a 2D anime character</h2>
+        <p>Or use <b>Load character image</b>. RIGFORGE auto-places landmarks and brings the art to life — no manual meshing.</p>
+      </div>
+    </main>
+
+    <!-- RIGHT: animation -->
+    <aside class="panel right" id="panelRight">
+      <div class="sec">
+        <h3>Driver</h3>
+        <div class="seg" id="driverSeg">
+          <button data-d="idle" class="on">Idle</button>
+          <button data-d="track">Cursor</button>
+          <button data-d="manual">Manual</button>
+        </div>
+        <p class="hint" id="driverHint">Idle: ambient breathing, blinking &amp; micro-sway.</p>
+      </div>
+
+      <div class="sec">
+        <h3>Auto behaviors</h3>
+        <div class="toggles">
+          <span class="chip on" data-b="blink">Blink</span>
+          <span class="chip on" data-b="breath">Breathe</span>
+          <span class="chip on" data-b="sway">Sway</span>
+          <span class="chip" data-b="lipsync">Lip-sync (mic)</span>
+        </div>
+      </div>
+
+      <div class="sec">
+        <h3>Pose <span style="margin-left:auto;font-size:9px;color:var(--ghost2)" id="poseMode">[idle-driven]</span></h3>
+        <div class="row"><label>Head ↔</label><input type="range" id="p_yaw" min="-100" max="100" value="0"><span class="val" id="v_yaw">0</span></div>
+        <div class="row"><label>Head ↕</label><input type="range" id="p_pitch" min="-100" max="100" value="0"><span class="val" id="v_pitch">0</span></div>
+        <div class="row"><label>Tilt ⟲</label><input type="range" id="p_roll" min="-100" max="100" value="0"><span class="val" id="v_roll">0</span></div>
+        <div class="row"><label>Eyes</label><input type="range" id="p_eye" min="0" max="100" value="100"><span class="val" id="v_eye">100</span></div>
+        <div class="row"><label>Mouth</label><input type="range" id="p_mouth" min="0" max="100" value="0"><span class="val" id="v_mouth">0</span></div>
+        <div class="row"><label>Body ↔</label><input type="range" id="p_body" min="-100" max="100" value="0"><span class="val" id="v_body">0</span></div>
+        <div class="row"><label>Breath</label><input type="range" id="p_breath" min="0" max="100" value="0"><span class="val" id="v_breath">0</span></div>
+      </div>
+
+      <div class="sec">
+        <h3>Export</h3>
+        <div class="btns three">
+          <button id="snap" disabled>◳ PNG</button>
+          <button id="rec" class="rift" disabled>● REC</button>
+          <button id="saveRig" disabled>↧ Rig</button>
+        </div>
+        <p class="hint">REC captures a WebM of the live canvas — drop it straight onto a DLDS panel. Rig saves landmarks + settings as JSON.</p>
+        <div class="btns one" style="margin-top:7px">
+          <button id="loadRig">↥ Load rig (.json)</button>
+        </div>
+        <input type="file" id="rigIn" class="file" accept="application/json,.json">
+      </div>
+
+      <div class="sec">
+        <h3>AI keypoints</h3>
+        <div class="btns one">
+          <button id="loadPose" disabled>⨁ Import pose keypoints (.json)</button>
+        </div>
+        <input type="file" id="poseIn" class="file" accept="application/json,.json">
+        <div style="margin-top:8px">
+          <input type="text" id="poseSpace" class="txt" placeholder="username/rigforge-pose" autocomplete="off"
+                 style="width:100%;box-sizing:border-box;background:#0c1018;border:1px solid #1d2738;color:#cfe;padding:6px 8px;border-radius:6px;font:inherit;font-size:12px">
+          <div class="btns one" style="margin-top:6px">
+            <button id="detectHF" class="soul" disabled>⚡ Detect joints via HF Space</button>
+          </div>
+        </div>
+        <p class="hint">Heuristic detection guesses interior joints (elbow, hip, knee) from the outline. For anatomically exact joints, run a 2D pose estimator (DWPose / anime-pose). Either import its OpenPose/COCO JSON, or deploy the RIGFORGE Pose Space and call it directly above — it rebuilds the rig on the real keypoints.</p>
+      </div>
+
+      <div class="sec">
+        <h3>Rig readiness</h3>
+        <div class="btns one"><button id="rigCheck" class="primary" disabled>🩺 Check readiness</button></div>
+        <div id="rigReport" class="hint" style="margin-top:8px;line-height:1.4"></div>
+        <div class="btns one" id="rigFixWrap" style="display:none;margin-top:6px"><button id="rigFix" class="soul">✛ Auto-fix joints</button></div>
+        <p class="hint">Certifies the rig did its basic job: one figure, joints on the body, bilateral symmetry, plausible proportions, and a clean rest-pose bind. This is the self-check the rest of the system builds on.</p>
+      </div>
+
+      <div class="sec">
+        <h3>Recursive foundation</h3>
+        <div class="btns one"><button id="capSample" class="soul" disabled>📦 Certify &amp; capture sample</button></div>
+        <div id="capReport" class="hint" style="margin-top:8px;line-height:1.4"></div>
+        <p class="hint">Captures a rig <b>only if it passes readiness</b>, then saves the figure + corrected keypoints as a labeled sample for <code>Alpeccaai-data</code>. Each certified rig becomes training data — the loop that lets her detector improve on her own art.</p>
+      </div>
+    </aside>
+  </div>
+
+  <!-- BACKGROUND REMOVAL OVERLAY -->
+  <div class="cutout" id="cutout">
+    <div class="cuttop">
+      <span class="ctitle">Cutout</span>
+      <span class="csub">auto matte + edge decontam + brush refine</span>
+      <div class="sp">
+        <button id="cutCancel">Cancel</button>
+        <button class="primary" id="cutApply">✓ Apply cutout</button>
+      </div>
+    </div>
+    <div class="cutMain" id="cutMain"><canvas id="cutCanvas"></canvas></div>
+    <div class="cutbar">
+      <div class="cutgroup">
+        <span class="cglabel">Auto</span>
+        <button id="autoCut" class="primary">⚡ Re-matte</button>
+        <label>Tol</label><input type="range" id="cutTol" min="6" max="140" value="42"><span class="v" id="cutTolV">42</span>
+        <label>Feather</label><input type="range" id="cutFeather" min="0" max="6" value="1"><span class="v" id="cutFeatherV">1</span>
+        <label>Edge</label><input type="range" id="cutShift" min="-3" max="3" value="0"><span class="v" id="cutShiftV">0</span>
+        <span class="chip on" id="cutDecon">Decontaminate</span>
+      </div>
+      <div class="cutsep"></div>
+      <div class="cutgroup">
+        <span class="cglabel">Brush</span>
+        <button id="brErase" class="on">Erase</button>
+        <button id="brRestore">Restore</button>
+        <label>Size</label><input type="range" id="brSize" min="4" max="160" value="40"><span class="v" id="brSizeV">40</span>
+        <label>Soft</label><input type="range" id="brSoft" min="0" max="100" value="50"><span class="v" id="brSoftV">50</span>
+        <button id="cutUndo">↶ Undo</button>
+        <button id="cutReset">↺ Reset</button>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <span class="dot" id="statDot"></span>
+    <span id="statText">No source loaded</span>
+    <span class="stat">VERTS <span class="kv" id="statVerts">0</span> · FPS <span class="kv" id="statFps">0</span></span>
+  </footer>
+</div>
+
+<script>
+"use strict";
+(function(){
+/* ============================================================
+   RIGFORGE — single-file 2D Cubism-style auto-rigger
+   Continuous-mesh warp engine (no cut-out holes), CPU canvas.
+   ============================================================ */
+
+// ---------- DOM ----------
+const $=id=>document.getElementById(id);
+const canvas=$("stageCanvas"), ctx=canvas.getContext("2d");
+const stage=$("stage"), drop=$("drop");
+const dpr=Math.min(window.devicePixelRatio||1, 2);
+
+// ---------- state ----------
+const S={
+  img:null, imgW:0, imgH:0,         // source bitmap (possibly bg-cut)
+  rawImg:null,                       // original element for re-processing
+  ready:false,
+  fit:{s:1,ox:0,oy:0,vw:0,vh:0},     // image->canvas device-px transform
+  grid:{cols:14,rows:18},            // mesh density
+  rest:[],                            // rest vertices (image coords) [{x,y}]
+  disp:[],                            // displaced (canvas device coords)
+  anchors:null,                       // {face,eyeL,eyeR,mouth,neck,hip} image coords
+  qLevels:[[10,13],[14,18],[20,26]],
+  overlay:{mesh:true,zones:false,pivots:false,skeleton:false},
+  skel:null, vw:[], poseEdit:false, selBone:-1, poseDrag:null, skelEdit:false, skelDrag:-1, anchorsManual:false,
+  anat:null, forceHumanoid:false, guidedRig:null,
+  guide:{active:false, step:0, mirror:true, pts:{}, auto:null,
+    seqM:["head","neck","pelvis","l_shoulder","l_elbow","l_hand","l_hip","l_knee","l_foot"],
+    seqF:["head","neck","pelvis","l_shoulder","l_elbow","l_hand","r_shoulder","r_elbow","r_hand","l_hip","l_knee","l_foot","r_hip","r_knee","r_foot"]},
+  driver:"idle",
+  behave:{blink:true,breath:true,sway:true,lipsync:false},
+  editing:false, dragIdx:-1,
+  // live params (-1..1 for bidirectional, 0..1 otherwise)
+  P:{yaw:0,pitch:0,roll:0,eye:1,mouth:0,body:0,breath:0},
+  manual:{yaw:0,pitch:0,roll:0,eye:1,mouth:0,body:0,breath:0},
+  // smoothing buffers
+  sm:{yaw:0,pitch:0,roll:0,body:0,hairLag:0,prevSway:0},
+  blink:{t:0,next:1.4,phase:1},
+  mouse:{x:0,y:0,inside:false},
+  mic:null, micVal:0,
+  rec:null, recChunks:[], recording:false,
+  t0:performance.now(), fps:0, fpsT:0, fpsN:0
+};
+
+// ---------- helpers ----------
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const clamp01=v=>v<0?0:v>1?1:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+const smooth=(a,b,t)=>a+(b-a)*(1-Math.pow(1-t,1)); // simple
+function smoothstep(t){t=clamp01(t);return t*t*(3-2*t);}
+function dist(a,b){const dx=a.x-b.x,dy=a.y-b.y;return Math.hypot(dx,dy);}
+
+// ---------- canvas sizing ----------
+function resize(){
+  const r=stage.getBoundingClientRect();
+  canvas.width=Math.max(2,Math.floor(r.width*dpr));
+  canvas.height=Math.max(2,Math.floor(r.height*dpr));
+  canvas.style.width=r.width+"px";
+  canvas.style.height=r.height+"px";
+  computeFit();
+}
+function computeFit(){
+  if(!S.imgW)return;
+  const cw=canvas.width, ch=canvas.height;
+  const pad=0.92;
+  const s=Math.min(cw/S.imgW, ch/S.imgH)*pad;
+  S.fit={s, ox:(cw-S.imgW*s)/2, oy:(ch-S.imgH*s)/2, vw:S.imgW*s, vh:S.imgH*s};
+}
+const toCanvas=(x,y)=>({x:x*S.fit.s+S.fit.ox, y:y*S.fit.s+S.fit.oy});
+const toImage=(cx,cy)=>({x:(cx-S.fit.ox)/S.fit.s, y:(cy-S.fit.oy)/S.fit.s}); // cx,cy device px
+
+// ---------- image loading ----------
+function loadFile(file){
+  if(!file||!file.type.startsWith("image/"))return;
+  const url=URL.createObjectURL(file);
+  const im=new Image();
+  im.onload=()=>{ URL.revokeObjectURL(url); S.rawImg=im;
+    S.imgName=((file.name||"alpecca").replace(/\.[^.]+$/,"").replace(/[^a-z0-9_-]/gi,"_"))||"alpecca";
+    ingest(im); };
+  im.onerror=()=>{ URL.revokeObjectURL(url); status("Could not read that image.", false); };
+  im.src=url;
+}
+function ingest(im){
+  // draw into an offscreen so we can optionally cut bg & sample
+  const off=document.createElement("canvas");
+  // cap working resolution for performance
+  const maxDim=1100, sc=Math.min(1, maxDim/Math.max(im.naturalWidth,im.naturalHeight));
+  off.width=Math.round(im.naturalWidth*sc); off.height=Math.round(im.naturalHeight*sc);
+  const octx=off.getContext("2d");
+  octx.drawImage(im,0,0,off.width,off.height);
+  S.work=off; S.workCtx=octx;            // clean original (source of truth for cutout)
+  S.origW=im.naturalWidth; S.origH=im.naturalHeight; S.poseScale=sc;  // for AI keypoint import
+  S.guidedRig=null; S.guide.active=false; S.anchorsManual=false; if(typeof updateGuideUI==="function")updateGuideUI();
+  S.img=off; S.imgW=off.width; S.imgH=off.height; S.ready=true;
+  drop.classList.add("hide");
+  computeFit();
+  autoDetect();
+  buildMesh();
+  enable(true);
+  status("Source loaded — auto-rig ready.", true);
+}
+/* ============================================================
+   Background removal — border-connected matte, edge decontam,
+   feather, and erase/restore brush. Fully offline, no ML.
+   ============================================================ */
+const cutCanvas=$("cutCanvas"), cctx=cutCanvas.getContext("2d");
+const cutOff=document.createElement("canvas"), coctx=cutOff.getContext("2d");
+const CUT={open:false,w:0,h:0,orig:null,out:null,alpha:null,refs:[],hasTransparent:false,
+  fit:{s:1,ox:0,oy:0}, brush:"erase",size:40,soft:.5,decon:true,
+  tol:42,feather:1,shift:0,drawing:false,cursor:null,undo:[]};
+
+function openCutout(){
+  if(!S.work)return;
+  const w=S.work.width,h=S.work.height; CUT.w=w;CUT.h=h;
+  CUT.orig=new Uint8ClampedArray(S.workCtx.getImageData(0,0,w,h).data);
+  CUT.out=new Uint8ClampedArray(CUT.orig);
+  CUT.alpha=new Uint8Array(w*h).fill(255);
+  cutOff.width=w;cutOff.height=h;
+  CUT.undo=[];
+  sampleRefs();
+  autoCut(false);
+  $("cutout").classList.add("show"); CUT.open=true;
+  resizeCut();
+}
+function closeCutout(){ $("cutout").classList.remove("show"); CUT.open=false; CUT.cursor=null; }
+
+function sampleRefs(){
+  const{w,h,orig}=CUT, refs=[]; let transparent=false;
+  const step=Math.max(1,Math.floor((w+h)/260));
+  const probe=p=>{ const i=p*4; if(orig[i+3]<16){transparent=true;return;}
+    const c=[orig[i],orig[i+1],orig[i+2]];
+    for(const r of refs){ if(Math.abs(r[0]-c[0])+Math.abs(r[1]-c[1])+Math.abs(r[2]-c[2])<28)return; }
+    refs.push(c);
+  };
+  for(let x=0;x<w;x+=step){ probe(x); probe((h-1)*w+x); }
+  for(let y=0;y<h;y+=step){ probe(y*w); probe(y*w+w-1); }
+  CUT.hasTransparent=transparent;
+  CUT.refs=refs.slice(0,6);
+  if(!CUT.refs.length) CUT.refs=[[orig[0],orig[1],orig[2]]];
+}
+function nearestRef(r,g,b){ let best=CUT.refs[0],bd=1e9;
+  for(const c of CUT.refs){const d=Math.abs(c[0]-r)+Math.abs(c[1]-g)+Math.abs(c[2]-b);if(d<bd){bd=d;best=c;}}
+  return best; }
+function isBg(p,tol){ const o=CUT.orig, i=p*4;
+  if(o[i+3]<16) return true;
+  const r=o[i],g=o[i+1],b=o[i+2];
+  for(const c of CUT.refs){ if(Math.abs(c[0]-r)+Math.abs(c[1]-g)+Math.abs(c[2]-b)<tol) return true; }
+  return false; }
+
+function autoCut(pushUndo){
+  if(pushUndo) snapUndo();
+  const{w,h}=CUT, N=w*h;
+  const bg=new Uint8Array(N), seen=new Uint8Array(N), stack=[];
+  for(let x=0;x<w;x++){ stack.push(x); stack.push((h-1)*w+x); }
+  for(let y=0;y<h;y++){ stack.push(y*w); stack.push(y*w+w-1); }
+  const tol=CUT.tol;
+  while(stack.length){ const p=stack.pop(); if(seen[p])continue; seen[p]=1;
+    if(!isBg(p,tol))continue; bg[p]=1;
+    const x=p%w,y=(p-x)/w;
+    if(x>0)stack.push(p-1); if(x<w-1)stack.push(p+1);
+    if(y>0)stack.push(p-w); if(y<h-1)stack.push(p+w);
+  }
+  let keep=new Uint8Array(N); for(let i=0;i<N;i++)keep[i]=bg[i]?0:1;
+  keep=morph(keep,CUT.shift,w,h);
+  buildAlpha(keep);
+  rebuildOut();
+  renderCut();
+  if(CUT.open) status("Auto-matte updated.",true);
+}
+function morph(mask,shift,w,h){
+  if(!shift)return mask;
+  const erode=shift>0, n=Math.abs(shift); let m=mask;
+  for(let k=0;k<n;k++){ const o=new Uint8Array(w*h);
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++){ const i=y*w+x, v=m[i];
+      const l=x>0?m[i-1]:v, r=x<w-1?m[i+1]:v, u=y>0?m[i-w]:v, d=y<h-1?m[i+w]:v;
+      o[i]= erode ? (v&&l&&r&&u&&d?1:0) : (v||l||r||u||d?1:0);
+    } m=o; }
+  return m;
+}
+function buildAlpha(keep){
+  const{w,h}=CUT, N=w*h, win=CUT.feather;
+  if(win<=0){ for(let i=0;i<N;i++)CUT.alpha[i]=keep[i]?255:0; return; }
+  const tmp=new Float32Array(N), out=new Float32Array(N), inv=1/(2*win+1);
+  for(let y=0;y<h;y++){ const row=y*w; let acc=0;
+    for(let x=-win;x<=win;x++)acc+=keep[row+clamp(x,0,w-1)];
+    for(let x=0;x<w;x++){ tmp[row+x]=acc*inv;
+      acc+=keep[row+clamp(x+win+1,0,w-1)]-keep[row+clamp(x-win,0,w-1)]; }
+  }
+  for(let x=0;x<w;x++){ let acc=0;
+    for(let y=-win;y<=win;y++)acc+=tmp[clamp(y,0,h-1)*w+x];
+    for(let y=0;y<h;y++){ out[y*w+x]=acc*inv;
+      acc+=tmp[clamp(y+win+1,0,h-1)*w+x]-tmp[clamp(y-win,0,h-1)*w+x]; }
+  }
+  for(let i=0;i<N;i++){ const a=clamp01((out[i]-0.18)/0.64); CUT.alpha[i]=Math.round(a*255); }
+}
+function rebuildOut(){
+  const{w,h,orig,out,alpha,decon}=CUT, N=w*h;
+  for(let i=0;i<N;i++){ const j=i*4, a=alpha[i];
+    if(a>=255||a<=0||!decon){ out[j]=orig[j];out[j+1]=orig[j+1];out[j+2]=orig[j+2]; }
+    else{ const B=nearestRef(orig[j],orig[j+1],orig[j+2]), af=a/255;
+      out[j]  =clamp((orig[j]  -(1-af)*B[0])/af,0,255);
+      out[j+1]=clamp((orig[j+1]-(1-af)*B[1])/af,0,255);
+      out[j+2]=clamp((orig[j+2]-(1-af)*B[2])/af,0,255);
+    }
+  }
+}
+function snapUndo(){ CUT.undo.push(new Uint8Array(CUT.alpha)); if(CUT.undo.length>8)CUT.undo.shift(); }
+function undoCut(){ if(!CUT.undo.length)return; CUT.alpha=CUT.undo.pop(); rebuildOut(); renderCut(); }
+
+function resizeCut(){
+  if(!CUT.open)return;
+  const r=$("cutMain").getBoundingClientRect();
+  cutCanvas.width=Math.max(2,Math.floor(r.width*dpr)); cutCanvas.height=Math.max(2,Math.floor(r.height*dpr));
+  cutCanvas.style.width=r.width+"px"; cutCanvas.style.height=r.height+"px";
+  const s=Math.min(cutCanvas.width/CUT.w, cutCanvas.height/CUT.h)*0.94;
+  CUT.fit={s, ox:(cutCanvas.width-CUT.w*s)/2, oy:(cutCanvas.height-CUT.h*s)/2};
+  renderCut();
+}
+function renderCut(){
+  if(!CUT.open)return;
+  cctx.setTransform(1,0,0,1,0,0);
+  const W=cutCanvas.width,H=cutCanvas.height;
+  cctx.fillStyle="#0c1018"; cctx.fillRect(0,0,W,H);
+  const cell=9*dpr; cctx.fillStyle="#161d2b";
+  for(let y=0;y<H;y+=cell){ for(let x=(((y/cell)|0)&1)?cell:0;x<W;x+=cell*2) cctx.fillRect(x,y,cell,cell); }
+  const id=coctx.createImageData(CUT.w,CUT.h), d=id.data;
+  for(let i=0;i<CUT.w*CUT.h;i++){ const j=i*4; d[j]=CUT.out[j];d[j+1]=CUT.out[j+1];d[j+2]=CUT.out[j+2];d[j+3]=CUT.alpha[i]; }
+  coctx.putImageData(id,0,0);
+  cctx.imageSmoothingEnabled=true;
+  cctx.drawImage(cutOff, CUT.fit.ox, CUT.fit.oy, CUT.w*CUT.fit.s, CUT.h*CUT.fit.s);
+  if(CUT.cursor){ cctx.strokeStyle=CUT.brush==="erase"?"#ff3d7f":"#3df0e0"; cctx.lineWidth=1.5*dpr;
+    cctx.beginPath(); cctx.arc(CUT.cursor.x,CUT.cursor.y,CUT.size*CUT.fit.s/2,0,Math.PI*2); cctx.stroke(); }
+}
+function paintAt(cx,cy){
+  const ix=(cx-CUT.fit.ox)/CUT.fit.s, iy=(cy-CUT.fit.oy)/CUT.fit.s;
+  const rad=CUT.size/2, soft=CUT.soft, w=CUT.w,h=CUT.h;
+  const x0=Math.max(0,Math.floor(ix-rad)),x1=Math.min(w-1,Math.ceil(ix+rad));
+  const y0=Math.max(0,Math.floor(iy-rad)),y1=Math.min(h-1,Math.ceil(iy+rad));
+  for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){
+    const dd=Math.hypot(x-ix,y-iy); if(dd>rad)continue;
+    const edge=soft<=0?1:clamp01((rad-dd)/(rad*soft+0.001));
+    const i=y*w+x, j=i*4;
+    if(CUT.brush==="erase"){ CUT.alpha[i]=Math.min(CUT.alpha[i], Math.round(255*(1-edge))); }
+    else { CUT.alpha[i]=Math.max(CUT.alpha[i], Math.round(255*edge));
+      CUT.out[j]=CUT.orig[j];CUT.out[j+1]=CUT.orig[j+1];CUT.out[j+2]=CUT.orig[j+2]; }
+  }
+}
+function cutPointer(e){
+  const t=e.touches?e.touches[0]:e, r=cutCanvas.getBoundingClientRect();
+  const cx=(t.clientX-r.left)*dpr, cy=(t.clientY-r.top)*dpr;
+  CUT.cursor={x:cx,y:cy};
+  if(CUT.drawing) paintAt(cx,cy);
+  renderCut();
+}
+function applyCutout(){
+  const w=CUT.w,h=CUT.h, oc=document.createElement("canvas");
+  oc.width=w;oc.height=h; const octx=oc.getContext("2d");
+  const id=octx.createImageData(w,h), d=id.data;
+  for(let i=0;i<w*h;i++){ const j=i*4; d[j]=CUT.out[j];d[j+1]=CUT.out[j+1];d[j+2]=CUT.out[j+2];d[j+3]=CUT.alpha[i]; }
+  octx.putImageData(id,0,0);
+  S.img=oc; S.imgW=w;S.imgH=h;
+  computeFit(); autoDetect(); buildMesh();
+  $("bgState2").textContent="background: removed";
+  closeCutout(); status("Background removed — landmarks re-detected.",true);
+}
+
+// ---------- auto landmark detection ----------
+// Heuristic for front-facing busts: find the alpha bounding box & opaque
+// centroid, then place anime-proportion landmarks. No ML => works offline.
+function autoDetect(){
+  const w=S.imgW,h=S.imgH,octx=S.img.getContext("2d");
+  let minX=w,minY=h,maxX=0,maxY=0, count=0;
+  // column opacity profile to find head vs shoulders
+  const colTop=new Int32Array(w).fill(-1);
+  let id; try{ id=octx.getImageData(0,0,w,h).data; }catch(e){ id=null; }
+  if(id){
+    for(let y=0;y<h;y++){
+      for(let x=0;x<w;x++){
+        const a=id[(y*w+x)*4+3];
+        if(a>24){
+          if(x<minX)minX=x; if(x>maxX)maxX=x;
+          if(y<minY)minY=y; if(y>maxY)maxY=y; count++;
+          if(colTop[x]<0)colTop[x]=y;
+        }
+      }
+    }
+  }
+  if(count<50){ minX=0;minY=0;maxX=w;maxY=h; } // opaque image fallback
+  const bbw=maxX-minX, bbh=maxY-minY;
+  const cx=minX+bbw*0.5;
+  // estimate head: scan widths near top to find where it narrows (neck)
+  // fallback proportions if profile unusable
+  const faceY = minY + bbh*0.30;
+  const eyeY  = minY + bbh*0.34;
+  const mouthY= minY + bbh*0.47;
+  // head half-width: measured opaque half-width at eye line
+  let hw=bbw*0.28;
+  if(id){
+    let l=cx,r=cx;
+    for(let x=Math.floor(cx);x>minX;x--){ if(id[(Math.floor(eyeY)*w+x)*4+3]>24)l=x; else break; }
+    for(let x=Math.floor(cx);x<maxX;x++){ if(id[(Math.floor(eyeY)*w+x)*4+3]>24)r=x; else break; }
+    if(r-l>bbw*0.12) hw=(r-l)*0.5;
+  }
+  const eyeDX=hw*0.46;
+  const neckY=minY+bbh*0.58;
+  const hipY =minY+bbh*0.98;
+  S.anchors={
+    face:{x:cx,y:faceY},
+    eyeL:{x:cx-eyeDX,y:eyeY},
+    eyeR:{x:cx+eyeDX,y:eyeY},
+    mouth:{x:cx,y:mouthY},
+    neck:{x:cx,y:neckY},
+    hip:{x:cx,y:hipY},
+    bbox:{minX,minY,maxX,maxY}
+  };
+  S.anchorsManual=false;
+}
+
+// ---------- mesh ----------
+function buildMesh(){
+  const{cols,rows}=S.grid, w=S.imgW,h=S.imgH;
+  S.rest=[];
+  for(let j=0;j<=rows;j++)for(let i=0;i<=cols;i++){
+    S.rest.push({x:i/cols*w, y:j/rows*h});
+  }
+  S.disp=new Array(S.rest.length);
+  $("statVerts").textContent=S.rest.length;
+  buildSkeleton();
+}
+const vIdx=(i,j)=>j*(S.grid.cols+1)+i;
+
+// ============================================================
+//  SKELETON — 2D bone hierarchy + linear blend skinning.
+//  Rest pose == identity (only deltas applied), so the bind is
+//  implicit: with zero deltas every vertex stays put.
+// ============================================================
+const IDENT=[1,0,0,1,0,0];
+function applyM(M,x,y){return {x:M[0]*x+M[2]*y+M[4], y:M[1]*x+M[3]*y+M[5]};}
+function composeM(A,B){ // A∘B : apply B then A
+  return [ A[0]*B[0]+A[2]*B[1], A[1]*B[0]+A[3]*B[1],
+           A[0]*B[2]+A[2]*B[3], A[1]*B[2]+A[3]*B[3],
+           A[0]*B[4]+A[2]*B[5]+A[4], A[1]*B[4]+A[3]*B[5]+A[5] ];
+}
+function xformAbout(px,py,ang,sx,sy){ // rotate+scale about a world pivot
+  const c=Math.cos(ang),s=Math.sin(ang);
+  const a=c*sx,b=s*sx,cc=-s*sy,d=c*sy;
+  return [a,b,cc,d, px-(a*px+cc*py), py-(b*px+d*py)];
+}
+function segDist(p,a,b){
+  const vx=b.x-a.x,vy=b.y-a.y,wx=p.x-a.x,wy=p.y-a.y;
+  const L=vx*vx+vy*vy; let t=L>0?(wx*vx+wy*vy)/L:0; t=t<0?0:t>1?1:t;
+  return Math.hypot(p.x-(a.x+vx*t), p.y-(a.y+vy*t));
+}
+function buildSkeleton(){
+  if(!S.anchors||!S.rest.length)return;
+  let R;
+  if(S.guidedRig){
+    const j=S.guidedRig, hy=S.anchors.face.y, U=Math.max(1,S.anchors.neck.y-hy);
+    const heads=((j.footL.y+j.footR.y)/2 - hy)/U;
+    R={ok:true,type:"full",joints:j,score:1,heads,sym:1,guided:true};
+  } else {
+    R=detectHumanoid();
+  }
+  S.anat=R; updateAnatomyUI(R);
+  if(!R.ok){                          // gate: non-humanoid art is not rigged
+    S.skel=null; S.vw=[]; $("statVerts").textContent=0;
+    if(!S.forceHumanoid) status("Blocked — not a bipedal humanoid. Use Force rig to override.",true);
+    return;
+  }
+  const A=S.anchors, fw=Math.max(24,dist(A.eyeL,A.eyeR)*1.9);
+  const crown={x:A.face.x,y:A.face.y-fw*0.72};
+  const hairL={x:A.face.x-fw*0.52,y:A.face.y-fw*0.15}, hairR={x:A.face.x+fw*0.52,y:A.face.y-fw*0.15};
+  const jaw={x:A.face.x,y:(A.mouth.y+A.neck.y)/2};
+  const L=(p,q,t)=>({x:p.x+(q.x-p.x)*t, y:p.y+(q.y-p.y)*t});
+  let B;
+  if(R.type==="full"){
+    const J=R.joints;
+    const spineLow=L(J.pelvis,J.neck,0.34), chest=L(J.pelvis,J.neck,0.72), headBase=L(J.neck,A.face,0.5);
+    B=[
+      {name:"Pelvis",  parent:-1, pivot:J.pelvis,   tc:1},
+      {name:"Spine",   parent:0,  pivot:spineLow,   tc:2},
+      {name:"Chest",   parent:1,  pivot:chest,      tc:3},
+      {name:"Neck",    parent:2,  pivot:A.neck,     tc:4},
+      {name:"Head",    parent:3,  pivot:headBase,   tc:5},
+      {name:"Crown",   parent:4,  pivot:crown,      tc:-1},
+      {name:"HairL",   parent:4,  pivot:hairL,      tc:-1},
+      {name:"HairR",   parent:4,  pivot:hairR,      tc:-1},
+      {name:"Jaw",     parent:4,  pivot:jaw,        tc:-1},
+      {name:"ShoulderL",parent:2, pivot:J.shoulderL,tc:10},
+      {name:"ElbowL",  parent:9,  pivot:J.elbowL,   tc:11},
+      {name:"HandL",   parent:10, pivot:J.handL,    tc:-1},
+      {name:"ShoulderR",parent:2, pivot:J.shoulderR,tc:13},
+      {name:"ElbowR",  parent:12, pivot:J.elbowR,   tc:14},
+      {name:"HandR",   parent:13, pivot:J.handR,    tc:-1},
+      {name:"HipL",    parent:0,  pivot:J.hipL,     tc:16},
+      {name:"KneeL",   parent:15, pivot:J.kneeL,    tc:17},
+      {name:"FootL",   parent:16, pivot:J.footL,    tc:-1},
+      {name:"HipR",    parent:0,  pivot:J.hipR,     tc:19},
+      {name:"KneeR",   parent:18, pivot:J.kneeR,    tc:20},
+      {name:"FootR",   parent:19, pivot:J.footR,    tc:-1}
+    ];
+  } else {
+    const spineLow=L(A.hip,A.neck,0.42), chest=L(A.hip,A.neck,0.78), headBase=L(A.neck,A.face,0.5);
+    B=[
+      {name:"Hips", parent:-1, pivot:A.hip,    tc:1},
+      {name:"Spine",parent:0,  pivot:spineLow, tc:2},
+      {name:"Chest",parent:1,  pivot:chest,    tc:3},
+      {name:"Neck", parent:2,  pivot:A.neck,   tc:4},
+      {name:"Head", parent:3,  pivot:headBase, tc:5},
+      {name:"Crown",parent:4,  pivot:crown,    tc:-1},
+      {name:"HairL",parent:4,  pivot:hairL,    tc:-1},
+      {name:"HairR",parent:4,  pivot:hairR,    tc:-1},
+      {name:"Jaw",  parent:4,  pivot:jaw,      tc:-1}
+    ];
+  }
+  B.forEach(b=>{b.delta=0;b.sx=1;b.sy=1;b.M=IDENT.slice();b.posed=false;});
+  S.skel={bones:B, fw, byName:{}, full:R.type==="full"};
+  B.forEach(b=>S.skel.byName[b.name]=b);
+  recomputeTips();
+  computeWeights();
+  $("statVerts").textContent=S.rest.length;
+}
+// derive each bone's tip from its tip-child (or extend from its parent)
+function recomputeTips(){
+  const B=S.skel.bones;
+  for(const b of B){
+    if(b.tc>=0 && B[b.tc]) b.tip={x:B[b.tc].pivot.x, y:B[b.tc].pivot.y};
+    else if(b.parent>=0){ const p=B[b.parent].pivot;
+      b.tip={x:b.pivot.x+(b.pivot.x-p.x)*0.5, y:b.pivot.y+(b.pivot.y-p.y)*0.5}; }
+    else b.tip={x:b.pivot.x, y:b.pivot.y-S.skel.fw};
+  }
+}
+// linear-blend skin weights from each vertex to the nearest bone segments
+function computeWeights(){
+  const B=S.skel.bones, fw=S.skel.fw, K=B.length>12?3:2;
+  S.vw=new Array(S.rest.length);
+  for(let k=0;k<S.rest.length;k++){
+    const p=S.rest[k], ws=[];
+    for(let bi=0;bi<B.length;bi++){ const d=segDist(p,B[bi].pivot,B[bi].tip);
+      ws.push({b:bi,w:1/(d*d+fw*fw*0.04)}); }
+    ws.sort((a,b)=>b.w-a.w);
+    const top=ws.slice(0,K); let s=0; for(const e of top)s+=e.w;
+    for(const e of top)e.w/=s; S.vw[k]=top;
+  }
+}
+// ---- anatomy proportion canon (figure-drawing head-unit system) ----
+const ANATOMY={
+  headsMin:4.0, headsMax:9.5,      // plausible total height in head-units
+  lvl:{ pelvis:0.50 },             // pelvis at mid-height (crown->foot)
+  elbowFrac:0.50,                  // elbow at mid shoulder->wrist
+  kneeFrac:0.48                    // knee just above mid hip->ankle
+};
+const lerpP=(a,b,t)=>({x:a.x+(b.x-a.x)*t, y:a.y+(b.y-a.y)*t});
+function symPair(Lp,Rp,cx){ // enforce bilateral symmetry about the centerline
+  const dxa=(Math.abs(Lp.x-cx)+Math.abs(Rp.x-cx))/2, ya=(Lp.y+Rp.y)/2;
+  Lp.x=cx-dxa; Rp.x=cx+dxa; Lp.y=ya; Rp.y=ya;
+}
+// ---- bipedal-humanoid detection: silhouette + anatomy priors + gate ----
+// ---- color-aware facial detection: skin blob -> face box, eyes, mouth, neck ----
+function detectFace(id,w,h,minX,minY,maxX,maxY,bcx,bbw,bbh){
+  const isSkin=i=>{ const r=id[i],g=id[i+1],b=id[i+2],a=id[i+3]; if(a<40)return false;
+    const mx=Math.max(r,g,b); return r>=g-6&&g>=b-6&&r>185&&b>110&&(r-b)>8&&(r-b)<100&&mx<=254; };
+  // head is top-center for a standing figure: search a central-upper window
+  const x0=Math.max(minX,Math.floor(bcx-bbw*0.20)), x1=Math.min(maxX,Math.floor(bcx+bbw*0.20));
+  const y0=minY, y1=Math.min(maxY,Math.floor(minY+bbh*0.36));
+  const rw=x1-x0, rh=y1-y0; if(rw<8||rh<8)return null;
+  const seen=new Uint8Array(rw*rh); let best=null,bestSize=0; const st=[];
+  for(let yy=0;yy<rh;yy++)for(let xx=0;xx<rw;xx++){ const li=yy*rw+xx; if(seen[li])continue;
+    if(!isSkin(((y0+yy)*w+(x0+xx))*4)){ seen[li]=1; continue; }
+    let size=0,xmn=1e9,xmx=-1,ymn=1e9,ymx=-1; st.length=0; st.push(li); seen[li]=1;
+    while(st.length){ const p=st.pop(), px=p%rw, py=(p-px)/rw, gx=x0+px, gy=y0+py;
+      size++; if(gx<xmn)xmn=gx; if(gx>xmx)xmx=gx; if(gy<ymn)ymn=gy; if(gy>ymx)ymx=gy;
+      const nb=[p-1,p+1,p-rw,p+rw], ok=[px>0,px<rw-1,py>0,py<rh-1];
+      for(let k=0;k<4;k++){ if(!ok[k])continue; const ni=nb[k]; if(seen[ni])continue; seen[ni]=1;
+        const ngx=x0+(ni%rw), ngy=y0+((ni/rw)|0); if(isSkin((ngy*w+ngx)*4)) st.push(ni); } }
+    if(size>bestSize){ bestSize=size; best={x0:xmn,x1:xmx,y0:ymn,y1:ymx}; }
+  }
+  if(!best||bestSize<rw*rh*0.02)return null;
+  const fL=best.x0,fR=best.x1,fTop=best.y0,fBot=best.y1,fH=Math.max(8,fBot-fTop),fW=Math.max(8,fR-fL),fcx=(fL+fR)/2;
+  // eyes: dark / strongly-coloured clusters in the eye band, split by centre
+  let lx=0,ly=0,ln=0,rx=0,ry=0,rn=0;
+  for(let gy=Math.floor(fTop+fH*0.30);gy<fTop+fH*0.62;gy++)for(let gx=fL;gx<=fR;gx++){
+    const i=(gy*w+gx)*4; if(id[i+3]<40)continue; const r=id[i],g=id[i+1],b=id[i+2];
+    const mx=Math.max(r,g,b),mn=Math.min(r,g,b);
+    if(mx<170||(mx-mn)>70){ if(gx<fcx){lx+=gx;ly+=gy;ln++;} else {rx+=gx;ry+=gy;rn++;} } }
+  const eyeL=ln?{x:lx/ln,y:ly/ln}:{x:fcx-fW*0.22,y:fTop+fH*0.46};
+  const eyeR=rn?{x:rx/rn,y:ry/rn}:{x:fcx+fW*0.22,y:fTop+fH*0.46};
+  // mouth: reddish cluster in the lower face band
+  let ms=0,my=0,mn2=0;
+  for(let gy=Math.floor(fTop+fH*0.60);gy<fTop+fH*0.92;gy++)for(let gx=Math.floor(fcx-fW*0.28);gx<fcx+fW*0.28;gx++){
+    const i=(gy*w+gx)*4; if(id[i+3]<40)continue; const r=id[i],g=id[i+1],b=id[i+2];
+    if((r-(g+b)/2)>22 && r>150){ ms+=gx;my+=gy;mn2++; } }
+  const mouth=mn2?{x:ms/mn2,y:my/mn2}:{x:fcx,y:fTop+fH*0.72};
+  return {fL,fR,fTop,fBot,fcx,fH,fW,eyeL,eyeR,mouth,
+    neck:{x:fcx,y:fBot+fH*0.10}, headUnit:Math.max(20,fBot-minY)};
+}
+function detectHumanoid(){
+  const w=S.imgW,h=S.imgH; let id;
+  try{ id=S.img.getContext("2d").getImageData(0,0,w,h).data; }catch(e){ return {ok:false,reason:"Can't read image pixels."}; }
+  const leftX=new Int32Array(h).fill(-1),rightX=new Int32Array(h).fill(-1),span=new Int32Array(h);
+  let minX=w,maxX=0,minY=-1,maxY=0,area=0;
+  for(let y=0;y<h;y++){ let l=-1,r=-1;
+    for(let x=0;x<w;x++){ if(id[(y*w+x)*4+3]>40){ if(l<0)l=x; r=x; area++; } }
+    leftX[y]=l;rightX[y]=r;span[y]=l<0?0:r-l;
+    if(l>=0){ if(minY<0)minY=y; maxY=y; if(l<minX)minX=l; if(r>maxX)maxX=r; }
+  }
+  if(minY<0)return {ok:false,reason:"Image is empty / fully transparent."};
+  const bbh=maxY-minY,bbw=maxX-minX;
+  if(bbh<60||bbw<24)return {ok:false,reason:"Subject too small to analyze."};
+  const spanMed=(y0,y1)=>{const a=[]; for(let y=Math.max(minY,y0|0);y<Math.min(maxY,y1|0);y++) if(span[y]>0)a.push(span[y]); a.sort((p,q)=>p-q); return a.length?a[a.length>>1]:0;};
+  const centerAt=y=>leftX[y]>=0?(leftX[y]+rightX[y])/2:(minX+maxX)/2;
+  let armY=minY,armSpan=0;
+  for(let y=minY;y<minY+bbh*0.45;y++) if(span[y]>armSpan){armSpan=span[y];armY=y;}
+  const torsoW=spanMed(armY+bbh*0.06,armY+bbh*0.22)||bbw*0.4;
+  let neckY=Math.floor(minY+(armY-minY)*0.8),pinch=1e9;
+  for(let y=Math.floor(minY+(armY-minY)*0.45);y<armY;y++) if(span[y]>0&&span[y]<pinch){pinch=span[y];neckY=y;}
+  let cx=0,cn=0; for(let y=Math.floor(armY+bbh*0.06);y<armY+bbh*0.4&&y<maxY;y++) if(span[y]>0){cx+=centerAt(y);cn++;}
+  cx=cn?cx/cn:(minX+maxX)/2;
+  // color-aware face detection drives head/neck (silhouette is unreliable with long hair)
+  const FACE=detectFace(id,w,h,minX,minY,maxX,maxY,cx,bbw,bbh);
+  if(FACE) neckY=Math.round(FACE.neck.y);
+  let U=Math.max(8, FACE?FACE.headUnit:(neckY-minY));   // head unit (crown->chin)
+  let totalHeads=bbh/U;
+  let headW=FACE?(FACE.fR-FACE.fL):spanMed(minY,minY+U*0.85);
+  const setFaceAnchors=()=>{ if(S.anchorsManual)return;
+    if(FACE){ S.anchors.face={x:FACE.fcx,y:(FACE.eyeL.y+FACE.mouth.y)/2};
+      S.anchors.eyeL=FACE.eyeL; S.anchors.eyeR=FACE.eyeR; S.anchors.mouth=FACE.mouth;
+      S.anchors.neck={x:FACE.fcx,y:FACE.neck.y};
+    } else { const hh=Math.max(12,neckY-minY), hcx=centerAt(Math.floor(minY+hh*0.5)), fw=hh*0.62;
+      S.anchors.face={x:hcx,y:minY+hh*0.46};
+      S.anchors.eyeL={x:hcx-fw*0.23,y:minY+hh*0.44}; S.anchors.eyeR={x:hcx+fw*0.23,y:minY+hh*0.44};
+      S.anchors.mouth={x:hcx,y:minY+hh*0.66}; S.anchors.neck={x:hcx,y:neckY}; }
+  };
+  const fullBody=(bbh/Math.max(1,bbw)>=1.3)&&(armSpan>torsoW*1.5)&&(maxY>minY+bbh*0.82);
+
+  // ----- anatomy validation: is this an upright bipedal humanoid? -----
+  const band=(v,a,b)=>v>=a&&v<=b?1:Math.max(0,1-(v<a?(a-v):(v-b))/((b-a)||1));
+  const sc=[]; let sym=1;
+  sc.push(band(totalHeads,ANATOMY.headsMin,ANATOMY.headsMax)); // head-unit height plausible
+  sc.push(headW>0 && torsoW>headW*1.05 ? 1 : 0.25);            // head narrower than shoulders
+  sc.push(area/(bbw*bbh) < 0.9 ? 1 : 0.4);                     // not a solid rectangle/blob
+  sc.push(FACE?1:0.4);                                          // a real face was found
+  if(fullBody){
+    const aL=Math.abs(leftX[armY]-cx), aR=Math.abs(rightX[armY]-cx);
+    sym=1-Math.min(1,Math.abs(aL-aR)/(((aL+aR)/2)||1));        // left/right symmetry
+    sc.push(sym);
+  } else sc.push(bbh>=bbw*0.9?0.8:0.3);                        // upright portrait
+  const score=sc.reduce((a,b)=>a+b,0)/sc.length;
+
+  if(score<0.55 && !S.forceHumanoid)
+    return {ok:false,reason:"Doesn't read as a bipedal humanoid.",score,heads:totalHeads,sym};
+  if(!(fullBody||S.forceHumanoid)){ setFaceAnchors();
+    return {ok:true,type:"bust",score,heads:totalHeads,sym,face:!!FACE}; }
+
+  // ----- full humanoid joints, constrained by the anatomy canon -----
+  const headTopY=minY, headH=Math.max(12,neckY-headTopY), headCx=FACE?FACE.fcx:centerAt(Math.floor(minY+headH*0.5));
+  const shHalf=torsoW*0.5;
+  const shoulderL={x:cx-shHalf,y:armY}, shoulderR={x:cx+shHalf,y:armY};
+  const handL={x:leftX[armY],y:armY}, handR={x:rightX[armY],y:armY};
+  const pelvisY=Math.round(headTopY+bbh*ANATOMY.lvl.pelvis), pelvis={x:cx,y:pelvisY};
+  const hipHalf=Math.max(8,(span[pelvisY]||torsoW)*0.30);
+  const hipL={x:cx-hipHalf,y:pelvisY}, hipR={x:cx+hipHalf,y:pelvisY};
+  // legs: per-side opaque centroids down the lower body — constrained to the
+  // silhouette so a knee/foot can never fly off to the side (the failure mode)
+  const lb=legColumns(id,w,leftX,rightX,pelvisY,maxY,cx,bbh);
+  const footL={x:clamp(lb.footL,minX,cx),y:lb.footY}, footR={x:clamp(lb.footR,cx,maxX),y:lb.footY};
+  const kneeL={x:clamp(lb.kneeL,minX,cx),y:lb.kneeY}, kneeR={x:clamp(lb.kneeR,cx,maxX),y:lb.kneeY};
+  // bilateral symmetry prior on arms + hips (legs stay measured for stance realism)
+  symPair(shoulderL,shoulderR,cx); symPair(handL,handR,cx); symPair(hipL,hipR,cx);
+  // canonical segment ratio for the elbows
+  const elbowL=lerpP(shoulderL,handL,ANATOMY.elbowFrac), elbowR=lerpP(shoulderR,handR,ANATOMY.elbowFrac);
+  setFaceAnchors();
+  if(!S.anchorsManual) S.anchors.hip=pelvis;
+  return {ok:true,type:"full",score,heads:totalHeads,sym,face:!!FACE,
+    joints:{neck:{x:headCx,y:neckY},pelvis,shoulderL,shoulderR,elbowL,elbowR,handL,handR,hipL,hipR,kneeL,kneeR,footL,footR}};
+}
+function updateAnatomyUI(R){
+  const el=$("anatReadout"); if(!el)return;
+  if(!R||R.heads==null){ el.innerHTML='<span style="color:var(--ghost)">Load a character to analyze.</span>'; return; }
+  const head = R.ok
+    ? (R.guided
+        ? '<b style="color:var(--soul)">GUIDED ✦</b> <span style="color:var(--ghost)">hand-placed</span>'
+        : '<b style="color:var(--ok)">HUMANOID ✓</b> <span style="color:var(--ghost)">'+(R.type==="full"?"full body":"bust")+'</span>')
+    : '<b style="color:var(--rift)">BLOCKED ✕</b> <span style="color:var(--ghost)">'+(R.reason||"")+'</span>';
+  el.innerHTML = head
+    + '<br>Height <b>'+R.heads.toFixed(1)+'</b> heads &nbsp; Symmetry <b>'+Math.round((R.sym||0)*100)+'%</b>'
+    + '<br>Face <b>'+(R.guided?'hand-placed':(R.face?'detected ✓':'estimated'))+'</b> &nbsp; Confidence <b>'+Math.round((R.score||0)*100)+'%</b>';
+}
+function legColumns(id,w,leftX,rightX,pelvisY,maxY,cx,bbh){
+  const footY=maxY-2, kneeY=Math.round((pelvisY+footY)/2), kb=Math.max(2,Math.floor(bbh*0.02));
+  const sideCentroid=(y0,y1,side)=>{ let s=0,n=0;
+    for(let y=Math.max(0,y0);y<=Math.min(maxY-1,y1);y++){ const l=leftX[y],r=rightX[y]; if(l<0)continue;
+      for(let x=l;x<=r;x++){ if(id[(y*w+x)*4+3]>40 && (side<0? x<cx : x>=cx)){ s+=x; n++; } } }
+    return n? s/n : (side<0? cx-bbh*0.05 : cx+bbh*0.05);
+  };
+  const fb0=Math.floor(maxY-bbh*0.05);
+  return { footY, kneeY,
+    footL:sideCentroid(fb0,maxY-1,-1), footR:sideCentroid(fb0,maxY-1,1),
+    kneeL:sideCentroid(kneeY-kb,kneeY+kb,-1), kneeR:sideCentroid(kneeY-kb,kneeY+kb,1) };
+}
+function solveSkeleton(){
+  if(!S.skel)return; const B=S.skel.bones;
+  for(let i=0;i<B.length;i++){ const b=B[i];
+    const pM=b.parent>=0?B[b.parent].M:IDENT;
+    const piv=applyM(pM,b.pivot.x,b.pivot.y);
+    b.M=composeM(xformAbout(piv.x,piv.y,b.delta,b.sx,b.sy),pM);
+  }
+}
+function skin(p,vw){
+  if(!vw)return {x:p.x,y:p.y};
+  let ax=0,ay=0;
+  for(const e of vw){ const M=S.skel.bones[e.b].M;
+    ax+=e.w*(M[0]*p.x+M[2]*p.y+M[4]); ay+=e.w*(M[1]*p.x+M[3]*p.y+M[5]); }
+  return {x:ax,y:ay};
+}
+function driveBones(){
+  if(!S.skel)return; const N=S.skel.byName,P=S.P,sm=S.sm;
+  S.skel.bones.forEach(b=>{ if(!b.posed){b.sx=1;b.sy=1;} });
+  const setN=(name,d)=>{ const b=N[name]; if(b&&!b.posed)b.delta=d; };
+  setN("Hips",  P.body*0.02);
+  setN("Pelvis",P.body*0.02);
+  setN("Spine", P.body*0.10);
+  setN("Chest", P.body*0.05);
+  const ch=N["Chest"]; if(ch&&!ch.posed){ ch.sy=1+P.breath*0.030; ch.sx=1+P.breath*0.016; }
+  setN("Neck",  P.roll*0.225);
+  setN("Head",  P.roll*0.275 - P.body*0.03);
+  setN("Crown", sm.hairLag*0.5);
+  setN("HairL", sm.hairLag*0.8);
+  setN("HairR",-sm.hairLag*0.5);
+  setN("Jaw",   P.mouth*0.05);
+  // gentle life in the arms on full-body rigs (skip when posed)
+  setN("ShoulderL", P.body*0.03 - P.breath*0.008);
+  setN("ShoulderR", P.body*0.03 + P.breath*0.008);
+}
+
+// ---------- per-vertex deform: skin -> fake-3D warp -> local features ----------
+function deform(p,idx){
+  const A=S.anchors, P=S.P, sm=S.sm;
+  const fw=Math.max(20, dist(A.eyeL,A.eyeR)*1.9);
+  const headTopY=A.face.y-fw*0.95;
+  const headW=smoothstep((A.neck.y - p.y)/Math.max(1,(A.neck.y-headTopY)));
+  const featW=Math.max(gauss(p,A.eyeL,fw*0.22),gauss(p,A.eyeR,fw*0.22),gauss(p,A.mouth,fw*0.26));
+
+  // 1) skeletal skinning — roll, sway, breath, hair are bone-driven
+  const q = S.skel ? skin(p, S.vw[idx]) : {x:p.x,y:p.y};
+  let x=q.x, y=q.y;
+
+  // 2) head YAW / PITCH = out-of-plane fake-3D warp (not skeletal in 2D)
+  if(headW>0.001){
+    const yaw=sm.yaw, pit=sm.pitch;
+    x += yaw*fw*0.16*headW + yaw*fw*0.10*featW;
+    y += pit*fw*0.14*headW + pit*fw*0.07*featW;
+    x = A.face.x + (x-A.face.x)*(1-Math.abs(yaw)*0.12*headW);
+    y = A.face.y + (y-A.face.y)*(1-Math.abs(pit)*0.08*headW);
+  }
+  // 3) EYE blink (local)
+  const eClose=1-P.eye;
+  if(eClose>0.001){
+    for(const e of [A.eyeL,A.eyeR]){
+      const g=gaussE(p,e,fw*0.20,fw*0.12);
+      if(g>0.001) y += (e.y - p.y)*eClose*0.9*g;
+    }
+  }
+  // 4) MOUTH open (local)
+  if(P.mouth>0.001){
+    const g=gaussE(p,A.mouth,fw*0.20,fw*0.16);
+    if(g>0.001){ const below=p.y>A.mouth.y?1:-0.25; y += below*P.mouth*fw*0.10*g; }
+  }
+  return {x,y};
+}
+function gauss(p,c,r){const d2=(p.x-c.x)**2+(p.y-c.y)**2;return Math.exp(-d2/(2*r*r));}
+function gaussE(p,c,rx,ry){const dx=(p.x-c.x)/rx,dy=(p.y-c.y)/ry;return Math.exp(-(dx*dx+dy*dy)/2);}
+
+// ---------- triangle warp render ----------
+function affine(s,d){
+  const x1=s[0].x,y1=s[0].y,x2=s[1].x,y2=s[1].y,x3=s[2].x,y3=s[2].y;
+  const u1=d[0].x,v1=d[0].y,u2=d[1].x,v2=d[1].y,u3=d[2].x,v3=d[2].y;
+  const det=x1*(y2-y3)+x2*(y3-y1)+x3*(y1-y2);
+  if(Math.abs(det)<1e-6)return null;
+  const a=(u1*(y2-y3)+u2*(y3-y1)+u3*(y1-y2))/det;
+  const b=(v1*(y2-y3)+v2*(y3-y1)+v3*(y1-y2))/det;
+  const c=(u1*(x3-x2)+u2*(x1-x3)+u3*(x2-x1))/det;
+  const dd=(v1*(x3-x2)+v2*(x1-x3)+v3*(x2-x1))/det;
+  const e=(u1*(x2*y3-x3*y2)+u2*(x3*y1-x1*y3)+u3*(x1*y2-x2*y1))/det;
+  const f=(v1*(x2*y3-x3*y2)+v2*(x3*y1-x1*y3)+v3*(x1*y2-x2*y1))/det;
+  return [a,b,c,dd,e,f];
+}
+function expand(d){ // push verts out from centroid ~0.7px to hide seams
+  const gx=(d[0].x+d[1].x+d[2].x)/3, gy=(d[0].y+d[1].y+d[2].y)/3;
+  return d.map(p=>{const dx=p.x-gx,dy=p.y-gy,l=Math.hypot(dx,dy)||1;
+    return {x:p.x+dx/l*0.7, y:p.y+dy/l*0.7};});
+}
+function drawTri(s,d){
+  const dd=expand(d);
+  const m=affine(s,dd); if(!m)return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(dd[0].x,dd[0].y);ctx.lineTo(dd[1].x,dd[1].y);ctx.lineTo(dd[2].x,dd[2].y);ctx.closePath();
+  ctx.clip();
+  ctx.setTransform(m[0],m[1],m[2],m[3],m[4],m[5]);
+  ctx.drawImage(S.img,0,0);
+  ctx.restore();
+  ctx.setTransform(1,0,0,1,0,0);
+}
+
+function render(){
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(!S.ready)return;
+
+  // solve the skeleton once, then skin every vertex
+  if(S.skel){ if(!S.poseEdit && !S.skelEdit) driveBones(); solveSkeleton(); }
+  for(let k=0;k<S.rest.length;k++){
+    const dp=deform(S.rest[k],k);
+    S.disp[k]=toCanvas(dp.x,dp.y);
+  }
+  const{cols,rows}=S.grid;
+  // src triangles use rest positions mapped to canvas at REST (so the image
+  // maps correctly): src must be in IMAGE coords for drawImage(img,0,0).
+  for(let j=0;j<rows;j++)for(let i=0;i<cols;i++){
+    const a=vIdx(i,j),b=vIdx(i+1,j),c=vIdx(i,j+1),e=vIdx(i+1,j+1);
+    const sa=S.rest[a],sb=S.rest[b],sc=S.rest[c],se=S.rest[e];
+    const da=S.disp[a],db=S.disp[b],dc=S.disp[c],de=S.disp[e];
+    drawTri([sa,sb,sc],[da,db,dc]);
+    drawTri([sb,se,sc],[db,de,dc]);
+  }
+  drawOverlay();
+}
+
+function drawOverlay(){
+  const A=S.anchors;
+  ctx.setTransform(1,0,0,1,0,0);
+  if(S.overlay.mesh){
+    ctx.lineWidth=1*dpr; ctx.strokeStyle="rgba(61,240,224,.30)";
+    ctx.beginPath();
+    const{cols,rows}=S.grid;
+    for(let j=0;j<=rows;j++)for(let i=0;i<=cols;i++){
+      const p=S.disp[vIdx(i,j)];
+      if(i<cols){const q=S.disp[vIdx(i+1,j)];ctx.moveTo(p.x,p.y);ctx.lineTo(q.x,q.y);}
+      if(j<rows){const q=S.disp[vIdx(i,j+1)];ctx.moveTo(p.x,p.y);ctx.lineTo(q.x,q.y);}
+    }
+    ctx.stroke();
+  }
+  if(S.overlay.zones&&A){
+    const fw=dist(A.eyeL,A.eyeR)*1.9;
+    ctx.strokeStyle="rgba(255,182,72,.7)";ctx.lineWidth=1.4*dpr;
+    ellipse(A.eyeL,fw*0.20,fw*0.12); ellipse(A.eyeR,fw*0.20,fw*0.12);
+    ctx.strokeStyle="rgba(255,61,127,.7)"; ellipse(A.mouth,fw*0.20,fw*0.16);
+  }
+  if(S.overlay.pivots&&A){
+    pin(A.neck,"NECK","#3df0e0"); pin(A.hip,"HIP","#ff3d7f");
+  }
+  if(S.guide.active){
+    for(const k of S.guide.seq){ const p=S.guide.pts[k]; if(!p)continue;
+      const c=toCanvas(p.x,p.y);
+      ctx.fillStyle="#3df0e0"; ctx.beginPath(); ctx.arc(c.x,c.y,4*dpr,0,Math.PI*2); ctx.fill();
+      ctx.font=(8.5*dpr)+"px ui-monospace"; ctx.fillStyle="#bdfff8"; ctx.fillText(k,c.x+7*dpr,c.y-5*dpr);
+    }
+  }
+  if((S.overlay.skeleton||S.poseEdit||S.skelEdit)&&S.skel){
+    const B=S.skel.bones;
+    for(let i=0;i<B.length;i++){ const b=B[i];
+      const pM=b.parent>=0?B[b.parent].M:IDENT;
+      const j0=applyM(pM,b.pivot.x,b.pivot.y), j1=applyM(b.M,b.tip.x,b.tip.y);
+      const c0=toCanvas(j0.x,j0.y), c1=toCanvas(j1.x,j1.y);
+      const sel=(i===S.selBone);
+      ctx.lineWidth=2.2*dpr;
+      ctx.strokeStyle=sel?"#ffb648":(b.posed?"#ff3d7f":"rgba(61,240,224,.85)");
+      ctx.beginPath();ctx.moveTo(c0.x,c0.y);ctx.lineTo(c1.x,c1.y);ctx.stroke();
+      ctx.fillStyle=sel?"#ffb648":"#0b0f18";
+      ctx.lineWidth=1.6*dpr; ctx.strokeStyle=sel?"#ffb648":(b.posed?"#ff3d7f":"rgba(61,240,224,.95)");
+      diamond(c0.x,c0.y,((S.poseEdit||S.skelEdit)?5.5:4)*dpr);
+      if(S.skelEdit){ ctx.fillStyle="rgba(61,240,224,.9)"; ctx.font=(8*dpr)+"px ui-monospace";
+        ctx.fillText(b.name,c0.x+8*dpr,c0.y-6*dpr); }
+    }
+  }
+  if(S.editing&&A){
+    for(const[k,col]of [["face","#9fb4d6"],["eyeL","#ffb648"],["eyeR","#ffb648"],["mouth","#ff3d7f"],["neck","#3df0e0"],["hip","#ff7fb0"]]){
+      handle(A[k],col,k);
+    }
+  }
+}
+function ellipse(c,rx,ry){const p=toCanvas(c.x,c.y);ctx.beginPath();
+  ctx.ellipse(p.x,p.y,rx*S.fit.s,ry*S.fit.s,0,0,Math.PI*2);ctx.stroke();}
+function pin(c,label,col){const p=toCanvas(c.x,c.y);
+  ctx.fillStyle=col;ctx.beginPath();ctx.arc(p.x,p.y,4*dpr,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle=col;ctx.lineWidth=1*dpr;ctx.beginPath();ctx.moveTo(p.x-9*dpr,p.y);ctx.lineTo(p.x+9*dpr,p.y);ctx.stroke();
+  ctx.font=(9*dpr)+"px ui-monospace";ctx.fillText(label,p.x+8*dpr,p.y-5*dpr);}
+function diamond(x,y,r){ctx.beginPath();ctx.moveTo(x,y-r);ctx.lineTo(x+r,y);ctx.lineTo(x,y+r);ctx.lineTo(x-r,y);ctx.closePath();ctx.fill();ctx.stroke();}
+function handle(c,col,key){const p=toCanvas(c.x,c.y);
+  ctx.beginPath();ctx.arc(p.x,p.y,8*dpr,0,Math.PI*2);
+  ctx.fillStyle="rgba(0,0,0,.5)";ctx.fill();
+  ctx.lineWidth=2*dpr;ctx.strokeStyle=col;ctx.stroke();
+  ctx.fillStyle=col;ctx.beginPath();ctx.arc(p.x,p.y,2.5*dpr,0,Math.PI*2);ctx.fill();
+  ctx.font=(8.5*dpr)+"px ui-monospace";ctx.fillStyle=col;ctx.fillText(key.toUpperCase(),p.x+11*dpr,p.y+3*dpr);}
+
+// ---------- drivers / animation loop ----------
+function tick(now){
+  const t=(now-S.t0)/1000;
+  const dt=Math.min(0.05,(now-(tick._last||now))/1000); tick._last=now;
+  // fps
+  S.fpsN++; if(now-S.fpsT>500){S.fps=Math.round(S.fpsN*1000/(now-S.fpsT));S.fpsT=now;S.fpsN=0;$("statFps").textContent=S.fps;}
+
+  const frozen = S.editing || S.poseEdit || S.skelEdit || S.guide.active;
+  if(S.ready && !frozen){
+    updateParams(t,dt);
+    render();
+  } else if(S.ready){
+    // hold a neutral face/body so the rig is readable while editing or posing
+    S.P={yaw:0,pitch:0,roll:0,eye:1,mouth:0,body:0,breath:0};
+    S.sm.yaw=S.sm.pitch=S.sm.roll=S.sm.body=S.sm.hairLag=0;
+    render();
+  }
+  requestAnimationFrame(tick);
+}
+
+function updateParams(t,dt){
+  const B=S.behave, P=S.P, M=S.manual;
+  let yaw=0,pitch=0,roll=0,eye=1,mouth=0,body=0,breath=0;
+
+  if(S.driver==="manual"){
+    yaw=M.yaw; pitch=M.pitch; roll=M.roll; eye=M.eye; mouth=M.mouth; body=M.body; breath=M.breath;
+  } else {
+    // ambient base for idle & track
+    if(B.breath) breath=0.5+0.5*Math.sin(t*1.5);
+    if(B.sway){ body=0.32*Math.sin(t*0.55)+0.12*Math.sin(t*0.23); }
+    if(S.driver==="track" && S.mouse.inside){
+      const r=canvas.getBoundingClientRect();
+      const nx=clamp((S.mouse.x-r.left)/r.width*2-1,-1,1);
+      const ny=clamp((S.mouse.y-r.top)/r.height*2-1,-1,1);
+      yaw=nx*0.9; pitch=ny*0.7;
+    } else {
+      // idle micro-motion
+      yaw=0.18*Math.sin(t*0.7)+0.07*Math.sin(t*1.9);
+      pitch=0.10*Math.sin(t*0.5+1)+0.05*Math.sin(t*1.3);
+      roll=0.06*Math.sin(t*0.4);
+    }
+    // blink
+    if(B.blink){ eye=blinkValue(t,dt); } else eye=1;
+    // lip-sync from mic
+    if(B.lipsync && S.mic){ mouth=clamp01(S.micVal*3.0); }
+  }
+
+  // ease toward targets (springy)
+  const k=1-Math.pow(0.001, dt); // frame-rate independent smoothing
+  S.sm.yaw  =lerp(S.sm.yaw,  yaw,  k*0.9);
+  S.sm.pitch=lerp(S.sm.pitch,pitch,k*0.9);
+  S.sm.roll =lerp(S.sm.roll, roll, k*0.8);
+  S.sm.body =lerp(S.sm.body, body, k*0.7);
+  // hair lag = lagged response to combined sway velocity
+  const swayNow=S.sm.yaw+S.sm.body;
+  const vel=(swayNow-S.sm.prevSway); S.sm.prevSway=swayNow;
+  S.sm.hairLag=lerp(S.sm.hairLag, -vel*12, k*0.5);
+
+  P.yaw=S.sm.yaw;P.pitch=S.sm.pitch;P.roll=S.sm.roll;P.body=S.sm.body;
+  P.eye=eye;P.mouth=mouth;P.breath=breath;
+
+  if(S.driver!=="manual") syncSliders();
+}
+function blinkValue(t,dt){
+  const bk=S.blink; bk.t+=dt;
+  if(bk.phase>=1 && bk.t>=bk.next){ bk.phase=0; bk.t=0; bk.dir=-1; }
+  if(bk.phase<1){
+    bk.phase+=dt* (bk.dir<0?9:7);
+    if(bk.dir<0 && bk.phase>=1){bk.dir=1;bk.phase=0;}
+    else if(bk.dir>0 && bk.phase>=1){bk.phase=1; bk.next=1.6+Math.random()*3.4;}
+    const closing = bk.dir<0;
+    const p=clamp01(bk.phase);
+    return closing ? 1-p : p;
+  }
+  return 1;
+}
+function syncSliders(){
+  set("yaw",Math.round(S.P.yaw*100)); set("pitch",Math.round(S.P.pitch*100));
+  set("roll",Math.round(S.P.roll*100)); set("eye",Math.round(S.P.eye*100));
+  set("mouth",Math.round(S.P.mouth*100)); set("body",Math.round(S.P.body*100));
+  set("breath",Math.round(S.P.breath*100));
+  function set(k,v){ const el=$("p_"+k); if(el && document.activeElement!==el) el.value=v; $("v_"+k).textContent=v; }
+}
+
+// ---------- UI wiring ----------
+$("loadBtn").onclick=()=>$("fileIn").click();
+$("fileIn").onchange=e=>{ if(e.target.files[0]) loadFile(e.target.files[0]); };
+$("bgRemove").onclick=openCutout;
+$("cutCancel").onclick=closeCutout;
+$("cutApply").onclick=applyCutout;
+$("autoCut").onclick=()=>autoCut(true);
+let cutTimer=null; const cutDebounce=()=>{clearTimeout(cutTimer);cutTimer=setTimeout(()=>autoCut(false),70);};
+$("cutTol").oninput=e=>{CUT.tol=+e.target.value;$("cutTolV").textContent=CUT.tol;cutDebounce();};
+$("cutFeather").oninput=e=>{CUT.feather=+e.target.value;$("cutFeatherV").textContent=CUT.feather;cutDebounce();};
+$("cutShift").oninput=e=>{CUT.shift=+e.target.value;$("cutShiftV").textContent=CUT.shift;cutDebounce();};
+$("cutDecon").onclick=()=>{CUT.decon=!CUT.decon;$("cutDecon").classList.toggle("on",CUT.decon);rebuildOut();renderCut();};
+$("brErase").onclick=()=>setBrush("erase");
+$("brRestore").onclick=()=>setBrush("restore");
+function setBrush(b){CUT.brush=b;$("brErase").classList.toggle("on",b==="erase");$("brRestore").classList.toggle("on",b==="restore");renderCut();}
+$("brSize").oninput=e=>{CUT.size=+e.target.value;$("brSizeV").textContent=CUT.size;renderCut();};
+$("brSoft").oninput=e=>{CUT.soft=+e.target.value/100;$("brSoftV").textContent=e.target.value;};
+$("cutUndo").onclick=undoCut;
+$("cutReset").onclick=()=>{snapUndo();CUT.alpha.fill(255);rebuildOut();renderCut();status("Cutout reset.",true);};
+cutCanvas.addEventListener("pointerdown",e=>{e.preventDefault();snapUndo();CUT.drawing=true;cutPointer(e);});
+cutCanvas.addEventListener("pointermove",cutPointer);
+cutCanvas.addEventListener("pointerleave",()=>{CUT.cursor=null;renderCut();});
+window.addEventListener("pointerup",()=>{CUT.drawing=false;});
+window.addEventListener("resize",resizeCut);
+
+// drag & drop
+["dragenter","dragover"].forEach(ev=>stage.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("drag");}));
+["dragleave","drop"].forEach(ev=>stage.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("drag");}));
+stage.addEventListener("drop",e=>{ const f=e.dataTransfer.files[0]; if(f)loadFile(f); });
+
+$("autoRig").onclick=()=>{ if(!S.ready)return; S.guidedRig=null; S.guide.active=false; updateGuideUI(); autoDetect(); buildMesh(); S.editing=false; setEditUI(false);
+  S.driver="idle"; setDriver("idle"); status("Rigged & playing.",true); };
+
+$("editAnchors").onclick=()=>{ S.editing=true; setEditUI(true); };
+$("anchorDone").onclick=()=>{ S.editing=false; S.anchorsManual=true; setEditUI(false); buildSkeleton(); status("Landmarks updated — skeleton rebuilt.",true); };
+$("resetAnchors").onclick=()=>{ S.guidedRig=null; autoDetect(); buildSkeleton(); status("Landmarks re-detected.",true); };
+
+function setEditUI(on){
+  $("anchorDone").style.display=on?"block":"none";
+  $("anchorHelp").style.display=on?"block":"none";
+  $("editAnchors").classList.toggle("on",on);
+  canvas.style.cursor=on?"grab":"crosshair";
+}
+
+// ---- bone posing (FK) ----
+$("poseBones").onclick=()=>{ if(!S.skel)return;
+  S.skelEdit=false; setSkelUI(false);
+  S.poseEdit=true; S.overlay.skeleton=true; syncChips();
+  S.skel.bones.forEach(b=>{ if(!b.posed){b.delta=0;b.sx=1;b.sy=1;} });
+  setPoseUI(true); status("Posing — drag the joints.",true);
+};
+$("poseDone").onclick=()=>{ S.poseEdit=false; S.selBone=-1; setPoseUI(false); status("Pose held. Auto-motion drives un-posed bones.",true); };
+$("resetPose").onclick=()=>{ if(!S.skel)return;
+  S.skel.bones.forEach(b=>{b.posed=false;b.delta=0;b.sx=1;b.sy=1;}); S.selBone=-1; status("Pose reset.",true); };
+function setPoseUI(on){
+  $("poseDone").style.display=on?"block":"none";
+  $("poseHelp").style.display=on?"block":"none";
+  $("poseBones").classList.toggle("on",on);
+  canvas.style.cursor=on?"grab":"crosshair";
+}
+// ---- skeleton editing (relocate joints, then re-bind) ----
+$("editSkel").onclick=()=>{ if(!S.skel)return;
+  S.poseEdit=false; setPoseUI(false);
+  S.skelEdit=true; S.overlay.skeleton=true; syncChips();
+  S.skel.bones.forEach(b=>{b.delta=0;b.sx=1;b.sy=1;});
+  setSkelUI(true); status("Edit skeleton — drag joints to fix the mapping.",true);
+};
+$("skelDone").onclick=()=>{ S.skelEdit=false; S.skelDrag=-1; S.selBone=-1;
+  recomputeTips(); computeWeights(); setSkelUI(false); status("Mesh re-bound to corrected skeleton.",true); };
+function setSkelUI(on){
+  $("skelDone").style.display=on?"block":"none";
+  $("skelHelp").style.display=on?"block":"none";
+  $("editSkel").classList.toggle("on",on);
+  if(on)canvas.style.cursor="grab";
+}
+
+// ---- guided rigging (click each joint; reliable, ML-free) ----
+const GUIDE_LABEL={ head:"HEAD (face center)", neck:"NECK", pelvis:"PELVIS (hips center)",
+  l_shoulder:"LEFT SHOULDER", l_elbow:"LEFT ELBOW", l_hand:"LEFT HAND",
+  l_hip:"LEFT HIP", l_knee:"LEFT KNEE", l_foot:"LEFT FOOT",
+  r_shoulder:"RIGHT SHOULDER", r_elbow:"RIGHT ELBOW", r_hand:"RIGHT HAND",
+  r_hip:"RIGHT HIP", r_knee:"RIGHT KNEE", r_foot:"RIGHT FOOT" };
+function startGuide(){ if(!S.ready)return;
+  S.poseEdit=false;setPoseUI(false); S.skelEdit=false;setSkelUI(false); S.editing=false;setEditUI(false);
+  S.guide.mirror=$("guideMirror").checked;
+  S.guide.seq=S.guide.mirror?S.guide.seqM:S.guide.seqF;
+  S.guide.step=0; S.guide.pts={}; S.guide.active=true; S.overlay.skeleton=false;
+  updateGuideUI(); status("Guided rig — click each joint on the art.",true);
+}
+function cancelGuide(){ S.guide.active=false; updateGuideUI(); status("Guided rig cancelled.",true); }
+function guideBack(){ if(!S.guide.active||S.guide.step<=0)return;
+  S.guide.step--; delete S.guide.pts[S.guide.seq[S.guide.step]]; updateGuideUI(); }
+function guidePlace(ip){ const seq=S.guide.seq; if(S.guide.step>=seq.length)return;
+  S.guide.pts[seq[S.guide.step]]={x:ip.x,y:ip.y}; S.guide.step++;
+  if(S.guide.step>=seq.length) finalizeGuide(); else updateGuideUI();
+}
+function updateGuideUI(){
+  const on=S.guide.active; $("guideBar").classList.toggle("show",on); $("guideBtn").classList.toggle("on",on);
+  if(!on)return;
+  const seq=S.guide.seq, key=seq[S.guide.step];
+  $("guideStep").textContent="Click "+(GUIDE_LABEL[key]||key);
+  $("guideProg").textContent=(S.guide.step+1)+" / "+seq.length;
+}
+function finalizeGuide(){
+  const P=S.guide.pts, cx=(P.pelvis||P.neck).x, mir=p=>({x:2*cx-p.x,y:p.y});
+  const J={ neck:P.neck, pelvis:P.pelvis,
+    shoulderL:P.l_shoulder, elbowL:P.l_elbow, handL:P.l_hand,
+    hipL:P.l_hip, kneeL:P.l_knee, footL:P.l_foot };
+  if(S.guide.mirror){ J.shoulderR=mir(J.shoulderL);J.elbowR=mir(J.elbowL);J.handR=mir(J.handL);
+    J.hipR=mir(J.hipL);J.kneeR=mir(J.kneeL);J.footR=mir(J.footL); }
+  else { J.shoulderR=P.r_shoulder;J.elbowR=P.r_elbow;J.handR=P.r_hand;
+    J.hipR=P.r_hip;J.kneeR=P.r_knee;J.footR=P.r_foot; }
+  const head=P.head, neck=P.neck, U=Math.max(10,Math.abs(neck.y-head.y));
+  S.anchors.face ={x:head.x,y:head.y};
+  S.anchors.eyeL ={x:head.x-U*0.30,y:head.y}; S.anchors.eyeR={x:head.x+U*0.30,y:head.y};
+  S.anchors.mouth={x:head.x,y:head.y+U*0.45};
+  S.anchors.neck ={x:neck.x,y:neck.y};
+  S.anchors.hip  ={x:J.pelvis.x,y:J.pelvis.y};
+  S.anchorsManual=true; S.guidedRig=J; S.guide.active=false;
+  updateGuideUI(); buildSkeleton();
+  status("Guided rig built. Fine-tune with Edit skeleton or Pose.",true);
+}
+$("guideBtn").onclick=startGuide;
+$("guideCancel").onclick=cancelGuide;
+$("guideBack").onclick=guideBack;
+$("guideMirror").onchange=e=>{ if(S.guide.active){ S.guide.mirror=e.target.checked;
+  S.guide.seq=e.target.checked?S.guide.seqM:S.guide.seqF; S.guide.step=0; S.guide.pts={}; updateGuideUI(); } };
+
+// ---- anatomy: force-rig override ----
+$("forceHuman").onchange=e=>{ S.forceHumanoid=e.target.checked;
+  $("forceState").textContent=e.target.checked?"on":"off";
+  if(S.ready){ buildSkeleton(); status(S.skel?"Humanoid rig forced.":"Still no riggable subject.",true); } };
+
+// overlay chips
+document.querySelectorAll('[data-t]').forEach(c=>c.onclick=()=>{
+  const k=c.dataset.t; S.overlay[k]=!S.overlay[k]; c.classList.toggle("on",S.overlay[k]);
+});
+// behavior chips
+document.querySelectorAll('[data-b]').forEach(c=>c.onclick=()=>{
+  const k=c.dataset.b;
+  if(k==="lipsync"){ toggleMic(c); return; }
+  S.behave[k]=!S.behave[k]; c.classList.toggle("on",S.behave[k]);
+});
+// quality
+document.querySelectorAll('[data-q]').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('[data-q]').forEach(x=>x.classList.remove("on"));
+  b.classList.add("on");
+  const lvl=+b.dataset.q; S.grid.cols=S.qLevels[lvl][0]; S.grid.rows=S.qLevels[lvl][1];
+  if(S.ready) buildMesh();
+});
+// driver segment
+document.querySelectorAll('#driverSeg button').forEach(b=>b.onclick=()=>setDriver(b.dataset.d));
+function setDriver(d){
+  S.driver=d;
+  document.querySelectorAll('#driverSeg button').forEach(x=>x.classList.toggle("on",x.dataset.d===d));
+  $("driverHint").textContent={
+    idle:"Idle: ambient breathing, blinking & micro-sway.",
+    track:"Cursor: head follows your pointer over the stage.",
+    manual:"Manual: pose hold via the sliders below."
+  }[d];
+  $("poseMode").textContent="["+(d==="manual"?"manual":d+"-driven")+"]";
+}
+
+// manual sliders
+[["yaw",1],["pitch",1],["roll",1],["eye",0],["mouth",0],["body",1],["breath",0]].forEach(([k])=>{
+  const el=$("p_"+k);
+  el.addEventListener("input",()=>{
+    const v=+el.value; $("v_"+k).textContent=v;
+    S.manual[k]= (k==="eye"||k==="mouth"||k==="breath") ? v/100 : v/100;
+    if(S.driver!=="manual"){ setDriver("manual"); }
+  });
+});
+
+// pointer for tracking + editing
+function pe(e){const t=e.touches?e.touches[0]:e; return {x:t.clientX,y:t.clientY};}
+stage.addEventListener("pointermove",e=>{
+  const m=pe(e); S.mouse.x=m.x;S.mouse.y=m.y;S.mouse.inside=true;
+  if(S.skelEdit && S.skelDrag>=0){
+    const r=canvas.getBoundingClientRect();
+    const ip=toImage((m.x-r.left)*dpr,(m.y-r.top)*dpr);
+    S.skel.bones[S.skelDrag].pivot={x:ip.x,y:ip.y};
+    recomputeTips();
+    return;
+  }
+  if(S.poseEdit && S.poseDrag){
+    const r=canvas.getBoundingClientRect();
+    const cx=(m.x-r.left)*dpr, cy=(m.y-r.top)*dpr;
+    const ang=Math.atan2(cy-S.poseDrag.pivot.y, cx-S.poseDrag.pivot.x);
+    S.skel.bones[S.poseDrag.i].delta = ang - S.poseDrag.start;
+    return;
+  }
+  if(S.editing && S.dragIdx>=0){
+    const r=canvas.getBoundingClientRect();
+    const cx=(m.x-r.left)*dpr, cy=(m.y-r.top)*dpr;
+    const ip=toImage(cx,cy);
+    const keys=["face","eyeL","eyeR","mouth","neck","hip"];
+    S.anchors[keys[S.dragIdx]]={x:ip.x,y:ip.y};
+  }
+});
+stage.addEventListener("pointerleave",()=>S.mouse.inside=false);
+stage.addEventListener("pointerdown",e=>{
+  if(S.guide.active){
+    if(e.target.closest && e.target.closest("#guideBar")) return;  // let banner buttons work
+    const m=pe(e); const r=canvas.getBoundingClientRect();
+    guidePlace(toImage((m.x-r.left)*dpr,(m.y-r.top)*dpr)); return; }
+  if(S.skelEdit && S.skel){
+    const m=pe(e); const r=canvas.getBoundingClientRect();
+    const cx=(m.x-r.left)*dpr, cy=(m.y-r.top)*dpr;
+    const B=S.skel.bones; let best=-1,bd=20*dpr;
+    for(let i=0;i<B.length;i++){ const c=toCanvas(B[i].pivot.x,B[i].pivot.y);
+      const d=Math.hypot(c.x-cx,c.y-cy); if(d<bd){bd=d;best=i;} }
+    S.selBone=best; S.skelDrag=best; canvas.style.cursor="grabbing";
+    return;
+  }
+  if(S.poseEdit && S.skel){
+    const m=pe(e); const r=canvas.getBoundingClientRect();
+    const cx=(m.x-r.left)*dpr, cy=(m.y-r.top)*dpr;
+    const B=S.skel.bones; let best=-1,bd=20*dpr,bpiv=null;
+    for(let i=0;i<B.length;i++){ const pM=B[i].parent>=0?B[B[i].parent].M:IDENT;
+      const j=applyM(pM,B[i].pivot.x,B[i].pivot.y); const c=toCanvas(j.x,j.y);
+      const d=Math.hypot(c.x-cx,c.y-cy); if(d<bd){bd=d;best=i;bpiv=c;} }
+    S.selBone=best;
+    if(best>=0){ B[best].posed=true;
+      S.poseDrag={i:best,pivot:bpiv,start:Math.atan2(cy-bpiv.y,cx-bpiv.x)-B[best].delta};
+      canvas.style.cursor="grabbing"; }
+    return;
+  }
+  if(!S.editing||!S.anchors)return;
+  const m=pe(e); const r=canvas.getBoundingClientRect();
+  const cx=(m.x-r.left)*dpr, cy=(m.y-r.top)*dpr;
+  const keys=["face","eyeL","eyeR","mouth","neck","hip"];
+  let best=-1,bd=22*dpr;
+  keys.forEach((k,i)=>{const p=toCanvas(S.anchors[k].x,S.anchors[k].y);const d=Math.hypot(p.x-cx,p.y-cy);if(d<bd){bd=d;best=i;}});
+  S.dragIdx=best; canvas.style.cursor="grabbing";
+});
+window.addEventListener("pointerup",()=>{S.dragIdx=-1; S.poseDrag=null; S.skelDrag=-1;
+  if(S.poseEdit||S.skelEdit)canvas.style.cursor="grab"; else if(S.editing)canvas.style.cursor="grab";});
+
+// ---------- mic / lip-sync ----------
+async function toggleMic(chip){
+  if(S.mic){ S.behave.lipsync=false; chip.classList.remove("on");
+    S.mic.stream.getTracks().forEach(t=>t.stop()); S.mic=null; return; }
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    const ac=new (window.AudioContext||window.webkitAudioContext)();
+    const src=ac.createMediaStreamSource(stream);
+    const an=ac.createAnalyser(); an.fftSize=512; src.connect(an);
+    const buf=new Uint8Array(an.fftSize);
+    S.mic={ac,an,buf,stream};
+    S.behave.lipsync=true; chip.classList.add("on");
+    (function poll(){ if(!S.mic)return; an.getByteTimeDomainData(buf);
+      let sum=0; for(let i=0;i<buf.length;i++){const v=(buf[i]-128)/128;sum+=v*v;}
+      S.micVal=Math.sqrt(sum/buf.length); requestAnimationFrame(poll); })();
+  }catch(err){ status("Mic permission denied.",true); chip.classList.remove("on"); }
+}
+
+// ---------- export ----------
+$("snap").onclick=()=>{
+  const a=document.createElement("a");
+  a.download="rigforge_frame.png"; a.href=canvas.toDataURL("image/png"); a.click();
+  status("Frame saved.",true);
+};
+$("rec").onclick=()=>{
+  if(S.recording){ stopRec(); return; }
+  let stream;
+  try{ stream=canvas.captureStream(30); }catch(e){ status("Recording unsupported here.",true); return; }
+  const mime=["video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm"].find(m=>MediaRecorder.isTypeSupported(m));
+  if(!mime){ status("WebM recording unsupported in this browser.",true); return; }
+  S.recChunks=[]; S.rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:8e6});
+  S.rec.ondataavailable=e=>{ if(e.data.size)S.recChunks.push(e.data); };
+  S.rec.onstop=()=>{
+    const blob=new Blob(S.recChunks,{type:"video/webm"});
+    const a=document.createElement("a"); a.download="rigforge_clip.webm";
+    a.href=URL.createObjectURL(blob); a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    status("Clip exported (.webm).",true);
+  };
+  S.rec.start(); S.recording=true;
+  $("rec").textContent="■ STOP"; $("rec").classList.add("on");
+  $("statDot").className="dot rec"; $("statText").textContent="Recording…";
+};
+function stopRec(){ if(S.rec&&S.recording){S.rec.stop();S.recording=false;
+  $("rec").textContent="● REC"; $("rec").classList.remove("on");
+  $("statDot").className="dot live"; $("statText").textContent="Live"; } }
+
+$("saveRig").onclick=()=>{
+  if(!S.anchors)return;
+  const data={ format:"rigforge.v1", anchors:S.anchors,
+    grid:S.grid, overlay:S.overlay, behave:S.behave, driver:S.driver, imgW:S.imgW, imgH:S.imgH,
+    bones: S.skel ? S.skel.bones.map(b=>({name:b.name,parent:b.parent,pivot:b.pivot,tip:b.tip,
+      delta:b.delta,sx:b.sx,sy:b.sy,posed:b.posed})) : null };
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+  const a=document.createElement("a"); a.download="rigforge_rig.json"; a.href=URL.createObjectURL(blob); a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),3000);
+  status("Rig saved (.json).",true);
+};
+$("loadRig").onclick=()=>$("rigIn").click();
+$("rigIn").onchange=e=>{ const f=e.target.files[0]; if(!f)return;
+  const fr=new FileReader();
+  fr.onload=()=>{ try{ const d=JSON.parse(fr.result);
+    if(d.anchors)S.anchors=d.anchors;
+    if(d.grid){S.grid=d.grid; if(S.ready)buildMesh();}
+    if(d.anchors && S.ready && !d.grid) buildSkeleton();
+    if(d.bones && S.skel){ d.bones.forEach((sb,i)=>{ const b=S.skel.bones[i];
+      if(b){ b.delta=sb.delta||0; b.sx=sb.sx||1; b.sy=sb.sy||1; b.posed=!!sb.posed; } }); }
+    if(d.behave)Object.assign(S.behave,d.behave);
+    if(d.overlay)Object.assign(S.overlay,d.overlay);
+    syncChips();
+    status("Rig loaded.",true);
+  }catch(err){ status("Invalid rig file.",true);} };
+  fr.readAsText(f);
+};
+
+// ---- import 2D pose-estimator keypoints (OpenPose / COCO / named dict) ----
+$("loadPose").onclick=()=>$("poseIn").click();
+$("poseIn").onchange=e=>{ const f=e.target.files[0]; if(!f)return;
+  const fr=new FileReader();
+  fr.onload=()=>{ try{ importPose(JSON.parse(fr.result)); }
+    catch(err){ status("Couldn't parse that pose JSON.",true); } };
+  fr.readAsText(f);
+};
+// ---- one-click: call a deployed RIGFORGE Pose Space and import its keypoints ----
+$("detectHF").onclick=async()=>{
+  if(!S.ready){ status("Load the character image first.",true); return; }
+  const id=($("poseSpace").value||"").trim();
+  if(!id||id.indexOf("/")<0){ status("Enter your Space id as username/space.",true); return; }
+  const btn=$("detectHF"); btn.disabled=true;
+  try{
+    status("Connecting to HF Space…",true);
+    const mod=await import("https://cdn.jsdelivr.net/npm/@gradio/client/+esm");
+    const Client=mod.Client||mod.client||mod.default;
+    const app=await Client.connect(id);
+    status("Uploading figure & running pose model…",true);
+    const blob=await new Promise(res=>S.work.toBlob(res,"image/png"));
+    const r=await app.predict("/detect",[blob,0.3]);
+    const data=(r&&r.data)||[];
+    // /detect returns [previewImage, jsonFile] — find the file-like entry
+    let file=data.find(d=>d&&(d.url||d.path)&&/\.json/i.test(d.url||d.path||""))||data[1]||data.find(d=>d&&(d.url||d.path));
+    let url=file&&(file.url||file.path);
+    if(!url) throw new Error("no file in Space response");
+    if(!/^https?:/i.test(url)){ const base="https://"+id.split("/")[0]+"-"+id.split("/")[1].replace(/[^a-z0-9-]/gi,"-")+".hf.space"; url=base+"/file="+url; }
+    const jr=await fetch(url); const json=await jr.json();
+    importPose(json);
+  }catch(err){
+    status("HF call failed ("+(err&&err.message||err)+"). Use ⨁ Import as fallback.",true);
+  }finally{ btn.disabled=false; }
+};
+
+// ============================================================
+//  RIG READINESS — the system self-evaluates its own rig.
+//  Phase 1 of the recursive loop: it has to certify the basic
+//  job before anything is built on top of it.
+// ============================================================
+function fgMask(){
+  const w=S.imgW,h=S.imgH,N=w*h;
+  let id; try{ id=S.img.getContext("2d").getImageData(0,0,w,h).data; }catch(e){ return null; }
+  const m=new Uint8Array(N);
+  let trans=0; for(let i=0;i<N;i++){ if(id[i*4+3]<200)trans++; }
+  if(trans>N*0.02){                       // real alpha present (cutout done)
+    for(let i=0;i<N;i++) m[i]=id[i*4+3]>40?1:0;
+  } else {                                // key out the background colour
+    const cs=[0,(w-1),(h-1)*w,(h-1)*w+(w-1)];
+    let br=0,bg=0,bb=0; for(const c of cs){ br+=id[c*4]; bg+=id[c*4+1]; bb+=id[c*4+2]; }
+    br/=4;bg/=4;bb/=4; const T=46*46;
+    for(let i=0;i<N;i++){ const dr=id[i*4]-br,dg=id[i*4+1]-bg,db=id[i*4+2]-bb;
+      m[i]=(dr*dr+dg*dg+db*db)>T?1:0; }
+  }
+  return {data:m,w,h};
+}
+function nearFg(mask,x,y,R){ const{data,w,h}=mask; x|=0;y|=0;
+  for(let dy=-R;dy<=R;dy++){ const yy=y+dy; if(yy<0||yy>=h)continue;
+    for(let dx=-R;dx<=R;dx++){ const xx=x+dx; if(xx<0||xx>=w)continue;
+      if(data[yy*w+xx])return true; } }
+  return false;
+}
+function nearestFg(mask,x,y){ const{data,w,h}=mask; x|=0;y|=0;
+  for(let r=1;r<Math.max(w,h);r+=2){
+    for(let dy=-r;dy<=r;dy++){ const yy=y+dy; if(yy<0||yy>=h)continue;
+      for(let dx=-r;dx<=r;dx++){ if(Math.abs(dx)!==r&&Math.abs(dy)!==r)continue;
+        const xx=x+dx; if(xx<0||xx>=w)continue; if(data[yy*w+xx])return{x:xx,y:yy}; } } }
+  return null;
+}
+function largeComponents(mask){
+  const{data,w,h}=mask,N=w*h,seen=new Uint8Array(N),big=[],minSz=N*0.012,st=[];
+  for(let i=0;i<N;i++){ if(data[i]&&!seen[i]){ let sz=0; st.length=0; st.push(i); seen[i]=1;
+    while(st.length){ const p=st.pop(); sz++; const x=p%w,y=(p-x)/w;
+      if(x>0&&data[p-1]&&!seen[p-1]){seen[p-1]=1;st.push(p-1);}
+      if(x<w-1&&data[p+1]&&!seen[p+1]){seen[p+1]=1;st.push(p+1);}
+      if(y>0&&data[p-w]&&!seen[p-w]){seen[p-w]=1;st.push(p-w);}
+      if(y<h-1&&data[p+w]&&!seen[p+w]){seen[p+w]=1;st.push(p+w);}
+    }
+    if(sz>=minSz)big.push(sz);
+  } }
+  return {count:big.length, sizes:big};
+}
+function rigReadiness(){
+  if(!S.skel){ return {score:0,verdict:"No rig",checks:[
+    {name:"Skeleton",ok:false,msg:"No skeleton yet — run Auto-Rig or import keypoints."}]}; }
+  const mask=fgMask(), B=S.skel.byName, full=S.skel.full, checks=[];
+  // 1 — single figure (catches reference sheets)
+  let cc={count:1};
+  if(mask) cc=largeComponents(mask);
+  checks.push({name:"Single figure", ok:cc.count<=1, weight:15,
+    msg: cc.count<=1?"One connected figure.":cc.count+" large blobs — looks like a multi-pose sheet. Feed one isolated figure."});
+  // 2 — joints on the body (the knees/feet-fly-off failure)
+  const R=Math.max(6,Math.round(S.imgW*0.022));
+  const jn=full?["ShoulderL","ElbowL","HandL","ShoulderR","ElbowR","HandR","HipL","KneeL","FootL","HipR","KneeR","FootR","Neck","Pelvis"]:["Neck","Head","Chest","Hips"];
+  const outside=[];
+  if(mask) for(const n of jn){ const b=B[n]; if(b&&!nearFg(mask,b.pivot.x,b.pivot.y,R))outside.push(n); }
+  checks.push({name:"Joints on the body", ok:outside.length===0, weight:30,
+    msg: outside.length===0?"Every joint sits on the figure.":"Off the figure: "+outside.join(", ")+".",
+    fix: outside.length?true:false});
+  // 3 — bilateral symmetry (full body)
+  if(full){
+    const pairs=[["ShoulderL","ShoulderR"],["ElbowL","ElbowR"],["HandL","HandR"],["HipL","HipR"],["KneeL","KneeR"],["FootL","FootR"]];
+    const cx=(B.HipL.pivot.x+B.HipR.pivot.x)/2; let worst=0,off=[];
+    for(const[l,r]of pairs){ const Lp=B[l].pivot,Rp=B[r].pivot;
+      const e=(Math.abs(Math.abs(Lp.x-cx)-Math.abs(Rp.x-cx))+Math.abs(Lp.y-Rp.y))/S.imgW;
+      if(e>worst)worst=e; if(e>0.06)off.push(l.slice(0,-1)); }
+    checks.push({name:"Bilateral symmetry", ok:worst<0.06, weight:20, score:Math.max(0,1-worst/0.12),
+      msg: worst<0.06?"Left/right joints level and mirrored.":"Asymmetric: "+[...new Set(off)].join(", ")+" (often arms snapped flat — a pose model fixes this)."});
+  }
+  // 4 — proportions (head-unit canon, soft)
+  { const A=S.anchors, bb=A.bbox||{minY:0,maxY:S.imgH};
+    const headU=Math.max(1,(A.mouth.y-A.face.y)*2.2), heads=(bb.maxY-bb.minY)/headU;
+    const ok=heads>=4&&heads<=9.5;
+    checks.push({name:"Proportions", ok, weight:10, score:ok?1:0.5,
+      msg: ok?heads.toFixed(1)+" heads tall — plausible.":heads.toFixed(1)+" heads — off canon; check head/neck landmarks."}); }
+  // 5 — rest-pose bind integrity
+  { let bad=0,finite=true;
+    if(S.vw)for(const top of S.vw){ if(!top){bad++;continue;} let s=0,ok=true;
+      for(const e of top){ if(!isFinite(e.w))ok=false; s+=e.w; } if(!ok||Math.abs(s-1)>0.02)bad++; }
+    for(const b of S.skel.bones)for(const v of b.M){ if(!isFinite(v))finite=false; }
+    const ok=bad===0&&finite;
+    checks.push({name:"Rest-pose bind", ok, weight:20,
+      msg: ok?"Weights normalized, matrices finite — no rest distortion.":"Bind issue ("+bad+" verts) — rebuild the mesh."}); }
+  // aggregate
+  let wsum=0,got=0; for(const c of checks){ const w=c.weight||10; wsum+=w; got+=w*(c.score!=null?c.score:(c.ok?1:0)); }
+  const score=Math.round(100*got/wsum);
+  const verdict=score>=85?"Ready — basic job done":(score>=60?"Riggable — needs touch-up":"Not ready");
+  return {score,verdict,checks};
+}
+function renderReadiness(r){
+  const col=r.score>=85?"#3df0e0":r.score>=60?"#ffd23d":"#ff3d7f";
+  let h='<div style="font-weight:700;color:'+col+';font-size:13px">'+r.score+'/100 — '+r.verdict+'</div>';
+  let fixable=false;
+  for(const c of r.checks){ h+='<div style="margin-top:5px">'+(c.ok?'✓':'✗')+' <b>'+c.name+'</b><br><span style="opacity:.78">'+c.msg+'</span></div>'; if(c.fix)fixable=true; }
+  $("rigReport").innerHTML=h;
+  $("rigFixWrap").style.display=fixable?"block":"none";
+}
+function autoFixJoints(){
+  if(!S.skel)return; const mask=fgMask(); if(!mask)return;
+  const B=S.skel.byName, full=S.skel.full, R=Math.max(6,Math.round(S.imgW*0.022));
+  const jn=full?["ShoulderL","ElbowL","HandL","ShoulderR","ElbowR","HandR","HipL","KneeL","FootL","HipR","KneeR","FootR","Neck","Pelvis"]:["Neck","Head","Chest","Hips"];
+  let moved=0;
+  for(const n of jn){ const b=B[n]; if(!b)continue;
+    if(!nearFg(mask,b.pivot.x,b.pivot.y,R)){ const p=nearestFg(mask,b.pivot.x,b.pivot.y);
+      if(p){ b.pivot.x=p.x; b.pivot.y=p.y; moved++; } } }
+  recomputeTips(); computeWeights();
+  return moved;
+}
+$("rigCheck").onclick=()=>{ renderReadiness(rigReadiness()); };
+$("rigFix").onclick=()=>{ const n=autoFixJoints(); renderReadiness(rigReadiness());
+  status(n?("Snapped "+n+" joint(s) back onto the figure."):"Nothing to fix.",true); };
+
+// ============================================================
+//  PHASE 2 — capture loop. A rig that passes its own readiness
+//  check becomes a labeled training sample for Alpeccaai-data.
+//  Corrected joints (post auto-fix / edit) are the training
+//  signal: she only ever learns from rigs she has certified.
+// ============================================================
+function rigToCoco17(){
+  if(!S.skel)return null;
+  const B=S.skel.byName, A=S.anchors, sc=S.poseScale||1;
+  const P=(p,c)=> p?[p.x/sc, p.y/sc, c]:[0,0,0];
+  const g=n=> B[n]?B[n].pivot:null;
+  // COCO subject-side = mirror of RIGFORGE screen-side (front-facing avatar)
+  const kp=[
+    P(A.face,1),                       // 0 nose
+    P(A.eyeR,1), P(A.eyeL,1),          // 1 L_eye, 2 R_eye
+    [0,0,0],[0,0,0],                   // 3 L_ear, 4 R_ear (not tracked)
+    P(g("ShoulderR"),1), P(g("ShoulderL"),1),
+    P(g("ElbowR"),1),    P(g("ElbowL"),1),
+    P(g("HandR"),1),     P(g("HandL"),1),
+    P(g("HipR"),1),      P(g("HipL"),1),
+    P(g("KneeR"),1),     P(g("KneeL"),1),
+    P(g("FootR"),1),     P(g("FootL"),1)
+  ];
+  return {format:"coco17", canvas_width:S.origW, canvas_height:S.origH,
+    keypoints:kp, certified:true, source:(S.imgName||"alpecca")+".png"};
+}
+function dl(obj,name){
+  const blob=(obj instanceof Blob)?obj:new Blob([JSON.stringify(obj,null,2)],{type:"application/json"});
+  const a=document.createElement("a"); a.download=name; a.href=URL.createObjectURL(blob); a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+}
+let CAP_N=0;
+$("capSample").onclick=()=>{
+  if(!S.skel){ status("Build a rig first.",true); return; }
+  const r=rigReadiness(); renderReadiness(r); const TH=70;
+  if(r.score<TH){
+    $("capReport").innerHTML='<div style="color:#ff3d7f;font-weight:700">Not certified ('+r.score+'/100)</div><div style="opacity:.82">Fix the failing checks above, then capture. The loop only learns from rigs it has certified.</div>';
+    status("Rig not certified — fix issues first.",true); return;
+  }
+  const name=(S.imgName||"alpecca");
+  const rig={ format:"rigforge.v1", anchors:S.anchors, grid:S.grid, overlay:S.overlay,
+    behave:S.behave, driver:S.driver, imgW:S.imgW, imgH:S.imgH,
+    bones:S.skel?S.skel.bones.map(b=>({name:b.name,parent:b.parent,pivot:b.pivot,tip:b.tip,
+      delta:b.delta,sx:b.sx,sy:b.sy,posed:b.posed})):null };
+  dl(rigToCoco17(), name+".rigpose.json");
+  dl(rig, name+".rig.json");
+  if(S.work) S.work.toBlob(b=>{ if(b)dl(b, name+".png"); }, "image/png");
+  CAP_N++;
+  $("capReport").innerHTML='<div style="color:#3df0e0;font-weight:700">Certified ✓ '+r.score+'/100 — sample '+CAP_N+' captured</div>'+
+    '<div style="opacity:.85;margin-top:3px">Add to Alpeccaai-data → <b>figures/'+name+'.png</b>, <b>pose/'+name+'.rigpose.json</b>, <b>rigs/'+name+'.rig.json</b>, then run <code>build_manifest.py</code>.</div>';
+  status("Certified sample captured.",true);
+};
+function importPose(obj){
+  if(!S.ready){ status("Load the character image first.",true); return; }
+  // ---- pull keypoint array out of common formats ----
+  let kp=null, fmt=null;
+  if(obj.people&&obj.people[0]&&obj.people[0].pose_keypoints_2d){
+    const a=obj.people[0].pose_keypoints_2d; kp=[]; for(let i=0;i<a.length;i+=3)kp.push([a[i],a[i+1],a[i+2]]);
+    fmt = kp.length>=25?"BODY25":"COCO18";
+  } else if(Array.isArray(obj.keypoints)){
+    kp=obj.keypoints.map(p=>Array.isArray(p)?[p[0],p[1],p[2]??1]:[p.x,p.y,(p.v??p.score??1)]); fmt="ARR";
+  } else if(typeof obj==="object"){ fmt="NAMED"; }
+  // ---- coordinate scaling: source-pixels -> working-image coords ----
+  const cw=obj.canvas_width||obj.width||obj.image_width;
+  const sc = cw? (S.imgW/cw) : (S.poseScale||1);
+  const Pt=(x,y)=>({x:x*sc, y:y*sc});
+  const named = fmt==="NAMED"?obj:null;
+  const byName=n=>{ if(!named)return null; const v=named[n]||named[n.toLowerCase()]; if(!v)return null;
+    return Array.isArray(v)?Pt(v[0],v[1]):Pt(v.x,v.y); };
+  let g;
+  if(fmt==="BODY25"||fmt==="COCO18"||fmt==="ARR"){
+    const idx = fmt==="BODY25"
+      ? {nose:0,neck:1,rsho:2,relb:3,rwri:4,lsho:5,lelb:6,lwri:7,mhip:8,rhip:9,rknee:10,rank:11,lhip:12,lknee:13,lank:14,reye:15,leye:16}
+      : fmt==="COCO18"
+      ? {nose:0,neck:1,rsho:2,relb:3,rwri:4,lsho:5,lelb:6,lwri:7,rhip:8,rknee:9,rank:10,lhip:11,lknee:12,lank:13,reye:14,leye:15}
+      : {nose:0,leye:1,reye:2,lsho:5,rsho:6,lelb:7,relb:8,lwri:9,rwri:10,lhip:11,rhip:12,lknee:13,rknee:14,lank:15,rank:16}; // COCO-17
+    g=k=>{ const i=idx[k]; const p=(i!=null)&&kp[i]; return (p&&p[2]>0.05)?Pt(p[0],p[1]):null; };
+  } else {
+    g=k=>({nose:byName('nose'),neck:byName('neck'),rsho:byName('right_shoulder'),lsho:byName('left_shoulder'),
+      relb:byName('right_elbow'),lelb:byName('left_elbow'),rwri:byName('right_wrist'),lwri:byName('left_wrist'),
+      rhip:byName('right_hip'),lhip:byName('left_hip'),rknee:byName('right_knee'),lknee:byName('left_knee'),
+      rank:byName('right_ankle'),lank:byName('left_ankle'),reye:byName('right_eye'),leye:byName('left_eye'),
+      mhip:byName('mid_hip')}[k]||null);
+  }
+  // ---- assign screen-left/right by x (avoids subject vs screen confusion) ----
+  const pair=(rk,lk)=>{ const a=g(rk),b=g(lk); if(!a&&!b)return[null,null]; if(a&&!b)return[a,a]; if(b&&!a)return[b,b];
+    return a.x<=b.x?[a,b]:[b,a]; };
+  const [shL,shR]=pair('rsho','lsho'), [elL,elR]=pair('relb','lelb'), [wL,wR]=pair('rwri','lwri');
+  const [hL,hR]=pair('rhip','lhip'),  [knL,knR]=pair('rknee','lknee'), [anL,anR]=pair('rank','lank');
+  if(!shL||!hL){ status("Pose JSON needs at least shoulders and hips.",true); return; }
+  const pelvis=g('mhip')||{x:(hL.x+hR.x)/2,y:(hL.y+hR.y)/2};
+  const neck  =g('neck') ||{x:(shL.x+shR.x)/2,y:(shL.y+shR.y)/2};
+  const nose  =g('nose')||neck;
+  const J={ neck, pelvis, shoulderL:shL, shoulderR:shR,
+    elbowL:elL||lerpP(shL,wL||shL,0.5), elbowR:elR||lerpP(shR,wR||shR,0.5),
+    handL:wL||elL||shL, handR:wR||elR||shR, hipL:hL, hipR:hR,
+    kneeL:knL||lerpP(hL,anL||hL,0.5), kneeR:knR||lerpP(hR,anR||hR,0.5),
+    footL:anL||knL||hL, footR:anR||knR||hR };
+  // face anchors from nose / eyes
+  const head=nose, U=Math.max(12,Math.abs(neck.y-head.y)||60);
+  const eyes=[g('reye'),g('leye')].filter(Boolean).sort((a,b)=>a.x-b.x);
+  S.anchors.face={x:head.x,y:head.y};
+  if(eyes.length===2){ S.anchors.eyeL=eyes[0]; S.anchors.eyeR=eyes[1]; }
+  else { S.anchors.eyeL={x:head.x-U*0.3,y:head.y}; S.anchors.eyeR={x:head.x+U*0.3,y:head.y}; }
+  S.anchors.mouth={x:head.x,y:head.y+U*0.5};
+  S.anchors.neck={x:neck.x,y:neck.y};
+  S.anchors.hip ={x:pelvis.x,y:pelvis.y};
+  S.anchorsManual=true; S.guidedRig=J; S.guide.active=false;
+  buildSkeleton();
+  status("Pose keypoints imported — rig built on real joints.",true);
+}
+function syncChips(){
+  document.querySelectorAll('[data-t]').forEach(c=>c.classList.toggle("on",!!S.overlay[c.dataset.t]));
+  document.querySelectorAll('[data-b]').forEach(c=>{ if(c.dataset.b!=="lipsync")c.classList.toggle("on",!!S.behave[c.dataset.b]); });
+}
+
+// ---------- enable/disable + status ----------
+function enable(on){
+  ["autoRig","editAnchors","resetAnchors","snap","rec","saveRig","bgRemove","poseBones","resetPose","editSkel","guideBtn","loadPose","detectHF","rigCheck","capSample"].forEach(id=>$(id).disabled=!on);
+}
+function status(msg,live){
+  $("statText").textContent=msg;
+  $("statDot").className="dot"+(live?" live":"");
+}
+
+// mobile panel toggles
+$("mLeft").onclick=()=>{$("panelLeft").classList.toggle("show");$("panelRight").classList.remove("show");};
+$("mRight").onclick=()=>{$("panelRight").classList.toggle("show");$("panelLeft").classList.remove("show");};
+
+// ---------- boot ----------
+window.addEventListener("resize",resize);
+resize();
+requestAnimationFrame(tick);
+
+/* ===== Alpecca embed bridge ===== */
+window.RIGFORGE={ loaded:false,
+  loadURL:function(url){ var im=new Image(); im.onload=function(){ S.imgName="alpecca"; ingest(im); window.RIGFORGE.loaded=true; }; im.onerror=function(){}; im.src=url; },
+  importPose:function(o){ try{ importPose(o); }catch(e){} },
+  autoRig:function(){ if(S.ready){ autoDetect(); buildMesh(); } },
+  setManual:function(p){ S.driver="manual"; for(var k in p){ if(S.manual.hasOwnProperty(k)) S.manual[k]=p[k]; } },
+  setDriver:function(d){ S.driver=d; },
+  setOverlay:function(o){ for(var k in o){ S.overlay[k]=o[k]; } },
+  canvasEl:function(){ return canvas; },
+  capture:function(name,readiness){
+    try{
+      var src=S.work||S.img; var fig=src.toDataURL("image/png");
+      var J=S.guidedRig||{}, A=S.anchors||{}, pt=function(p){return p?[p.x,p.y]:null;};
+      var pose={canvas_width:S.imgW,canvas_height:S.imgH,nose:pt(A.face),left_eye:pt(A.eyeL),right_eye:pt(A.eyeR),neck:pt(A.neck),mid_hip:pt(A.hip)};
+      var map={shoulderL:"left_shoulder",shoulderR:"right_shoulder",elbowL:"left_elbow",elbowR:"right_elbow",handL:"left_wrist",handR:"right_wrist",hipL:"left_hip",hipR:"right_hip",kneeL:"left_knee",kneeR:"right_knee",footL:"left_ankle",footR:"right_ankle"};
+      for(var jk in map){ if(J[jk]) pose[map[jk]]=pt(J[jk]); }
+      var rig={format:"rigforge.v1",anchors:S.anchors,grid:S.grid,imgW:S.imgW,imgH:S.imgH,bones:S.skel?S.skel.bones.map(function(b){return {name:b.name,parent:b.parent,pivot:b.pivot,tip:b.tip,delta:b.delta,sx:b.sx,sy:b.sy,posed:b.posed};}):null};
+      return fetch("/rigforge/capture",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:name||S.imgName||"sample",readiness:readiness||0,figure:fig,pose:pose,rig:rig})})
+        .then(function(r){return r.json();}).then(function(d){ try{status(d.ok?("Captured: "+d.name):("Capture: "+(d.error||"failed")),true);}catch(e){} return d; });
+    }catch(e){ return Promise.reject(e); }
+  }
+};
+(function(){ var btn=document.getElementById("capSample"); if(!btn) return;
+  btn.addEventListener("click",function(){ setTimeout(function(){
+    var rep=(document.getElementById("rigReport")||{}).innerText||(document.getElementById("capReport")||{}).innerText||"";
+    var mm=rep.match(/(\d{1,3})\s*\/\s*100/)||rep.match(/score[^0-9]*(\d{1,3})/i);
+    var sc=mm?parseInt(mm[1],10):0; if(sc>0) window.RIGFORGE.capture(S.imgName,sc);
+  }, 400); });
+})();
+window.addEventListener("message",function(ev){ var d=ev.data||{};
+  if(d.rf==="loadURL")window.RIGFORGE.loadURL(d.url);
+  else if(d.rf==="pose")window.RIGFORGE.importPose(d.pose);
+  else if(d.rf==="manual")window.RIGFORGE.setManual(d.params);
+  else if(d.rf==="driver")window.RIGFORGE.setDriver(d.driver);
+  else if(d.rf==="capture")window.RIGFORGE.capture(d.name,d.readiness); });
+
+})();
+</script>
+<script>
+(function(){
+  var q=new URLSearchParams(location.search);
+  if(q.get("embed")!=="1") return;
+  document.body.classList.add("rf-embed");
+  var usePose=q.get("pose")==="1";
+  var speakingUntil=0, blinkUntil=0, nextBlink=0, t0=performance.now(), pose={};
+  function boot(){
+    if(!window.RIGFORGE){ return setTimeout(boot,80); }
+    window.RIGFORGE.setOverlay({mesh:false,zones:false,pivots:false,skeleton:false});
+    window.RIGFORGE.loadURL("/avatar/portrait/idle");
+    (function waitImg(){
+      if(!window.RIGFORGE.loaded) return setTimeout(waitImg,120);
+      window.RIGFORGE.setOverlay({mesh:false,zones:false,pivots:false,skeleton:false});
+      if(usePose){ fetch("/avatar/rigpose").then(function(r){return r.ok?r.json():null;})
+        .then(function(p){ if(p) window.RIGFORGE.importPose(p); window.RIGFORGE.setDriver("manual"); })
+        .catch(function(){ window.RIGFORGE.setDriver("manual"); }); }
+      else { window.RIGFORGE.setDriver("manual"); }
+    })();
+    try{ var ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws");
+      ws.onmessage=function(e){ var m; try{m=JSON.parse(e.data);}catch(_){return;}
+        if((m.type==="reply"||m.type==="proactive")&&m.reply){ speakingUntil=performance.now()+Math.max(1200,Math.min(9000,m.reply.length*55)); } };
+    }catch(e){}
+    setInterval(function(){ fetch("/home/state",{cache:"no-store"}).then(function(r){return r.json();}).then(function(d){ pose=d.pose||{}; }).catch(function(){}); }, 2500);
+    function frame(now){
+      requestAnimationFrame(frame);
+      if(!window.RIGFORGE) return;
+      var arousal=pose.arousal!=null?pose.arousal:0.4, lean=pose.lean!=null?pose.lean:0.1, curiosity=pose.curiosity!=null?pose.curiosity:0.2;
+      var tilt=(pose.gesture==="tilt")?0.5:0;
+      if(now>nextBlink){ blinkUntil=now+110; nextBlink=now+(2400+Math.random()*2600); }
+      var eye=now<blinkUntil?0.05:1, speaking=now<speakingUntil, mouth=speaking?(0.4+0.4*Math.abs(Math.sin(now*0.018))):0, ts=(now-t0)/1000;
+      window.RIGFORGE.setManual({yaw:0.18*Math.sin(ts*0.6)+lean*0.3,pitch:0.07*Math.sin(ts*0.5)+curiosity*0.1,roll:tilt*0.35+0.05*Math.sin(ts*0.7),eye:eye,mouth:mouth,body:0.28*Math.sin(ts*0.55)*(0.6+arousal*0.5),breath:0.5+0.5*Math.sin(ts*1.5)});
+    }
+    requestAnimationFrame(frame);
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

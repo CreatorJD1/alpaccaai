@@ -35,6 +35,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# Make a vendored THA3 checkout importable without the user setting PYTHONPATH.
+# setup_face.bat clones it here; if present, `import tha3` just works.
+_THA3 = Path(__file__).resolve().parent.parent / "vendor" / "talking-head-anime-3-demo"
+if _THA3.exists():
+    sys.path.insert(0, str(_THA3))
+
 from config import HOST, PORT, AVATAR_DIR
 
 URL = f"http://{HOST}:{PORT}"
@@ -161,8 +167,13 @@ def main() -> None:
         sys.exit(1)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Loading THA3 on {device} (first run downloads models)...")
-    poser = load_poser("standard_float", device)
+    # Model choice is the first VRAM lever. On a small card (e.g. RTX 3050 4 GB)
+    # 'separable_half' uses roughly half the memory of 'standard_float', leaving
+    # room for a 4B LLM on the same GPU. Override with ALPECCA_THA3_MODEL.
+    import os as _os
+    model_kind = _os.environ.get("ALPECCA_THA3_MODEL", "separable_half")
+    print(f"Loading THA3 ({model_kind}) on {device} (first run downloads models)...")
+    poser = load_poser(model_kind, device)
     names = _name_index_map(poser)
     image = extract_pytorch_image_from_filelike(str(IMG_PATH)).to(device).unsqueeze(0)
 
@@ -191,6 +202,13 @@ def main() -> None:
                               headers={"Content-Type": "image/jpeg"}, timeout=2)
             except Exception:
                 pass
+            # Adaptive framerate -- the *compute* lever for sharing the GPU with
+            # her brain. While she SPEAKS, render fast for smooth lip-sync. While
+            # she's quiet (including the moment she's THINKING up a reply), drop to
+            # a few frames a second -- just enough to blink and breathe -- so the
+            # LLM gets the GPU and her replies stay fast. So the face naturally
+            # steps back exactly when the brain needs the card.
+            time.sleep(0.045 if speaking else 0.22)
     except KeyboardInterrupt:
         print("\nStopped. Her face is back to the cheaper rig.")
 

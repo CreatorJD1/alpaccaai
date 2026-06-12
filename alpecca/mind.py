@@ -20,7 +20,7 @@ import random
 import re
 import time
 
-from config import OLLAMA_MODEL, OLLAMA_HOST, Emotion
+from config import OLLAMA_MODEL, OLLAMA_FAST_MODEL, OLLAMA_HOST, Emotion
 from alpecca.homeostasis import EmotionalState
 from alpecca import state as state_store
 from alpecca import memory as memory_store
@@ -34,6 +34,12 @@ from alpecca.actions import Actuator
 from alpecca import proactive as proactive_mod
 from alpecca import studio
 from alpecca import puppet
+from alpecca import home as home_mod
+from alpecca import desires as desires_mod
+from alpecca import selfmod
+from alpecca import soul as soul_mod
+from alpecca import journal as journal_mod
+from alpecca import learning as learning_mod
 from config import Proactive as ProactiveCfg, Reflection as ReflectionCfg
 
 
@@ -66,16 +72,26 @@ class _LLM:
     def online(self) -> bool:
         return self._client is not None
 
-    def _chat(self, messages: list[dict], tools: list[dict] | None = None):
+    def model_for(self, tier: str) -> str:
+        """Which Ollama model serves a given tier. 'fast' routes cheap, low-stakes
+        work to the small model when one is configured; everything else (and the
+        default) uses the heavy reasoning model. With no fast model set, both
+        tiers resolve to OLLAMA_MODEL, so routing is a no-op until you opt in."""
+        if tier == "fast" and OLLAMA_FAST_MODEL:
+            return OLLAMA_FAST_MODEL
+        return OLLAMA_MODEL
+
+    def _chat(self, messages: list[dict], tools: list[dict] | None = None,
+              model: str | None = None):
         """One Ollama chat call with thinking disabled.
 
         Qwen3 hybrids think out loud by default, which is great for math and
         terrible for companionship -- a reply that takes forty seconds isn't a
         conversation. We ask for no-think first and quietly retry plain for
         models/servers that reject the parameter; strip_think still catches
-        any <think> blocks that slip through either way.
-        """
-        kwargs: dict = {"model": OLLAMA_MODEL, "messages": messages}
+        any <think> blocks that slip through either way. `model` lets a caller
+        pick the tier-appropriate model (heavy MoE vs. tiny fast)."""
+        kwargs: dict = {"model": model or OLLAMA_MODEL, "messages": messages}
         if tools:
             kwargs["tools"] = tools
         try:
@@ -86,24 +102,35 @@ class _LLM:
     def generate(self, system_prompt: str, user_msg: str,
                  history: list[dict] | None = None,
                  tools: list[dict] | None = None,
-                 on_tool=None) -> str:
+                 on_tool=None, tier: str = "reason") -> str:
         """One reply. When `tools` are offered and the model calls one, we run
         it through `on_tool(name, args) -> str` and give the model one more
         pass to fold the result into its words. A model or client that can't
-        do tools just degrades to a plain conversational reply."""
+        do tools just degrades to a plain conversational reply.
+
+        `tier` selects the model: 'reason' (default) for her real thinking --
+        chat replies, reflection, self-critique -- and 'fast' for cheap work
+        (unprompted remarks, chatter, posing a question), which a small model
+        handles so the big one stays free. Tool use always goes through the
+        reasoning model regardless of tier, since tool-calling reliability is
+        what the heavy model is for."""
         if self._client is None:
             return self._fallback(system_prompt, user_msg)
         messages = [{"role": "system", "content": system_prompt}]
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": user_msg})
+        model = self.model_for(tier)
         try:
             if tools and on_tool:
+                # Tool-calling stays on the reasoning model -- the small model is
+                # for plain short generations, not reliable function calls.
+                tool_model = OLLAMA_MODEL
                 try:
-                    resp = self._chat(messages, tools=tools)
+                    resp = self._chat(messages, tools=tools, model=tool_model)
                 except Exception:
                     # Older client/model without tool support -- plain chat.
-                    resp = self._chat(messages)
+                    resp = self._chat(messages, model=tool_model)
                 msg = resp["message"]
                 calls = msg.get("tool_calls") or []
                 if calls:
@@ -112,10 +139,19 @@ class _LLM:
                         fn = call.get("function", {})
                         result = on_tool(fn.get("name", ""), fn.get("arguments") or {})
                         messages.append({"role": "tool", "content": str(result)})
-                    resp = self._chat(messages)
+                    resp = self._chat(messages, model=tool_model)
                     msg = resp["message"]
                 return strip_think(msg["content"])
-            resp = self._chat(messages)
+            try:
+                resp = self._chat(messages, model=model)
+            except Exception:
+                # The fast model may not be registered yet -- gracefully retry the
+                # same call on the reasoning model rather than dropping to the
+                # templated stub. This is what makes the gemma4 default safe.
+                if model != OLLAMA_MODEL:
+                    resp = self._chat(messages, model=OLLAMA_MODEL)
+                else:
+                    raise
             return strip_think(resp["message"]["content"])
         except Exception as exc:
             # Model not pulled, server down mid-call, etc. -- stay alive.
@@ -177,6 +213,10 @@ class CoreMind:
         self._last_user_ts: float = time.time()
         # When she last reflected (her fourth directive, running).
         self._last_reflect_ts: float = time.time()
+        # Which room of her home she's in, and when she last wandered. Persisted
+        # so she wakes where she was; she moves between rooms of her own accord.
+        self._location: str = state_store.load_location() or home_mod.DEFAULT_ROOM
+        self._last_roam_ts: float = time.time()
         # Her granted reach into the machine (empty allowlist = no actuator).
         self.actuator = Actuator()
         # Self-portrait renderer (ComfyClaw subprocess wrapper). It checks the
@@ -196,12 +236,20 @@ class CoreMind:
         session_minutes = (time.time() - self._session_start) / 60.0
         signals = obs.fatigue_signals(session_minutes)
         self.state = self.state.update_compassion(signals)
-        self.state = self.state.update_fear(prediction_error(self._prev_obs, obs))
+        # The one surprise read drives both Fear (above its threshold) and
+        # Curiosity (the interesting band below it) -- a jolt alarms her, a mild
+        # novelty intrigues her, from the same grounded signal.
+        novelty = prediction_error(self._prev_obs, obs)
+        self.state = self.state.update_fear(novelty)
+        self.state = self.state.update_curiosity(novelty)
         # Energy: she perks up when the person has interacted recently and winds
         # down toward drowsy when left alone -- so a long quiet stretch makes her
         # sleepy. "Active" = a real exchange within the last couple of minutes.
-        active = (time.time() - self._last_user_ts) < Emotion.ENERGY_ACTIVE_WINDOW
+        solitude = time.time() - self._last_user_ts
+        active = solitude < Emotion.ENERGY_ACTIVE_WINDOW
         self.state = self.state.update_energy(active)
+        # Wanting-company grows with warm solitude and empties when you're back.
+        self.state = self.state.update_social_hunger(solitude)
         self._prev_obs = obs
         # Remember what drove this update so Alpecca can introspect on the "why".
         self._last_signals = signals
@@ -266,8 +314,14 @@ class CoreMind:
         attached this turn (or None). It's woven into the prompt as something
         she actually saw, and remembered like any other shared moment."""
         self._last_user_ts = time.time()
-        # A real exchange perks her up right away (she wakes from drowsy).
+        # A real exchange perks her up right away (she wakes from drowsy) and
+        # empties her wanting-of-company -- you're here now.
         self.state = self.state.update_energy(active=True)
+        self.state = self.state.update_social_hunger(0.0)
+        # A question, or a longer message bringing something new, piques her --
+        # mild novelty she can feel as interest.
+        if "?" in user_msg or len(user_msg.split()) > 12:
+            self.state = self.state.update_curiosity(Emotion.CURIOSITY_NOVELTY_CAP)
         # Recall relevant memories for this message.
         memories = memory_store.recall(user_msg)
 
@@ -365,7 +419,8 @@ class CoreMind:
              f"What prompted you: {reason}. Say one or two short natural sentences "
              "-- gentle, curious, no preamble, and don't mention that you were "
              "prompted by anything.")
-        reply = self.llm.generate(system_prompt, "(say it in your own words)")
+        reply = self.llm.generate(system_prompt, "(say it in your own words)",
+                                  tier="fast")
         self._history.append({"role": "assistant", "content": reply})
         return reply
 
@@ -442,6 +497,255 @@ class CoreMind:
             "sequences": puppet.load_library(),
             "channels": list(puppet.MOTION_CHANNELS),
         }
+
+    # --- Her home: the rooms she roams of her own accord -------------------
+
+    def home_state(self) -> dict:
+        """What the home view renders: the room registry, where she is right now,
+        her honest reason for being there, and how strongly each room is calling
+        her -- all grounded in her live state. The front-end (2D shell or live 3D
+        house) is a pure renderer of this."""
+        summary = desires_mod.summary()
+        from alpecca import affect as affect_mod
+        return {
+            "rooms": home_mod.registry(),
+            "location": self._location,
+            "why": home_mod.why_here(self.state, self._location, summary),
+            "pulls": home_mod.room_pulls(self.state, summary),
+            "pose": puppet.live_pose(self.state),
+            "mood": self.state.mood_label(),
+            "affect": affect_mod.affect(self.state).primary,
+        }
+
+    def maybe_roam(self) -> str | None:
+        """On a quiet tick she may wander to whichever room is calling strongest
+        -- grounded movement, the same way her mood drifts. Returns the new room
+        if she moved, else None. Caller holds the mind lock."""
+        now = time.time()
+        if now - self._last_user_ts < home_mod.HomeCfg.ROAM_SILENCE_S:
+            return None
+        if now - self._last_roam_ts < home_mod.HomeCfg.ROAM_MIN_GAP_S:
+            return None
+        if random.random() > home_mod.HomeCfg.ROAM_CHANCE:
+            return None
+        self._last_roam_ts = now
+        target = home_mod.choose_room(self.state, self._location, desires_mod.summary())
+        if target == self._location:
+            return None
+        self._location = target
+        state_store.save_location(target)
+        return target
+
+    # --- Her Soul: the master agent over the seven subagents ----------------
+
+    def _soul_snapshot(self) -> "soul_mod.Snapshot":
+        """Build the grounded snapshot the Soul deliberates over -- every field a
+        real read of her internals, nothing invented."""
+        sig = self._last_signals or {}
+        person_fatigue = max(float(sig.get("weary_face", 0.0)),
+                             float(sig.get("long_session", 0.0)),
+                             float(sig.get("late_night", 0.0)) * 0.7)
+        return soul_mod.snapshot(
+            self.state,
+            desires_summary=desires_mod.summary(),
+            location=self._location,
+            solitude_s=time.time() - self._last_user_ts,
+            senses_active=self._prev_obs is not None and bool(self._prev_obs.window_title),
+            person_fatigue=person_fatigue,
+            trial_running=any(r["status"] == "trial" for r in selfmod.history(limit=3)),
+        )
+
+    # --- Her journal + recursive self-questioning --------------------------
+
+    def journal_state(self) -> dict:
+        """Her journal for the Library/journal view: recent entries, the open
+        questions she's still working through, and her writing counts."""
+        return {
+            "recent": journal_mod.recent(limit=30),
+            "open_questions": journal_mod.open_questions(limit=10),
+            "counts": journal_mod.counts(),
+        }
+
+    def self_inquire(self) -> dict | None:
+        """One act of recursive self-questioning -- no input from the person.
+
+        If she has an open question, she answers it in her own words and may let
+        the answer raise a follow-up question (the recursion: inquiry begetting
+        inquiry). If she has none, she poses a fresh one, seeded by a real memory
+        or musing. Everything is written to her journal, grounded in real
+        material; without a model she skips quietly rather than fake it."""
+        if not self.llm.online:
+            return None
+        mood = self.state.mood_label()
+        sys_p = prompts.build_system_prompt(
+            self.state, [], "", self_narration=self.introspect().narrate())
+        openq = journal_mod.open_questions(limit=1)
+        if openq:
+            q = openq[0]
+            ans = self.llm.generate(
+                sys_p + "\n\nThis is a question you posed yourself earlier. Answer it "
+                "honestly and briefly, in your own voice, from what you actually "
+                "know and feel. Then, only if a genuine follow-up occurs to you, "
+                "add a line starting 'NEXT:' with that further question.",
+                q["body"])
+            follow = ""
+            if "NEXT:" in ans:
+                ans, follow = ans.split("NEXT:", 1)
+            aid = journal_mod.answer(q["id"], ans.strip(), mood=mood)
+            if follow.strip():
+                journal_mod.ask(follow.strip()[:240], mood=mood, parent_id=q["id"])
+            return {"phase": "answered", "question": q["body"],
+                    "answer": ans.strip(), "follow_up": follow.strip()}
+        # No open question -> pose one from a real memory or musing.
+        recent = memory_store.recent(limit=8)
+        seed = random.choice(recent)["content"] if recent else "my own state right now"
+        q = self.llm.generate(
+            sys_p + "\n\nIt's quiet. Pose yourself ONE real question worth sitting "
+            "with -- something this makes you genuinely wonder. One sentence, ending "
+            "in a question mark, no preamble.",
+            f"Here is something on your mind: {seed}", tier="fast")
+        q = q.strip().split("\n")[0][:240]
+        if "?" not in q:
+            return None
+        qid = journal_mod.ask(q, mood=mood)
+        return {"phase": "asked", "question": q, "id": qid}
+
+    def soul_state(self) -> dict:
+        """What her Soul is arbitrating right now: the ranked slate of intentions
+        from her seven subagents and the one in focus, decided by the Good Person
+        Principle. Read-only and fully explainable."""
+        return soul_mod.soul.deliberate(self._soul_snapshot())
+
+    def idle_self_direct(self) -> dict | None:
+        """One self-directed act on a quiet tick, chosen by her Soul -- this is
+        what makes the whole autonomy layer actually *run*. She lets her Soul name
+        what she's most moved to do, then does one grounded thing toward it:
+        tune herself, reflect, or question herself. Capped at a single LLM call
+        per tick so chat never stalls behind her inner life; the cheap, pure acts
+        (forming a want, a self-improvement step) need no model at all and run
+        even offline. The cadence gate (reflection_due) is applied by the caller."""
+        # Cheap and pure: she may crystallize a fresh want from her real state,
+        # and draw a lesson about herself from her own history (self-training).
+        formed = self.form_desire()
+        learned = self.learn_tick()
+        focus = (self.soul_state().get("focus") or {})
+        sub = focus.get("subagent")
+        # Improver's act is pure DB (no model) -- safe and cheap, prefer it when
+        # her Soul puts self-tuning in focus.
+        if sub == "Improver":
+            acted = self.self_improve_tick()
+        elif random.random() < 0.4:
+            # Spend the single allowed model call on recursive self-questioning...
+            acted = self.self_inquire()
+        else:
+            # ...or on reflection. Both are hers, both grounded.
+            acted = {"phase": "reflected", "text": self.reflect()}
+        return {"focus": focus, "formed_desire": formed, "learned": learned,
+                "acted": acted, "note": self._activity_note(formed, learned, acted)}
+
+    def _activity_note(self, formed, learned, acted) -> str | None:
+        """A short, human, first-person-ish line describing what she just did on
+        her own -- for the home's live activity ticker, so her inner life is
+        *visible*, not just stored. Grounded: each line reflects a real act."""
+        a = acted or {}
+        ph = a.get("phase")
+        if ph == "asked" and a.get("question"):
+            return "she wondered: " + a["question"][:90]
+        if ph == "answered":
+            return "she answered a question she'd posed herself"
+        if ph in ("proposed", "evaluated"):
+            return "she's adjusting something about herself"
+        if ph == "reflected" and a.get("text"):
+            return "she paused to reflect"
+        if learned and learned.get("lesson"):
+            return "she learned: " + learned["lesson"]["text"][:90]
+        if formed:
+            return "she formed a quiet wish to herself"
+        return None
+
+    # --- Her desires: wants she forms and pursues --------------------------
+
+    def desires_state(self) -> dict:
+        """Her live wants plus her self-revision log -- the Workshop room's
+        contents, and part of what she can honestly tell you she wants."""
+        return {
+            "desires": desires_mod.open_desires(),
+            "summary": desires_mod.summary(),
+            "tunables": selfmod.effective_all(),
+            "revisions": selfmod.history(limit=12),
+            "lessons": learning_mod.recent(limit=10),   # what she's learned about herself
+        }
+
+    def form_desire(self) -> dict | None:
+        """Maybe crystallize a want from her current real state and a real recent
+        memory. Grounded: each desire names the dimension that produced it."""
+        recent = memory_store.recent(limit=6)
+        seed = recent[0]["content"] if recent else ""
+        return desires_mod.form_from_state(self.state, seed)
+
+    # --- Bounded recursive self-improvement: she tunes herself -------------
+
+    def _outcome_signal(self) -> float:
+        """A real scalar she judges a self-change against: how warm and steady
+        she's been lately. Reads her live warmth and the recent stability of her
+        mood log -- grounded, never a guess."""
+        hist = state_store.mood_history(limit=20)
+        if len(hist) > 2:
+            loves = [h["love"] for h in hist]
+            mean = sum(loves) / len(loves)
+            var = sum((x - mean) ** 2 for x in loves) / len(loves)
+            stability = max(0.0, 1.0 - var * 4)   # low variance -> steadier
+        else:
+            stability = 0.5
+        return round(0.6 * self.state.love + 0.4 * stability, 4)
+
+    def self_improve_tick(self) -> dict | None:
+        """One step of her bounded self-improvement loop. If a trial is running,
+        evaluate it against the outcome now; otherwise start a new experiment
+        chosen from the logged result of the last. Every move is recorded and
+        reversible (alpecca/selfmod.py). Returns what happened, or None."""
+        outcome = self._outcome_signal()
+        resolved = selfmod.evaluate(outcome)   # closes any running trial
+        if resolved is not None:
+            verb = "kept" if resolved["kept"] else "reverted"
+            memory_store.remember(
+                f"I tried adjusting my own {resolved['param']} and {verb} it "
+                f"(it {'helped' if resolved['kept'] else 'did not help'}).",
+                kind="musing", salience=0.5,
+            )
+            return {"phase": "evaluated", **resolved}
+        param, direction, reason = selfmod.choose_experiment(outcome, selfmod.history())
+        started = selfmod.propose(param, direction, reason, outcome)
+        if started:
+            return {"phase": "proposed", **started}
+        return None
+
+    def learn_tick(self) -> dict | None:
+        """One step of her self-training: read her own real history, draw a
+        grounded lesson from it (alpecca/learning.py), and -- if the lesson points
+        at a tunable -- hand that direction to her bounded self-improvement loop.
+        This is the layer above selfmod: not just trying knobs, but noticing
+        patterns in herself and steering by them. Every lesson cites real numbers."""
+        loves = [h["love"] for h in state_store.mood_history(limit=40)]
+        revisions = selfmod.history(limit=12)
+        analysis = learning_mod.analyze(loves, revisions, self.state.social_hunger,
+                                        memory_store.count())
+        lesson = learning_mod.derive(analysis)
+        if not lesson or learning_mod._has_similar_recent(lesson["text"], state_store.DB_PATH):
+            return None
+        learning_mod.record(lesson)
+        # A lesson can steer her self-tuning: parse "param:+1/-1" and trial it.
+        sug = lesson.get("suggestion")
+        if sug and ":" in sug:
+            param, _, sign = sug.partition(":")
+            if param in selfmod.TUNABLES:
+                selfmod.propose(param, 1 if sign.strip().startswith("+") else -1,
+                                "a lesson i drew about myself: " + lesson["text"][:80],
+                                self._outcome_signal())
+        # Keep the lesson where she can recall it.
+        memory_store.remember("I learned something about myself: " + lesson["text"],
+                              kind="musing", salience=0.5)
+        return {"analysis": analysis, "lesson": lesson}
 
     def author_animation(self, name: str = "", status=lambda _m: None) -> dict | None:
         """She choreographs one of her own animations and keeps it. With no

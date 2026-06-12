@@ -1,0 +1,242 @@
+[
+  {
+    "file": "00_Back_Hair.png",
+    "part": "Back Hair",
+    "folder": "Hair Back",
+    "drawOrder": 0,
+    "offset": [
+      332,
+      33
+    ]
+  },
+  {
+    "file": "01_Legwear.png",
+    "part": "Legwear",
+    "folder": "Body",
+    "drawOrder": 1,
+    "offset": [
+      408,
+      381
+    ]
+  },
+  {
+    "file": "02_Footwear.png",
+    "part": "Footwear",
+    "folder": "Body",
+    "drawOrder": 2,
+    "offset": [
+      419,
+      780
+    ]
+  },
+  {
+    "file": "03_Bottomwear.png",
+    "part": "Bottomwear",
+    "folder": "Body",
+    "drawOrder": 3,
+    "offset": [
+      411,
+      323
+    ]
+  },
+  {
+    "file": "04_Arm_-_Handwear_L.png",
+    "part": "Arm / Handwear L",
+    "folder": "Body",
+    "drawOrder": 4,
+    "offset": [
+      518,
+      196
+    ]
+  },
+  {
+    "file": "05_Arm_-_Handwear_R.png",
+    "part": "Arm / Handwear R",
+    "folder": "Body",
+    "drawOrder": 5,
+    "offset": [
+      129,
+      197
+    ]
+  },
+  {
+    "file": "06_Topwear.png",
+    "part": "Topwear",
+    "folder": "Body",
+    "drawOrder": 6,
+    "offset": [
+      375,
+      167
+    ]
+  },
+  {
+    "file": "07_Neckwear.png",
+    "part": "Neckwear",
+    "folder": "Body",
+    "drawOrder": 7,
+    "offset": [
+      460,
+      171
+    ]
+  },
+  {
+    "file": "08_Neck.png",
+    "part": "Neck",
+    "folder": "Neck",
+    "drawOrder": 8,
+    "offset": [
+      467,
+      136
+    ]
+  },
+  {
+    "file": "09_Ear_L.png",
+    "part": "Ear L",
+    "folder": "Face",
+    "drawOrder": 9,
+    "offset": [
+      508,
+      111
+    ]
+  },
+  {
+    "file": "10_Ear_R.png",
+    "part": "Ear R",
+    "folder": "Face",
+    "drawOrder": 10,
+    "offset": [
+      434,
+      111
+    ]
+  },
+  {
+    "file": "11_Face.png",
+    "part": "Face",
+    "folder": "Face",
+    "drawOrder": 11,
+    "offset": [
+      431,
+      56
+    ]
+  },
+  {
+    "file": "12_Nose.png",
+    "part": "Nose",
+    "folder": "Face",
+    "drawOrder": 12,
+    "offset": [
+      478,
+      127
+    ]
+  },
+  {
+    "file": "13_Mouth.png",
+    "part": "Mouth",
+    "folder": "Mouth",
+    "drawOrder": 13,
+    "offset": [
+      475,
+      143
+    ]
+  },
+  {
+    "file": "14_Eye_White_L.png",
+    "part": "Eye White L",
+    "folder": "Eyes",
+    "drawOrder": 14,
+    "offset": [
+      492,
+      109
+    ]
+  },
+  {
+    "file": "15_Eye_White_R.png",
+    "part": "Eye White R",
+    "folder": "Eyes",
+    "drawOrder": 15,
+    "offset": [
+      450,
+      110
+    ]
+  },
+  {
+    "file": "16_Iris_L.png",
+    "part": "Iris L",
+    "folder": "Eyes",
+    "drawOrder": 16,
+    "offset": [
+      494,
+      110
+    ]
+  },
+  {
+    "file": "17_Iris_R.png",
+    "part": "Iris R",
+    "folder": "Eyes",
+    "drawOrder": 17,
+    "offset": [
+      455,
+      111
+    ]
+  },
+  {
+    "file": "18_Eyelash_L.png",
+    "part": "Eyelash L",
+    "folder": "Eyes",
+    "drawOrder": 18,
+    "offset": [
+      491,
+      105
+    ]
+  },
+  {
+    "file": "19_Eyelash_R.png",
+    "part": "Eyelash R",
+    "folder": "Eyes",
+    "drawOrder": 19,
+    "offset": [
+      444,
+      106
+    ]
+  },
+  {
+    "file": "20_Eyebrow_L.png",
+    "part": "Eyebrow L",
+    "folder": "Brows",
+    "drawOrder": 20,
+    "offset": [
+      491,
+      93
+    ]
+  },
+  {
+    "file": "21_Eyebrow_R.png",
+    "part": "Eyebrow R",
+    "folder": "Brows",
+    "drawOrder": 21,
+    "offset": [
+      448,
+      94
+    ]
+  },
+  {
+    "file": "22_Front_Hair.png",
+    "part": "Front Hair",
+    "folder": "Hair Front",
+    "drawOrder": 22,
+    "offset": [
+      422,
+      17
+    ]
+  },
+  {
+    "file": "23_Headwear.png",
+    "part": "Headwear",
+    "folder": "Accessory",
+    "drawOrder": 23,
+    "offset": [
+      514,
+      71
+    ]
+  }
+]

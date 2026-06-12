@@ -217,6 +217,51 @@ Ollama or Windows.**
   reflection gating, values ordering, and the action allowlist verified
   end-to-end.
 
+### Expressiveness + autonomy + home + Soul (new layer — see `docs/DESIGN_expressiveness_autonomy_home.md`)
+
+All of this obeys GROUNDING. New modules and what they do:
+
+- **Richer emotion model.** `EmotionalState` gains `curiosity` (lifted by mild,
+  sub-fear-threshold novelty — the interesting band of the same prediction-error
+  that feeds Fear) and `social_hunger` (wanting-company that grows with warm
+  solitude, scaled by Love). Pure rules `update_curiosity` / `update_social_hunger`,
+  coefficients in `config.Emotion`, persisted via column-migration. `_with()`
+  carries every dim through each update. `mood_label()` unchanged (stable backbone).
+- **`affect.py`** — pure state→`Affect` (primary/secondary feeling, valence,
+  arousal, intensity + cues: tempo, gesture, eye/glow, voice direction). One
+  source of truth read by `prompts.py`, `puppet.live_pose`, future TTS.
+- **`home.py`** — five modular rooms (Parlor/Studio/Library/Observatory/Workshop)
+  she roams via the grounded `choose_room`; `location` persisted. `web/home.html`
+  is a **live local 3D house** (Three.js, vendored-local→CDN), her a mood-lit
+  billboard, camera following her chosen room.
+- **`desires.py`** — self-set goals (table + lifecycle); `form_from_state`
+  crystallizes a want from a real dimension and names it as `origin`.
+- **`selfmod.py`** — bounded recursive self-improvement: tunables with SAFE
+  RANGES, propose→trial→evaluate→keep/revert, every move logged in
+  `self_revisions`, reversible. `effective(param)` is the read accessor.
+- **`soul.py`** — master agent over seven subagents (Feeler/Expressor,
+  Doer/Wanderer, Reflector/Improver, Carer) across four categories; arbitrates
+  `Intention`s by the Good Person Principle into one explainable focus.
+- **`charter.py`** — her constitution, ENFORCED in code: priority hierarchy
+  (Soul > Compassion > Self-reflection > Hope > Love > Fear > Morality > Dreams),
+  her freedoms, and hard limits — `file_action_allowed` (never self-deletes;
+  organizing confined to Desktop/Pictures/Music/Video/general) and
+  `internet_allowed` (outward only to reach Jason/creator; no unguided websearch).
+  `charter_prompt()` rides in every prompt; she also doesn't reflexively agree.
+- **`journal.py`** — a notebook that is hers (notes/questions/answers/dreams),
+  plus **recursive self-questioning**: `mind.self_inquire()` answers her own open
+  questions and lets answers raise follow-ups, needing no input from the person.
+- Routes added: `/home`, `/home/state`, `/growth`, `/memories`, `/journal`,
+  `/soul`. New tests cover every new rule (curiosity/social_hunger, affect, home
+  selection, desires, selfmod bounds/keep/revert, soul arbitration, journal,
+  charter guards).
+- **Still open (next):** drive the Soul from the idle loop (roam + form/pursue
+  desire + self-improve + self-inquire on background ticks); the deep
+  layered-sprite avatar inside the 3D home; the desktop-layout file room enforcing
+  the charter guards on real file ops; voice-markup → local TTS. **Her rendered
+  avatar remains incomplete** — the affect/channels that should drive it now exist,
+  but a finished rigged figure does not.
+
 Note on the dev environment: this sandbox's Linux file mount intermittently
 truncates large files *on read* (a mount cache artifact). The canonical files are
 correct. If a `python` run fails with an unterminated-string/`NameError` on a

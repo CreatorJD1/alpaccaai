@@ -1,0 +1,14 @@
+# Minimal install -- everything the server needs to run, nothing that compiles.
+#   pip install -r requirements-core.txt
+#
+# Deliberately plain `uvicorn` (not uvicorn[standard]) + explicit `websockets`:
+# the [standard] extra pulls watchfiles/httptools, which need a Rust/C toolchain
+# and hang or fail to build on newer Python. We don't need them. `websockets`
+# covers the /ws chat endpoint that plain uvicorn otherwise omits.
+fastapi>=0.110
+uvicorn>=0.29
+websockets>=12.0
+ollama>=0.3.0
+
+# Windows-only window-title sense; she falls back automatically without it.
+pywin32>=306; platform_system == "Windows"

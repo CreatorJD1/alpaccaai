@@ -91,9 +91,15 @@ def load_manifest(rig_dir: Path = RIG_DIR) -> Optional[dict]:
 
 
 def save_manifest(layers: list[dict], size: list[int],
-                  rig_dir: Path = RIG_DIR) -> dict:
+                  rig_dir: Path = RIG_DIR, anchors: Optional[dict] = None) -> dict:
     """Write rig.json. `layers` is a list of {file, role}; we sort by role z and
-    fill defaults so the renderer has everything it needs."""
+    fill defaults so the renderer has everything it needs.
+
+    `anchors` is her pose skeleton's normalized anchors (alpecca/pose.py:
+    head_center/neck/hip_center in 0..1). When present, the head pivot becomes her
+    *real* neck in pixels instead of a guess, and the anchors ride along in the
+    manifest so the renderer can tilt her head and lean her body around her actual
+    joints. Backwards compatible: with no anchors we keep the old 0.32 estimate."""
     rig_dir.mkdir(parents=True, exist_ok=True)
     clean = []
     for lyr in layers:
@@ -102,8 +108,15 @@ def save_manifest(layers: list[dict], size: list[int],
             role = "body"
         clean.append({"file": lyr["file"], "role": role, "z": ROLE_Z[role]})
     clean.sort(key=lambda l: l["z"])
-    manifest = {"size": size, "layers": clean,
-                "head_pivot": [size[0] / 2, size[1] * 0.32]}
+    # Head pivot: her real neck (or head center) when the skeleton gives one,
+    # else the historical estimate so nothing regresses without a skeleton.
+    pivot = [size[0] / 2, size[1] * 0.32]
+    neck = (anchors or {}).get("neck") or (anchors or {}).get("head_center")
+    if neck and neck.get("x") is not None:
+        pivot = [round(neck["x"] * size[0], 1), round(neck["y"] * size[1], 1)]
+    manifest = {"size": size, "layers": clean, "head_pivot": pivot}
+    if anchors:
+        manifest["anchors"] = anchors          # normalized, for grounded motion
     manifest_path(rig_dir).write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     return manifest

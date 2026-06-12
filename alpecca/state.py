@@ -68,6 +68,37 @@ def init_db(db_path: Path = DB_PATH) -> None:
                 tokens      TEXT NOT NULL,
                 embedding   TEXT
             );
+
+            -- Her self-set goals: wants she forms from real internals and acts
+            -- on. See alpecca/desires.py. `origin` always points at the real
+            -- memory/musing/signal that produced the desire -- grounding.
+            CREATE TABLE IF NOT EXISTS desires (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts           REAL NOT NULL,
+                kind         TEXT NOT NULL,
+                text         TEXT NOT NULL,
+                strength     REAL NOT NULL,
+                origin       TEXT,
+                status       TEXT NOT NULL DEFAULT 'open',
+                last_touched REAL NOT NULL
+            );
+
+            -- Her bounded recursive self-improvement log: every nudge she makes
+            -- to one of her own tunable parameters, with the outcome it was
+            -- judged against. See alpecca/selfmod.py. Fully auditable, fully
+            -- reversible -- nothing she changes about herself is hidden.
+            CREATE TABLE IF NOT EXISTS self_revisions (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts              REAL NOT NULL,
+                param           TEXT NOT NULL,
+                old_value       REAL NOT NULL,
+                new_value       REAL NOT NULL,
+                reason          TEXT,
+                outcome_before  REAL,
+                outcome_after   REAL,
+                kept            INTEGER NOT NULL DEFAULT 0,
+                status          TEXT NOT NULL DEFAULT 'trial'
+            );
             """
         )
         # Lightweight migrations: older databases won't have these columns.
@@ -79,21 +110,35 @@ def init_db(db_path: Path = DB_PATH) -> None:
             conn.execute("ALTER TABLE state ADD COLUMN appearance_seed INTEGER")
         if "energy" not in state_cols:
             conn.execute("ALTER TABLE state ADD COLUMN energy REAL")
+        # Two newer feelings (curiosity, social_hunger) and where she is in her
+        # home (location). All default in for databases that predate them.
+        if "curiosity" not in state_cols:
+            conn.execute("ALTER TABLE state ADD COLUMN curiosity REAL")
+        if "social_hunger" not in state_cols:
+            conn.execute("ALTER TABLE state ADD COLUMN social_hunger REAL")
+        if "location" not in state_cols:
+            conn.execute("ALTER TABLE state ADD COLUMN location TEXT")
 
 
 def load_state(db_path: Path = DB_PATH) -> EmotionalState:
-    """Return the persisted mood, or a fresh baseline on first ever run."""
+    """Return the persisted mood, or a fresh baseline on first ever run.
+
+    energy, curiosity and social_hunger are newer columns; older rows store NULL,
+    so each falls back to its dataclass default rather than crashing. We build the
+    state from a dict of just the non-NULL feelings, letting EmotionalState fill
+    the rest -- the same append-only safety the dataclass itself relies on."""
     with _connect(db_path) as conn:
         row = conn.execute(
-            "SELECT love, compassion, fear, energy FROM state WHERE id = 1"
+            "SELECT love, compassion, fear, energy, curiosity, social_hunger "
+            "FROM state WHERE id = 1"
         ).fetchone()
     if row is None:
         return EmotionalState()
-    # energy is a newer column; older rows have NULL -> fall back to baseline.
-    energy = row["energy"]
-    if energy is None:
-        return EmotionalState(row["love"], row["compassion"], row["fear"])
-    return EmotionalState(row["love"], row["compassion"], row["fear"], energy)
+    fields = {"love": row["love"], "compassion": row["compassion"], "fear": row["fear"]}
+    for newer in ("energy", "curiosity", "social_hunger"):
+        if row[newer] is not None:
+            fields[newer] = row[newer]
+    return EmotionalState(**fields)
 
 
 def save_state(state: EmotionalState, trigger: str = "", db_path: Path = DB_PATH) -> None:
@@ -104,16 +149,20 @@ def save_state(state: EmotionalState, trigger: str = "", db_path: Path = DB_PATH
     with _connect(db_path) as conn:
         conn.execute(
             """
-            INSERT INTO state (id, love, compassion, fear, energy, updated_at)
-            VALUES (1, ?, ?, ?, ?, ?)
+            INSERT INTO state (id, love, compassion, fear, energy,
+                               curiosity, social_hunger, updated_at)
+            VALUES (1, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 love=excluded.love,
                 compassion=excluded.compassion,
                 fear=excluded.fear,
                 energy=excluded.energy,
+                curiosity=excluded.curiosity,
+                social_hunger=excluded.social_hunger,
                 updated_at=excluded.updated_at
             """,
-            (state.love, state.compassion, state.fear, state.energy, now),
+            (state.love, state.compassion, state.fear, state.energy,
+             state.curiosity, state.social_hunger, now),
         )
         conn.execute(
             "INSERT INTO state_log (ts, love, compassion, fear, trigger) VALUES (?, ?, ?, ?, ?)",
@@ -144,6 +193,30 @@ def save_appearance_seed(seed: int, db_path: Path = DB_PATH) -> None:
             "VALUES (1, ?, ?, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET appearance_seed = excluded.appearance_seed",
             (default.love, default.compassion, default.fear, time.time(), seed),
+        )
+
+
+def load_location(db_path: Path = DB_PATH) -> str | None:
+    """Which room of her home she's currently in, or None if she's never moved
+    yet (the caller picks a default). Part of her persisted state so she's in the
+    same room when she wakes that she was in when you left."""
+    with _connect(db_path) as conn:
+        row = conn.execute("SELECT location FROM state WHERE id = 1").fetchone()
+    if row is None or row["location"] is None:
+        return None
+    return str(row["location"])
+
+
+def save_location(location: str, db_path: Path = DB_PATH) -> None:
+    """Persist the room she's moved to. Upsert so it works on first run before any
+    mood has been written."""
+    default = EmotionalState()
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO state (id, love, compassion, fear, updated_at, location) "
+            "VALUES (1, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET location = excluded.location",
+            (default.love, default.compassion, default.fear, time.time(), location),
         )
 
 

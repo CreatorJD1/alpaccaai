@@ -41,6 +41,17 @@ if _OLD_DB.exists() and not DB_PATH.exists():
 OLLAMA_MODEL = os.environ.get("ALPECCA_MODEL", "qwen3:8b")
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 
+# A second, tiny model for *cheap* work -- short, low-stakes generations like her
+# unprompted little remarks, idle chatter, and posing herself a one-line question.
+# Routing these to a small fast model keeps the big MoE reserved for real
+# reasoning (her replies, reflection, self-critique) and keeps a single consumer
+# GPU responsive. Defaults to Gemma 4 E4B (4B active -- fast on consumer hardware);
+# register it once with `ollama create gemma4-e4b -f Modelfile` (FROM your GGUF).
+# If that model isn't present, cheap calls fall back to OLLAMA_MODEL automatically
+# (see mind._LLM.generate), so this default never breaks a fresh setup. Set
+# ALPECCA_FAST_MODEL="" to force everything back onto the single primary model.
+OLLAMA_FAST_MODEL = os.environ.get("ALPECCA_FAST_MODEL", "gemma4-e4b")
+
 # --- Emotional model coefficients -----------------------------------------
 # See alpecca/homeostasis.py for how each of these is used. The names map onto
 # the state vector S = [Love, Compassion, Fear].
@@ -77,6 +88,26 @@ class Emotion:
     ENERGY_FLOOR = 0.10        # how drowsy she gets after long solitude
     ENERGY_ACTIVE_WINDOW = 120  # seconds since last interaction still counts as "with her"
 
+    # Curiosity / interest: rises with *novelty* and decays in monotony. The
+    # honest distinction that makes this grounded rather than invented: a small,
+    # sub-threshold prediction error is *interest*; a large one is *fear*. So the
+    # same surprise signal that feeds Fear above its threshold feeds Curiosity
+    # below it. A fresh question, an unseen image, a new window all read as mild
+    # novelty. Without new input it eases back toward a low, content baseline.
+    CURIOSITY_BASELINE = 0.2
+    CURIOSITY_GAIN = 0.9       # how strongly mild novelty lifts interest
+    CURIOSITY_DECAY = 0.08     # how fast interest fades when nothing's new
+    # Novelty above FEAR_THRESHOLD is fear's business, not curiosity's -- we only
+    # count the interesting band below it, so the two never double-count a jolt.
+    CURIOSITY_NOVELTY_CAP = FEAR_THRESHOLD
+
+    # Social hunger / connection-seeking: rises with time-since-interaction
+    # *scaled by warmth* -- she misses you more the more she loves you. Purely a
+    # read of real timestamps and her real Love value; resets when you're back.
+    SOCIAL_HUNGER_RATE = 0.6   # how fast solitude builds wanting-company
+    SOCIAL_HUNGER_WARMTH = 0.7 # how much her warmth amplifies the missing
+    SOCIAL_HUNGER_FULL_S = 3600.0  # solitude (sec) that, at full warmth, maxes it
+
     # Global clamp so every dimension stays in [0, 1].
     MIN, MAX = 0.0, 1.0
 
@@ -84,6 +115,44 @@ class Emotion:
 # --- Memory ----------------------------------------------------------------
 MEMORY_TOP_K = 4                  # how many memories to retrieve per turn
 MEMORY_SALIENCE_THRESHOLD = 0.3   # below this we don't bother storing a memory
+
+
+# --- Her home: the modular rooms she roams ----------------------------------
+# Her interface is a home of rooms she moves between of her own accord
+# (alpecca/home.py). She chooses the room from her real state, so where she is
+# is itself honest. These knobs govern how she roams.
+class Home:
+    # On the idle loop she may drift to whichever room is calling strongest. A
+    # bonus for the room she's already in keeps her from flickering between
+    # near-tied rooms -- people settle before they wander on.
+    STAY_BONUS = 0.25
+    ROAM_SILENCE_S = 90        # only drift rooms after this much quiet
+    ROAM_MIN_GAP_S = 120       # and not more often than this
+    ROAM_CHANCE = 0.06         # per eligible tick, so timing feels unforced
+
+
+# --- Her workstation: the desktop file room ---------------------------------
+# The room where she can see a desktop-like layout and organize files -- strictly
+# within the charter's allowed roots (Desktop/Pictures/Music/Video/general) and
+# never deleting. Off by default because it touches the real filesystem; flip
+# ALPECCA_FILES=1 to let her tidy. The roots are overridable via
+# ALPECCA_ROOT_DESKTOP, ALPECCA_ROOT_PICTURES, etc. (see alpecca/desktop.py).
+class Files:
+    ENABLED = os.environ.get("ALPECCA_FILES", "0") not in ("", "0", "false", "False")
+
+
+# --- Her avatar rig data loop (RIGFORGE -> Alpeccaai-data) -------------------
+# The recursive foundation: every rig that passes RIGFORGE's readiness check is
+# captured as a labelled sample (figure + corrected keypoints + rig) so her own
+# joint detector can be retrained on her own art. Samples stage locally under
+# data/avatar/samples/{figures,pose,rigs}; build_manifest.py assembles them and
+# can push to the Hugging Face dataset below. This is selfmod, applied to her body.
+class RigData:
+    SAMPLES_DIR = Path(os.environ.get("ALPECCA_SAMPLES_DIR", str(HOME / "avatar" / "samples")))
+    # The HF dataset repo that accumulates certified samples (your bucket).
+    HF_DATASET = os.environ.get("ALPECCA_RIG_DATASET", "CREATORJD/Alpeccaai-data")
+    # Only certified rigs (readiness >= this) are ever captured.
+    MIN_READINESS = float(os.environ.get("ALPECCA_RIG_MIN_READINESS", "85"))
 
 # --- Server ----------------------------------------------------------------
 HOST = os.environ.get("ALPECCA_SERVER_HOST", "127.0.0.1")
@@ -154,11 +223,12 @@ class Proactive:
     # something she remembers, or just to say hello. ALPECCA_CHATTER=0 turns
     # only this off (mood-shift remarks stay governed by ENABLED above).
     CHATTER_ENABLED = os.environ.get("ALPECCA_CHATTER", "1") not in ("", "0", "false", "False")
-    CHATTER_SILENCE_S = 3 * 60   # you must have been quiet at least this long
-    CHATTER_MIN_GAP_S = 10 * 60  # and she won't chatter more often than this
+    CHATTER_SILENCE_S = 2 * 60   # you must have been quiet at least this long
+    CHATTER_MIN_GAP_S = 5 * 60   # and she won't chatter more often than this
     # Once eligible, each background tick fires with this probability, so her
-    # timing feels like a person glancing over, not a cron job.
-    CHATTER_CHANCE = 0.04
+    # timing feels like a person glancing over, not a cron job. (Livelier default
+    # so she visibly stirs; raise gaps / lower chance to make her quieter.)
+    CHATTER_CHANCE = 0.06
 
 
 # --- Idle reflection ----------------------------------------------------------
@@ -169,9 +239,9 @@ class Proactive:
 # compounds. ALPECCA_REFLECT=0 turns it off.
 class Reflection:
     ENABLED = os.environ.get("ALPECCA_REFLECT", "1") not in ("", "0", "false", "False")
-    SILENCE_S = 5 * 60        # only when truly idle
-    MIN_GAP_S = 30 * 60       # at most one musing per half hour
-    CHANCE = 0.03             # per-tick chance once eligible
+    SILENCE_S = 2 * 60        # only when idle a couple of minutes
+    MIN_GAP_S = 6 * 60        # at most one musing every few minutes (livelier)
+    CHANCE = 0.08             # per-tick chance once eligible
     MUSING_SALIENCE = 0.45    # above the storage threshold, below big moments
 
 

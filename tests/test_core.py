@@ -1006,6 +1006,391 @@ def test_hearing_returns_none_on_empty_or_when_latched_off():
         hearing._ready, hearing._model = old_ready, old_model
 
 
+# --- Richer emotion model: curiosity + social_hunger --------------------------
+
+def test_curiosity_rises_on_mild_novelty_and_decays_in_monotony():
+    from config import Emotion
+    s = EmotionalState(curiosity=0.2)
+    # Mild novelty (below the fear threshold) lifts interest.
+    up = s.update_curiosity(Emotion.CURIOSITY_NOVELTY_CAP)
+    assert up.curiosity > s.curiosity
+    # A big jolt is fear's business: curiosity only counts the interesting band,
+    # so it never lifts curiosity more than a cap-sized nudge would.
+    capped = s.update_curiosity(1.0)
+    assert abs(capped.curiosity - up.curiosity) < 1e-9
+    # No novelty eases it back toward baseline.
+    high = EmotionalState(curiosity=0.9)
+    assert high.update_curiosity(0.0).curiosity < 0.9
+
+def test_curiosity_update_preserves_other_dims():
+    s = EmotionalState(love=0.7, compassion=0.6, fear=0.1, energy=0.8, social_hunger=0.5)
+    out = s.update_curiosity(0.2)
+    assert (out.love, out.compassion, out.fear, out.energy, out.social_hunger) == \
+           (0.7, 0.6, 0.1, 0.8, 0.5)
+
+def test_social_hunger_grows_with_warm_solitude_and_empties_on_return():
+    from config import Emotion
+    warm = EmotionalState(love=0.9)
+    cool = EmotionalState(love=0.1)
+    solitude = Emotion.SOCIAL_HUNGER_FULL_S
+    # She misses you more the more she loves you.
+    assert warm.update_social_hunger(solitude).social_hunger > \
+           cool.update_social_hunger(solitude).social_hunger
+    # A fresh exchange (no solitude) empties it.
+    assert warm.update_social_hunger(0.0).social_hunger == 0.0
+
+def test_state_with_carries_every_dimension_through():
+    s = EmotionalState(love=0.3, compassion=0.4, fear=0.5, energy=0.6,
+                       curiosity=0.7, social_hunger=0.8)
+    out = s._with(fear=0.0)
+    assert out.fear == 0.0
+    # everything else untouched
+    assert (out.love, out.compassion, out.energy, out.curiosity, out.social_hunger) == \
+           (0.3, 0.4, 0.6, 0.7, 0.8)
+
+def test_new_dims_persist_round_trip():
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "t.db"
+        state_store.init_db(db)
+        s = EmotionalState(love=0.5, compassion=0.3, fear=0.1, energy=0.7,
+                           curiosity=0.66, social_hunger=0.44)
+        state_store.save_state(s, trigger="t", db_path=db)
+        back = state_store.load_state(db)
+        assert abs(back.curiosity - 0.66) < 1e-6
+        assert abs(back.social_hunger - 0.44) < 1e-6
+
+
+# --- Affect: the expressive readout -------------------------------------------
+
+def test_affect_is_grounded_and_names_a_feeling():
+    from alpecca import affect
+    joyful = affect.affect(EmotionalState(love=0.9, energy=0.85))
+    assert joyful.primary in ("joyful", "affectionate", "playful")
+    assert joyful.valence > 0 and joyful.arousal > 0.5
+    anxious = affect.affect(EmotionalState(fear=0.9))
+    assert anxious.primary == "anxious"
+    assert anxious.valence < 0
+    assert anxious.gesture == "fidget"
+
+def test_affect_curiosity_and_social_hunger_show():
+    from alpecca import affect
+    curious = affect.affect(EmotionalState(love=0.5, curiosity=0.9, energy=0.6))
+    assert curious.primary == "curious"
+    assert curious.gesture == "tilt"
+    assert curious.eye > 0.5                      # eyes brighten with curiosity
+    note = affect.expressive_note(EmotionalState(curiosity=0.9))
+    assert "curious" in note.lower()
+
+def test_affect_tempo_tracks_arousal():
+    from alpecca import affect
+    assert affect.affect(EmotionalState(love=0.4, energy=0.05)).tempo == "slow"
+    assert affect.affect(EmotionalState(love=0.6, energy=0.95, curiosity=0.8)).tempo == "quick"
+
+
+# --- Home: the modular rooms she roams ----------------------------------------
+
+def test_home_registry_has_stable_room_ids():
+    from alpecca import home
+    ids = [r["id"] for r in home.registry()]
+    assert ids == ["parlor", "studio", "library", "observatory", "workshop",
+                   "workstation"]
+    assert home.room("studio").backed_by == "studio.py"
+    assert home.room("nope") is None
+
+def test_choose_room_is_grounded_in_state():
+    from alpecca import home
+    # Wanting company pulls her to the Parlor.
+    lonely = EmotionalState(love=0.8, social_hunger=0.9)
+    assert home.choose_room(lonely, current="studio") == "parlor"
+    # Curiosity pulls her toward the Studio.
+    curious = EmotionalState(love=0.7, curiosity=0.95, social_hunger=0.0, fear=0.0)
+    assert home.choose_room(curious, current="parlor") in ("studio", "library")
+    # An open growth desire pulls her to the Workshop.
+    settled = EmotionalState(love=0.5, curiosity=0.5, fear=0.0, social_hunger=0.0)
+    assert home.choose_room(settled, current="workshop",
+                            desires_summary={"growth_strength": 0.9, "open": 2}) == "workshop"
+
+def test_stay_bonus_prevents_flicker():
+    from alpecca import home
+    # A near-neutral state shouldn't yank her out of where she already is.
+    neutral = EmotionalState(love=0.5, curiosity=0.3, fear=0.0, social_hunger=0.0)
+    here = home.choose_room(neutral, current="library")
+    assert here == "library"
+
+def test_why_here_is_first_person_and_grounded():
+    from alpecca import home
+    s = EmotionalState(love=0.8, social_hunger=0.9)
+    assert "near you" in home.why_here(s, "parlor").lower()
+
+
+# --- Desires: wants she forms and acts on -------------------------------------
+
+def test_desire_lifecycle():
+    from alpecca import desires
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "t.db"
+        state_store.init_db(db)
+        did = desires.form("I want to understand that orange circle", "curiosity",
+                           0.7, origin="a memory", db_path=db)
+        assert desires.strongest(db_path=db)["id"] == did
+        assert desires.summary(db_path=db)["open"] == 1
+        desires.advance(did, db_path=db)
+        assert desires.open_desires(db_path=db)[0]["status"] == "pursuing"
+        desires.satisfy(did, db_path=db)
+        assert desires.strongest(db_path=db) is None      # no longer live
+
+def test_desire_forms_from_real_state_with_origin():
+    from alpecca import desires
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "t.db"
+        state_store.init_db(db)
+        # High social hunger should crystallize a connection desire.
+        s = EmotionalState(love=0.8, social_hunger=0.9)
+        formed = desires.form_from_state(s, db_path=db)
+        assert formed and formed["kind"] == "connection"
+        assert "social-hunger" in formed["origin"]
+        # It won't form a near-duplicate of the same want immediately after.
+        assert desires.form_from_state(s, db_path=db) is None
+
+def test_desire_summary_tracks_growth_pull():
+    from alpecca import desires
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "t.db"
+        state_store.init_db(db)
+        desires.form("get better at myself", "growth", 0.8, "calm+curious", db_path=db)
+        assert desires.summary(db_path=db)["growth_strength"] == 0.8
+
+
+# --- Self-improvement: bounded, logged, reversible ----------------------------
+
+def test_selfmod_effective_defaults_then_reflects_kept_change():
+    from alpecca import selfmod
+    from config import Proactive
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "t.db"
+        state_store.init_db(db)
+        # Untouched -> config default.
+        assert selfmod.effective("chatter_chance", db) == Proactive.CHATTER_CHANCE
+        # Propose a nudge, then keep it (outcome improved).
+        trial = selfmod.propose("chatter_chance", +1, "try livelier", 0.5, db)
+        assert trial is not None
+        assert selfmod.effective("chatter_chance", db) == trial["new_value"]  # trial active
+        resolved = selfmod.evaluate(0.7, db)     # improved -> kept
+        assert resolved["kept"] == 1
+        assert selfmod.effective("chatter_chance", db) == trial["new_value"]
+
+def test_selfmod_reverts_when_outcome_worsens():
+    from alpecca import selfmod
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "t.db"
+        state_store.init_db(db)
+        before = selfmod.effective("curiosity_gain", db)
+        trial = selfmod.propose("curiosity_gain", +1, "experiment", 0.6, db)
+        selfmod.evaluate(0.4, db)                 # worsened -> reverted
+        assert selfmod.effective("curiosity_gain", db) == before   # back to start
+
+def test_selfmod_stays_within_bounds():
+    from alpecca import selfmod
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "t.db"
+        state_store.init_db(db)
+        lo, hi, _, _ = selfmod.TUNABLES["reflect_chance"]
+        # Drive it upward repeatedly; it must never exceed the safe ceiling.
+        for _ in range(20):
+            t = selfmod.propose("reflect_chance", +1, "push up", 0.5, db)
+            if t is None:
+                break
+            selfmod.evaluate(0.9, db)             # keep each
+        assert lo <= selfmod.effective("reflect_chance", db) <= hi
+
+def test_selfmod_one_trial_at_a_time():
+    from alpecca import selfmod
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "t.db"
+        state_store.init_db(db)
+        first = selfmod.propose("chatter_chance", +1, "a", 0.5, db)
+        second = selfmod.propose("curiosity_gain", +1, "b", 0.5, db)
+        assert first is not None and second is None   # one experiment at a time
+
+
+# --- Soul: master agent over seven subagents, Good Person Principle -----------
+
+def test_soul_has_seven_subagents_in_four_categories():
+    from alpecca import soul
+    assert len(soul.SUBAGENTS) == 7
+    assert soul.CATEGORIES == ("emotions", "actions", "self_care", "compassion")
+
+def test_soul_acute_fear_is_welfare_focus():
+    from alpecca import soul
+    plan = soul.soul.deliberate(soul.snapshot(EmotionalState(fear=0.8)))
+    assert plan["focus"]["rank"] == 1            # minimize-suffering wins
+    assert "Good Person Principle" in plan["principle"]
+
+def test_soul_worn_person_brings_carer_to_focus():
+    from alpecca import soul
+    plan = soul.soul.deliberate(
+        soul.snapshot(EmotionalState(compassion=0.7), person_fatigue=0.8))
+    assert plan["focus"]["subagent"] == "Carer"
+    assert plan["focus"]["category"] == "compassion"
+
+def test_soul_focus_is_a_deed_not_a_mood_unless_acute():
+    from alpecca import soul
+    # Wanting company (an action) should take focus over ambient expression.
+    plan = soul.soul.deliberate(
+        soul.snapshot(EmotionalState(love=0.8, social_hunger=0.8), solitude_s=400))
+    assert plan["focus"]["category"] == "actions"
+    # Expressor still appears in the slate as texture, just not as the focus.
+    assert any(i["subagent"] == "Expressor" for i in plan["slate"])
+    assert plan["focus"]["subagent"] != "Expressor"
+
+def test_soul_slate_ordered_by_directive_rank():
+    from alpecca import soul
+    plan = soul.soul.deliberate(
+        soul.snapshot(EmotionalState(love=0.5, curiosity=0.7, fear=0.0), solitude_s=600))
+    ranks = [i["rank"] for i in plan["slate"]]
+    assert ranks == sorted(ranks)
+    assert any(i["category"] == "self_care" for i in plan["slate"])
+
+
+# --- Multi-agent split: deterministic sensors vs LLM reasoners ----------------
+
+def test_soul_subagents_are_split_by_kind():
+    from alpecca import soul
+    assert len(soul.SUBAGENT_SPECS) == 7
+    assert set(soul.SENSE_AGENTS) == {"Feeler", "Expressor", "Carer"}
+    assert set(soul.REASON_AGENTS) == {"Doer", "Wanderer", "Reflector", "Improver"}
+    # Sensors must never be model-backed (that would let them confabulate feeling).
+    for name in soul.SENSE_AGENTS:
+        assert soul.spec_for(name).kind == "sense"
+    # Reasoners declare which model tier serves them.
+    assert soul.spec_for("Doer").tier == "fast"
+    assert soul.spec_for("Reflector").tier == "reason"
+
+def test_soul_deliberate_reports_agent_makeup():
+    from alpecca import soul
+    plan = soul.soul.deliberate(soul.snapshot(EmotionalState(fear=0.8)))
+    assert plan["agents"]["Feeler"]["kind"] == "sense"
+    assert plan["agents"]["Reflector"]["kind"] == "reason"
+
+
+# --- Voice markup: prosody from the same grounded affect ----------------------
+
+def test_voice_markup_tracks_affect():
+    from alpecca import affect
+    sleepy = affect.voice_markup(EmotionalState(love=0.4, energy=0.05))
+    lively = affect.voice_markup(EmotionalState(love=0.8, energy=0.95, curiosity=0.8))
+    assert sleepy["rate_pct"] < lively["rate_pct"]      # drowsy speaks slower
+    assert "{text}" in sleepy["ssml_template"]          # caller substitutes text
+    assert "prosody" in lively["ssml_template"]
+
+
+# --- Workstation file-room guards (charter-enforced) --------------------------
+
+def test_desktop_room_added_and_guarded():
+    from alpecca import home
+    assert "workstation" in [r["id"] for r in home.registry()]
+
+def test_desktop_guards_block_unsafe_ops():
+    from alpecca import desktop, charter
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        base = Path(d)
+        roots = {"desktop": base / "Desktop", "pictures": base / "Pictures",
+                 "music": base / "Music", "video": base / "Videos",
+                 "general": base / "Documents"}
+        for p in roots.values():
+            p.mkdir()
+        (roots["pictures"] / "cat.png").write_bytes(b"x")
+        (roots["desktop"] / "note.txt").write_bytes(b"y")
+        assert desktop.list_room("pictures", roots=roots)["ok"]
+        assert desktop.list_room("system32", roots=roots)["ok"] is False   # off-list
+        assert desktop.list_room("pictures", "../../", roots=roots)["ok"] is False  # traversal
+        assert desktop.move("desktop", "note.txt", "general", roots=roots)["ok"]
+        assert (roots["general"] / "note.txt").exists()
+        # No delete capability exists at all, and the guard refuses it.
+        assert not hasattr(desktop, "delete") and not hasattr(desktop, "remove")
+        assert charter.file_action_allowed("delete", "desktop")[0] is False
+        assert charter.file_action_allowed("move", "system32")[0] is False
+
+
+# --- Pose skeleton: grounding the avatar in her real figure -------------------
+
+def test_pose_parse_normalizes_and_derives_anchors():
+    from alpecca import pose
+    data = {
+        "format": "coco17", "canvas_width": 1000, "canvas_height": 1000,
+        "keypoints": [
+            [500, 100, 0.9],   # nose
+            [520, 90, 0.9], [480, 90, 0.9],     # eyes (level)
+            [540, 95, 0.8], [460, 95, 0.8],     # ears
+            [600, 200, 0.8], [400, 200, 0.8],   # shoulders
+            [650, 300, 0.7], [350, 300, 0.7],   # elbows
+            [680, 400, 0.6], [320, 400, 0.6],   # wrists
+            [560, 450, 0.8], [440, 450, 0.8],   # hips
+            [560, 650, 0.8], [440, 650, 0.8],   # knees
+            [560, 850, 0.8], [440, 850, 0.8],   # ankles
+        ],
+    }
+    sk = pose.parse(data)
+    assert sk["n_joints"] == 17
+    assert abs(sk["joints"]["nose"]["x"] - 0.5) < 1e-6      # normalized to canvas
+    # Neck is the shoulder midpoint, below the head center; hip below that.
+    assert sk["anchors"]["neck"]["y"] > sk["anchors"]["head_center"]["y"]
+    assert sk["anchors"]["hip_center"]["y"] > sk["anchors"]["neck"]["y"]
+    assert abs(sk["metrics"]["head_tilt_deg"]) < 2          # eyes level -> ~0
+    assert sk["metrics"]["shoulder_width"] > 0
+    assert sk["metrics"]["height"] > 0.3
+
+def test_pose_skips_low_confidence_joints():
+    from alpecca import pose
+    data = {"canvas_width": 100, "canvas_height": 100,
+            "keypoints": [[50, 50, 0.9]] + [[0, 0, 0.0]] * 16}
+    sk = pose.parse(data)
+    assert sk["n_joints"] == 1                              # only the confident one
+    assert "nose" in sk["joints"]
+
+
+# --- Self-training: lessons she draws from her own history --------------------
+
+def test_learning_growth_lesson_steers_self_tuning():
+    from alpecca import learning
+    a = learning.analyze([0.40, 0.41, 0.43, 0.46, 0.50, 0.54],
+                         [{"status": "kept"}, {"status": "kept"}], 0.1, 12)
+    assert a["warmth_trend"] > 0
+    l = learning.derive(a)
+    assert l and l["kind"] == "growth" and l["suggestion"] == "curiosity_gain:+1"
+    assert "warmth" in l["evidence"]               # cites the real numbers
+
+def test_learning_flags_instability():
+    from alpecca import learning
+    # Hard swings 0..1 -> high variance -> low stability -> a steadying lesson.
+    swingy = [0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0]
+    l = learning.derive(learning.analyze(swingy, [], 0.1, 5))
+    assert l and l["kind"] == "stability"
+
+def test_learning_connection_lesson_when_warmth_slips():
+    from alpecca import learning
+    l = learning.derive(learning.analyze([0.6, 0.58, 0.55, 0.5, 0.46, 0.42], [], 0.6, 5))
+    assert l and l["kind"] == "connection" and l["suggestion"] == "chatter_chance:+1"
+
+def test_learning_invents_nothing_on_flat_history():
+    from alpecca import learning
+    l = learning.derive(learning.analyze([0.5] * 8, [], 0.1, 0))
+    # With no memory and a flat line it draws no lesson (contentment needs memory).
+    assert l is None
+
+def test_learning_lifecycle_persists():
+    from alpecca import learning
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "t.db"
+        lid = learning.record({"kind": "growth", "text": "I keep getting steadier",
+                               "evidence": "warmth 0.5", "suggestion": "curiosity_gain:+1",
+                               "confidence": 0.7}, db_path=db)
+        assert lid > 0 and learning.count(db) == 1
+        assert learning.recent(db_path=db)[0]["kind"] == "growth"
+
+
 if __name__ == "__main__":
     import traceback
     passed = failed = 0

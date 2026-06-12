@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live2D Auto-Rigger</title>
+<style>
+  :root{
+    --bg:#0f1216; --panel:#171b22; --panel2:#1d222b; --line:#2a313c;
+    --text:#e6e9ef; --dim:#9aa4b2; --accent:#5b8cff; --accent2:#36d399;
+    --warn:#f7a23b; --bad:#f06a6a; --chip:#222a36;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text)}
+  header{display:flex;align-items:center;gap:14px;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--panel)}
+  header h1{font-size:17px;margin:0;font-weight:650;letter-spacing:.2px}
+  header .tag{font-size:11px;color:var(--dim);border:1px solid var(--line);padding:2px 8px;border-radius:20px}
+  header .spacer{flex:1}
+  button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--panel2);color:var(--text);
+    padding:8px 14px;border-radius:8px;transition:.15s}
+  button:hover{border-color:var(--accent);color:#fff}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  button.primary:hover{filter:brightness(1.1)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  .wrap{display:flex;gap:0;height:calc(100vh - 57px)}
+  .left{width:520px;min-width:380px;border-right:1px solid var(--line);display:flex;flex-direction:column;background:var(--panel)}
+  .right{flex:1;display:flex;flex-direction:column;overflow:hidden}
+  #drop{margin:18px;border:2px dashed var(--line);border-radius:14px;flex:1;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;text-align:center;color:var(--dim);transition:.15s;padding:30px}
+  #drop.hover{border-color:var(--accent);background:#141a24;color:var(--text)}
+  #drop h2{margin:.2em 0;font-size:18px;color:var(--text)}
+  #drop .big{font-size:40px;opacity:.6}
+  .preview-box{flex:1;display:flex;align-items:center;justify-content:center;background:
+    repeating-conic-gradient(#1a1f27 0% 25%,#151a21 0% 50%) 50% / 22px 22px;overflow:auto;position:relative}
+  #preview{box-shadow:0 6px 30px #0008;border-radius:4px}
+  .pv-meta{padding:8px 18px;border-top:1px solid var(--line);color:var(--dim);font-size:12px;display:flex;gap:16px;flex-wrap:wrap;background:var(--panel)}
+  .pv-meta b{color:var(--text);font-weight:600}
+  .toolbar{display:flex;gap:8px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+  .toolbar .spacer{flex:1}
+  .switch{display:flex;align-items:center;gap:7px;color:var(--dim);font-size:13px;user-select:none}
+  .switch input{width:16px;height:16px;accent-color:var(--accent)}
+  .list{flex:1;overflow:auto;padding:8px 12px 60px}
+  .folder{margin:14px 0 4px;display:flex;align-items:center;gap:8px;color:var(--accent2);font-weight:600;font-size:12px;
+    text-transform:uppercase;letter-spacing:.7px}
+  .folder .ln{flex:1;height:1px;background:var(--line)}
+  .row{display:grid;grid-template-columns:46px 1fr 150px 78px;gap:10px;align-items:center;padding:7px 8px;border-radius:9px;
+    border:1px solid transparent}
+  .row:hover{background:var(--panel2)}
+  .row.sel{background:#16202f;border-color:var(--accent)}
+  .row.low .cat{border-color:var(--warn)}
+  .thumb{width:46px;height:46px;border-radius:7px;background:#0c0f14;border:1px solid var(--line);
+    display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .thumb canvas{max-width:100%;max-height:100%}
+  .names{min-width:0}
+  .pn{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .on{font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .badge{font-size:10px;padding:1px 6px;border-radius:10px;margin-left:6px;vertical-align:middle}
+  .badge.edited{background:#1d3a5f;color:#9cc4ff}
+  .badge.low{background:#4a3413;color:#ffcf95}
+  select{font:inherit;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:6px 6px;width:100%}
+  select:focus{outline:none;border-color:var(--accent)}
+  .cat{font-size:12px}
+  .side{font-size:12px}
+  .log{position:fixed;bottom:0;right:0;left:520px;max-height:140px;overflow:auto;background:#0b0e12cc;backdrop-filter:blur(4px);
+    border-top:1px solid var(--line);font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;color:var(--dim);padding:8px 16px;display:none}
+  .log.show{display:block}
+  .log .err{color:var(--bad)}
+  .log .ok{color:var(--accent2)}
+  input[type=file]{display:none}
+  .hint{font-size:12px;color:var(--dim);max-width:340px}
+  .stat{display:flex;gap:5px;align-items:center}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--accent2)}
+  /* mode toggle */
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{border:0;border-radius:0;background:var(--panel2);padding:6px 14px}
+  .seg button.on{background:var(--accent);color:#fff;font-weight:600}
+  .seg button:disabled{opacity:.4}
+  /* pose panel */
+  .pose{flex:1;overflow:auto;padding:10px 14px 70px}
+  .pgrp{margin:10px 0 14px}
+  .ph{font-size:11px;letter-spacing:.7px;text-transform:uppercase;color:var(--accent2);font-weight:600;margin:0 0 8px}
+  .pgrid{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{padding:6px 12px;font-size:13px;border-radius:18px;background:var(--chip);border:1px solid var(--line)}
+  .chip:hover{border-color:var(--accent);color:#fff}
+  .prow{display:grid;grid-template-columns:64px 1fr 44px;gap:10px;align-items:center;margin:5px 0}
+  .pl{font-size:12px;color:var(--dim)}
+  .pv{font-size:12px;color:var(--text);text-align:right;font-variant-numeric:tabular-nums}
+  .prow input[type=range]{width:100%;accent-color:var(--accent)}
+  .pctl{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Live2D Auto-Rigger</h1>
+  <span class="tag">PSD → Cubism-ready rig</span>
+  <div class="spacer"></div>
+  <button id="loadBtn">Open PSD…</button>
+  <button class="primary" id="expPsd" disabled>Export rigged PSD</button>
+  <button id="expJson" disabled>Manifest .json</button>
+  <button id="expPlan" disabled>Rig plan .md</button>
+  <input type="file" id="file" accept=".psd">
+</header>
+
+<div class="wrap">
+  <div class="left">
+    <div id="drop">
+      <div class="big">🎴</div>
+      <h2>Drop a character PSD here</h2>
+      <div class="hint">Layers (or layer folders) are auto-classified into Live2D parts — hair, eyes,
+        brows, mouth, face, body & clothing — then re-stacked into a clean, Cubism-ready PSD with a full rig plan.</div>
+    </div>
+    <div class="preview-box" id="pvbox" style="display:none"><canvas id="preview"></canvas></div>
+    <div class="pv-meta" id="pvmeta" style="display:none"></div>
+  </div>
+
+  <div class="right">
+    <div class="toolbar">
+      <span class="seg"><button id="mParts" class="on" disabled>Parts</button><button id="mPose" disabled>Pose</button></span>
+      <span class="switch" id="reorderWrap"><input type="checkbox" id="reorder" checked><label for="reorder">Re-order to canonical draw order</label></span>
+      <div class="spacer"></div>
+      <span class="stat" id="stat" style="color:var(--dim)"></span>
+    </div>
+    <div class="list" id="list">
+      <div style="color:var(--dim);padding:40px;text-align:center">No PSD loaded yet.</div>
+    </div>
+    <div class="pose" id="pose" style="display:none"></div>
+  </div>
+</div>
+<div class="log" id="log"></div>
+
+<script src="ag-psd.bundle.js"></script>
+<script src="rigcore.js"></script>
+<script src="alpecca.profile.js"></script>
+<script src="skeleton.js"></script>
+<script src="pose.js"></script>
+<script>
+(function(){
+  "use strict";
+  var $ = function(s){return document.querySelector(s);};
+  var readPsd = agPsd.readPsd, writePsd = agPsd.writePsd;
+  var RC = window.RigCore;
+
+  var state = { fileName:null, canvasW:0, canvasH:0, layers:[], overrides:{}, result:null, selected:-1, reorder:true };
+
+  // bridge for pose.js
+  window.__rig = {
+    get layers(){return state.layers;}, get result(){return state.result;},
+    get canvasW(){return state.canvasW;}, get canvasH(){return state.canvasH;},
+    get fileName(){return state.fileName;}, requestRender:function(){ renderPreview(); }
+  };
+
+  /* ---------- Parts / Pose mode ---------- */
+  function setMode(pose){
+    if(window.PoseUI) PoseUI.setActive(pose);
+    $('#mParts').classList.toggle('on', !pose);
+    $('#mPose').classList.toggle('on', pose);
+    $('#list').style.display = pose ? 'none':'block';
+    $('#pose').style.display = pose ? 'block':'none';
+    $('#reorderWrap').style.visibility = pose ? 'hidden':'visible';
+    state.selected = -1;
+    renderPreview();
+  }
+  $('#mParts').onclick = function(){ setMode(false); };
+  $('#mPose').onclick  = function(){ setMode(true); };
+
+  /* ---------- logging ---------- */
+  var logEl = $('#log');
+  function log(msg, cls){ logEl.classList.add('show'); var d=document.createElement('div');
+    if(cls) d.className=cls; d.textContent=msg; logEl.appendChild(d); logEl.scrollTop=logEl.scrollHeight; }
+
+  /* ---------- file loading ---------- */
+  $('#loadBtn').onclick = function(){ $('#file').click(); };
+  $('#file').onchange = function(e){ if(e.target.files[0]) handleFile(e.target.files[0]); };
+
+  var drop = $('#drop');
+  ['dragenter','dragover'].forEach(function(ev){ drop.addEventListener(ev,function(e){e.preventDefault();drop.classList.add('hover');});});
+  ['dragleave','drop'].forEach(function(ev){ drop.addEventListener(ev,function(e){e.preventDefault();drop.classList.remove('hover');});});
+  drop.addEventListener('drop',function(e){ var f=e.dataTransfer.files[0]; if(f) handleFile(f); });
+  // allow dropping anywhere on left
+  document.querySelector('.left').addEventListener('dragover',function(e){e.preventDefault();});
+  document.querySelector('.left').addEventListener('drop',function(e){e.preventDefault();var f=e.dataTransfer.files[0];if(f)handleFile(f);});
+
+  function handleFile(file){
+    if(!/\.psd$/i.test(file.name)){ log('Not a .psd file: '+file.name,'err'); return; }
+    state.fileName = file.name.replace(/\.psd$/i,'');
+    log('Reading '+file.name+' …');
+    var rdr = new FileReader();
+    rdr.onload = function(){
+      try{ parsePsd(rdr.result); }
+      catch(err){ log('Failed to read PSD: '+err.message,'err'); console.error(err); }
+    };
+    rdr.readAsArrayBuffer(file);
+  }
+
+  function flatten(node, path, out){
+    (node.children||[]).forEach(function(c){
+      if(c.children && c.children.length){ flatten(c, path.concat(c.name), out); }
+      else if(c.imageData || c.canvas){
+        out.push({ name:c.name, group:path.join('/'), left:c.left||0, top:c.top||0,
+          right:c.right||0, bottom:c.bottom||0, imageData:c.imageData||null,
+          blendMode:c.blendMode||'normal', opacity:c.opacity!=null?c.opacity:1 });
+      }
+    });
+  }
+
+  function parsePsd(buf){
+    var t0=performance.now();
+    var psd = readPsd(buf, { useImageData:true, skipCompositeImageData:true, skipThumbnail:true });
+    state.canvasW = psd.width; state.canvasH = psd.height;
+    var layers=[]; flatten(psd, [], layers);
+    if(!layers.length){ log('No usable pixel layers found.','err'); return; }
+    // build per-layer canvas for compositing/thumbnails
+    layers.forEach(function(l){
+      var w=Math.max(1,l.right-l.left), h=Math.max(1,l.bottom-l.top);
+      if(l.imageData){
+        var cv=document.createElement('canvas'); cv.width=l.imageData.width; cv.height=l.imageData.height;
+        cv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(l.imageData.data), l.imageData.width, l.imageData.height),0,0);
+        l.cv=cv;
+      }
+    });
+    state.layers=layers; state.overrides={}; state.selected=-1;
+    log('Parsed '+layers.length+' layers in '+Math.round(performance.now()-t0)+'ms','ok');
+    analyzeAndRender();
+    $('#drop').style.display='none';
+    $('#pvbox').style.display='flex'; $('#pvmeta').style.display='flex';
+    ['expPsd','expJson','expPlan','mParts','mPose'].forEach(function(id){ $('#'+id).disabled=false; });
+    if(window.PoseUI) PoseUI.init(window.__rig, $('#pose'));
+    setMode(false);
+  }
+
+  /* ---------- analyze ---------- */
+  function analyzeAndRender(){
+    state.reorder = $('#reorder').checked;
+    state.result = RC.analyze(state.layers, {
+      canvas:{width:state.canvasW,height:state.canvasH},
+      reorder:state.reorder, overrides:state.overrides
+    });
+    renderList(); renderPreview(); renderStat();
+  }
+  $('#reorder').onchange = analyzeAndRender;
+
+  function renderStat(){
+    var parts=state.result.parts, unc=parts.filter(function(p){return !p.cls.key;}).length;
+    var edited=Object.keys(state.overrides).length;
+    $('#stat').innerHTML='<span class="dot"></span>'+parts.length+' parts · '+
+      (unc?('<span style="color:var(--warn)">'+unc+' unclassified</span> · '):'')+
+      state.result.folders.length+' folders'+(edited?' · '+edited+' edited':'');
+  }
+
+  /* ---------- preview ---------- */
+  function renderPreview(){
+    var W=state.canvasW,H=state.canvasH, max=560;
+    var scale=Math.min(1, max/Math.max(W,H));
+    var cv=$('#preview'); cv.width=Math.round(W*scale); cv.height=Math.round(H*scale);
+    var ctx=cv.getContext('2d'); ctx.clearRect(0,0,cv.width,cv.height); ctx.scale(scale,scale);
+    var posed = window.PoseUI && PoseUI.active;
+    if(posed){
+      PoseUI.draw(ctx);
+    } else {
+      state.result.ordered.forEach(function(p){
+        var l=state.layers[p.index];
+        if(l.cv) ctx.drawImage(l.cv, l.left, l.top);
+      });
+      if(state.selected>=0){
+        var sp=state.result.parts[state.selected]; var b=sp.bbox;
+        ctx.lineWidth=2/scale; ctx.strokeStyle='#5b8cff';
+        ctx.strokeRect(b.left,b.top,b.right-b.left,b.bottom-b.top);
+        ctx.fillStyle='#5b8cff22'; ctx.fillRect(b.left,b.top,b.right-b.left,b.bottom-b.top);
+      }
+    }
+    ctx.setTransform(1,0,0,1,0,0);
+    $('#pvmeta').innerHTML='<span><b>'+state.fileName+'.psd</b></span>'+
+      '<span>Canvas <b>'+W+'×'+H+'</b></span>'+
+      (posed ? '<span>Mode: <b>Pose</b></span>'
+             : '<span>Draw order: <b>'+(state.reorder?'canonical':'as-authored')+'</b></span>'+
+               (state.selected>=0?'<span>Selected: <b>'+state.result.parts[state.selected].partName+'</b></span>':''));
+  }
+
+  /* ---------- part list ---------- */
+  var CAT_OPTIONS = (function(){
+    var o=[['unsorted','— Unclassified —']];
+    for(var k in RC.SCHEMA) o.push([k, RC.SCHEMA[k].label]);
+    return o;
+  })();
+
+  function renderList(){
+    var list=$('#list'); list.innerHTML='';
+    state.result.folders.forEach(function(f){
+      var fh=document.createElement('div'); fh.className='folder';
+      fh.innerHTML='<span>'+f.name+'</span><span class="ln"></span><span style="color:var(--dim);font-weight:400">'+f.parts.length+'</span>';
+      list.appendChild(fh);
+      f.parts.forEach(function(p){ list.appendChild(rowFor(p)); });
+    });
+  }
+
+  function rowFor(p){
+    var idx=p.index;
+    var row=document.createElement('div'); row.className='row'+(idx===state.selected?' sel':'')+(p.cls.confidence<0.5&&p.cls.key?' low':'');
+    row.dataset.idx=idx;
+    // thumb
+    var th=document.createElement('div'); th.className='thumb';
+    var l=state.layers[idx]; if(l.cv){ var c=l.cv.cloneNode(); c.getContext('2d').drawImage(l.cv,0,0); th.appendChild(c); }
+    // names
+    var nm=document.createElement('div'); nm.className='names';
+    var badge = state.overrides[idx]!==undefined ? '<span class="badge edited">edited</span>'
+              : (p.cls.key && p.cls.confidence<0.5 ? '<span class="badge low">low</span>':'');
+    nm.innerHTML='<div class="pn">'+esc(p.partName)+badge+'</div><div class="on">'+esc(p.original)+'</div>';
+    // category select
+    var cat=document.createElement('select'); cat.className='cat';
+    CAT_OPTIONS.forEach(function(o){ var op=document.createElement('option'); op.value=o[0]; op.textContent=o[1];
+      if((p.cls.key||'unsorted')===o[0]) op.selected=true; cat.appendChild(op); });
+    // side select
+    var side=document.createElement('select'); side.className='side';
+    [['auto','Side: Auto'],['L','Side: L'],['R','Side: R'],['none','Side: —']].forEach(function(o){
+      var op=document.createElement('option'); op.value=o[0]; op.textContent=o[1];
+      side.appendChild(op);
+    });
+    side.value = p.cls.side ? p.cls.side : (state.overrides[idx] && state.overrides[idx].side===null ? 'none':'auto');
+
+
+    function commit(){
+      var key=cat.value==='unsorted'?null:cat.value;
+      var sv=side.value;
+      state.overrides[idx]={ key:key, side: sv==='auto'?undefined:(sv==='none'?null:sv) };
+      analyzeAndRender();
+    }
+    cat.onchange=commit; side.onchange=commit;
+    row.onclick=function(e){ if(e.target.tagName==='SELECT') return; state.selected=idx; renderList(); renderPreview(); };
+
+    row.appendChild(th); row.appendChild(nm); row.appendChild(cat); row.appendChild(side);
+    return row;
+  }
+  function esc(s){ return (s+'').replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];}); }
+
+  /* ---------- exports ---------- */
+  function saveBlob(blob, name){
+    var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name;
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },1500);
+  }
+
+  $('#expPsd').onclick = function(){
+    try{
+      var children = state.result.folders.map(function(f){
+        return { name:f.name, opened:true, children:f.parts.map(function(p){
+          var l=state.layers[p.index];
+          var layer={ name:p.partName, left:l.left, top:l.top, right:l.right, bottom:l.bottom,
+                      blendMode:l.blendMode||'normal', opacity:l.opacity!=null?l.opacity:1, hidden:false };
+          if(l.imageData) layer.imageData = l.imageData;
+          return layer;
+        })};
+      });
+      var out={ width:state.canvasW, height:state.canvasH, children:children };
+      log('Writing rigged PSD...');
+      var t0=performance.now();
+      var ab=writePsd(out,{ generateThumbnail:true });
+      saveBlob(new Blob([ab],{type:'application/octet-stream'}), state.fileName+'_rigged.psd');
+      log('Exported '+state.fileName+'_rigged.psd ('+Math.round(ab.byteLength/1024)+' KB) in '+Math.round(performance.now()-t0)+'ms','ok');
+    }catch(err){ log('PSD export failed: '+err.message,'err'); console.error(err); }
+  };
+
+  $('#expJson').onclick = function(){
+    var man = state.result.manifest;
+    if(window.Skeleton && Skeleton.bones && Skeleton.bones.length) man = Object.assign({}, man, { skeleton: Skeleton.exportBones() });
+    saveBlob(new Blob([JSON.stringify(man,null,2)],{type:'application/json'}), state.fileName+'_rig_manifest.json');
+    log('Exported manifest.','ok');
+  };
+  $('#expPlan').onclick = function(){
+    saveBlob(new Blob([RC.buildPlan(state.result, state.fileName)],{type:'text/markdown'}), state.fileName+'_rig_plan.md');
+    log('Exported rig plan.','ok');
+  };
+
+  log('Ready. Open or drop a character PSD to begin.','ok');
+})();
+</script>
+</body>
+</html>

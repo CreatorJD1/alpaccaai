@@ -60,22 +60,41 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 def live_pose(state: EmotionalState) -> dict:
     """The channel values her *current real state* produces. Always on; this is
     the honest layer -- her warmth/care/unease are exactly her Love/Compassion/
-    Fear, and the derived channels follow from them."""
+    Fear, and the derived channels follow from them.
+
+    It now also carries her richer expression (alpecca/affect.py): the eyes and
+    core emblem brighten from the same grounded affect that colors her words, and
+    she gains an explicit `gesture` and `lean` so curiosity tilts her head and a
+    wish for company leans her toward you. Same single source of truth as her
+    voice -- her body can't say something her words wouldn't."""
+    from alpecca import affect as affect_mod
     love, care, fear = state.love, state.compassion, state.fear
-    # Core emblem brightness tracks overall arousal; eye-glow leans toward the
-    # dominant feeling (0 calm/low .. 1 intense), mostly driven by unease+care.
-    core_glow = _clamp(0.3 + love * 0.4 + fear * 0.4, 0.0, 1.0)
-    eye_glow = _clamp(0.3 + fear * 0.5 + care * 0.2, 0.0, 1.0)
+    aff = affect_mod.affect(state)
+    # Eye/core brightness come straight from the affect read so avatar and prose
+    # never disagree; we keep the old unease/care contribution folded in.
+    eye_glow = _clamp(max(aff.eye, 0.3 + fear * 0.5 + care * 0.2), 0.0, 1.0)
+    core_glow = _clamp(max(aff.glow, 0.3 + love * 0.4 + fear * 0.4), 0.0, 1.0)
+    # A forward lean that grows with wanting-company and curiosity -- she draws
+    # toward you when she misses you or is interested.
+    lean = _clamp(state.social_hunger * 0.7 + state.curiosity * 0.3, 0.0, 1.0)
     return {
         "warmth": round(love, 4),
         "care": round(care, 4),
         "unease": round(fear, 4),
+        "curiosity": round(state.curiosity, 4),
+        "wanting_company": round(state.social_hunger, 4),
         "core_glow": round(core_glow, 4),
         "eye_glow": round(eye_glow, 4),
+        # Her expressive read, so the renderer can pick a matching micro-pose.
+        "gesture": aff.gesture,
+        "tempo": aff.tempo,
+        "lean": round(lean, 4),
+        "valence": aff.valence,
+        "arousal": aff.arousal,
         # Base motion intensities the UI uses to scale its idle loop -- restless
-        # when uneasy, buoyant when warm. Still grounded, still hers.
+        # when uneasy, buoyant when warm, a little livelier when curious.
         "sway_intensity": round(1.5 + fear * 5.0, 3),
-        "float_intensity": round(2.0 + love * 1.5, 3),
+        "float_intensity": round(2.0 + love * 1.5 + state.curiosity * 1.0, 3),
     }
 
 
