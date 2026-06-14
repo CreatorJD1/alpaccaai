@@ -35,10 +35,17 @@ if _OLD_DB.exists() and not DB_PATH.exists():
 # human-preference alignment, role-play, multi-turn dialogue -- so it's the
 # default. Qwen3 hybrid models may emit <think>...</think> blocks; mind.py
 # strips those from replies, so thinking variants also work. For lower latency
-# on small GPUs, ALPECCA_MODEL=qwen3:4b-instruct-2507 is a good pick (the
-# instruct-2507 line never thinks). qwen2.5:7b-instruct still works if that's
-# what you have pulled.
+# on a small GPU (e.g. 4 GB), ALPECCA_MODEL=qwen3:4b is the right pick.
+# qwen2.5:7b-instruct still works if that's what you have pulled.
 OLLAMA_MODEL = os.environ.get("ALPECCA_MODEL", "qwen3:8b")
+
+# Safety net for a specific, painful gotcha: an earlier build suggested the tag
+# 'qwen3:4b-instruct-2507', which is NOT a real Ollama model -- pulling it 404s.
+# If a stale env var still points there, EVERY reply silently falls back to the
+# "You said: ..." echo. Quietly remap that one dead name to the real 4B tag so a
+# leftover setting can't keep her brain offline.
+if OLLAMA_MODEL == "qwen3:4b-instruct-2507":
+    OLLAMA_MODEL = "qwen3:8b"
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 
 # A second, tiny model for *cheap* work -- short, low-stakes generations like her
@@ -51,6 +58,56 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 # (see mind._LLM.generate), so this default never breaks a fresh setup. Set
 # ALPECCA_FAST_MODEL="" to force everything back onto the single primary model.
 OLLAMA_FAST_MODEL = os.environ.get("ALPECCA_FAST_MODEL", "gemma4-e4b")
+
+# Context window (in tokens) we ask Ollama to allocate. This is the single most
+# important knob on a small machine: modern models like qwen3 advertise a 256K
+# context, and Ollama will try to allocate a KV cache for the FULL window up
+# front -- which for qwen3:4b is ~36 GB and instantly OOMs a normal laptop, so
+# the model fails to start and she silently drops to her echo fallback. Capping
+# the context to a few thousand tokens shrinks the KV cache to ~1 GB and is far
+# more than a companion chat ever needs. Raise ALPECCA_NUM_CTX if you have RAM
+# to spare and want her to remember more of a long conversation at once.
+OLLAMA_NUM_CTX = int(os.environ.get("ALPECCA_NUM_CTX", "8192"))
+
+# --- Brain backend: local Ollama (default) or Hugging Face cloud ---------------
+# On a small laptop the local model spills onto the CPU and eats RAM. Routing her
+# *thinking* to Hugging Face's hosted inference lifts that whole load off the
+# machine -- she replies fast and your CPU/RAM are freed. Only her chat text and
+# prompt travel to HF; senses, mood, memory and her avatar all stay local. To
+# keep the project's privacy line, what she's SENSED on your screen is stripped
+# from cloud prompts unless you explicitly opt in below.
+#   Switch on with:  ALPECCA_LLM_BACKEND=hf
+#   Auth: run `huggingface-cli login` once (token cached) OR set HF_TOKEN.
+LLM_BACKEND = os.environ.get("ALPECCA_LLM_BACKEND", "ollama").lower()
+HF_TOKEN = (os.environ.get("HF_TOKEN", "")
+            or os.environ.get("HUGGINGFACEHUB_API_TOKEN", ""))
+# A solid, widely-served instruct model in her Qwen lineage (no <think> noise).
+# Change with ALPECCA_HF_MODEL; any chat model on HF Inference Providers works.
+HF_MODEL = os.environ.get("ALPECCA_HF_MODEL", "Qwen/Qwen2.5-7B-Instruct")
+HF_PROVIDER = os.environ.get("ALPECCA_HF_PROVIDER", "auto")
+# Privacy: keep what she's sensed on your screen OUT of cloud prompts by default.
+CLOUD_SEND_SENSES = os.environ.get("ALPECCA_CLOUD_SEND_SENSES", "0") \
+    not in ("", "0", "false", "False")
+
+# --- Her voice (text-to-speech) ------------------------------------------------
+# Server-side TTS for a real, natural voice (alpecca/tts.py), replacing the
+# robotic browser engine. 'auto' uses the best installed engine: Kokoro (best
+# open, fully local) if present, else edge-tts (Microsoft neural voices, no
+# install pain, uses the network). 'kokoro'/'edge' force one; 'browser'/'off'
+# keep the old built-in voice. TTS_VOICE picks the speaker (e.g. af_heart for
+# Kokoro, en-US-AriaNeural for edge); blank = a warm default.
+TTS_BACKEND = os.environ.get("ALPECCA_TTS_BACKEND", "auto").lower()
+TTS_VOICE = os.environ.get("ALPECCA_TTS_VOICE", "")
+# Voice character. A bright, young female voice with a lifted pitch and a little
+# extra pace reads as "anime girl" rather than flat newsreader. These tune the
+# edge-tts voice; raise/lower to taste. ALPECCA_TTS_VOICE overrides the speaker.
+TTS_RATE = os.environ.get("ALPECCA_TTS_RATE", "+6%")     # slightly livelier pace
+TTS_PITCH = os.environ.get("ALPECCA_TTS_PITCH", "+18Hz")  # brighter, younger tone
+# Kokoro voice + pitch (separate from the edge voice above, since Kokoro uses its
+# own names like af_heart/af_bella). KOKORO_PITCH > 1 brightens her toward an
+# anime tone; ~1.08 is "just right" -- youthful but not squeaky. 1.0 = natural.
+KOKORO_VOICE = os.environ.get("ALPECCA_KOKORO_VOICE", "af_heart")
+KOKORO_PITCH = float(os.environ.get("ALPECCA_KOKORO_PITCH", "1.08"))
 
 # --- Emotional model coefficients -----------------------------------------
 # See alpecca/homeostasis.py for how each of these is used. The names map onto
@@ -126,9 +183,9 @@ class Home:
     # bonus for the room she's already in keeps her from flickering between
     # near-tied rooms -- people settle before they wander on.
     STAY_BONUS = 0.25
-    ROAM_SILENCE_S = 90        # only drift rooms after this much quiet
-    ROAM_MIN_GAP_S = 120       # and not more often than this
-    ROAM_CHANCE = 0.06         # per eligible tick, so timing feels unforced
+    ROAM_SILENCE_S = 20        # drift rooms after a short lull (visible life)
+    ROAM_MIN_GAP_S = 40        # and not more often than this
+    ROAM_CHANCE = 0.30         # per eligible tick -- she wanders within a minute
 
 
 # --- Her workstation: the desktop file room ---------------------------------
@@ -223,12 +280,12 @@ class Proactive:
     # something she remembers, or just to say hello. ALPECCA_CHATTER=0 turns
     # only this off (mood-shift remarks stay governed by ENABLED above).
     CHATTER_ENABLED = os.environ.get("ALPECCA_CHATTER", "1") not in ("", "0", "false", "False")
-    CHATTER_SILENCE_S = 2 * 60   # you must have been quiet at least this long
-    CHATTER_MIN_GAP_S = 5 * 60   # and she won't chatter more often than this
+    CHATTER_SILENCE_S = 35       # you must have been quiet at least this long
+    CHATTER_MIN_GAP_S = 100      # and she won't chatter more often than this
     # Once eligible, each background tick fires with this probability, so her
     # timing feels like a person glancing over, not a cron job. (Livelier default
     # so she visibly stirs; raise gaps / lower chance to make her quieter.)
-    CHATTER_CHANCE = 0.06
+    CHATTER_CHANCE = 0.25
 
 
 # --- Idle reflection ----------------------------------------------------------
@@ -239,9 +296,9 @@ class Proactive:
 # compounds. ALPECCA_REFLECT=0 turns it off.
 class Reflection:
     ENABLED = os.environ.get("ALPECCA_REFLECT", "1") not in ("", "0", "false", "False")
-    SILENCE_S = 2 * 60        # only when idle a couple of minutes
-    MIN_GAP_S = 6 * 60        # at most one musing every few minutes (livelier)
-    CHANCE = 0.08             # per-tick chance once eligible
+    SILENCE_S = 30            # only when idle a short stretch
+    MIN_GAP_S = 150           # at most one musing every couple of minutes
+    CHANCE = 0.15             # per-tick chance once eligible
     MUSING_SALIENCE = 0.45    # above the storage threshold, below big moments
 
 

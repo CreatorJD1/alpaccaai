@@ -40,7 +40,15 @@ def _ensure_model():
             _model = WhisperModel(HearingCfg.WHISPER_MODEL,
                                   device="cpu", compute_type="int8")
             _ready = True
-        except Exception:
+        except Exception as exc:
+            # Latch off, but say WHY once -- a silent failure here is the
+            # "(didn't catch that)" message with no way to diagnose it. The
+            # usual causes: faster-whisper installed in a different Python than
+            # the server runs, or the model download being blocked.
+            import traceback, sys
+            print(f"[hearing] couldn't load Whisper ({HearingCfg.WHISPER_MODEL}): "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr)
+            traceback.print_exc()
             _ready = False
             return None
     return _model
@@ -59,5 +67,11 @@ def transcribe(audio_bytes: bytes) -> Optional[str]:
         segments, _info = model.transcribe(io.BytesIO(audio_bytes), beam_size=1)
         text = " ".join(seg.text.strip() for seg in segments).strip()
         return text or None
-    except Exception:
-        return None  # one bad blob isn't a broken ear
+    except Exception as exc:
+        # One bad blob isn't a broken ear -- don't latch. But print it, so a
+        # decode problem (e.g. PyAV not present to read the browser's webm)
+        # isn't invisible.
+        import sys
+        print(f"[hearing] transcribe failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return None

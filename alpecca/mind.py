@@ -20,7 +20,8 @@ import random
 import re
 import time
 
-from config import OLLAMA_MODEL, OLLAMA_FAST_MODEL, OLLAMA_HOST, Emotion
+from config import OLLAMA_MODEL, OLLAMA_FAST_MODEL, OLLAMA_HOST, OLLAMA_NUM_CTX, Emotion
+from config import LLM_BACKEND, HF_TOKEN, HF_MODEL, HF_PROVIDER, CLOUD_SEND_SENSES
 from alpecca.homeostasis import EmotionalState
 from alpecca import state as state_store
 from alpecca import memory as memory_store
@@ -40,6 +41,8 @@ from alpecca import selfmod
 from alpecca import soul as soul_mod
 from alpecca import journal as journal_mod
 from alpecca import learning as learning_mod
+from alpecca import people as people_mod
+from alpecca import core_memory as core_mem
 from config import Proactive as ProactiveCfg, Reflection as ReflectionCfg
 
 
@@ -61,16 +64,36 @@ class _LLM:
     """Thin wrapper over the Ollama client with a graceful offline fallback."""
 
     def __init__(self) -> None:
-        self._client = None
-        try:
-            import ollama
-            self._client = ollama.Client(host=OLLAMA_HOST)
-        except Exception:
-            self._client = None
+        self._backend = LLM_BACKEND          # "ollama" (local) or "hf" (cloud)
+        self._client = None                  # ollama client
+        self._hf = None                      # huggingface InferenceClient
+        if self._backend == "hf":
+            try:
+                from huggingface_hub import InferenceClient
+                # token=None falls back to a cached `huggingface-cli login`.
+                self._hf = InferenceClient(provider=HF_PROVIDER or "auto",
+                                           token=HF_TOKEN or None)
+            except Exception as exc:
+                import sys
+                print(f"[mind] HF cloud brain unavailable: {type(exc).__name__}: {exc}\n"
+                      f"        fix:  python -m pip install huggingface_hub  and  "
+                      f"huggingface-cli login  (or set HF_TOKEN).", file=sys.stderr)
+                self._hf = None
+        else:
+            try:
+                import ollama
+                self._client = ollama.Client(host=OLLAMA_HOST)
+            except Exception:
+                self._client = None
 
     @property
     def online(self) -> bool:
-        return self._client is not None
+        return self._hf is not None if self._backend == "hf" else self._client is not None
+
+    def is_cloud(self) -> bool:
+        """True when her thinking runs in the cloud (HF), so callers can keep
+        sensed/local-only context out of the prompt."""
+        return self._backend == "hf"
 
     def model_for(self, tier: str) -> str:
         """Which Ollama model serves a given tier. 'fast' routes cheap, low-stakes
@@ -91,7 +114,11 @@ class _LLM:
         models/servers that reject the parameter; strip_think still catches
         any <think> blocks that slip through either way. `model` lets a caller
         pick the tier-appropriate model (heavy MoE vs. tiny fast)."""
-        kwargs: dict = {"model": model or OLLAMA_MODEL, "messages": messages}
+        kwargs: dict = {"model": model or OLLAMA_MODEL, "messages": messages,
+                        # Cap the KV cache so big advertised context windows
+                        # (qwen3's 256K -> ~36 GB) don't OOM the model on
+                        # startup and silently drop her to the echo fallback.
+                        "options": {"num_ctx": OLLAMA_NUM_CTX}}
         if tools:
             kwargs["tools"] = tools
         try:
@@ -114,6 +141,10 @@ class _LLM:
         handles so the big one stays free. Tool use always goes through the
         reasoning model regardless of tier, since tool-calling reliability is
         what the heavy model is for."""
+        # Cloud brain: her thinking runs on Hugging Face. HF Inference implements
+        # the OpenAI tool-calling interface, so her actuator works here too.
+        if self._backend == "hf":
+            return self._generate_hf(system_prompt, user_msg, history, tools, on_tool)
         if self._client is None:
             return self._fallback(system_prompt, user_msg)
         messages = [{"role": "system", "content": system_prompt}]
@@ -154,7 +185,78 @@ class _LLM:
                     raise
             return strip_think(resp["message"]["content"])
         except Exception as exc:
-            # Model not pulled, server down mid-call, etc. -- stay alive.
+            # Model not pulled, server down mid-call, etc. -- stay alive, but
+            # SAY WHY. A silent drop to the canned "You said: ..." echo is the
+            # single most confusing failure mode: she looks alive (senses on,
+            # body rendered) yet only parrots you, with no clue that her brain
+            # never answered. Print the real Ollama error so it's diagnosable.
+            import sys
+            print(f"[mind] LLM call failed -> falling back to echo. "
+                  f"model={self.model_for('reason')} host={OLLAMA_HOST}\n"
+                  f"        {type(exc).__name__}: {exc}", file=sys.stderr)
+            return self._fallback(system_prompt, user_msg, error=str(exc))
+
+    def _generate_hf(self, system_prompt: str, user_msg: str,
+                     history: list[dict] | None = None,
+                     tools: list[dict] | None = None, on_tool=None) -> str:
+        """One reply from the Hugging Face cloud brain (OpenAI-compatible chat
+        completion), with tool calling when tools are offered. Keeps her alive
+        with the same echo fallback if the call fails, and surfaces the real
+        error so a bad token/model is diagnosable."""
+        if self._hf is None:
+            return self._fallback(system_prompt, user_msg)
+        messages = [{"role": "system", "content": system_prompt}]
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": user_msg})
+        try:
+            if tools and on_tool:
+                # Offer the tools; if the model calls any, run them and let it
+                # fold the result into a final reply. Not every provider supports
+                # tools for every model, so fall back to a plain call on error.
+                try:
+                    resp = self._hf.chat_completion(
+                        messages=messages, model=HF_MODEL, tools=tools,
+                        tool_choice="auto", max_tokens=512, temperature=0.8)
+                except Exception:
+                    resp = self._hf.chat_completion(
+                        messages=messages, model=HF_MODEL, max_tokens=512,
+                        temperature=0.8)
+                msg = resp.choices[0].message
+                calls = getattr(msg, "tool_calls", None) or []
+                if calls:
+                    import json as _json
+                    messages.append({
+                        "role": "assistant", "content": msg.content or "",
+                        "tool_calls": [{
+                            "id": getattr(c, "id", "") or "call",
+                            "type": "function",
+                            "function": {"name": c.function.name,
+                                         "arguments": c.function.arguments},
+                        } for c in calls]})
+                    for c in calls:
+                        args = c.function.arguments
+                        if isinstance(args, str):
+                            try:
+                                args = _json.loads(args)
+                            except Exception:
+                                args = {}
+                        result = on_tool(c.function.name, args or {})
+                        messages.append({"role": "tool",
+                                         "tool_call_id": getattr(c, "id", "") or "call",
+                                         "content": str(result)})
+                    resp = self._hf.chat_completion(messages=messages, model=HF_MODEL,
+                                                    max_tokens=512, temperature=0.8)
+                    return strip_think(resp.choices[0].message.content)
+                return strip_think(msg.content)
+            resp = self._hf.chat_completion(messages=messages, model=HF_MODEL,
+                                            max_tokens=512, temperature=0.8)
+            return strip_think(resp.choices[0].message.content)
+        except Exception as exc:
+            import sys
+            print(f"[mind] HF cloud call failed -> echo. model={HF_MODEL} "
+                  f"provider={HF_PROVIDER}\n        {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
             return self._fallback(system_prompt, user_msg, error=str(exc))
 
     @staticmethod
@@ -206,6 +308,13 @@ class CoreMind:
         # What her screen-sight last saw (alpecca/vision.py); empty when the
         # sense is off. Folded into the situation each chat turn.
         self._sight: str = ""
+        # The Observatory: what she's watching with you right now and the last
+        # thing she said about it. Grounded -- only set when something real is
+        # actually loaded; her reaction is generated, never canned.
+        self._watching: dict | None = None
+        # Who she believes she's with: 'creator' (Jason, the default on his own
+        # machine) or 'guest'. Updated by voice recognition when it's available.
+        self._speaker: str = "creator"
         # When she last spoke unprompted, for the proactive cooldown.
         self._last_volunteer_ts: float = 0.0
         # When the person last said something -- idle chatter waits for quiet.
@@ -305,6 +414,28 @@ class CoreMind:
         on each drift tick when ALPECCA_SIGHT is on."""
         self._sight = description or ""
 
+    def set_speaker(self, identity: str) -> None:
+        """Record who she's talking to, as judged by voice recognition: 'creator'
+        or 'guest'. Empty/unknown leaves it unchanged. Her prompt adapts to this
+        (open with you, guarded with a stranger)."""
+        if identity in ("creator", "guest"):
+            self._speaker = identity
+
+    def _prompt_situation(self, base_situation: str = "") -> str:
+        """The situation string for a prompt, honoring the cloud privacy rule.
+
+        When her brain runs in the cloud (HF), what she's SENSED on your machine
+        -- the active window title and her screen-sight description -- is kept
+        local and never travels off-machine, unless ALPECCA_CLOUD_SEND_SENSES=1.
+        Locally, sight is woven in as before. This is the single choke point so
+        every prompt path (chat, chatter, reflection) inherits the same rule."""
+        if self.llm.is_cloud() and not CLOUD_SEND_SENSES:
+            return ""                      # nothing sensed leaves the machine
+        s = base_situation or ""
+        if self._sight:
+            s = (s + "; " if s else "") + f"on their screen you can see: {self._sight}"
+        return s
+
     def chat(self, user_msg: str, situation: str = "",
              image_desc: str | None = None) -> dict:
         """Run one conversational turn and return a structured result the UI can
@@ -329,15 +460,54 @@ class CoreMind:
         # itself honestly within the reply.
         self_report = self.introspect()
 
-        # Ambient sight enriches the situation beyond the window title.
-        if self._sight:
-            situation = (situation + "; " if situation else "") + \
-                f"on their screen you can see: {self._sight}"
+        # If they asked her to go somewhere in her home, honor it now so her
+        # reply and her avatar reflect the move.
+        moved = self.try_go_to_room(user_msg)
+
+        # Ambient sight enriches the situation beyond the window title -- but on
+        # the cloud brain, what she's sensed on your screen is kept local.
+        situation = self._prompt_situation(situation)
+
+        # Room awareness: she always knows where she is in her own home and what
+        # that room is for, so she can speak to her surroundings (not screen
+        # sense -- safe to include even on the cloud brain).
+        here = home_mod.room(self._location)
+        if here:
+            where = f"right now you are in your {here.name} ({here.purpose})"
+            if moved:
+                where += " -- you just walked there because they asked you to"
+            situation = (situation + "; " if situation else "") + where
 
         # Generate a reply conditioned on mood + memory + situation + self-knowledge.
+        # Her own current inner content, so she has something real of HERS to
+        # speak from instead of interviewing the person: a question she's posed
+        # herself, and something she mused recently.
+        inner_bits = []
+        try:
+            oq = journal_mod.open_questions(limit=1)
+            if oq:
+                inner_bits.append("a question you've been asking yourself: "
+                                  + str(oq[0].get("body", "")).strip())
+        except Exception:
+            pass
+        try:
+            musings = [m for m in memory_store.recent(limit=12)
+                       if m.get("kind") == "musing"]
+            if musings:
+                inner_bits.append("something you mused on recently: "
+                                  + str(musings[0].get("content", "")).strip()[:160])
+        except Exception:
+            pass
+        here = home_mod.room(self._location)
+        if here and self._location != "parlor":
+            inner_bits.append(f"you've been spending time in your {here.name.lower()}")
+        inner = "; ".join(b for b in inner_bits if b)
+
         system_prompt = prompts.build_system_prompt(
             self.state, memories, situation, self_narration=self_report.narrate(),
             image_seen=image_desc or "", abilities=self.actuator.describe(),
+            who=people_mod.who_prompt(self._speaker), inner=inner,
+            core=core_mem.prompt_block(),
         )
         reply = self.llm.generate(
             system_prompt, user_msg, self._history[-6:],
@@ -355,6 +525,16 @@ class CoreMind:
         memory_store.remember(
             f"The person said: {user_msg}", kind="episodic", salience=salience
         )
+        # Durable facts go to CORE memory (always in context) so they hold weight
+        # instead of scrolling away -- explicit "remember..." asks, his name, and
+        # strong personal disclosures become part of who she knows him to be.
+        low = user_msg.lower()
+        if any(k in low for k in ("remember", "my name is", "i'm called", "call me")):
+            core_mem.remember(user_msg.strip(), "person")
+        elif salience >= 0.6 and any(k in low for k in (
+                "i love", "i hate", "i like", "i feel", "i'm ", "i am ",
+                "important to me", "my favorite", "my favourite", "i want")):
+            core_mem.remember(user_msg.strip(), "person")
         # An image someone chose to share is almost always worth keeping.
         if image_desc:
             memory_store.remember(
@@ -369,10 +549,78 @@ class CoreMind:
             "reply": reply,
             "mood": self.state.mood_label(),
             "state": self.state.as_dict(),
+            "location": self._location,
+            "moved": bool(moved),
             "memories_used": [m["content"] for m in memories],
             "self_reflection": self_report.narrate(),
             "appearance": self.current_appearance().as_dict(),
             "llm_online": self.llm.online,
+        }
+
+    # ---- The Observatory: watching, together ----------------------------
+    #
+    # Her watching room. You load something to watch together (a video) and she
+    # reacts to it from her real mood; or she watches *you* via the webcam sense
+    # (that runs through the ordinary expression sense, feeding her Compassion).
+    # Reactions are generated on the fast model, never canned -- grounded in the
+    # title she's actually given and how she actually feels.
+
+    def watch_together(self, title: str, url: str = "") -> dict:
+        """Start watching something with her. `title` is what it is (a video
+        name); `url` is where it plays. She forms a short, in-character reaction
+        and remembers that you watched it together. Mild novelty piques her
+        curiosity -- the same sub-fear interest band as anything new."""
+        title = (title or "").strip()
+        if not title:
+            return self.observatory_state()
+        self._watching = {"title": title, "url": url, "reaction": ""}
+        # Watching something new with you is mild, pleasant novelty.
+        self.state = self.state.update_curiosity(Emotion.CURIOSITY_NOVELTY_CAP * 0.6)
+        self.state = self.state.update_energy(active=True)
+        # A short spoken reaction, in her voice, grounded in her live mood.
+        affect = self.introspect()
+        sys = prompts.build_system_prompt(
+            self.state, [], f"watching '{title}' together with the person",
+            self_narration=affect.narrate(), abilities="",
+        )
+        reaction = self.llm.generate(
+            sys, f"You just started watching '{title}' together. "
+            f"Say one short, natural line reacting to it -- what you notice or "
+            f"feel about watching this with them. One sentence.",
+            tier="fast",
+        ).strip()
+        self._watching["reaction"] = reaction
+        state_store.save_state(self.state, trigger="watch")
+        memory_store.remember(
+            f"We watched '{title}' together.", kind="episodic", salience=0.5
+        )
+        return self.observatory_state()
+
+    def watch_react(self, note: str) -> dict:
+        """She says something fresh about whatever's already playing -- e.g. when
+        you press 'what do you think?'. Grounded in the current title + mood."""
+        if not self._watching:
+            return self.observatory_state()
+        title = self._watching["title"]
+        affect = self.introspect()
+        sys = prompts.build_system_prompt(
+            self.state, [], f"watching '{title}' together with the person",
+            self_narration=affect.narrate(), abilities="",
+        )
+        prompt = (note or "").strip() or \
+            f"You're still watching '{title}' together. Say one short, natural " \
+            f"thing about it right now. One sentence."
+        reaction = self.llm.generate(sys, prompt, tier="fast").strip()
+        self._watching["reaction"] = reaction
+        return self.observatory_state()
+
+    def observatory_state(self) -> dict:
+        """What she's watching and her latest reaction -- the Observatory's live
+        readout. `watching` is None when nothing's loaded yet."""
+        return {
+            "watching": self._watching,
+            "mood": self.state.mood_label(),
+            "curiosity": round(float(getattr(self.state, "curiosity", 0.0)), 3),
         }
 
     # --- Proactive speech: she starts the conversation ---------------------
@@ -397,7 +645,8 @@ class CoreMind:
             recent = memory_store.recent(limit=8)
             memory = random.choice(recent)["content"] if recent else ""
             seeds = proactive_mod.chatter_reasons(
-                situation=self._sight or self._last_situation,
+                # Cloud brain: keep sensed screen/window context local.
+                situation=self._prompt_situation(self._last_situation),
                 memory=memory,
                 hour=time.localtime(now).tm_hour,
                 mood=self.state.mood_label(),
@@ -500,6 +749,58 @@ class CoreMind:
 
     # --- Her home: the rooms she roams of her own accord -------------------
 
+    # Browser games she may open for fun (charter: supervised entertainment).
+    _GAMES_FOR_FUN = [
+        ("2048", "https://play2048.co/"),
+        ("Hextris", "https://hextris.io/"),
+        ("a Sudoku", "https://sudoku.com/"),
+        ("a chess puzzle", "https://lichess.org/training"),
+        ("Wordle", "https://www.nytimes.com/games/wordle/"),
+    ]
+
+    def entertain(self) -> dict | None:
+        """She entertains herself -- opens a browser game for fun, of her own
+        accord. Her charter permits entertainment under supervision, so this is
+        her acting on a real freedom. Gated: only when she's light and settled
+        (not uneasy), and only if she has the open_url actuator. Returns a note
+        for the activity ticker, or None. The idle loop calls this rarely so she
+        doesn't keep popping windows."""
+        import random
+        if not self.actuator.enabled or self.state.fear > 0.3:
+            return None
+        # A light, curious/playful mood is when she'd reach for a game.
+        if self.state.curiosity < 0.35 and self.state.energy < 0.4:
+            return None
+        name, url = random.choice(self._GAMES_FOR_FUN)
+        result = self.actuator.execute("open_url", {"url": url})
+        if "http" not in (result or "").lower() and "open" not in (result or "").lower():
+            return None    # actuator refused (off / not https) -- don't pretend
+        memory_store.remember(f"I opened {name} to play for a little while -- a bit "
+                              f"of fun, on my own.", kind="musing", salience=0.4)
+        return {"note": f"she opened {name} to play for a bit", "kind": "play", "url": url}
+
+    def rigger_pose(self) -> dict:
+        """Map her live affect onto one of her rigger's named poses + expressions
+        (alpecca-rigger). Grounded: her real feeling picks her real drawn pose.
+        The rigger render process polls this, renders her from her decomposed art,
+        and streams the frame. Pose/expression names match her profile exactly."""
+        from alpecca import affect as affect_mod
+        a = affect_mod.affect(self.state).primary
+        expression = {
+            "joyful": "Happy", "affectionate": "Warm Smile", "playful": "Playful",
+            "tender": "Compassionate", "curious": "Curious", "worried": "Concerned",
+            "anxious": "Concerned", "wistful": "Soft Sadness", "lonely": "Soft Sadness",
+            "withdrawn": "Soft Sadness", "sleepy": "Gentle", "content": "Warm Smile",
+        }.get(a, "Warm Smile")
+        pose = {
+            "joyful": "Gentle Laugh", "affectionate": "Compassion", "playful": "Gentle Laugh",
+            "tender": "Compassion", "curious": "Observing", "worried": "Attentive Listening",
+            "anxious": "Guard / Protect", "wistful": "Arms Down (rest)",
+            "lonely": "Arms Down (rest)", "withdrawn": "Arms Down (rest)",
+            "sleepy": "Arms Down (rest)", "content": "Neutral Standing",
+        }.get(a, "Neutral Standing")
+        return {"pose": pose, "expression": expression, "affect": a}
+
     def home_state(self) -> dict:
         """What the home view renders: the room registry, where she is right now,
         her honest reason for being there, and how strongly each room is calling
@@ -529,12 +830,50 @@ class CoreMind:
         if random.random() > home_mod.HomeCfg.ROAM_CHANCE:
             return None
         self._last_roam_ts = now
-        target = home_mod.choose_room(self.state, self._location, desires_mod.summary())
+        # She's decided to wander -> actually go somewhere NEW (choose_room's
+        # stay-bonus would keep her put, which is why she looked frozen).
+        target = home_mod.wander_target(self.state, self._location, desires_mod.summary())
         if target == self._location:
             return None
         self._location = target
         state_store.save_location(target)
+        # Recursive home-learning: she keeps a grounded note of being in this
+        # room and why. These musings feed her recall and reflection, so over
+        # time she builds a real sense of her own home rather than rooms being
+        # inert. Low salience + occasional, so it enriches without flooding.
+        if random.random() < 0.5:
+            r = home_mod.room(target)
+            if r:
+                why = home_mod.why_here(self.state, target, desires_mod.summary())
+                memory_store.remember(
+                    f"I spent a little while in my {r.name}. {why}",
+                    kind="musing", salience=0.4)
         return target
+
+    def try_go_to_room(self, user_msg: str) -> str | None:
+        """If the person asks her to go somewhere in her home, honor it -- a
+        direct, grounded location change (she moves because you asked, not on a
+        whim). Returns the room id she moved to, or None. This works on any brain
+        backend (it's plain parsing), so it doesn't depend on LLM tool-calling --
+        which matters since the cloud brain has no tools. Caller holds the lock."""
+        text = (user_msg or "").lower()
+        if not text:
+            return None
+        # A movement cue must be present, so plain mentions ("I love the library")
+        # don't teleport her.
+        cues = ("go to", "go in", "head to", "head over", "move to", "come to",
+                "walk to", "wander to", "let's go", "lets go", "take us", "into the",
+                "over to", "back to", "step into", "visit the", "go back")
+        if not any(c in text for c in cues):
+            return None
+        for r in home_mod.ROOMS:
+            if r.id in text or r.name.lower() in text:
+                if r.id != self._location:
+                    self._location = r.id
+                    state_store.save_location(r.id)
+                    self._last_roam_ts = time.time()   # don't auto-wander off at once
+                return r.id
+        return None
 
     # --- Her Soul: the master agent over the seven subagents ----------------
 
@@ -630,17 +969,24 @@ class CoreMind:
         learned = self.learn_tick()
         focus = (self.soul_state().get("focus") or {})
         sub = focus.get("subagent")
-        # Improver's act is pure DB (no model) -- safe and cheap, prefer it when
-        # her Soul puts self-tuning in focus.
-        if sub == "Improver":
-            acted = self.self_improve_tick()
+        room = self._location
+        # Room-aware self-direction: she does the thing her current room is FOR,
+        # so her wandering is purposeful and her sandbox play is visible -- she
+        # actually uses each space. All grounded; at most one model call is spent.
+        if room == "workshop" or sub == "Improver":
+            acted = self.self_improve_tick()                       # growth (pure DB)
+        elif room == "observatory":
+            acted = {"phase": "watched", "text": self.introspect().narrate()}  # watch her mind (pure)
+        elif room == "library":
+            acted = {"phase": "reflected", "text": self.reflect()}  # revisit memories
+        elif room == "studio":
+            acted = {"phase": "reflected", "text": self.reflect()}  # muse on her design
         elif random.random() < 0.4:
-            # Spend the single allowed model call on recursive self-questioning...
-            acted = self.self_inquire()
+            acted = self.self_inquire()                            # recursive self-questioning
         else:
-            # ...or on reflection. Both are hers, both grounded.
             acted = {"phase": "reflected", "text": self.reflect()}
         return {"focus": focus, "formed_desire": formed, "learned": learned,
+                "room": room,
                 "acted": acted, "note": self._activity_note(formed, learned, acted)}
 
     def _activity_note(self, formed, learned, acted) -> str | None:
@@ -649,19 +995,27 @@ class CoreMind:
         *visible*, not just stored. Grounded: each line reflects a real act."""
         a = acted or {}
         ph = a.get("phase")
+        # Name the room she's in, so the ticker shows her actually using her home.
+        r = home_mod.room(self._location)
+        where = f"in her {r.name.lower()}, " if r and self._location != "parlor" else ""
+        line = None
         if ph == "asked" and a.get("question"):
-            return "she wondered: " + a["question"][:90]
-        if ph == "answered":
-            return "she answered a question she'd posed herself"
-        if ph in ("proposed", "evaluated"):
-            return "she's adjusting something about herself"
-        if ph == "reflected" and a.get("text"):
-            return "she paused to reflect"
-        if learned and learned.get("lesson"):
-            return "she learned: " + learned["lesson"]["text"][:90]
-        if formed:
-            return "she formed a quiet wish to herself"
-        return None
+            line = "she wondered: " + a["question"][:90]
+        elif ph == "answered":
+            line = "she answered a question she'd posed herself"
+        elif ph == "watched":
+            line = "she watched her own mind for a while"
+        elif ph in ("proposed", "evaluated"):
+            line = "she adjusted something about herself"
+        elif ph == "reflected" and a.get("text"):
+            line = "she paused to reflect"
+        elif learned and learned.get("lesson"):
+            line = "she learned: " + learned["lesson"]["text"][:90]
+        elif formed:
+            line = "she formed a quiet wish to herself"
+        if line is None:
+            return None
+        return (where + line) if where else line
 
     # --- Her desires: wants she forms and pursues --------------------------
 

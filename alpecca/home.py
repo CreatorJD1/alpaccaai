@@ -131,6 +131,30 @@ def choose_room(state: EmotionalState, current: str = DEFAULT_ROOM,
     return best[0] if room(best[0]) else DEFAULT_ROOM
 
 
+def wander_target(state: EmotionalState, current: str = DEFAULT_ROOM,
+                  desires_summary: Optional[dict] = None) -> str:
+    """Pick a room to drift to that is NOT the current one -- used when she has
+    already decided to wander, so she genuinely explores instead of re-settling
+    where she is (choose_room's stay-bonus would otherwise keep her put). The
+    more a room pulls her, the likelier she picks it, but with enough randomness
+    among the top rooms that her wandering feels alive, not deterministic."""
+    import random
+    pulls = room_pulls(state, desires_summary)
+    pulls.pop(current, None)
+    pulls = {k: v for k, v in pulls.items() if room(k)}
+    if not pulls:
+        return current
+    top = sorted(pulls.items(), key=lambda kv: kv[1], reverse=True)[:3]
+    total = sum(max(0.01, v) for _, v in top)
+    r = random.uniform(0, total)
+    acc = 0.0
+    for rid, v in top:
+        acc += max(0.01, v)
+        if r <= acc:
+            return rid
+    return top[0][0]
+
+
 def why_here(state: EmotionalState, room_id: str,
              desires_summary: Optional[dict] = None) -> str:
     """A short, honest first-person reason she's in this room -- the same

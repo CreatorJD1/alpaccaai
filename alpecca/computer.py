@@ -221,6 +221,7 @@ class TaskResult:
 def run_task(task: str,
              confirm: Callable[[Action], bool],
              status: Callable[[str], None],
+             on_cursor: Optional[Callable[[float, float], None]] = None,
              max_steps: Optional[int] = None) -> TaskResult:
     """Drive the computer toward `task`. `confirm(action) -> bool` is called
     for every consequential action and must return the person's decision;
@@ -272,6 +273,16 @@ def run_task(task: str,
                                   steps=history)
 
         status(f"{action.kind}: {action.target or action.text or action.keys}")
+        # Let the UI move her on-screen cursor marker to where she's acting, so
+        # her exploration is visible (a fraction of the screen, 0..1).
+        if on_cursor and action.coordinate:
+            try:
+                import pyautogui
+                sw, sh = pyautogui.size()
+                on_cursor((action.coordinate[0] / scale) / sw,
+                          (action.coordinate[1] / scale) / sh)
+            except Exception:
+                pass
         result = execute(action, scale)
         history.append(result)
 

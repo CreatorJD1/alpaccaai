@@ -147,8 +147,10 @@ def main() -> None:
         import requests, torch
         from PIL import Image
         from tha3.poser.modes.load_poser import load_poser
+        # THA3's util names this `rgba_to_numpy_image` (older drafts of this
+        # runner used a `pytorch_` prefix that doesn't exist in the repo).
         from tha3.util import extract_pytorch_image_from_filelike, \
-            pytorch_rgba_to_numpy_image
+            rgba_to_numpy_image
     except ImportError as exc:
         print("Talking-head mode needs THA3 + torch + requests + pillow.")
         print("Clone pkhungurn/talking-head-anime-3-demo, install its requirements,")
@@ -167,15 +169,28 @@ def main() -> None:
         sys.exit(1)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # Model choice is the first VRAM lever. On a small card (e.g. RTX 3050 4 GB)
-    # 'separable_half' uses roughly half the memory of 'standard_float', leaving
-    # room for a 4B LLM on the same GPU. Override with ALPECCA_THA3_MODEL.
+    # THA3 loads its weight files from the RELATIVE path "data/models/<kind>/..."
+    # resolved against the process's working directory. Our runner starts in the
+    # project root, where there are no models -- so we must run it from INSIDE the
+    # THA3 repo, where we vendored the weights. Resolve her portrait to an
+    # absolute path FIRST (so the chdir can't hide it), then chdir in and stay
+    # there for the whole render loop (THA3 lazy-loads each module on first use).
     import os as _os
+    img_abs = str(IMG_PATH.resolve())
+    if _THA3.exists():
+        _os.chdir(_THA3)
     model_kind = _os.environ.get("ALPECCA_THA3_MODEL", "separable_half")
-    print(f"Loading THA3 ({model_kind}) on {device} (first run downloads models)...")
+    # The *_half variants run in float16 to save VRAM (the whole reason we use
+    # separable_half on a small card). Their weights are Half, so the image and
+    # pose tensors we feed them must be Half too, or the first conv throws
+    # "expected scalar type Float but found Half". The *_float variants stay 32-bit.
+    half = model_kind.endswith("_half")
+    print(f"Loading THA3 ({model_kind}) on {device} from {_THA3} ...")
     poser = load_poser(model_kind, device)
     names = _name_index_map(poser)
-    image = extract_pytorch_image_from_filelike(str(IMG_PATH)).to(device).unsqueeze(0)
+    image = extract_pytorch_image_from_filelike(img_abs).to(device).unsqueeze(0)
+    if half:
+        image = image.half()
 
     print("Her face is live. Ctrl+C to stop.")
     import numpy as np
@@ -192,9 +207,12 @@ def main() -> None:
                     pass
                 last_pull = t
             pose_t = _build_pose(poser, names, pose_cache, t, speaking).to(device).unsqueeze(0)
+            if half:
+                pose_t = pose_t.half()
             with torch.no_grad():
                 out = poser.pose(image, pose_t)[0]
-            arr = pytorch_rgba_to_numpy_image(out.detach().cpu())
+            # Back to float32 before numpy so the half output converts cleanly.
+            arr = rgba_to_numpy_image(out.detach().cpu().float())
             frame = Image.fromarray(np.uint8(np.rint(arr * 255)), mode="RGBA").convert("RGB")
             buf = io.BytesIO(); frame.save(buf, format="JPEG", quality=85)
             try:

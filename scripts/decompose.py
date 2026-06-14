@@ -24,6 +24,7 @@ The rig-building half (this script's main job) is CPU-only and runs anywhere.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -36,7 +37,9 @@ sys.path.insert(0, str(ROOT / "vendor" / "alpecca-rigger"))
 from config import AVATAR_DIR
 
 OUT = AVATAR_DIR / "rigger"
-SEETHROUGH = ROOT / "vendor" / "see-through"
+# Where your See-Through checkout lives. Point ALPECCA_SEETHROUGH_DIR at it if it's
+# not vendored here (e.g. set ALPECCA_SEETHROUGH_DIR=C:\Users\Jason\see-through).
+SEETHROUGH = Path(os.environ.get("ALPECCA_SEETHROUGH_DIR", str(ROOT / "vendor" / "see-through")))
 
 
 def build_rig_from_psd(psd_path: Path) -> None:

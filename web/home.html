@@ -24,8 +24,9 @@
   html, body { margin:0; height:100%; background:#070b14; color:var(--ink);
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; }
   #scene { position:fixed; inset:0; }
-  .hud { position:fixed; left:18px; top:16px; max-width:340px; z-index:10;
-    pointer-events:none; }
+  .hud { position:fixed; left:80px; top:16px; max-width:300px; z-index:10;
+    pointer-events:none; background:rgba(8,14,26,.55); backdrop-filter:blur(6px);
+    padding:10px 14px; border-radius:12px; }
   .room-name { font-size:26px; font-weight:650; letter-spacing:.2px;
     text-shadow:0 0 18px rgba(127,217,255,.35); }
   .why { color:var(--dim); margin-top:4px; font-size:14px; line-height:1.4; }
@@ -41,7 +42,7 @@
   .pull .bar { flex:1; height:6px; border-radius:6px; background:#16203a; overflow:hidden; }
   .pull .bar i { display:block; height:100%; background:linear-gradient(90deg,#3a6,#7fd9ff); }
   .pull.here .label { color:var(--core); font-weight:650; }
-  .foot { position:fixed; left:18px; bottom:14px; z-index:10; font-size:12px;
+  .foot { position:fixed; left:80px; bottom:14px; z-index:10; font-size:12px;
     color:var(--dim); }
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%;
     background:#3a6; margin-right:6px; vertical-align:middle; }
@@ -116,6 +117,19 @@
   .facet .item .meta { color:var(--dim); font-size:11px; margin-top:3px; }
   .facet .bar2 { height:6px; border-radius:6px; background:#16203a; overflow:hidden; margin-top:5px; }
   .facet .bar2 i { display:block; height:100%; background:linear-gradient(90deg,#3a6,#7fd9ff); }
+  .facet .badge { display:inline-block; font-size:9px; letter-spacing:.06em; text-transform:uppercase;
+    padding:2px 7px; border-radius:10px; background:#16243f; color:var(--core); margin-right:6px; }
+  .facet .item.emph { border-color:#2a3d63; background:rgba(127,217,255,.06); }
+  .facet .item .ttl { font-weight:600; color:var(--ink); }
+  .facet .fbtn { display:inline-flex; align-items:center; gap:6px; margin:4px 6px 4px 0;
+    padding:8px 14px; border-radius:9px; border:1px solid #2a3d63; background:#101a30;
+    color:var(--core); cursor:pointer; font-size:12px; }
+  .facet .fbtn:hover { background:#16243f; }
+  .facet .fhero { display:flex; gap:10px; align-items:center; margin-bottom:8px; }
+  .facet .fhero img { width:54px; height:54px; border-radius:10px; object-fit:cover;
+    object-position:top center; border:1px solid #1d2a47; background:#0a1018; }
+  .facet .fico { font-size:14px; margin-right:7px; opacity:.85; }
+  .facet .empty { color:var(--dim); font-size:12px; padding:10px 2px; }
   /* voice / camera / cowork controls in the chat bar */
   .chatrow .feat { width:32px; height:32px; min-width:32px; border-radius:50%;
     border:1px solid #1d2a47; background:transparent; color:var(--dim); font-size:14px;
@@ -159,6 +173,33 @@
     border-radius:14px; border:1px solid #1d2a47; opacity:0; transition:opacity .5s ease;
     pointer-events:none; max-width:62vw; text-align:center; }
   .activity.show { opacity:1; }
+  /* dedicated screen-share view -- she sits at her desk and watches with you */
+  .sharescreen { position:fixed; inset:0; z-index:18; display:none;
+    flex-direction:column; align-items:center; justify-content:center; gap:10px;
+    background:radial-gradient(900px 500px at 50% 24%, rgba(127,217,255,.07), transparent 60%), rgba(6,9,15,.97); }
+  .sharescreen.show { display:flex; }
+  .desk-scene { position:relative; width:min(92vw,980px); height:60vh; }
+  /* her figure, behind, lit from her screen */
+  .share-her { position:absolute; left:50%; bottom:2%; transform:translateX(-50%);
+    height:100%; object-fit:contain; object-position:bottom center; z-index:1;
+    filter:drop-shadow(0 8px 30px rgba(0,0,0,.55)); }
+  /* the shared screen, framed as a monitor in front of her */
+  .share-monitor { position:absolute; left:50%; bottom:9%; transform:translateX(-50%);
+    width:min(54vw,600px); aspect-ratio:16/10; background:#000; border-radius:8px;
+    border:6px solid #161d2b; overflow:hidden; z-index:2;
+    box-shadow:0 18px 44px rgba(0,0,0,.6), 0 0 26px rgba(127,217,255,.14); }
+  .share-monitor video { width:100%; height:100%; object-fit:contain; background:#000; display:block; }
+  .monitor-stand { position:absolute; left:50%; bottom:6%; transform:translateX(-50%) translateY(60%);
+    width:64px; height:20px; background:#161d2b; border-radius:0 0 7px 7px; z-index:2; }
+  .desk-surface { position:absolute; left:50%; bottom:0; transform:translateX(-50%);
+    width:130%; height:13%; background:linear-gradient(#0f1830,#070b14);
+    border-top:1px solid #233a5c; z-index:3; }
+  .sharescreen .cap { max-width:72vw; text-align:center; color:var(--core); font-size:14px; min-height:20px; }
+  .sharescreen .hint { color:var(--dim); font-size:12px; }
+  .sharescreen .ctl { display:flex; gap:10px; }
+  .sharescreen .ctl button { padding:8px 16px; border-radius:10px; border:1px solid #1d2a47;
+    background:#101a30; color:var(--ink); cursor:pointer; font-size:13px; }
+  .sharescreen .ctl button.go { background:var(--core); color:#06121c; border:0; font-weight:600; }
 </style>
 </head>
 <body>
@@ -173,6 +214,25 @@
 
 <!-- activity ticker: her autonomous acts (roamed, reflected, learned, formed a wish) -->
 <div class="activity" id="activity"></div>
+
+<!-- dedicated screen-share view: she sits at her desk and watches the screen with you -->
+<div class="sharescreen" id="sharescreen">
+  <div class="desk-scene">
+    <img class="share-her" id="shareHer" src="/avatar/expression/thinking" alt="her watching" />
+    <div class="share-monitor">
+      <video id="shareVideo" autoplay muted playsinline></video>
+    </div>
+    <div class="monitor-stand"></div>
+    <div class="desk-surface"></div>
+  </div>
+  <div class="cap" id="shareCap"></div>
+  <div class="hint" id="shareHint">Share a window or your screen — she'll watch it with you at her desk.</div>
+  <div class="ctl">
+    <button class="go" id="shareStart">Share my screen</button>
+    <button id="shareStop">Stop sharing</button>
+    <button id="shareClose">Close</button>
+  </div>
+</div>
 
 <!-- her own cursor: appears and moves as she works the desktop (cowork) -->
 <div class="hercursor" id="hercursor" aria-hidden="true">
@@ -311,6 +371,7 @@ function init(){
   buildPullsUI();
   buildNav();                        // super-app facet rail
   initChat();                        // integrated chat dock + voice/cam/cowork
+  initShare();                       // dedicated screen-share desk view
   connectWS();                       // chat + lip-sync + live state, one socket
   loadSkeleton();                    // ground her resting tilt in her real figure
   setInterval(updateProfile, 220);   // live face: expression from her mood
@@ -318,6 +379,33 @@ function init(){
   pollSight(); setInterval(pollSight, 4000);   // live senses indicator + her cursor
   poll(); setInterval(poll, 3000);
   animate();
+}
+
+/* Tier 0a -- her rigger figure: a full-body posed render streamed from
+   scripts/run_rigger.py (CPU, her decomposed art, changes pose with her mood).
+   Best tier for the laptop (no GPU). Falls through if the runner isn't up. */
+function tryRigger(){
+  return new Promise(resolve=>{
+    fetch("/rigger/manifest",{cache:"no-store"}).then(r=>r.json()).then(m=>{
+      if(!m || !m.rigger_mode){ resolve(false); return; }
+      const cvs=document.createElement("canvas"); cvs.width=2; cvs.height=2;
+      const cx=cvs.getContext("2d");
+      const t=new THREE.CanvasTexture(cvs); t.minFilter=THREE.LinearFilter; t.generateMipmaps=false;
+      const mat=new THREE.SpriteMaterial({map:t, transparent:true});
+      const sp=new THREE.Sprite(mat); sp.scale.set(3.0,4.2,1); sp.userData.baseScale=[3.0,4.2];
+      her.add(sp); her.userData.rig=false; her.userData.layers={body:[sp]}; her.userData.liveTex=t;
+      const img=new Image(); let n=0;
+      img.onload=()=>{
+        if(cvs.width!==img.width){ cvs.width=img.width; cvs.height=img.height;
+          const a=img.width/img.height; sp.scale.set(4.2*a,4.2,1); sp.userData.baseScale=[4.2*a,4.2]; }
+        cx.clearRect(0,0,cvs.width,cvs.height); cx.drawImage(img,0,0); t.needsUpdate=true;
+        setTimeout(()=>{ img.src="/rigger/frame?t="+(++n); }, 400);
+      };
+      img.onerror=()=>{ setTimeout(()=>{ img.src="/rigger/frame?t="+(++n); }, 600); };
+      img.src="/rigger/frame?t="+(++n);
+      resolve(true);
+    }).catch(()=>resolve(false));
+  });
 }
 
 /* Tier 0 -- THA3 neural frames. When the GPU runner is pushing frames
@@ -414,7 +502,10 @@ async function loadAvatar(){
   // Clear whatever's there.
   while(her.children.length) her.remove(her.children[0]);
   her.userData.liveTex=null; her.userData.poseSwap=null;
-  // Tier 0: THA3 neural animation (best, GPU only). Active when the runner is up.
+  // Tier 0a: her rigger figure (full-body posed render, CPU, her art). Best for
+  // the laptop -- no GPU. Active when scripts/run_rigger.py is running.
+  if(await tryRigger()) return;
+  // Tier 0b: THA3 neural face (GPU only). Active when that runner is up.
   if(await tryTalkingHead()) return;
   // Tier 1: crisp real-art POSE SWAP -- her own idle/thinking/speaking art,
   // switched by what she's doing, with breathing/sway. No GPU, no warp. Default.
@@ -528,14 +619,45 @@ function connectWS(){
       const ms = Math.max(1200, Math.min(9000, m.reply.length*55));  // ~55ms/char
       speakingUntil = performance.now() + ms;
       if(m.state) state.pose = {...state.pose, ...poseFromState(m.state)};
+      // If she moved rooms because you asked, follow her right away.
+      if(m.location){ state.location=m.location; renderHUD(); if(m.moved) showActivity("she went to the "+m.location); }
       addMsg(m.reply, "her");
       speak(m.reply);                                  // 🔊 if enabled
-      if(m.type==="reply"){ waitingReply=false; setSendEnabled(true); }
+      if(m.type==="reply"){ waitingReply=false; setSendEnabled(true);
+        if(_replyWatchdog){ clearTimeout(_replyWatchdog); _replyWatchdog=null; } }
     }
     // Her autonomous acts (roamed, reflected, learned, formed a wish) -> ticker.
     else if(m.type==="activity" && m.text){ showActivity(m.text); }
+    // Watch her design: her studio steps stream into the Studio panel feed.
+    else if(m.type==="studio_status" && m.text){
+      const f=document.getElementById("studioFeed"); if(f) f.textContent="· "+m.text;
+      showActivity("studio: "+m.text);
+    }
+    else if(m.type==="studio_done"){
+      const f=document.getElementById("studioFeed");
+      if(f) f.textContent="✓ "+((m.verdict||m.summary)||"design session done");
+      if(openFacet==="studio") setTimeout(()=>showFacet("studio"), 600);  // refresh gallery
+    }
+    // Observatory: her reaction to whatever you're watching together.
+    else if(m.type==="watch_reaction"){
+      const w=m.watching||{};
+      const now=document.getElementById("obNow"); if(now) now.style.display=w.title?"":"none";
+      const t=document.getElementById("obTitle"); if(t&&w.title) t.textContent=w.title;
+      const rw=document.getElementById("obReaction"), rt=document.getElementById("obReactionTxt");
+      if(rt&&w.reaction){ rt.textContent=w.reaction; if(rw) rw.style.display=""; }
+      const ask=document.getElementById("obAsk"); if(ask) ask.style.display=w.title?"":"none";
+      if(w.reaction) showActivity("she said something about what you're watching");
+    }
     // Cowork (computer use) progress, confirmations, and completion.
     else if(m.type==="computer_status" && m.text){ addMsg("· "+m.text, "her"); }
+    // Her cursor moves to where she's working the desktop (screen fraction).
+    else if(m.type==="computer_cursor"){
+      const hc=document.getElementById("hercursor"); if(hc){
+        hc.classList.add("show");
+        hc.style.left=Math.max(0,Math.min(1,m.x))*window.innerWidth+"px";
+        hc.style.top =Math.max(0,Math.min(1,m.y))*window.innerHeight+"px";
+      }
+    }
     else if(m.type==="computer_done"){
       addMsg(m.ok ? ("✓ "+(m.summary||"done")) : ("stopped: "+(m.error||"")), "her");
     }
@@ -562,12 +684,19 @@ function showActivity(text){
   el.textContent="· "+text+" ·"; el.classList.add("show");
   clearTimeout(actTimer); actTimer=setTimeout(()=>el.classList.remove("show"), 6500);
 }
+let _replyWatchdog=null;
 function sendChat(){
   const inp=document.getElementById("chatin"); const t=(inp.value||"").trim();
   if(!t || !appWS || appWS.readyState!==1 || waitingReply) return;
   addMsg(t,"me"); inp.value="";
   waitingReply=true; setSendEnabled(false);
-  try{ appWS.send(JSON.stringify({text:t})); }catch(e){ waitingReply=false; setSendEnabled(true); }
+  // Safety: never lock the input forever if a reply is slow or lost. After a
+  // generous window, re-enable so the person can always type again (the mic
+  // path used to leave the box stuck disabled when no reply came back).
+  if(_replyWatchdog) clearTimeout(_replyWatchdog);
+  _replyWatchdog=setTimeout(()=>{ waitingReply=false; setSendEnabled(true); }, 180000);
+  try{ appWS.send(JSON.stringify({text:t})); }
+  catch(e){ waitingReply=false; setSendEnabled(true); }
 }
 function initChat(){
   const inp=document.getElementById("chatin"), btn=document.getElementById("chatsend");
@@ -587,8 +716,26 @@ function pickVoice(){
         || vs.find(v=>/^en-(us|gb)/i.test(v.lang))
         || vs.find(v=>/^en/i.test(v.lang)) || vs[0];
 }
-function speak(text){
-  if(!ttsOn || !window.speechSynthesis || !text) return;
+let _ttsAudio=null;
+async function speak(text){
+  if(!ttsOn || !text) return;
+  // Her real voice first: ask the server to synthesize (Kokoro/edge-tts). If no
+  // engine is installed it answers 204 and we fall back to the browser voice.
+  try{
+    const r=await fetch("/tts",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({text})});
+    if(r.ok && r.status!==204){
+      const blob=await r.blob();
+      if(_ttsAudio){ try{_ttsAudio.pause();}catch(e){} }
+      _ttsAudio=new Audio(URL.createObjectURL(blob));
+      _ttsAudio.play().catch(()=>speakBrowser(text));
+      return;
+    }
+  }catch(e){}
+  speakBrowser(text);
+}
+function speakBrowser(text){
+  if(!window.speechSynthesis || !text) return;
   try{
     if(!_voice) pickVoice();
     const u=new SpeechSynthesisUtterance(text);
@@ -608,7 +755,8 @@ function initFeatures(){
   // Speak her replies aloud (browser TTS -- no install). Voices load async.
   if(window.speechSynthesis){ speechSynthesis.onvoiceschanged=pickVoice; pickVoice(); }
   tt.onclick=()=>{ ttsOn=!ttsOn; tt.classList.toggle("on",ttsOn);
-    if(!ttsOn && window.speechSynthesis) speechSynthesis.cancel(); };
+    if(!ttsOn){ if(window.speechSynthesis) speechSynthesis.cancel();
+      if(_ttsAudio){ try{_ttsAudio.pause();}catch(e){} } } };
 
   // Hold-to-talk: record, POST to /listen (faster-whisper), send the words.
   async function startRec(){
@@ -670,58 +818,209 @@ function initFeatures(){
 }
 
 /* ===== Facet panels: one shell over her existing endpoints ===== */
+function bar(v){ return `<div class="bar2"><i style="width:${Math.round(Math.max(0,Math.min(1,v))*100)}%"></i></div>`; }
+function studioWork(){ fetch("/studio/work",{method:"POST"}).catch(()=>{}); showActivity("she stepped into her studio to design"); }
+// Studio mini-screen: stream her live rigger figure into the panel. If the
+// rigger isn't running (no frame), show a placeholder instead -- no dependency
+// on a manifest, just try the frame and react to load/error.
+let _studioTimer=null;
+function studioScreenStart(){
+  studioScreenStop();
+  const img=document.getElementById("studioScreen"), ph=document.getElementById("studioPh");
+  if(!img) return;
+  img.onload=()=>{ img.style.display=""; if(ph) ph.style.display="none"; };
+  img.onerror=()=>{ img.style.display="none"; if(ph) ph.style.display=""; };
+  const tick=()=>{ img.src="/rigger/frame?t="+Date.now(); };
+  tick(); _studioTimer=setInterval(tick, 800);
+}
+function studioScreenStop(){ if(_studioTimer){ clearInterval(_studioTimer); _studioTimer=null; } }
+// Voice visualizer: a read-only live view of how SHE steers her own voice.
+function voicePanelHTML(d){
+  d=d||{};
+  const clamp=(x)=>Math.max(0,Math.min(1,x));
+  const pb=clamp(((d.pitch||1)-0.88)/(1.30-0.88));
+  const vb=clamp(((d.volume||1)-0.65)/0.70);
+  const val=clamp(((d.valence||0)+1)/2);
+  let h=`<div class="fhero"><span class="fico">🎙</span><div><div class="ttl">Her voice</div>
+    <div class="meta">she steers it herself from how she feels — you're watching, not setting it</div></div></div>`;
+  h+=`<div class="item emph"><span class="badge">${esc(d.voice||"af_heart")}</span> tone <b>${esc(d.tone||"even")}</b> · anime baseline ${d.baseline||"—"}</div>`;
+  h+=`<h5>What she's doing with her voice</h5>`;
+  h+=`<div class="item">pitch <b>${d.pitch||"—"}</b>${bar(pb)}</div>`;
+  h+=`<div class="item">volume <b>${d.volume||"—"}</b>${bar(vb)}</div>`;
+  h+=`<h5>Driven by her feeling, right now</h5>`;
+  h+=`<div class="item">energy <b>${d.arousal||"—"}</b>${bar(d.arousal||0)}</div>`;
+  h+=`<div class="item">mood <b>${d.valence||"—"}</b>${bar(val)}</div>`;
+  h+=`<div class="item">intensity <b>${d.intensity||"—"}</b>${bar(d.intensity||0)}</div>`;
+  return h;
+}
+let _voiceTimer=null;
+function voicePollStart(){ voicePollStop();
+  const tick=()=>{ fetch("/voice",{cache:"no-store"}).then(r=>r.json()).then(d=>{
+    if(openFacet==="voice"){ const b=document.getElementById("facetBody"); if(b) b.innerHTML=voicePanelHTML(d); }
+  }).catch(()=>{}); };
+  tick(); _voiceTimer=setInterval(tick, 700);   // watch her modulate live
+}
+function voicePollStop(){ if(_voiceTimer){ clearInterval(_voiceTimer); _voiceTimer=null; } }
+// In-app rigging: upload her PSD/art, build her rig, run her figure -- no batch.
+async function uploadStudio(input, kind){
+  const f=input&&input.files&&input.files[0]; if(!f) return;
+  showActivity("uploading "+f.name+"…");
+  try{
+    const buf=await f.arrayBuffer();
+    const r=await fetch("/studio/upload?kind="+kind,{method:"POST",body:buf});
+    const d=await r.json();
+    if(d.ok){ showActivity("saved "+d.saved); if(kind==="psd") buildRig(); }
+    else showActivity("upload failed: "+(d.error||""));
+  }catch(e){ showActivity("upload failed"); }
+}
+function buildRig(){ showActivity("building her figure from the PSD…");
+  fetch("/rigger/build",{method:"POST"}).catch(()=>{}); }
+function riggerStart(){ fetch("/rigger/start",{method:"POST"}).then(r=>r.json()).then(d=>{
+  showActivity(d.ok?"her figure is starting…":"couldn't start her figure"); studioScreenStart(); }).catch(()=>{}); }
+function riggerStop(){ fetch("/rigger/stop",{method:"POST"}).catch(()=>{}); showActivity("her figure stopped"); }
+// Observatory: watch a video together. Pull the YouTube id so it plays inline.
+function ytId(u){ try{ const url=new URL(u);
+  if(url.hostname.includes("youtu.be")) return url.pathname.slice(1);
+  if(url.searchParams.get("v")) return url.searchParams.get("v");
+  const m=url.pathname.match(/\/embed\/([^/?]+)/); if(m) return m[1];
+}catch(e){} return ""; }
+function ytEmbed(u){ const id=ytId(u);
+  if(id) return `<iframe width="100%" height="190" style="border-radius:10px;border:0" src="https://www.youtube.com/embed/${id}" allow="autoplay; encrypted-media" allowfullscreen></iframe>`;
+  return `<div class="item"><a href="${esc(u)}" target="_blank" rel="noopener">open the video ↗</a></div>`; }
+function obWatch(){ const inp=document.getElementById("obUrl"); let v=(inp&&inp.value||"").trim(); if(!v) return;
+  let title=v, url=""; if(/^https?:/i.test(v)){ url=v; title="this video"; }
+  const sc=document.getElementById("obScreen"); if(sc&&url) sc.innerHTML=ytEmbed(url);
+  fetch("/observatory/watch",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({title,url})}).catch(()=>{});
+  showActivity("she settled in to watch with you"); }
+function obReact(){ fetch("/observatory/react",{method:"POST",headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({})}).catch(()=>{}); showActivity("you asked what she thinks…"); }
+// Person recognition: record ~5s and teach her your (creator's) voice.
+async function enrollVoice(){
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    const rec=new MediaRecorder(stream); const chunks=[];
+    rec.ondataavailable=e=>{ if(e.data&&e.data.size) chunks.push(e.data); };
+    rec.onstop=async ()=>{
+      stream.getTracks().forEach(t=>t.stop());
+      try{
+        const r=await fetch("/people/enroll_voice",{method:"POST",body:new Blob(chunks,{type:"audio/webm"})});
+        const d=await r.json();
+        showActivity(d.ok ? "she learned your voice — she'll know it's you" :
+          "couldn't learn your voice (needs: pip install resemblyzer)");
+        if(openFacet==="senses") setTimeout(()=>showFacet("senses"),500);
+      }catch(e){ showActivity("voice enroll failed"); }
+    };
+    rec.start(); showActivity("listening… say a sentence or two");
+    setTimeout(()=>{ try{rec.stop();}catch(e){} }, 5000);   // ~5s sample
+  }catch(e){ alert("Microphone unavailable: "+(e&&e.message||e)); }
+}
 const FACETS={
   studio:{title:"Studio", url:"/character", render:d=>{
-    const s=d.sheet||{}; let h="";
-    h+=`<h5>Her character sheet</h5><div class="item">${esc(s.form||s.description||"(she hasn't written one yet)")}</div>`;
+    const s=d.sheet||{};
+    let h=`<div class="fhero"><img src="/avatar/expression/playful" alt="her"/>
+      <div><div class="ttl">Her design studio</div><div class="meta">where she shapes how she looks</div></div></div>`;
+    h+=`<h5>Her character sheet</h5><div class="item emph">${esc(s.form||s.description||"(she hasn't written one yet)")}</div>`;
+    h+=`<h5>Her design screen</h5>
+      <div style="position:relative;background:#0b1426;border:1px solid #24345a;border-radius:10px;min-height:160px;display:flex;align-items:center;justify-content:center;overflow:hidden">
+        <img id="studioScreen" style="max-width:100%;max-height:240px;display:none" alt="her figure"/>
+        <div id="studioPh" class="meta" style="padding:18px;text-align:center;line-height:1.5">her live figure shows here once it's built and running. Use the buttons below — no batch files.</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+        <div class="fbtn" style="margin:0" onclick="riggerStart()">▶ Start figure</div>
+        <div class="fbtn" style="margin:0" onclick="riggerStop()">■ Stop</div>
+        <label class="fbtn" style="margin:0">⬆ Upload layered PSD<input type="file" accept=".psd" style="display:none" onchange="uploadStudio(this,'psd')"></label>
+        <label class="fbtn" style="margin:0">🖼 Upload her art<input type="file" accept="image/*" style="display:none" onchange="uploadStudio(this,'art')"></label>
+      </div>
+      <div class="meta" style="margin-top:6px">See-Through (art → layers) runs free on its <a href="https://huggingface.co/spaces/24yearsold/see-through-demo" target="_blank" rel="noopener">HF Space</a> on a 4&nbsp;GB card; decompose there, then <b>Upload layered PSD</b> here and she builds + runs herself.</div>`;
+    h+=`<h5>Watch her design</h5>
+      <div class="fbtn" onclick="studioWork()">✦ Ask her to design now</div>
+      <div id="studioFeed" class="item" style="min-height:34px">her studio is quiet. Press the button and watch her work — she renders a design, looks at it, judges it against her sheet, and iterates.</div>`;
     if(d.gallery&&d.gallery.length){ h+="<h5>Kept designs</h5>"; d.gallery.slice(0,6).forEach(g=>
-      h+=`<div class="item">${esc(g.because||g.reason||"kept")}</div>`); }
+      h+=`<div class="item"><span class="badge">kept</span>${esc(g.because||g.reason||"a design she liked")}</div>`); }
     return h; }},
   library:{title:"Library", url:"/memories", render:d=>{
-    let h=`<h5>${(d.count||0)} memories</h5>`;
-    (d.recent||[]).slice(0,20).forEach(m=> h+=`<div class="item">${esc((m.content||"").slice(0,160))}<div class="meta">${m.kind||""}</div></div>`);
+    let h=`<div class="fhero"><span class="fico">▤</span><div><div class="ttl">${(d.count||0)} memories</div>
+      <div class="meta">the moments and musings she keeps</div></div></div>`;
+    if(!(d.recent||[]).length) h+="<div class='empty'>no memories yet</div>";
+    (d.recent||[]).slice(0,24).forEach(m=> h+=`<div class="item"><span class="badge">${m.kind||"moment"}</span>${esc((m.content||"").slice(0,170))}</div>`);
     return h; }},
   journal:{title:"Journal", url:"/journal", render:d=>{
-    let h=""; const oq=d.open_questions||[];
-    if(oq.length){ h+="<h5>Open questions she's working through</h5>"; oq.forEach(q=> h+=`<div class="item">${esc(q.body||"")}</div>`); }
-    h+="<h5>Recent entries</h5>"; (d.recent||[]).slice(0,16).forEach(e=>
-      h+=`<div class="item">${esc((e.body||"").slice(0,180))}<div class="meta">${e.kind||""}${e.mood?" · "+e.mood:""}</div></div>`);
-    return h||"<div class='item'>her notebook is empty</div>"; }},
+    let h=`<div class="fhero"><span class="fico">✑</span><div><div class="ttl">Her journal</div>
+      <div class="meta">notes, dreams, and questions she works through alone</div></div></div>`;
+    const oq=d.open_questions||[];
+    if(oq.length){ h+="<h5>Questions she's pondering</h5>"; oq.forEach(q=>
+      h+=`<div class="item emph"><span class="fico">?</span>${esc(q.body||"")}</div>`); }
+    h+="<h5>Recent entries</h5>";
+    if(!(d.recent||[]).length) h+="<div class='empty'>her notebook is empty</div>";
+    (d.recent||[]).slice(0,16).forEach(e=> h+=`<div class="item"><span class="badge">${e.kind||"note"}</span>${esc((e.body||"").slice(0,190))}${e.mood?`<div class="meta">felt ${esc(e.mood)}</div>`:""}</div>`);
+    return h; }},
+  voice:{title:"Voice", url:"/voice", render:d=>voicePanelHTML(d)},
+  observatory:{title:"Observatory", url:"/observatory", render:d=>{
+    let h=`<div class="fhero"><span class="fico">🔭</span><div><div class="ttl">Her observatory</div>
+      <div class="meta">where she watches — a video with you, or you</div></div></div>`;
+    h+=`<h5>Watch together</h5>
+      <div style="display:flex;gap:6px;margin:6px 0">
+        <input id="obUrl" placeholder="paste a YouTube link…" style="flex:1;background:#0e1830;border:1px solid #24345a;color:#cfe0ff;border-radius:8px;padding:8px"/>
+        <div class="fbtn" style="margin:0" onclick="obWatch()">▶ Watch</div></div>
+      <div id="obScreen" class="obscreen">${d.watching&&d.watching.url?ytEmbed(d.watching.url):""}</div>`;
+    h+=`<div id="obNow" class="item emph" style="${d.watching?"":"display:none"}">
+        <span class="badge">watching</span><span id="obTitle">${d.watching?esc(d.watching.title):""}</span></div>
+      <div id="obReaction" class="item" style="${d.watching&&d.watching.reaction?"":"display:none"}">
+        <span class="fico">❝</span><span id="obReactionTxt">${d.watching&&d.watching.reaction?esc(d.watching.reaction):""}</span></div>
+      <div class="fbtn" id="obAsk" onclick="obReact()" style="${d.watching?"":"display:none"}">✦ What do you think?</div>`;
+    if(!d.watching) h+=`<div class="empty">nothing playing yet — paste a link and she'll watch it with you</div>`;
+    h+=`<h5>Watch you</h5>
+      <div class="item"><span class="fico">📷</span><span class="ttl">webcam</span>
+        <span class="badge" style="background:${d.face_active?"#16243f":"#16203a"};color:${d.face_active?"#7fd9ff":"#8aa0c6"}">${d.face_active?"on":"off"}</span>
+        <div class="meta">${d.face_active?"she can see you — a weary face lifts her compassion (frames are never stored)":"off — launch with start_full.bat so she can watch you (ALPECCA_FACE=1)"}</div></div>`;
+    return h; }},
   mind:{title:"Mind", url:"/soul", render:d=>{
-    let h="<h5>What she's most moved to do</h5>";
-    if(d.focus) h+=`<div class="item">${esc(d.focus.action)}<div class="meta">${esc(d.focus.reason)}</div></div>`;
+    let h=`<div class="fhero"><span class="fico">◉</span><div><div class="ttl">Her Soul</div>
+      <div class="meta">seven subagents, one focus</div></div></div>`;
+    h+="<h5>What she's most moved to do</h5>";
+    if(d.focus) h+=`<div class="item emph"><div class="ttl">${esc(d.focus.action)}</div><div class="meta">${esc(d.focus.reason)}</div></div>`;
     h+="<h5>Her subagents</h5>";
-    (d.slate||[]).forEach(i=> h+=`<div class="item">${esc(i.subagent)} — ${esc(i.action)}<div class="meta">${i.category} · ${esc(i.reason)}</div></div>`);
-    if(d.principle) h+=`<div class="meta" style="margin-top:8px">${esc(d.principle)}</div>`;
+    (d.slate||[]).forEach(i=> h+=`<div class="item"><span class="badge">${i.category}</span><span class="ttl">${esc(i.subagent)}</span> — ${esc(i.action)}<div class="meta">${esc(i.reason)}</div></div>`);
+    if(d.principle) h+=`<div class="meta" style="margin-top:10px">${esc(d.principle)}</div>`;
     return h; }},
   workshop:{title:"Workshop", url:"/growth", render:d=>{
-    let h="<h5>What she wants</h5>";
-    (d.desires||[]).forEach(x=> h+=`<div class="item">${esc(x.text)}<div class="meta">${x.kind} · strength ${(x.strength||0).toFixed(2)}</div></div>`);
+    let h=`<div class="fhero"><span class="fico">⚙</span><div><div class="ttl">Her workshop</div>
+      <div class="meta">the goals she sets and the changes she makes to herself</div></div></div>`;
+    h+="<h5>What she wants</h5>";
+    if(!(d.desires||[]).length) h+="<div class='empty'>no active wants</div>";
+    (d.desires||[]).forEach(x=> h+=`<div class="item"><span class="badge">${x.kind}</span>${esc(x.text)}${bar(x.strength||0)}</div>`);
     h+="<h5>What she's learned about herself</h5>";
-    (d.lessons||[]).forEach(x=> h+=`<div class="item">${esc(x.text)}<div class="meta">${esc(x.evidence||"")}</div></div>`);
+    if(!(d.lessons||[]).length) h+="<div class='empty'>no lessons yet — she draws them from her own history</div>";
+    (d.lessons||[]).forEach(x=> h+=`<div class="item emph">${esc(x.text)}<div class="meta">${esc(x.evidence||"")}</div></div>`);
     h+="<h5>Changes she's made to herself</h5>";
-    (d.revisions||[]).slice(0,8).forEach(r=> h+=`<div class="item">${esc(r.param)}: ${(r.old_value||0).toFixed(3)}→${(r.new_value||0).toFixed(3)} <span class="meta">(${r.status})</span></div>`);
-    return h||"<div class='item'>nothing yet</div>"; }},
-  files:{title:"Workstation", url:"/desktop", render:d=>{
-    let h=`<h5>${d.note||""}</h5>`;
-    (d.rooms||[]).forEach(r=> h+=`<div class="item">${r.root} <span class="meta">${r.count} items</span></div>`);
+    if(!(d.revisions||[]).length) h+="<div class='empty'>none yet</div>";
+    (d.revisions||[]).slice(0,8).forEach(r=> h+=`<div class="item"><span class="badge">${r.status}</span>${esc(r.param)}: ${(r.old_value||0).toFixed(3)} → ${(r.new_value||0).toFixed(3)}</div>`);
     return h; }},
-  senses:{title:"Senses & Workspace", url:"/sight", render:d=>{
-    const row=(label,on)=>`<div class="item">${label}: <b style="color:${on?'#7fd9ff':'#8aa0c6'}">${on?"on":"off"}</b></div>`;
-    let h="<h5>What she can sense</h5>";
-    h+=row("👁 screen sight", d.screen_active);
-    h+=row("🎤 voice tone", d.voice_active);
-    h+=row("📷 webcam expression", d.face_active);
-    h+=row("🖥 cowork (computer use)", d.computer_use);
-    if(d.busy) h+="<div class='item'>· she's working on a task right now…</div>";
-    if(d.screen) h+="<h5>What she last saw on your screen</h5><div class='item'>"+esc(d.screen)+"</div>";
-    if(!d.screen_active && !d.computer_use)
-      h+="<div class='meta' style='margin-top:10px'>most senses are off — launch with <b>start_full.bat</b> to turn them on.</div>";
+  files:{title:"Workstation", url:"/desktop", render:d=>{
+    let h=`<div class="fhero"><span class="fico">🗂</span><div><div class="ttl">Her workstation</div>
+      <div class="meta">${esc(d.note||"")}</div></div></div>`;
+    (d.rooms||[]).forEach(r=> h+=`<div class="item"><span class="fico">📁</span><span class="ttl">${r.root}</span><span class="meta"> · ${r.count} items</span></div>`);
+    return h; }},
+  senses:{title:"Senses", url:"/sight", render:d=>{
+    const row=(ic,label,on,extra)=>`<div class="item"><span class="fico">${ic}</span><span class="ttl">${label}</span> <span class="badge" style="background:${on?'#16243f':'#16203a'};color:${on?'#7fd9ff':'#8aa0c6'}">${on?"on":"off"}</span>${extra||""}</div>`;
+    let h=`<div class="fhero"><span class="fico">◍</span><div><div class="ttl">What she can sense</div>
+      <div class="meta">${d.busy?"she's working on a task right now…":"her live perception"}</div></div></div>`;
+    h+=row("👁","screen sight",d.screen_active);
+    h+=row("🎤","voice tone",d.voice_active);
+    h+=row("📷","webcam",d.face_active);
+    h+=row("🖥","cowork",d.computer_use);
+    if(d.screen) h+=`<h5>What she last saw</h5><div class="item emph">${esc(d.screen)}</div>`;
+    if(!d.screen_active && !d.computer_use) h+="<div class='meta' style='margin-top:10px'>most senses are off — launch with <b>START_HERE.bat</b>.</div>";
+    h+=`<h5>Who she's with</h5>
+      <div class="item"><span class="fico">🪪</span><span class="ttl">voice recognition</span>
+        <div class="meta">she treats you as her creator by default; teach her your voice and she'll tell you from a guest</div></div>
+      <div class="fbtn" onclick="enrollVoice()">🎙 Teach her my voice (5s)</div>`;
     return h; }},
   games:{title:"Play", url:"/games", render:d=>{
-    let h="<h5>Browser games she can play (for fun)</h5>";
-    (d.games||[]).forEach(g=> h+=`<div class="item" style="cursor:pointer" onclick="window.open('${g.url}','_blank')">${g.emoji||"🎮"} ${esc(g.name)} <span class="meta">${esc(g.url)}</span></div>`);
-    h+="<div class='meta' style='margin-top:8px'>Her charter lets her open these as supervised entertainment; click one to open it.</div>";
+    let h=`<div class="fhero"><span class="fico">🎮</span><div><div class="ttl">Play</div>
+      <div class="meta">games she can open for fun (her charter allows it)</div></div></div>`;
+    (d.games||[]).forEach(g=> h+=`<div class="item" style="cursor:pointer" onclick="window.open('${g.url}','_blank')"><span class="fico">${g.emoji||"🎮"}</span><span class="ttl">${esc(g.name)}</span></div>`);
     return h; }},
 };
 let openFacet=null;
@@ -732,21 +1031,26 @@ function showFacet(key){
   document.getElementById("facetTitle").textContent=f.title;
   const body=document.getElementById("facetBody"); body.innerHTML="<div class='meta'>loading…</div>";
   document.getElementById("facet").classList.add("show");
-  fetch(f.url,{cache:"no-store"}).then(r=>r.json()).then(d=>{ body.innerHTML=f.render(d); })
+  studioScreenStop(); voicePollStop();   // stop prior live panels when switching
+  fetch(f.url,{cache:"no-store"}).then(r=>r.json()).then(d=>{ body.innerHTML=f.render(d);
+      if(key==="studio") studioScreenStart();
+      if(key==="voice") voicePollStart(); })
     .catch(()=>{ body.innerHTML="<div class='item'>couldn't load this yet</div>"; });
 }
-function hideFacet(){ openFacet=null; document.getElementById("facet").classList.remove("show");
+function hideFacet(){ openFacet=null; studioScreenStop(); voicePollStop(); document.getElementById("facet").classList.remove("show");
   document.querySelectorAll(".nav .nb").forEach(b=>b.classList.remove("on")); }
 function buildNav(){
   const nav=document.getElementById("nav");
-  const items=[["home","⌂","Home"],["face","☺","Face"],["senses","◍","Senses"],
-    ["studio","✎","Studio"],["library","▤","Library"],["journal","✑","Journal"],
+  const items=[["home","⌂","Home"],["face","☺","Face"],["share","⧉","Share"],
+    ["senses","◍","Senses"],["voice","🎙","Voice"],["studio","✎","Studio"],
+    ["observatory","🔭","Watch"],["library","▤","Library"],["journal","✑","Journal"],
     ["mind","◉","Mind"],["workshop","⚙","Workshop"],["files","🗂","Files"],["games","🎮","Play"]];
   items.forEach(([k,ic,label])=>{
     const b=document.createElement("div"); b.className="nb"; b.dataset.k=k;
     b.innerHTML=`<span class="ic">${ic}</span>${label}`;
     b.onclick=()=>{
       if(k==="face"){ toggleProfile(); b.classList.toggle("on",!document.getElementById("profile").classList.contains("hide")); return; }
+      if(k==="share"){ toggleShareScreen(!document.getElementById("sharescreen").classList.contains("show")); return; }
       if(k==="home"){ hideFacet(); } else if(openFacet===k){ hideFacet(); } else { showFacet(k); }
     };
     nav.appendChild(b);
@@ -768,6 +1072,55 @@ async function pollSight(){
   if(sg) sg.innerHTML=(d.screen_active && d.screen) ? ("she sees: <b>"+esc(d.screen)+"</b>") : "";
   const hc=document.getElementById("hercursor");
   if(hc) hc.classList.toggle("show", !!d.busy);   // her cursor while she works
+}
+
+/* ===== Dedicated screen-share desk: you share a window, she watches it with you,
+   sitting at her desk. Frames go to her vision (/sight/push) and she describes
+   what's on your screen. ===== */
+let shareStream=null, shareTimer=null;
+function initShare(){
+  const s=document.getElementById("shareStart"), st=document.getElementById("shareStop"),
+        cl=document.getElementById("shareClose");
+  if(s) s.onclick=startShare; if(st) st.onclick=stopShare;
+  if(cl) cl.onclick=()=>toggleShareScreen(false);
+}
+function toggleShareScreen(show){
+  const el=document.getElementById("sharescreen"); if(!el) return;
+  el.classList.toggle("show", show);
+  document.querySelectorAll(".nav .nb").forEach(b=>{ if(b.dataset.k==="share") b.classList.toggle("on",show); });
+  if(!show) stopShare();
+}
+async function startShare(){
+  try{
+    shareStream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:8}, audio:false});
+    const v=document.getElementById("shareVideo"); v.srcObject=shareStream;
+    document.getElementById("shareHint").textContent="She's watching your screen with you.";
+    document.getElementById("shareHer").src="/avatar/expression/curious";   // a watching look
+    shareStream.getVideoTracks()[0].addEventListener("ended", stopShare);
+    setTimeout(shareFrame, 1300);                          // first look once it's flowing
+    clearInterval(shareTimer); shareTimer=setInterval(shareFrame, 45000);   // vision is heavy
+  }catch(e){ document.getElementById("shareHint").textContent="Screen share cancelled."; }
+}
+function shareFrame(){
+  const v=document.getElementById("shareVideo"); if(!v || !v.videoWidth) return;
+  const scale=Math.min(1, 1280/v.videoWidth);
+  const c=document.createElement("canvas"); c.width=v.videoWidth*scale; c.height=v.videoHeight*scale;
+  c.getContext("2d").drawImage(v,0,0,c.width,c.height);
+  document.getElementById("shareCap").textContent="…she's looking…";
+  c.toBlob(b=>{ if(!b) return;
+    fetch("/sight/push",{method:"POST",headers:{"Content-Type":"image/jpeg"},body:b})
+      .then(r=>r.json()).then(d=>{
+        document.getElementById("shareCap").textContent = d.description
+          ? ("she sees: "+d.description) : "(she couldn't make it out — is her vision model running?)";
+      }).catch(()=>{ document.getElementById("shareCap").textContent="(couldn't reach her vision)"; });
+  }, "image/jpeg", 0.8);
+}
+function stopShare(){
+  if(shareStream){ shareStream.getTracks().forEach(t=>t.stop()); shareStream=null; }
+  clearInterval(shareTimer); shareTimer=null;
+  const v=document.getElementById("shareVideo"); if(v) v.srcObject=null;
+  document.getElementById("shareHint").textContent="Share a window or your screen — she'll watch it with you at her desk.";
+  document.getElementById("shareCap").textContent="";
 }
 
 /* ===== Live face+torso profile view: a close, reactive bust of her =====
@@ -948,12 +1301,20 @@ function renderHUD(){
   });
 }
 
+// Each room opens its real function (the facet panel for what she does there).
+const ROOM_FACET={ studio:"studio", library:"library", observatory:"observatory",
+                   workshop:"workshop", workstation:"files" };
+function enterRoom(id){
+  lookAtRoom(id);                                  // camera glances over
+  const f=ROOM_FACET[id];
+  if(f){ showFacet(f); } else { hideFacet(); }     // parlor = home/chat, no panel
+}
 function buildPullsUI(){
   const wrap=document.getElementById("pulls");
   ROOMS.forEach(rm=>{
     const row=document.createElement("div"); row.className="pull"; row.id="pull-"+rm.id;
     row.innerHTML=`<span class="label">${rm.name}</span><span class="bar"><i></i></span>`;
-    row.onclick=()=>{ lookAtRoom(rm.id); };   // you can glance into any room
+    row.onclick=()=>{ enterRoom(rm.id); };   // click a room -> go there + open its function
     wrap.appendChild(row);
   });
 }

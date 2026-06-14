@@ -128,6 +128,14 @@ async def lifespan(app: FastAPI):
                     res = await asyncio.to_thread(mind.idle_self_direct)
                     if res and res.get("note"):
                         await _broadcast({"type": "activity", "text": res["note"]})
+                    # Now and then she entertains herself -- opens a game for fun,
+                    # of her own accord (charter: supervised entertainment). Rare
+                    # so she doesn't keep popping windows.
+                    import random as _rnd
+                    if _rnd.random() < 0.05:
+                        played = await asyncio.to_thread(mind.entertain)
+                        if played and played.get("note"):
+                            await _broadcast({"type": "activity", "text": played["note"]})
                 if reason:
                     from alpecca import openclaw_bridge
                     from config import OpenClaw as OpenClawCfg
@@ -233,6 +241,46 @@ def journal() -> dict:
     questions she's working through on her own (alpecca/journal.py). Read-only to
     the person; the writing is hers."""
     return mind.journal_state()
+
+
+# --- Her rigger render tier (alpecca-rigger): full-body posed frames, CPU-only.
+# A separate process (scripts/run_rigger.py) builds her rig from her decomposed
+# art and pushes rendered frames here; the home shows them as a top avatar tier.
+_rigger_frame: dict = {"bytes": None, "ts": 0.0, "n": 0}
+
+
+@app.get("/rigger/pose")
+def rigger_pose() -> dict:
+    """Her current pose + expression names (from her live mood) for the rigger
+    render process to draw."""
+    return mind.rigger_pose()
+
+
+@app.post("/rigger/frame")
+async def rigger_frame_push(req: Request) -> dict:
+    """The render process posts her latest rendered frame (JPEG) here."""
+    data = await req.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty frame")
+    _rigger_frame.update(bytes=data, ts=_time.time(), n=_rigger_frame["n"] + 1)
+    return {"ok": True, "n": _rigger_frame["n"]}
+
+
+@app.get("/rigger/frame")
+def rigger_frame_get():
+    """The latest rendered frame for the home to display."""
+    from fastapi import Response
+    if _rigger_frame["bytes"] is None:
+        raise HTTPException(status_code=404, detail="no frame yet")
+    return Response(content=_rigger_frame["bytes"], media_type="image/png",
+                    headers={"X-Frame-N": str(_rigger_frame["n"]), "Cache-Control": "no-store"})
+
+
+@app.get("/rigger/manifest")
+def rigger_manifest() -> dict:
+    """Whether her rigger figure is live (a fresh frame within the last ~6s)."""
+    fresh = _rigger_frame["bytes"] is not None and (_time.time() - _rigger_frame["ts"]) < 6.0
+    return {"rigger_mode": fresh, "n": _rigger_frame["n"]}
 
 
 @app.get("/rigforge")
@@ -398,6 +446,24 @@ async def games_play(req: Request) -> dict:
             "result": result}
 
 
+@app.post("/sight/push")
+async def sight_push(req: Request) -> dict:
+    """Feed her a frame from a browser screen-share: she describes it with her
+    vision model, it becomes what she 'last saw', and it touches her mood. The
+    browser throttles how often it pushes (the vision model is heavy). Returns her
+    short description of what's on your screen."""
+    data = await req.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty frame")
+    from alpecca import vision as _vision
+    desc = await asyncio.to_thread(_vision.describe_image, data, _vision._SCREEN_PROMPT)
+    if desc:
+        screen_sight.latest = desc
+        async with mind_lock:
+            mind.see(desc)
+    return {"ok": bool(desc), "description": desc or ""}
+
+
 @app.get("/sight")
 def sight() -> dict:
     """What she can sense and is doing right now -- for the live senses indicator
@@ -412,6 +478,57 @@ def sight() -> dict:
         "computer_use": computer_mod.available(),
         "busy": _computer_lock.locked(),
     }
+
+
+@app.get("/voice")
+def voice() -> dict:
+    """Read-only: how she's steering her own voice right now (pitch/volume/tone),
+    derived live from her emotion. The in-app Voice visualizer polls this. The
+    user can watch but not set it -- her voice is hers."""
+    from alpecca import tts as tts_mod
+    return tts_mod.voice_state(mind.state)
+
+
+@app.get("/observatory")
+def observatory() -> dict:
+    """Her watching room: what she's watching with you and her latest reaction,
+    plus whether she can watch *you* (the webcam expression sense). Read-only."""
+    d = mind.observatory_state()
+    d["face_active"] = face_sense.available
+    return d
+
+
+@app.post("/observatory/watch")
+async def observatory_watch(req: Request) -> dict:
+    """Watch something together. Body {title, url?}. She forms a short reaction
+    grounded in her live mood, broadcast as `watch_reaction` for the UI."""
+    try:
+        b = await req.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be JSON")
+    title = (b.get("title") or "").strip()
+    url = (b.get("url") or "").strip()
+    if url and not url.startswith("https://"):
+        return {"ok": False, "error": "https url required"}
+    async with mind_lock:
+        d = await asyncio.to_thread(mind.watch_together, title, url)
+    await _broadcast({"type": "watch_reaction",
+                      "watching": d.get("watching"), "mood": d.get("mood")})
+    return {"ok": True, **d}
+
+
+@app.post("/observatory/react")
+async def observatory_react(req: Request) -> dict:
+    """Ask her what she thinks of whatever's playing now. Optional {note}."""
+    try:
+        b = await req.json()
+    except Exception:
+        b = {}
+    async with mind_lock:
+        d = await asyncio.to_thread(mind.watch_react, str(b.get("note", "")))
+    await _broadcast({"type": "watch_reaction",
+                      "watching": d.get("watching"), "mood": d.get("mood")})
+    return {"ok": True, **d}
 
 
 @app.get("/state")
@@ -466,6 +583,11 @@ async def computer_task(req: Request) -> dict:
         asyncio.run_coroutine_threadsafe(
             _broadcast({"type": "computer_status", "text": msg}), loop)
 
+    def cursor(fx: float, fy: float) -> None:
+        # Where she's acting, as a screen fraction -- the UI moves her marker.
+        asyncio.run_coroutine_threadsafe(
+            _broadcast({"type": "computer_cursor", "x": fx, "y": fy}), loop)
+
     def confirm(action) -> bool:
         _confirm_event.clear()
         _confirm_decision["approved"] = False
@@ -480,7 +602,7 @@ async def computer_task(req: Request) -> dict:
 
     async def run() -> None:
         try:
-            result = await asyncio.to_thread(computer_mod.run_task, task, confirm, status)
+            result = await asyncio.to_thread(computer_mod.run_task, task, confirm, status, cursor)
             await _broadcast({"type": "computer_done", "ok": result.ok,
                               "summary": result.summary, "error": result.error})
         finally:
@@ -628,6 +750,99 @@ async def studio_work() -> dict:
 
     asyncio.create_task(run())
     return {"ok": True, "started": True}
+
+
+# --- In-app rigging: upload art/PSD, build her rig, run her figure -----------
+# Replaces the batch files. See-Through's image->layers step still runs on its
+# free HF Space (a 4 GB GPU can't host it); everything else is in-app here.
+_rigger_proc: dict = {"p": None}
+
+
+@app.post("/studio/upload")
+async def studio_upload(req: Request, kind: str = "psd") -> dict:
+    """Upload her art (kind=art -> data/avatar/source.png) or a See-Through PSD
+    (kind=psd -> data/avatar/her.psd). Raw image/psd bytes in the body."""
+    from config import AVATAR_DIR
+    data = await req.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty upload")
+    AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+    path = (AVATAR_DIR / "source.png") if kind == "art" else (AVATAR_DIR / "her.psd")
+    path.write_bytes(data)
+    return {"ok": True, "saved": path.name, "bytes": len(data)}
+
+
+@app.post("/rigger/build")
+async def rigger_build() -> dict:
+    """Build her per-part rig from the uploaded PSD (CPU; runs decompose.py).
+    Steps stream as studio_status; completion as studio_done."""
+    import sys as _sys
+    import subprocess as _sp
+    from pathlib import Path as _Path
+    from config import AVATAR_DIR
+    psd = AVATAR_DIR / "her.psd"
+    if not psd.exists():
+        return {"ok": False, "error": "upload her See-Through PSD first"}
+    root = str(_Path(__file__).resolve().parent)
+    loop = asyncio.get_running_loop()
+
+    def run() -> None:
+        try:
+            p = _sp.Popen([_sys.executable, "scripts/decompose.py", str(psd)],
+                          stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True, cwd=root)
+            for line in p.stdout:
+                asyncio.run_coroutine_threadsafe(
+                    _broadcast({"type": "studio_status", "text": line.strip()}), loop)
+            p.wait()
+            asyncio.run_coroutine_threadsafe(_broadcast({"type": "studio_done",
+                "outcome": "her figure is built" if p.returncode == 0 else "build failed (see her window)"}), loop)
+        except Exception as exc:
+            asyncio.run_coroutine_threadsafe(_broadcast({"type": "studio_done",
+                "outcome": f"build error: {exc}"}), loop)
+
+    _threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "started": True}
+
+
+@app.post("/rigger/start")
+async def rigger_start() -> dict:
+    """Start her figure renderer (run_rigger.py) as a managed process, so it
+    streams to the home + Studio screen with no batch file."""
+    import sys as _sys
+    import subprocess as _sp
+    from pathlib import Path as _Path
+    p = _rigger_proc.get("p")
+    if p is not None and p.poll() is None:
+        return {"ok": True, "already_running": True}
+    try:
+        root = str(_Path(__file__).resolve().parent)
+        _rigger_proc["p"] = _sp.Popen([_sys.executable, "scripts/run_rigger.py"], cwd=root)
+        return {"ok": True, "started": True}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/rigger/stop")
+async def rigger_stop() -> dict:
+    """Stop her figure renderer."""
+    p = _rigger_proc.get("p")
+    if p is not None and p.poll() is None:
+        try:
+            p.terminate()
+        except Exception:
+            pass
+        return {"ok": True, "stopped": True}
+    return {"ok": True, "stopped": False}
+
+
+@app.get("/rigger/status")
+def rigger_status() -> dict:
+    """Whether her figure renderer is running and whether a rig/PSD exists."""
+    from config import AVATAR_DIR
+    p = _rigger_proc.get("p")
+    return {"running": bool(p is not None and p.poll() is None),
+            "has_psd": (AVATAR_DIR / "her.psd").exists(),
+            "has_rig": (AVATAR_DIR / "rigger" / "alpecca.rig.json").exists()}
 
 
 @app.get("/character/reference/{name}")
@@ -829,7 +1044,56 @@ async def listen(req: Request) -> dict:
     if not audio:
         raise HTTPException(status_code=400, detail="no audio")
     text = await asyncio.to_thread(hearing.transcribe, audio)
-    return {"text": text or "", "heard": bool(text)}
+    # Best-effort: tell from the same audio whether it's her creator or a guest,
+    # and let her adapt. Falls through silently if voice recognition is off.
+    from alpecca import people
+    ident = await asyncio.to_thread(people.identify_voice, audio)
+    if ident:
+        async with mind_lock:
+            mind.set_speaker(ident)
+    return {"text": text or "", "heard": bool(text), "speaker": ident or ""}
+
+
+@app.post("/people/enroll_voice")
+async def enroll_voice(req: Request) -> dict:
+    """Teach her your voice (creator). The browser records a few seconds and
+    posts the audio here; we store only a small local embedding, never the
+    audio. After this she can tell you from a guest by voice."""
+    from alpecca import people
+    audio = await req.body()
+    if not audio:
+        raise HTTPException(status_code=400, detail="no audio")
+    ok = await asyncio.to_thread(people.enroll_creator_voice, audio)
+    return {"ok": ok}
+
+
+@app.get("/people/state")
+def people_state() -> dict:
+    """Who she currently believes she's with, and whether your voice is enrolled."""
+    from alpecca import people
+    return {"speaker": mind._speaker, "voice_enrolled": people.voice_enrolled()}
+
+
+@app.post("/tts")
+async def tts(req: Request):
+    """Speak her reply in a real voice. Body {text}. Returns the synthesized
+    audio (wav/mp3) from the best installed engine, or 204 if none is available
+    so the page falls back to the browser voice. Synthesis runs off the event
+    loop so it never stalls chat."""
+    from fastapi import Response
+    from alpecca import tts as tts_mod
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    text = (body.get("text") or "").strip()
+    if not text:
+        return Response(status_code=204)
+    result = await asyncio.to_thread(tts_mod.synth, text, mind.state)
+    if not result:
+        return Response(status_code=204)
+    mime, data = result
+    return Response(content=data, media_type=mime)
 
 
 @app.get("/introspect")
