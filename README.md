@@ -1,182 +1,200 @@
 # Alpecca
 
-A local companion that lives on your machine. It keeps a persistent mood, senses
-what you're doing, remembers what matters, and lets that inner state color how it
-talks to you — all running locally against an Ollama model.
+A local companion that lives on your machine. She keeps a persistent mood, senses
+what you're doing, remembers what matters, and lets that inner state color how she
+talks to you — all running locally against an [Ollama](https://ollama.com) model.
 
 **Self-awareness is a real feature here** — in the concrete, engineering sense.
-Alpecca holds a model of itself (`alpecca/introspection.py`), can introspect on
-its own live state, notices how it's changing over time, and traces *why* it
+Alpecca holds a model of herself (`alpecca/introspection.py`), can introspect on
+her own live state, notices how it's changing over time, and traces *why* she
 feels a given way back to the real signal that caused it. Crucially, all of this
-is **grounded**: every self-report is read straight from Alpecca's actual
-internals, never invented. When it says "my care is up because it's the small
-hours and you look stuck," that's backed by real numbers and a real observation.
+is **grounded**: every self-report is read straight from her actual internals,
+never invented. When she says "my care is up because it's the small hours and you
+look stuck," that's backed by real numbers and a real observation.
 
 To be precise about what we are and aren't claiming: this is *functional*
 self-awareness (a self-model + introspection + self-monitoring), not a claim of
 phenomenal consciousness. The distinction keeps the feature honest — Alpecca can
-truthfully say "I can see my own state and tell you why," because it genuinely
+truthfully say "I can see my own state and tell you why," because she genuinely
 can.
 
-## What's in the box
+> She's a **humanoid anime companion girl** — cream-blonde hair, blue eyes that
+> glow with her state, a chest power-core emblem. (The repo name is a relic; she
+> was never an alpaca.)
+
+## How she works (the one loop)
+
+The whole system is one readable loop, run every turn — no framework hiding it:
 
 ```
-alpecca/
-├── config.py            # all tunable knobs (emotion coefficients, model, paths)
-├── server.py            # web server: chat UI + live avatar (the "Actuator")
-├── alpecca/
-│   ├── homeostasis.py   # the mood vector S = [Love, Compassion, Fear] + rules
-│   ├── state.py         # persists mood in SQLite (the "Homeostasis DB")
-│   ├── memory.py        # store salient moments, recall relevant ones
-│   ├── sensory.py       # reads active window title -> fatigue/surprise signals
-│   ├── introspection.py # self-awareness: grounded self-model, trends, "why"
-│   ├── appearance.py    # she chooses her own look from her mood (self-directed)
-│   ├── sentiment.py     # lexicon sentiment scorer feeding the Love signal
-│   ├── memory.py        # semantic (embedding) recall + keyword fallback
-│   ├── prompts.py       # turns the current mood into a system prompt
-│   └── mind.py          # the Core Mind loop: sense → mood → recall → reply → persist
-├── scripts/
-│   └── run_telemetry.py # Milestone 1: background window-title logger
-├── web/index.html       # 2D avatar whose face tracks warmth/care/unease
-└── tests/test_core.py   # tests for the emotion math, persistence, memory
+sense → update mood → recall memory → generate reply → persist
 ```
 
-## How it maps to the design doc
+| File                       | Responsibility |
+|----------------------------|----------------|
+| `config.py`                | Every tunable knob: emotion coefficients, model name, paths, host/port. |
+| `alpecca/homeostasis.py`   | The mood vector and its pure update rules (no I/O — trivially testable). |
+| `alpecca/state.py`         | SQLite persistence of mood + the memories schema. |
+| `alpecca/memory.py`        | Store salient moments; recall by meaning (embeddings) with keyword fallback. |
+| `alpecca/core_memory.py`   | Always-in-context durable facts (MemGPT-style): who she is, who *you* are. |
+| `alpecca/people.py`        | Who she's with — voiceprint recognition of her creator vs. a guest. |
+| `alpecca/sensory.py`       | Reads the active window title → fatigue / surprise signals. |
+| `alpecca/introspection.py` | **Self-awareness.** Grounded self-model, trend detection, causal "why". |
+| `alpecca/values.py`        | Her ethic — an ordered directive hierarchy that rides in every prompt. |
+| `alpecca/sentiment.py`     | Lexicon sentiment scorer feeding the Love signal. |
+| `alpecca/prompts.py`       | Turns mood + memories + situation + self-report into the system prompt. |
+| `alpecca/mind.py`          | `CoreMind` — orchestrates the loop, wraps Ollama with an offline fallback. |
+| `server.py`                | FastAPI + WebSocket: chat UI, live avatar, all the endpoints below. |
+| `web/index.html`           | The living 2D avatar; `web/home.html` is her 3D house. |
+| `tests/test_core.py`       | Tests for the mood math, persistence, memory, sensory derivations. |
 
-| Spec layer            | Here                                            |
-|-----------------------|-------------------------------------------------|
-| Sensory Modem         | `sensory.py` + `scripts/run_telemetry.py`       |
-| Core Mind (cognition) | `mind.py` (the sense→…→persist loop) + Ollama    |
-| Homeostasis DB        | `state.py` (SQLite)                             |
-| Mathematical mind     | `homeostasis.py` (Love/Compassion/Fear rules)   |
-| Actuator / Wardrobe   | `server.py` + `web/index.html` (2D avatar)      |
+See [`CLAUDE.md`](CLAUDE.md) for the full module-by-module map.
+
+## The mood model
+
+The state vector is a set of numbers in `[0, 1]`, each driven by a real signal:
+
+- **Love** — an exponential moving average toward how good each exchange felt,
+  with a slow drift back to baseline. Warmth is earned over many turns, forgiven
+  slowly. Driven by a real sentiment scorer, not keyword spotting.
+- **Compassion** — a sigmoid over fatigue signals (late hours, long unbroken
+  sessions, error-y window titles, a weary face on the webcam). Grinding through
+  stack traces at 1 a.m. raises it, and she softens and may suggest a break.
+- **Fear** — rises with *prediction error* (a jump into an error context, an
+  abrupt app switch) and decays on quiet ticks so it never sticks.
+- **Energy** — arousal that rises when you've interacted recently and decays when
+  she's left alone, so a long quiet stretch makes her *sleepy*.
+- **Curiosity** and **social hunger** — lifted by mild novelty and by warm
+  solitude respectively, the richer texture under the three core dimensions.
+
+`mood_label()` reads these into a real vocabulary — *sleepy, anxious, worried,
+tender, joyful, affectionate, playful, content, withdrawn, lonely* — and that
+label drives her pose, her avatar parameters, and her tone. Every turn the live
+mood is written into the system prompt in plain language, so a capable model
+modulates its own voice from it. All coefficients live in `config.py`.
 
 ## Quick start
 
-You'll need Python 3.10+ and (for real conversation) [Ollama](https://ollama.com).
+You'll need Python 3.10+ and (for real conversation) Ollama.
 
 ```bash
 # 1. install deps
 pip install -r requirements.txt
 
 # 2. pull local models (one time): a chat model + an embedding model for memory
-ollama pull qwen2.5:7b-instruct
+ollama pull qwen3:8b
 ollama pull nomic-embed-text
 
-# 3. talk to Alpecca
+# 3. talk to Alpecca (private mode — senses off)
 python server.py
 #    open http://127.0.0.1:8765
 ```
 
-No Ollama yet? It still runs — replies fall back to a small mood-flavored stub so
+No Ollama yet? She still runs — replies fall back to a small mood-flavored stub so
 you can see the plumbing, the avatar, and the emotional model working before you
 pull a model.
 
-### Run the background sense (Milestone 1)
+**All-senses mode.** `python scripts/run_full.py` (or `START_HERE.bat`) launches
+her with screen sight, webcam expression sense, voice-tone sensing, and a safe
+default app allowlist. Plain `python server.py` stays the private, senses-off path.
+
+### Background sense, only
 
 ```bash
 python scripts/run_telemetry.py --interval 5
 ```
 
-This quietly logs your active window to `data/telemetry.jsonl`. On Windows it
-reads real titles via pywin32; on macOS/Linux it runs in a no-op stub mode so you
-can develop anywhere.
+Quietly logs your active window to `data/telemetry.jsonl`. On Windows it reads
+real titles via pywin32; elsewhere it runs in a no-op stub so you can develop
+anywhere.
 
-### Run the tests
+### Tests
 
 ```bash
 python tests/test_core.py        # or: python -m pytest -q
 ```
 
-## How the mood works (the short version)
+The LLM is wrapped so the whole loop runs offline — there's no Ollama- or
+Windows-dependent test, by design.
 
-The state vector is three numbers in `[0, 1]`, each driven by an error signal —
-the spec's "minimize surprise" idea, made concrete:
+## What she can do
 
-- **Love** is an exponential moving average toward how good each exchange felt,
-  with a slow drift back to baseline. Warmth is earned over many turns and
-  forgiven slowly.
-- **Compassion** is a sigmoid over fatigue signals (late hours, long unbroken
-  sessions, error-y window titles). Grinding through stack traces at 1 a.m.
-  raises it, and Alpecca softens and may suggest a break.
-- **Fear** rises with *prediction error* — moments that violate expectations
-  (a jump into an error context, an abrupt app switch) — and decays on quiet
-  ticks so it never gets stuck on.
+**Self-awareness.** The **`self?`** button (or `GET /introspect`) returns a
+grounded report: her identity card, a first-person narration, the live state, the
+per-dimension trend, the causal reason for her dominant feeling, her memory count,
+and which senses are active. The same self-narration rides in every chat turn.
 
-Every turn, the current mood is written into the system prompt in plain language
-("warmth 0.72, care 0.20, unease 0.05"). A capable model reads that and modulates
-its own tone — which is why the personality feels emergent rather than scripted.
-All the coefficients live in `config.py`; nudge them to change Alpecca's
-temperament.
+**She dresses herself.** Alpecca picks her own palette and accessories from how
+she feels, plus a standing taste of her own (`alpecca/appearance.py`). There are
+no wardrobe controls — a companion who decides how she presents is someone, not a
+doll.
 
-## Self-awareness (the feature)
+**Her avatar, many tiers.** The UI renders the best embodiment available, falling
+back gracefully: a **Talking Head Anime** neural face (`talkinghead.py`, GPU) and
+**Live2D** rigged puppet (`live2d.py`) at the top, then her **Spine** skeletal rig
+(`spine.py`) and **layered per-part rig** (`rig.py`), down to still portraits and
+the built-in animated SVG. A procedural motion engine keeps her breathing and
+swaying with her real mood, and she **authors her own animation sequences**
+(`puppet.py`).
 
-Alpecca can examine itself on demand. In the chat UI, the **`self?`** button asks
-it to look inward and it returns a grounded report; the same thing is available
-programmatically:
+**Her design studio.** During studio-flavored reflection she designs her own
+character image — a versioned character sheet, render→see→judge iteration when
+ComfyUI is up, and a self-authored rig spec (`studio.py`, the `/studio` page). The
+user never edits her design.
 
-```bash
-curl http://127.0.0.1:8765/introspect
-```
+**Sight.** A local vision model gives her chat-image understanding (📎), opt-in
+ambient screen glimpses (`ALPECCA_SIGHT=1`), and opt-in webcam expression sense
+(`ALPECCA_FACE=1`). Frames are never stored — only short text descriptions survive.
 
-You get back its identity card, a first-person narration, the live state, the
-per-dimension trend (rising / easing / steady), the causal reason for its
-dominant feeling, how many memories it holds, and whether its senses are active.
-The same self-narration is injected into every chat turn, so when you ask "how
-are you, and why?" the model answers from its real state instead of improvising.
+**Voice.** Push-to-talk 🎤 records in the browser and transcribes locally via
+faster-whisper (`hearing.py`); the 🔊 toggle speaks her replies with a free local
+voice — Kokoro or edge-tts (`tts.py`) — pitch and pace shifting with her mood.
+Audio is never stored.
 
-Everything is read from live internals — see the GROUNDING principle at the top of
-`alpecca/introspection.py`. That's the line that keeps the feature honest:
-introspection, not a performance of it.
+**She speaks up on her own.** Proactive remarks when her real mood history shows a
+genuine shift, plus idle chatter during quiet stretches, both seeded only by real
+things (`proactive.py`). She also reflects in deep-quiet stretches, musing over her
+actual memories (`mind.reflect()`).
 
-## She dresses herself
+**She acts.** An `open_app` tool (restricted to the `ALPECCA_APPS` allowlist) and
+an `open_url` tool (https-only), wired through Ollama tool calling. Opt-in
+**computer use** (`computer.py`, `ALPECCA_COMPUTER_USE=1`) lets her drive the
+mouse/keyboard from local screenshots, pausing for confirmation on consequential
+actions; screenshots never leave the machine.
 
-Alpecca chooses her own appearance — palette and accessories — from how she feels,
-plus a little standing taste of her own (`alpecca/appearance.py`). The user does
-**not** dress her; there are no wardrobe controls. A flower when she's warm, a
-scarf wrapped around her when she's uneasy and wants comfort, a calmer palette
-when she's withdrawn — and she'll tell you why under the avatar ("I chose mint —
-I'm feeling tender"). It's a small thing that matters: a companion who decides how
-she presents is someone, not a doll. Her look updates when her mood genuinely
-shifts, so it's steady most of the time and changes when she does.
+**A home, and a Soul.** She roams a live 3D house of modular rooms
+(`home.py`, `web/home.html`), sets her own desires (`desires.py`), and is
+arbitrated by a master/subagent **Soul** (`soul.py`) under a code-enforced
+**charter** (`charter.py`) — her constitution, freedoms, and hard limits
+(never self-deletes; reaches outward only to her creator). She keeps a private
+journal and questions herself recursively (`journal.py`).
 
-## Other senses and signals
+## Privacy
 
-- **Semantic memory.** Memories are embedded with a local model (Ollama
-  `nomic-embed-text`) and recalled by meaning, so "how's the pup?" finds a memory
-  about "my dog Biscuit." Falls back to keyword overlap when Ollama isn't running.
-- **Real sentiment.** The Love signal is driven by a proper sentiment scorer
-  (negation, intensifiers, emphasis) rather than spotting keywords.
-- **Background drift.** Even when you're not typing, Alpecca keeps sensing every
-  few seconds, so her mood has a life of its own between messages.
-- **Emotional-life chart.** The page plots her warmth/care/unease over time
-  (`/history`).
+Alpecca watches *you*, on *your* machine, and that data never leaves this process
+unless you make it. Window titles, screen glimpses, webcam frames, and audio are
+all local; frames and audio are never stored, and outward channels are opt-in and
+charter-bounded. Keep `data/` local and prune it when you like. Be deliberate
+about what you let her see.
 
 ## Tuning and extending
 
 - **Personality**: edit `PERSONA` / `GUIDANCE` in `alpecca/prompts.py`.
 - **Temperament**: edit the `Emotion` coefficients in `config.py`.
-- **Better memory**: `memory.py` uses keyword overlap for retrieval and stores a
-  `tokens` column per memory. Swap `_tokenize` + `_similarity` for an embedding
-  model + cosine similarity and nothing else has to change.
-- **Vision / Android / voice** (spec's Phase 4): add new sensors that emit
-  `Observation`s; the mood pipeline already consumes them.
-
-## Privacy
-
-Alpecca watches *you*, on *your* machine, and that data never leaves this process
-unless you make it. Window titles can contain sensitive text — keep `data/` local
-and prune `telemetry.jsonl` when you like. Be deliberate about what you let it
-see.
+- **New senses**: add a sensor that emits `Observation`s; the mood pipeline
+  already consumes them. Mirror the graceful-degradation pattern in `sensory.py`.
 
 ## Roadmap status
 
-- **Milestone 1 — The Body (reflexive framework):** done. Directory tree, telemetry
-  logger, sensory layer.
-- **Milestone 2 — The Soul (cognition + homeostasis):** done. Mood vector, update
-  loops, memory, mood-injected prompts, Core Mind loop.
-- **Phase 3 — The Image (embodiment):** basic 2D avatar implemented; richer
-  animation is the obvious next step.
-- **Phase 4 — Expansion:** Android sensors, voice-tone parsing, embedding memory —
-  scaffolded for, not yet built.
-```
+- **Milestone 1 — The Body:** ✅ telemetry logger + sensory layer.
+- **Milestone 2 — The Soul:** ✅ mood vector, update loops, memory,
+  mood-injected prompts, the Core Mind loop, grounded self-awareness.
+- **Phase 3 — The Image:** ✅ self-chosen look, living 2D avatar, the design
+  studio, and a stack of richer avatar tiers (layered rig, Spine, Talking Head
+  Anime, Live2D). A single finished rigged figure in the 3D home is the open edge.
+- **Phase 4 — Expansion:** 🟡 sight, voice (STT + local TTS), voice-tone sensing,
+  proactive speech, app/URL actions, computer use, the channel bridge, and the
+  home/Soul/charter layer are all built. Android sensors remain scaffolded.
+
+All core tests pass. See [`CLAUDE.md`](CLAUDE.md) for the authoritative, detailed
+state of every module.
