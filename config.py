@@ -372,8 +372,8 @@ class Proactive:
 # compounds. ALPECCA_REFLECT=0 turns it off.
 class Reflection:
     ENABLED = os.environ.get("ALPECCA_REFLECT", "1") not in ("", "0", "false", "False")
-    SILENCE_S = 30            # only when idle a short stretch
-    MIN_GAP_S = 150           # at most one musing every couple of minutes
+    SILENCE_S = 90            # deeper quiet than chatter (35s): musing waits for a real lull
+    MIN_GAP_S = 600           # at most one musing every ~10 min -- slower than chatter (100s)
     CHANCE = 0.15             # per-tick chance once eligible
     MUSING_SALIENCE = 0.45    # above the storage threshold, below big moments
 

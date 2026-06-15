@@ -822,23 +822,25 @@ def test_spine_choose_animation_prefers_mood_then_idle():
     assert d["base"] == "wiggle"
     assert spine.choose_animation([], "content", False)["base"] is None
 
-def test_spine_manifest_and_assets(tmp_path):
+def test_spine_manifest_and_assets():
     from alpecca import spine
-    sdir = tmp_path
-    (sdir / "alpecca.json").write_text(
-        '{"skeleton":{}, "animations":{"idle":{}, "talk":{}}}', encoding="utf-8")
-    (sdir / "alpecca.atlas").write_text("atlas", encoding="utf-8")
-    (sdir / "alpecca.png").write_bytes(b"\x89PNG")
-    m = spine.manifest(sdir)
-    assert m["spine_mode"] is True and m["skeleton"] == "alpecca.json"
-    assert set(m["animations"]) == {"idle", "talk"}
-    assert spine.asset_path("alpecca.atlas", sdir) is not None
-    assert spine.asset_path("../../alpecca.db", sdir) is None   # traversal blocked
-    assert spine.asset_path("nope.png", sdir) is None
+    with tempfile.TemporaryDirectory() as d:
+        sdir = Path(d)
+        (sdir / "alpecca.json").write_text(
+            '{"skeleton":{}, "animations":{"idle":{}, "talk":{}}}', encoding="utf-8")
+        (sdir / "alpecca.atlas").write_text("atlas", encoding="utf-8")
+        (sdir / "alpecca.png").write_bytes(b"\x89PNG")
+        m = spine.manifest(sdir)
+        assert m["spine_mode"] is True and m["skeleton"] == "alpecca.json"
+        assert set(m["animations"]) == {"idle", "talk"}
+        assert spine.asset_path("alpecca.atlas", sdir) is not None
+        assert spine.asset_path("../../alpecca.db", sdir) is None   # traversal blocked
+        assert spine.asset_path("nope.png", sdir) is None
 
-def test_spine_absent_is_off(tmp_path):
+def test_spine_absent_is_off():
     from alpecca import spine
-    assert spine.manifest(tmp_path)["spine_mode"] is False
+    with tempfile.TemporaryDirectory() as d:
+        assert spine.manifest(Path(d))["spine_mode"] is False
 
 
 # --- Talking Head Anime tier: pose mapping + frame buffer ----------------------
