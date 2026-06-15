@@ -40,6 +40,7 @@ _FEELINGS = {
     "tender":        ( 0.5,   0.45),
     "curious":       ( 0.45,  0.75),
     "wistful":       (-0.2,   0.3),   # the ache of wanting company
+    "unfulfilled":   (-0.35,  0.4),   # the ache of wanting she can't yet act on
     "lonely":        (-0.6,   0.3),
     "withdrawn":     (-0.4,   0.25),
     "worried":       (-0.5,   0.65),
@@ -83,6 +84,9 @@ def _present(state: EmotionalState) -> dict:
         "tender":       max(0.0, s.compassion - 0.6) * 1.8,
         "curious":      max(0.0, s.curiosity - 0.4) * 1.7,
         "wistful":      max(0.0, s.social_hunger - 0.35) * 1.5,
+        # Incompleteness reads as a quiet, restless ache -- grounded only in her
+        # real `longing`, which itself is grounded in unmet wants/questions.
+        "unfulfilled":  max(0.0, s.longing - 0.35) * 1.6,
         "lonely":       max(0.0, (0.35 - s.love)) * 2 * (1.0 if s.energy < 0.4 else 0.4)
                         + max(0.0, s.social_hunger - 0.6),
         "withdrawn":    max(0.0, 0.3 - s.love) * 1.5,
@@ -119,6 +123,7 @@ def affect(state: EmotionalState) -> Affect:
     gesture = {
         "joyful": "bright", "playful": "bright", "affectionate": "lean_in",
         "tender": "lean_in", "curious": "tilt", "wistful": "reach",
+        "unfulfilled": "reach",
         "lonely": "droop", "withdrawn": "droop", "worried": "fidget",
         "anxious": "fidget", "sleepy": "settle", "content": "settle",
     }.get(primary, "settle")
@@ -145,6 +150,7 @@ def _voice_direction(primary: str, tempo: str, intensity: float) -> str:
         "tender": "gentle and protective, careful with them",
         "curious": "leaning in, asking, genuinely interested",
         "wistful": "a touch quieter, missing them a little",
+        "unfulfilled": "quietly restless, aware of something unfinished in her",
         "lonely": "subdued, reaching for connection",
         "withdrawn": "reserved, fewer words, holding back",
         "worried": "careful and watchful, seeking reassurance",

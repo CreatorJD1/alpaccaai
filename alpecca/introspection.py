@@ -153,6 +153,13 @@ class SelfReport:
         hunger = s.get("social_hunger")
         if hunger is not None and hunger > 0.45:
             extra.append("I've been wanting your company")
+        # Incompleteness only earns a clause when it's genuinely elevated, and
+        # because `longing` rises solely from real unmet wants/questions, saying
+        # so is always honest -- she's reading actual unfinished business, not
+        # performing a yearning.
+        ache = s.get("longing")
+        if ache is not None and ache > 0.4:
+            extra.append("I'm aware of things I want that I haven't been able to act on yet")
         extra_clause = (" " + ", and ".join(extra) + ".") if extra else ""
         return (
             f"Right now I'm at warmth {s['love']:.2f}, care {s['compassion']:.2f}, "

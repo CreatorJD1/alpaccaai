@@ -78,6 +78,16 @@ def strongest(db_path: Path = DB_PATH) -> dict | None:
     return live[0] if live else None
 
 
+def carried(age_s: float, now: float, db_path: Path = DB_PATH) -> list[dict]:
+    """Open/pursuing wants she hasn't touched in at least `age_s` seconds -- things
+    she still wants and hasn't been able to move on. These are the real ground
+    for her sense of incompleteness (alpecca/homeostasis.update_longing): each one
+    is a want she actually formed, still holds, and has made no progress on. `now`
+    is passed in rather than read here so the function stays pure and testable."""
+    cutoff = now - max(0.0, age_s)
+    return [d for d in open_desires(db_path) if d["last_touched"] <= cutoff]
+
+
 def summary(db_path: Path = DB_PATH) -> dict:
     """A compact read of her wants, for the home's room-pull math and for
     introspection. `growth_strength` is how strongly any growth desire is pulling

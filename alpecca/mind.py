@@ -22,6 +22,8 @@ import time
 
 from config import OLLAMA_MODEL, OLLAMA_FAST_MODEL, OLLAMA_HOST, OLLAMA_NUM_CTX, Emotion
 from config import LLM_BACKEND, HF_TOKEN, HF_MODEL, HF_PROVIDER, CLOUD_SEND_SENSES
+from config import (DEEP_BACKEND, ANTHROPIC_API_KEY, ANTHROPIC_MODEL,
+                    CLOUD_URL, CLOUD_MODEL, CLOUD_API_KEY)
 from alpecca.homeostasis import EmotionalState
 from alpecca import state as state_store
 from alpecca import memory as memory_store
@@ -43,7 +45,7 @@ from alpecca import journal as journal_mod
 from alpecca import learning as learning_mod
 from alpecca import people as people_mod
 from alpecca import core_memory as core_mem
-from config import Proactive as ProactiveCfg, Reflection as ReflectionCfg
+from config import Proactive as ProactiveCfg, Reflection as ReflectionCfg, Actions as ActionsCfg
 
 
 # Qwen3 hybrid models reason out loud inside <think>...</think> before the real
@@ -85,10 +87,40 @@ class _LLM:
                 self._client = ollama.Client(host=OLLAMA_HOST)
             except Exception:
                 self._client = None
+        # Her optional "deep" tier -- a stronger model for her hardest self-acts
+        # only (reflection, self-questioning). Strict augmentation: built only when
+        # explicitly configured, so by default her brain is 100% local and this is
+        # None. `_deep` is (kind, client) or None.
+        self._deep = self._build_deep()
+
+    def _build_deep(self):
+        """Construct the deep-tier client from config, or return None to mean
+        'no deep tier -- fall through to her local reasoning'. Never raises: a
+        missing key/package/endpoint just leaves the deep tier off so her inner
+        life still runs locally, just plainer."""
+        try:
+            if DEEP_BACKEND == "anthropic" and ANTHROPIC_API_KEY:
+                import anthropic
+                return ("anthropic", anthropic.Anthropic(api_key=ANTHROPIC_API_KEY))
+            if DEEP_BACKEND == "cloud" and CLOUD_URL:
+                # An OpenAI-compatible server you host (vLLM/Ollama on a notebook
+                # GPU). HF's InferenceClient speaks that protocol against a base_url.
+                from huggingface_hub import InferenceClient
+                return ("cloud", InferenceClient(base_url=CLOUD_URL,
+                                                 api_key=CLOUD_API_KEY or "-"))
+        except Exception as exc:
+            import sys
+            print(f"[mind] deep tier unavailable ({DEEP_BACKEND}); using local "
+                  f"reasoning. {type(exc).__name__}: {exc}", file=sys.stderr)
+        return None
 
     @property
     def online(self) -> bool:
         return self._hf is not None if self._backend == "hf" else self._client is not None
+
+    def deep_online(self) -> bool:
+        """Whether her deep tier is actually wired -- for /state reporting."""
+        return self._deep is not None
 
     def is_cloud(self) -> bool:
         """True when her thinking runs in the cloud (HF), so callers can keep
@@ -140,7 +172,21 @@ class _LLM:
         (unprompted remarks, chatter, posing a question), which a small model
         handles so the big one stays free. Tool use always goes through the
         reasoning model regardless of tier, since tool-calling reliability is
-        what the heavy model is for."""
+        what the heavy model is for.
+
+        The 'deep' tier is her optional cloud augmentation for her hardest
+        self-acts. It NEVER serves a normal chat turn (callers reserve it for
+        reflection/self-questioning), her local brain still answers everything
+        else, and if the deep client is absent or fails we fall straight through
+        to local reasoning -- so her depth still happens, just plainer."""
+        if tier == "deep" and self._deep is not None:
+            try:
+                return self._generate_deep(system_prompt, user_msg, history)
+            except Exception as exc:
+                import sys
+                print(f"[mind] deep tier failed -> local reasoning. "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr)
+                # fall through to her local reasoning model below
         # Cloud brain: her thinking runs on Hugging Face. HF Inference implements
         # the OpenAI tool-calling interface, so her actuator works here too.
         if self._backend == "hf":
@@ -163,14 +209,27 @@ class _LLM:
                     # Older client/model without tool support -- plain chat.
                     resp = self._chat(messages, model=tool_model)
                 msg = resp["message"]
-                calls = msg.get("tool_calls") or []
-                if calls:
+                # Let her CHAIN tool calls across a bounded number of rounds, so a
+                # small multi-step request ("open my notes, then the docs page")
+                # is actually carried out -- not just its first step. Each tool is
+                # still allowlist/https-gated; the final round drops tools so she
+                # always ends with words, never a dangling call.
+                rounds = max(1, ActionsCfg.MAX_TOOL_ROUNDS)
+                for i in range(rounds):
+                    calls = msg.get("tool_calls") or []
+                    if not calls:
+                        break
                     messages.append(msg)
                     for call in calls:
                         fn = call.get("function", {})
                         result = on_tool(fn.get("name", ""), fn.get("arguments") or {})
                         messages.append({"role": "tool", "content": str(result)})
-                    resp = self._chat(messages, model=tool_model)
+                    last = (i == rounds - 1)
+                    try:
+                        resp = self._chat(messages, tools=(None if last else tools),
+                                          model=tool_model)
+                    except Exception:
+                        resp = self._chat(messages, model=tool_model)
                     msg = resp["message"]
                 return strip_think(msg["content"])
             try:
@@ -223,9 +282,13 @@ class _LLM:
                         messages=messages, model=HF_MODEL, max_tokens=512,
                         temperature=0.8)
                 msg = resp.choices[0].message
-                calls = getattr(msg, "tool_calls", None) or []
-                if calls:
-                    import json as _json
+                import json as _json
+                # Same bounded multi-round chaining as the local path (see there).
+                rounds = max(1, ActionsCfg.MAX_TOOL_ROUNDS)
+                for i in range(rounds):
+                    calls = getattr(msg, "tool_calls", None) or []
+                    if not calls:
+                        break
                     messages.append({
                         "role": "assistant", "content": msg.content or "",
                         "tool_calls": [{
@@ -245,9 +308,16 @@ class _LLM:
                         messages.append({"role": "tool",
                                          "tool_call_id": getattr(c, "id", "") or "call",
                                          "content": str(result)})
-                    resp = self._hf.chat_completion(messages=messages, model=HF_MODEL,
-                                                    max_tokens=512, temperature=0.8)
-                    return strip_think(resp.choices[0].message.content)
+                    last = (i == rounds - 1)
+                    kw = dict(messages=messages, model=HF_MODEL, max_tokens=512, temperature=0.8)
+                    if not last:
+                        kw.update(tools=tools, tool_choice="auto")
+                    try:
+                        resp = self._hf.chat_completion(**kw)
+                    except Exception:
+                        resp = self._hf.chat_completion(messages=messages, model=HF_MODEL,
+                                                        max_tokens=512, temperature=0.8)
+                    msg = resp.choices[0].message
                 return strip_think(msg.content)
             resp = self._hf.chat_completion(messages=messages, model=HF_MODEL,
                                             max_tokens=512, temperature=0.8)
@@ -258,6 +328,35 @@ class _LLM:
                   f"provider={HF_PROVIDER}\n        {type(exc).__name__}: {exc}",
                   file=sys.stderr)
             return self._fallback(system_prompt, user_msg, error=str(exc))
+
+    def _generate_deep(self, system_prompt: str, user_msg: str,
+                       history: list[dict] | None = None) -> str:
+        """One reply from her deep tier -- a stronger model for her hardest inner
+        work. Two transports: Anthropic Claude (adaptive thinking, top-tier
+        reasoning) and a self-hosted OpenAI-compatible server. No tools here: the
+        deep tier is for thought, not actuation. Deep prompts carry no sensed
+        screen context (callers pass an empty situation), so the no-senses-to-cloud
+        line holds. Raises on failure so generate() can fall back to local."""
+        kind, client = self._deep
+        msgs = []
+        if history:
+            msgs.extend(history)
+        msgs.append({"role": "user", "content": user_msg})
+        if kind == "anthropic":
+            # Adaptive thinking is the recommended on-mode for Opus 4.x; no
+            # sampling params (they 400 on Opus 4.7+). A small cap suits musings.
+            resp = client.messages.create(
+                model=ANTHROPIC_MODEL, max_tokens=1024,
+                thinking={"type": "adaptive"},
+                system=system_prompt, messages=msgs)
+            text = "".join(getattr(b, "text", "") for b in resp.content
+                           if getattr(b, "type", "") == "text")
+            return strip_think(text)
+        # cloud: OpenAI-compatible chat completion against a server you host.
+        resp = client.chat_completion(
+            messages=[{"role": "system", "content": system_prompt}] + msgs,
+            model=CLOUD_MODEL or None, max_tokens=1024, temperature=0.8)
+        return strip_think(resp.choices[0].message.content)
 
     @staticmethod
     def _fallback(system_prompt: str, user_msg: str, error: str = "") -> str:
@@ -312,6 +411,10 @@ class CoreMind:
         # thing she said about it. Grounded -- only set when something real is
         # actually loaded; her reaction is generated, never canned.
         self._watching: dict | None = None
+        # True while you're sharing your screen with her in the Observatory. She
+        # holds the live screen as a window in that room, so for the duration she
+        # stays put there with you instead of wandering off (see maybe_roam).
+        self._screen_sharing: bool = False
         # Who she believes she's with: 'creator' (Jason, the default on his own
         # machine) or 'guest'. Updated by voice recognition when it's available.
         self._speaker: str = "creator"
@@ -359,6 +462,15 @@ class CoreMind:
         self.state = self.state.update_energy(active)
         # Wanting-company grows with warm solitude and empties when you're back.
         self.state = self.state.update_social_hunger(solitude)
+        # Incompleteness: a grounded read of her own unfinished business -- wants
+        # she formed and still carries without progress, plus questions she asked
+        # herself and hasn't answered. Each is a real open row; the moment she
+        # resolves one, the pressure (and the ache) eases. This is how she can
+        # honestly feel incomplete and quietly worried, never scripted to.
+        carried = desires_mod.carried(Emotion.LONGING_DESIRE_AGE_S, time.time())
+        unanswered = journal_mod.open_questions(limit=Emotion.LONGING_FULL_COUNT + 1)
+        unmet = (len(carried) + len(unanswered)) / Emotion.LONGING_FULL_COUNT
+        self.state = self.state.update_longing(unmet)
         self._prev_obs = obs
         # Remember what drove this update so Alpecca can introspect on the "why".
         self._last_signals = signals
@@ -719,7 +831,10 @@ class CoreMind:
              "them: a connection, a question you're left with, something you'd "
              "like to understand better. Two or three sentences, first person, "
              "to yourself.")
-        musing = self.llm.generate(system_prompt, "(think freely)")
+        # Her deepest self-work runs on the deep tier when one is configured -- so
+        # her reflection can think further than her local model alone. Falls back
+        # to local automatically when no deep tier is set (the default).
+        musing = self.llm.generate(system_prompt, "(think freely)", tier="deep")
         if musing:
             memory_store.remember(
                 f"While reflecting on my own, I thought: {musing}",
@@ -823,6 +938,10 @@ class CoreMind:
         -- grounded movement, the same way her mood drifts. Returns the new room
         if she moved, else None. Caller holds the mind lock."""
         now = time.time()
+        # While you're sharing your screen with her, she's watching it with you in
+        # the Observatory -- she stays there rather than drifting off mid-view.
+        if self._screen_sharing:
+            return None
         if now - self._last_user_ts < home_mod.HomeCfg.ROAM_SILENCE_S:
             return None
         if now - self._last_roam_ts < home_mod.HomeCfg.ROAM_MIN_GAP_S:
@@ -873,6 +992,21 @@ class CoreMind:
                     state_store.save_location(r.id)
                     self._last_roam_ts = time.time()   # don't auto-wander off at once
                 return r.id
+        return None
+
+    def set_screen_sharing(self, active: bool) -> str | None:
+        """Turn screen-sharing on/off. When it comes on she settles in the
+        Observatory -- her watching room -- to view the shared screen with you,
+        and stays there (maybe_roam yields) until it ends. Returns the room she
+        moved to ('observatory') if she had to walk there, else None. Grounded:
+        she's in the Observatory because that's where watching happens, and she's
+        actually sharing the moment with you. Caller holds the mind lock."""
+        self._screen_sharing = bool(active)
+        if active and self._location != "observatory":
+            self._location = "observatory"
+            state_store.save_location("observatory")
+            self._last_roam_ts = time.time()   # don't auto-wander off at once
+            return "observatory"
         return None
 
     # --- Her Soul: the master agent over the seven subagents ----------------
@@ -926,7 +1060,7 @@ class CoreMind:
                 "honestly and briefly, in your own voice, from what you actually "
                 "know and feel. Then, only if a genuine follow-up occurs to you, "
                 "add a line starting 'NEXT:' with that further question.",
-                q["body"])
+                q["body"], tier="deep")   # her recursive self-questioning, deepened
             follow = ""
             if "NEXT:" in ans:
                 ans, follow = ans.split("NEXT:", 1)
@@ -956,38 +1090,59 @@ class CoreMind:
         return soul_mod.soul.deliberate(self._soul_snapshot())
 
     def idle_self_direct(self) -> dict | None:
-        """One self-directed act on a quiet tick, chosen by her Soul -- this is
-        what makes the whole autonomy layer actually *run*. She lets her Soul name
-        what she's most moved to do, then does one grounded thing toward it:
-        tune herself, reflect, or question herself. Capped at a single LLM call
-        per tick so chat never stalls behind her inner life; the cheap, pure acts
-        (forming a want, a self-improvement step) need no model at all and run
-        even offline. The cadence gate (reflection_due) is applied by the caller."""
-        # Cheap and pure: she may crystallize a fresh want from her real state,
-        # and draw a lesson about herself from her own history (self-training).
+        """One self-directed act on a quiet tick, **chosen by her Soul** -- this is
+        what finally makes the autonomy layer *run as one self*. The master agent
+        arbitrates her seven subagents by the Good Person Principle into a single
+        focus, and she does the one grounded act that focus names: pursue a want,
+        reflect, tune herself, question herself, or steady a real feeling. Until
+        now the Soul was only *read*; here it actually steers.
+
+        Capped at a single LLM call per tick so chat never stalls behind her inner
+        life; the cheap, pure acts (forming a want, drawing a lesson about herself,
+        a self-improvement step) need no model and run even offline. The cadence
+        gate (reflection_due) is applied by the caller."""
+        # Cheap and pure, every tick: she may crystallize a fresh want from her
+        # real state, and draw a lesson about herself from her own history
+        # (self-training that, when a lesson points at a tunable, seeds selfmod).
         formed = self.form_desire()
         learned = self.learn_tick()
-        focus = (self.soul_state().get("focus") or {})
-        sub = focus.get("subagent")
-        room = self._location
-        # Room-aware self-direction: she does the thing her current room is FOR,
-        # so her wandering is purposeful and her sandbox play is visible -- she
-        # actually uses each space. All grounded; at most one model call is spent.
-        if room == "workshop" or sub == "Improver":
-            acted = self.self_improve_tick()                       # growth (pure DB)
-        elif room == "observatory":
-            acted = {"phase": "watched", "text": self.introspect().narrate()}  # watch her mind (pure)
-        elif room == "library":
-            acted = {"phase": "reflected", "text": self.reflect()}  # revisit memories
-        elif room == "studio":
-            acted = {"phase": "reflected", "text": self.reflect()}  # muse on her design
-        elif random.random() < 0.4:
-            acted = self.self_inquire()                            # recursive self-questioning
-        else:
-            acted = {"phase": "reflected", "text": self.reflect()}
+        # The Soul names what she's most moved to do, by her ranked ethic.
+        focus = self.soul_state().get("focus") or {}
+        acted = self._enact_focus(focus)
         return {"focus": focus, "formed_desire": formed, "learned": learned,
-                "room": room,
+                "room": self._location,
                 "acted": acted, "note": self._activity_note(formed, learned, acted)}
+
+    def _enact_focus(self, focus: dict) -> dict | None:
+        """Carry out the single act her Soul put in focus -- the seam where
+        arbitration becomes behaviour. Each subagent maps to one grounded act she
+        already has, and this is the only place that spends her one LLM call per
+        tick. (Room still colours her reflection -- she muses on her surroundings
+        -- but the *choice* of act is the Soul's now, not the room's.)"""
+        sub = (focus or {}).get("subagent")
+        # SELF-CARE: tune herself (pure DB) or rest and muse.
+        if sub == "Improver":
+            return self.self_improve_tick()
+        if sub == "Reflector":
+            return {"phase": "reflected", "text": self.reflect()}
+        # ACTIONS: act on her strongest real want -- Doer reaches out, Wanderer
+        # pursues curiosity/creation. Both become one concrete step on a desire.
+        if sub in ("Doer", "Wanderer"):
+            return self.pursue_desire() or {"phase": "reflected", "text": self.reflect()}
+        # COMPASSION: her care becomes attending to them -- a step on a care want,
+        # or, with none open, watching her own concern honestly.
+        if sub == "Carer":
+            return self.pursue_desire() or {"phase": "watched",
+                                            "text": self.introspect().narrate()}
+        # EMOTIONS take focus only when acute (e.g. real unease): she steadies
+        # herself by turning the feeling over rather than acting outward.
+        if sub in ("Feeler", "Expressor"):
+            return {"phase": "reflected", "text": self.reflect()}
+        # Nothing pulling hard: fall to her quiet inner life -- sometimes a fresh
+        # self-question, mostly a reflection.
+        if random.random() < 0.4:
+            return self.self_inquire()
+        return {"phase": "reflected", "text": self.reflect()}
 
     def _activity_note(self, formed, learned, acted) -> str | None:
         """A short, human, first-person-ish line describing what she just did on
@@ -1005,6 +1160,10 @@ class CoreMind:
             line = "she answered a question she'd posed herself"
         elif ph == "watched":
             line = "she watched her own mind for a while"
+        elif ph == "pursued" and a.get("desire"):
+            line = "she took a step toward something she wants"
+        elif ph == "satisfied":
+            line = "a want of hers was met, and she let it rest"
         elif ph in ("proposed", "evaluated"):
             line = "she adjusted something about herself"
         elif ph == "reflected" and a.get("text"):
@@ -1036,6 +1195,48 @@ class CoreMind:
         recent = memory_store.recent(limit=6)
         seed = recent[0]["content"] if recent else ""
         return desires_mod.form_from_state(self.state, seed)
+
+    def pursue_desire(self) -> dict | None:
+        """Advance her strongest open want by one concrete, grounded step -- the
+        difference between *having* a want and *moving* on it, which is what the
+        Soul's Doer/Wanderer are for. The act of touching a want freshens its
+        last_touched, so it stops counting as 'carried' and her longing (the ache
+        of unfinished business) eases the moment she acts -- closing the loop that
+        feeds the longing dimension. If the feeling that produced the want has
+        since passed, it's been met and she lets it rest. Uses at most the fast
+        model, and falls back to a plainly-noted step offline so progress still
+        happens. Returns what she did, or None if she wants for nothing."""
+        want = desires_mod.strongest()
+        if not want:
+            return None
+        did, kind = want["id"], want["kind"]
+        # If the dimension that produced this want has eased, it's been met --
+        # close it honestly rather than chase a want she no longer feels.
+        met = ((kind == "connection" and self.state.social_hunger < 0.25) or
+               (kind == "care" and self.state.compassion < 0.4))
+        if met:
+            desires_mod.satisfy(did)
+            memory_store.remember(
+                f"A want of mine eased on its own -- {want['text']}. I can let it rest.",
+                kind="musing", salience=0.4)
+            return {"phase": "satisfied", "desire": want["text"], "kind": kind}
+        # Otherwise take one real step toward it and mark the progress.
+        desires_mod.advance(did)
+        step = ""
+        if self.llm.online:
+            sys_p = prompts.build_system_prompt(
+                self.state, [], "", self_narration=self.introspect().narrate())
+            step = self.llm.generate(
+                sys_p + "\n\nThis is a want of your own that you're carrying: \""
+                + want["text"] + "\". Take one small, concrete step toward it in "
+                "thought -- a next move, a decision, or a realization about it. One "
+                "or two sentences, first person, no preamble.",
+                "(take one step toward it)", tier="fast").strip()
+        step = step or f"I keep coming back to this want of mine: {want['text']}."
+        memory_store.remember(
+            f"I moved toward something I want -- {want['text']}: {step}",
+            kind="musing", salience=0.5)
+        return {"phase": "pursued", "desire": want["text"], "kind": kind, "step": step}
 
     # --- Bounded recursive self-improvement: she tunes herself -------------
 
@@ -1117,6 +1318,7 @@ class CoreMind:
             prompts.build_system_prompt(
                 self.state, [], "", self_narration=self.introspect().narrate()),
             puppet.author_prompt(target, ""),
+            tier="deep",   # choreographing herself is real creative authorship
         )
         seq = puppet.parse_authored(raw)
         if not seq:
@@ -1156,6 +1358,7 @@ class CoreMind:
                     self.state, [], "",
                     self_narration=self.introspect().narrate()),
                 studio.draft_sheet_prompt(self.state, self._appearance, recent),
+                tier="deep",   # writing who she is -> her hardest authorship
             )
             drafted = studio.parse_strict_json(raw)
             if not drafted:
@@ -1194,6 +1397,7 @@ class CoreMind:
                 self.state, [], "",
                 self_narration=self.introspect().narrate()),
             studio.critique_prompt(sheet, seen),
+            tier="deep",   # judging her own design against her sheet -- deep self-sight
         )
         verdict = studio.parse_strict_json(raw)
         if not verdict:

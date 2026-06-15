@@ -4,11 +4,13 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Alpecca — live avatar</title>
+<!-- Shared soft-tech/glow design system + live mood-glow (tokens come from app.css). -->
+<link rel="stylesheet" href="/web/app.css" />
+<script src="/web/glow.js"></script>
 <style>
-  :root { --bg:#1a1726; --panel:#241f33; --ink:#efe9ff; --muted:#9b91b8; --accent:#c9a8ff; }
   * { box-sizing:border-box; }
-  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
-         background:radial-gradient(1200px 800px at 50% -10%, #2c2540, var(--bg));
+  body { margin:0; font-family:var(--font);
+         background:radial-gradient(1200px 800px at 50% -10%, #0c1426, var(--bg));
          color:var(--ink); min-height:100vh; overflow:hidden; }
   #stage { position:fixed; inset:0; z-index:0; }
   #canvas { width:100%; height:100%; display:block; }
@@ -19,33 +21,34 @@
   /* The chrome (back button, params toggle/panel) always sits ABOVE the overlay
      and canvas so it's clickable -- this is what lets you get back to chat. */
   a.back { position:fixed; top:12px; left:14px; z-index:60; pointer-events:auto;
-           color:var(--ink); font-size:13px; text-decoration:none; background:#3a3158;
+           color:var(--ink); font-size:13px; text-decoration:none;
+           background:var(--bg-2); border:1px solid var(--line);
            padding:7px 14px; border-radius:9px; }
-  a.back:hover { background:#4a3f70; }
+  a.back:hover { border-color:var(--line-2); }
   /* The note shown until a compiled model is dropped in. It must NOT eat clicks
      across the whole screen (that trapped you on this page) -- only its card is
      interactive; everything else passes through to the chrome below. */
   #note { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
           z-index:20; pointer-events:none; }
   #note .card { pointer-events:auto; }
-  #note .card { background:var(--panel); border:1px solid #3d3658; border-radius:16px;
-                padding:22px 26px; max-width:560px; box-shadow:0 14px 50px rgba(0,0,0,.45); }
+  #note .card { background:var(--panel-solid); border:1px solid var(--line); border-radius:16px;
+                padding:22px 26px; max-width:560px; box-shadow:var(--shadow-panel); }
   #note h2 { margin:0 0 8px; font-size:16px; }
   #note p { color:var(--muted); font-size:13px; line-height:1.5; }
-  #note code { background:#1d1a2b; padding:1px 6px; border-radius:5px; color:#efe9ff; }
+  #note code { background:var(--bg-2); padding:1px 6px; border-radius:5px; color:var(--ink); }
   /* Live Cubism parameter panel -- proves her state drives the rig, and is the
      debug view while rigging. Always available via the "params" toggle. */
   #params { position:fixed; right:14px; top:54px; width:280px; max-height:78vh; overflow:auto;
-            background:rgba(36,31,51,.92); border:1px solid #3d3658; border-radius:12px;
+            background:var(--panel-solid); border:1px solid var(--line); border-radius:12px;
             padding:12px 14px; font-size:12px; display:none; pointer-events:auto; z-index:60; }
   #params h3 { margin:2px 0 8px; font-size:12px; color:var(--muted); font-weight:600; }
   .prow { display:flex; align-items:center; gap:8px; margin:5px 0; }
-  .prow .name { width:128px; color:#cfc6e6; font-family:ui-monospace,Consolas,monospace; font-size:11px; }
-  .prow .track { flex:1; height:5px; background:#3a3350; border-radius:3px; overflow:hidden; position:relative; }
-  .prow .fill { position:absolute; top:0; bottom:0; left:50%; width:0; background:var(--accent); }
+  .prow .name { width:128px; color:var(--dim); font-family:ui-monospace,Consolas,monospace; font-size:11px; }
+  .prow .track { flex:1; height:5px; background:#16203a; border-radius:3px; overflow:hidden; position:relative; }
+  .prow .fill { position:absolute; top:0; bottom:0; left:50%; width:0; background:var(--mood); box-shadow:var(--glow-sm); }
   .prow .val { width:42px; text-align:right; color:var(--muted); font-variant-numeric:tabular-nums; }
   #ptoggle { position:fixed; right:16px; top:16px; pointer-events:auto; cursor:pointer; z-index:60;
-             background:#3a3158; color:var(--ink); border:0; padding:6px 12px; border-radius:9px; font-size:12px; }
+             background:var(--bg-2); color:var(--ink); border:1px solid var(--line); padding:6px 12px; border-radius:9px; font-size:12px; }
 </style>
 </head>
 <body>
@@ -69,8 +72,8 @@
        her state is driving <i>right now</i> — the exact wiring the model will use.
        Rig the names in her <code>RIG_SPEC.md</code> and she'll move the moment
        she's dropped in.</p>
-    <a href="/" style="display:inline-block;margin-top:6px;background:var(--accent);
-       color:#221a33;text-decoration:none;padding:9px 18px;border-radius:9px;font-weight:600;">
+    <a href="/" style="display:inline-block;margin-top:6px;background:var(--mood);
+       color:#06121c;text-decoration:none;padding:9px 18px;border-radius:9px;font-weight:600;box-shadow:var(--mood-glow);">
        ← Back to chat</a>
   </div></div>
 
@@ -168,6 +171,9 @@ setInterval(thaPoll, 1500); thaPoll();
 let dims = { love: 0.4, compassion: 0.2, fear: 0.0, energy: 0.5 };
 async function pollDims(){
   try { const s = await fetch('/state').then(r=>r.json()); if(s.state) dims = s.state; } catch(e){}
+  // The debug view breathes with her too: its accent bars glow in her live hue.
+  if(window.applyMood) applyMood({warmth:dims.love, unease:dims.fear,
+    curiosity:dims.compassion, glow:dims.energy});
 }
 setInterval(pollDims, 1500); pollDims();
 

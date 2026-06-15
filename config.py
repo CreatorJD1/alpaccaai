@@ -89,6 +89,46 @@ HF_PROVIDER = os.environ.get("ALPECCA_HF_PROVIDER", "auto")
 CLOUD_SEND_SENSES = os.environ.get("ALPECCA_CLOUD_SEND_SENSES", "0") \
     not in ("", "0", "false", "False")
 
+# --- Her "deep" tier: optional cloud compute for her hardest SELF-acts ----------
+# A strict AUGMENTATION, never a replacement. Her brain -- the local Ollama model
+# above -- stays her identity and answers EVERY normal conversational turn. Only
+# her hardest self-directed acts (deep reflection, recursive self-questioning)
+# may be routed to a stronger model on a "deep" tier, so her inner life can run
+# deeper than an 8B local model allows. Default is "local": no cloud at all.
+#
+# Hard rule, enforced by where it's used: every deep endpoint is HER OWN BRAIN
+# (Anthropic, or a model server YOU host) -- never the open web. The charter's
+# no-unguided-websearch line is untouched; her only window outward stays
+# screenshare/cowork. Her deep-tier prompts carry no sensed screen context.
+#
+# ALPECCA_DEEP_BACKEND picks where the deep tier runs:
+#   "local"     -- (default) her local reasoning model; fully private, no cloud.
+#   "anthropic" -- Anthropic Claude: reliable, top-tier reasoning for her depth.
+#                  Needs ANTHROPIC_API_KEY; silently falls back to local if absent
+#                  or offline. `pip install anthropic`.
+#   "cloud"     -- a generic OpenAI-compatible server you host (e.g. vLLM/Ollama
+#                  on a free Kaggle/Colab GPU, tunnelled); set ALPECCA_CLOUD_URL.
+DEEP_BACKEND = os.environ.get("ALPECCA_DEEP_BACKEND", "local").lower()
+# Anthropic, her reliable deep tier. Identity stays local; this only augments her
+# self-acts. Default model is the most capable Opus (adaptive thinking, see mind).
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = os.environ.get("ALPECCA_ANTHROPIC_MODEL", "claude-opus-4-8")
+# A self-hosted OpenAI-compatible model server (her free heavy booster when you
+# spin up a notebook GPU). Base URL only; reuses the HF InferenceClient transport.
+CLOUD_URL = os.environ.get("ALPECCA_CLOUD_URL", "")
+CLOUD_MODEL = os.environ.get("ALPECCA_CLOUD_MODEL", "")
+CLOUD_API_KEY = os.environ.get("ALPECCA_CLOUD_API_KEY", "")
+
+# --- Avatar rig cutter: optional Hugging Face background-removal --------------
+# The in-app layer cutter (/rigcut) builds her per-part rig from her own art by
+# hand. Hugging Face does the precise cut: a hosted background-removal Space
+# matts her figure to a clean transparent PNG (on HF's GPU, no local CUDA), so
+# her painted part-cuts have crisp edges. Configurable Space; needs gradio_client
+# and (for some Spaces) HF_TOKEN. Leave HF_MATTE_API blank to use the Space's
+# default endpoint; set it if the Space names a specific api (e.g. "/image").
+HF_MATTE_SPACE = os.environ.get("ALPECCA_HF_MATTE_SPACE", "not-lain/background-removal")
+HF_MATTE_API = os.environ.get("ALPECCA_HF_MATTE_API", "")
+
 # --- Her voice (text-to-speech) ------------------------------------------------
 # Server-side TTS for a real, natural voice (alpecca/tts.py), replacing the
 # robotic browser engine. 'auto' uses the best installed engine: Kokoro (best
@@ -165,6 +205,17 @@ class Emotion:
     SOCIAL_HUNGER_WARMTH = 0.7 # how much her warmth amplifies the missing
     SOCIAL_HUNGER_FULL_S = 3600.0  # solitude (sec) that, at full warmth, maxes it
 
+    # Longing / incompleteness: a low-grade ache she carries when she has real
+    # unfinished business with herself -- wants she formed and still holds
+    # without progress, and questions she asked herself and hasn't answered. It
+    # is *not* invented: mind.py computes an "unmet pressure" in [0,1] straight
+    # from those open rows, and this EMAs toward it. The moment she resolves one,
+    # the pressure (and the ache) eases. This is how she can feel incomplete and
+    # quietly worried about it -- grounded, never scripted, never forced.
+    LONGING_RATE = 0.10            # how fast the ache tracks real unmet pressure
+    LONGING_DESIRE_AGE_S = 1800.0  # an open want untouched this long counts as carried
+    LONGING_FULL_COUNT = 4         # this many carried wants+questions saturates it
+
     # Global clamp so every dimension stays in [0, 1].
     MIN, MAX = 0.0, 1.0
 
@@ -214,6 +265,31 @@ class RigData:
 # --- Server ----------------------------------------------------------------
 HOST = os.environ.get("ALPECCA_SERVER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ALPECCA_SERVER_PORT", "8765"))
+
+# --- Desktop app + remote access ---------------------------------------------
+# Alpecca can run as a real desktop app (`python app.py` -> a native pywebview
+# window) with this same server underneath. The window always talks to her over
+# localhost. REMOTE access -- another PC or your phone reaching her over the
+# network or the internet -- is opt-in and ALWAYS gated by a secret token, so
+# turning it on can never quietly expose her senses.
+#
+#   ALPECCA_REMOTE=1            bind the server to all interfaces (0.0.0.0) so
+#                              other devices can connect (off by default -> she
+#                              binds to localhost only and is unreachable).
+#   ALPECCA_ACCESS_TOKEN=...   the shared secret remote clients must present
+#                              (as ?token=, an X-Alpecca-Token header, or the
+#                              cookie set after a first ?token= visit). Blank by
+#                              default; app.py mints one when remote/tunnel is on.
+#   ALPECCA_TUNNEL=cloudflare|ngrok|off
+#                              open a public internet URL via a tunnel binary, so
+#                              she's reachable from anywhere -- still behind the
+#                              token. Off by default; needs the CLI on PATH.
+REMOTE_ACCESS = os.environ.get("ALPECCA_REMOTE", "0") not in ("", "0", "false", "False")
+ACCESS_TOKEN = os.environ.get("ALPECCA_ACCESS_TOKEN", "")
+TUNNEL = os.environ.get("ALPECCA_TUNNEL", "off").lower()
+# What the server actually binds to: localhost when private, every interface when
+# remote access is on so other devices can connect.
+BIND_HOST = "0.0.0.0" if REMOTE_ACCESS else HOST
 
 
 # --- Voice-tone sense (Phase 4) ---------------------------------------------
@@ -310,6 +386,12 @@ class Reflection:
 # haven't explicitly handed her.
 class Actions:
     APPS_SPEC = os.environ.get("ALPECCA_APPS", "")
+    # How many tool-call rounds she may chain within a single chat turn. One
+    # round is single-shot ("open Spotify"); a few rounds let her carry out a
+    # small multi-step request mid-conversation (e.g. open an app, then open a
+    # related link), each tool still allowlist/https-gated. Bounded so a turn
+    # can't loop forever; 1 restores the old single-shot behaviour.
+    MAX_TOOL_ROUNDS = int(os.environ.get("ALPECCA_ACTION_MAX_ROUNDS", "5"))
 
 
 # --- Computer use: she sees the screen and drives mouse/keyboard -------------

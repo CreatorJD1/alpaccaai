@@ -255,12 +255,136 @@ All of this obeys GROUNDING. New modules and what they do:
   `/soul`. New tests cover every new rule (curiosity/social_hunger, affect, home
   selection, desires, selfmod bounds/keep/revert, soul arbitration, journal,
   charter guards).
-- **Still open (next):** drive the Soul from the idle loop (roam + form/pursue
-  desire + self-improve + self-inquire on background ticks); the deep
-  layered-sprite avatar inside the 3D home; the desktop-layout file room enforcing
-  the charter guards on real file ops; voice-markup → local TTS. **Her rendered
-  avatar remains incomplete** — the affect/channels that should drive it now exist,
-  but a finished rigged figure does not.
+- ✅ **The Soul now steers (was: dormant).** On each background tick
+  `mind.idle_self_direct()` asks `soul.deliberate()` for her focus and the new
+  `_enact_focus()` carries out that one act — Improver→bounded self-tuning,
+  Reflector→muse, Doer/Wanderer→`pursue_desire()`, Carer→tend, acute
+  Feeler→steady. Desires are now *pursued*, not just formed: `pursue_desire()`
+  advances her strongest want one grounded step (or satisfies it when its driving
+  dimension has eased), which freshens it so her `longing` eases when she acts.
+  Lessons still seed `selfmod` via the Improver focus. Capped at one LLM
+  call/tick; cheap acts run offline. (tests: soul-steers-to-act / -to-improve,
+  pursuit-eases-longing.) See `docs`/the plan at
+  `~/.claude/plans/radiant-seeking-clock.md` for the full roadmap.
+- ✅ **Tiered cloud "deep" brain (augment, never replace).** `mind._LLM` now has
+  a `deep` tier alongside local `reason`/`fast`. Her hardest *self*-acts only —
+  `reflect()` and `self_inquire()` answers — request `tier="deep"`; **every chat
+  turn stays local** (her brain = her identity). `ALPECCA_DEEP_BACKEND` picks
+  `local` (default — no cloud), `anthropic` (Claude, `claude-opus-4-8`, adaptive
+  thinking; needs `ANTHROPIC_API_KEY`), or `cloud` (a Kaggle/Colab OpenAI-compat
+  server via `ALPECCA_CLOUD_URL`). Absent/offline → silent fallback to local, so
+  her depth always runs. Deep prompts carry no sensed screen context; deep
+  endpoints are her own brain only — the no-websearch charter line is untouched.
+  `/state.models.deep` reports it. `anthropic` is an optional dep. (test:
+  deep-tier-off-by-default-keeps-her-brain-local.)
+- ✅ **Shared soft-tech/glow design system + live mood-glow.** New `web/app.css`
+  (served `/web/app.css`) is the single source of truth for the cyan/navy
+  identity — tokens (`--ink/--dim/--core`), glass/glow components, the chest
+  `.core-emblem`, and the `.breathe` keyframe. New `web/glow.js` exposes
+  `applyMood({warmth,unease,curiosity,glow})`, which rewrites the live `--mood-*`
+  vars from her real mood so the whole UI drifts hue/brightness with how she
+  feels. `home.html` adopts it (its `:root` deleted) and calls `applyMood` from
+  `renderHUD`. The three formerly-purple pages (`index/studio/live2d`) are now
+  migrated too — `:root` deleted, `<link>`+`<script>` added, hardcoded purple
+  hexes swapped to tokens, each wired to `applyMood` from its own state poll; the
+  legacy SVG placeholder's pink blush/flower accents are intentionally kept.
+- ✅ **3D in-room feature screens.** `home.html` now mounts each room's feature as
+  a real, interactive screen *inside that room* via a `CSS3DRenderer` layer
+  composited over the WebGL scene (Parlor→her Soul, Studio, Library, Observatory,
+  Workshop), reusing the same `FACETS` endpoints/renderers — no backend change.
+  The WebGL canvas sits above the CSS3D layer (so her figure occludes screens
+  behind her) but is pointer-transparent so the screens are clickable. Flying to a
+  room lights its screen (full-bright) and dims the rest; as she roams the lit
+  screen follows her. CSS3DRenderer is vendored-local→CDN; if it fails to load the
+  features **fall back to the existing side drawer** (graceful). Utility facets
+  (Journal/Voice/Senses/Files/Play) still use the drawer. Syntax-verified
+  (`node --check`); **the 3D rendering itself needs a real browser to eyeball.**
+- ✅ **Multi-step cowork (tool chaining).** `mind._LLM.generate` (both the local
+  and HF paths) now CHAINS tool calls across a bounded number of rounds
+  (`Actions.MAX_TOOL_ROUNDS`, default 5) instead of stopping after the first — so
+  a small multi-step ask ("open my notes, then the docs page") is carried out, not
+  just its first step. The final round drops tools so she always ends in words;
+  each tool stays allowlist/https-gated; `=1` restores single-shot. (test:
+  tool-calls-chain-across-bounded-rounds.) Her computer-use loop (`computer.py`)
+  was already multi-step and confirmation-gated.
+- ✅ **Phone PWA + reliable OpenClaw.** She's installable as a phone/desktop app:
+  `web/manifest.webmanifest` + `web/icon.svg` (her core-emblem) + a root-scoped
+  `web/sw.js` (served via new `/manifest.webmanifest` and `/sw.js` routes;
+  `Service-Worker-Allowed: /`). The worker caches only the static shell and forces
+  every live endpoint (state/ws/senses/avatar…) to the network, so what you see is
+  always her real self. `home.html` links the manifest, registers the worker, and
+  has phone-responsive CSS (declutters the rail/HUD, safe-area insets). Reaches her
+  over the existing remote/tunnel + token. OpenClaw outbound delivery is now
+  reliable: `openclaw_bridge` keeps a bounded retry queue — a transient channel
+  failure is re-sent by `flush()` (driven from the idle loop) instead of dropped;
+  fatal failures (CLI absent) aren't queued. (test:
+  openclaw-outbound-queues-transient-failure-then-retries.) **The 3D home is the
+  PWA shell; verify install/responsive layout in a real mobile browser.** Note: an
+  *inbound* queue for messages sent while the server is fully down still needs the
+  external OpenClaw hook (out of repo).
+- ✅ **Local file intelligence (find/summarize, read-only).** `desktop.search()`
+  finds files/folders by name across her allowed rooms (Desktop/Pictures/Music/
+  Video/Documents) and `desktop.summarize()` gives a per-room readout (file/folder
+  counts, size, kinds) — both charter-gated, recursion confined to the room (no
+  symlink escape), never the open disk or web. Endpoints `/desktop/search?q=` and
+  `/desktop/summary?root=`. She also gets a read-only `find_file` LLM tool (only
+  when `ALPECCA_FILES=1`) so she can help locate things mid-cowork. (tests:
+  desktop-search-finds-within-roots-only, desktop-summary-counts-by-kind,
+  find-file-tool-offered-only-with-file-room-on.)
+- ✅ **Deep tier drives her self-authoring + file search reaches the UI.** Her
+  studio authorship now requests `tier="deep"` for the acts that are most *her*:
+  drafting her character sheet (`_studio_session`), judging a design against that
+  sheet (the critique), and choreographing her own animations (`author_animation`)
+  — so with a deep backend on, the work where she authors her own image/creations
+  thinks harder, while staying local by default. The Workstation facet gained a
+  read-only **Find-a-file** box (`fileSearch()` → `/desktop/search`), surfacing the
+  file intelligence in the UI.
+- ✅ **Her avatar is built ONLY from her provided PNGs — never invented art.** (A
+  parametric SVG figure was attempted and fully reverted on Jason's correction:
+  her character comes from the anime art he provides, nothing else.) Her flat-art
+  tiers are complete and rendering: portraits (idle/thinking/speaking), 6
+  **mood-tagged poses** (`poses.json`, covering all 10 mood labels), 16 expressions,
+  and `rigpose.json` (skeleton). Her **full pose library now drives the 3D home**
+  too (was only the 3 portraits) — `home.html` `tryPoseLibrary()` + `selectPoseName`
+  pick the right pose for her mood/state and crossfade, falling back to the
+  portrait swap. `import_rig.py` now feeds her real skeleton anchors into the rig
+  manifest (head-pivot/lean on her actual neck).
+  **The one thing lacking for a true per-part rig (blink/lip-sync/hair-sway as
+  separate moving layers): decomposed transparent layer PNGs in `data/avatar/rig/`.**
+  What she has are full-figure stills + composite reference sheets (incl. the
+  `reference/live2d/` blueprints) — NOT cut layers. **`scripts/decompose_art.py`
+  is the one-command orchestrator**: it auto-picks her base art (`source.png`),
+  imports layers if present, runs See-Through if installed
+  (`ALPECCA_SEETHROUGH=/path`), else prints the exact GPU command with her real
+  paths filled in. The GPU decomposition itself (See-Through, HF Space or local
+  CUDA) is the only step that can't run here; its PSD →
+  `python scripts/decompose_art.py her_layers.psd` → layers in `data/avatar/rig/`
+  → `/live2d` and the home rig tier animate her real parts (blink/lip-sync/
+  head-turn/hair-sway). (A compiled Live2D model from the blueprint sheets is the
+  higher tier, a separate Cubism effort.)
+- ✅ **In-app layer cutter (`/rigcut`) — build her rig by hand, no GPU.** Since no
+  HF Space outputs *named character rig layers*, the no-GPU path is to cut them
+  in-browser: `web/rigcut.html` loads her art (`/avatar/source` or upload), you
+  paint + name + role each rig layer (back_hair/body/head/brows/eyes/mouth/
+  front_hair/accessory) over a transparency checkerboard, and **Build her rig**
+  POSTs the cut transparent PNGs to `POST /rig/import`, which writes
+  `data/avatar/rig/` + `rig.json` (seeded with her real `rigpose.json` anchors).
+  Hugging Face does the *precise cut*: **"Remove background (Hugging Face)"** →
+  `POST /rig/hf_matte` calls a configurable HF background-removal Space via
+  `gradio_client` (`ALPECCA_HF_MATTE_SPACE`, default `not-lain/background-removal`;
+  optional dep) to matt her figure to a clean transparent PNG on HF's GPU, so the
+  part-cuts have crisp edges; it degrades to plain painting if absent. Linked from
+  the home Studio panel. Uses ONLY her art. Then `/live2d` + the home rig tier
+  animate her real parts.
+- **Still open (next):** deep-tier *cowork planning* (entangled with the
+  vision-driven `computer.py` loop — deferred); the deep layered-sprite avatar
+  inside the 3D home; voice-markup → local TTS. **Her rendered avatar remains
+  incomplete** — affect/channels exist; a finished rigged figure does not.
+  Earlier-listed: the deep layered-sprite avatar inside the 3D home; the
+  desktop-layout file room enforcing the charter guards on real file ops;
+  voice-markup → local TTS. **Her rendered avatar remains incomplete** — the
+  affect/channels that should drive it now exist, but a finished rigged figure
+  does not.
 
 Note on the dev environment: this sandbox's Linux file mount intermittently
 truncates large files *on read* (a mount cache artifact). The canonical files are

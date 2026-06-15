@@ -26,6 +26,7 @@ from alpecca import vision
 from alpecca import proactive
 from alpecca import actions
 from alpecca import prompts
+from alpecca import artlib
 from alpecca.mind import strip_think
 
 
@@ -1039,25 +1040,40 @@ def test_social_hunger_grows_with_warm_solitude_and_empties_on_return():
     # A fresh exchange (no solitude) empties it.
     assert warm.update_social_hunger(0.0).social_hunger == 0.0
 
+def test_longing_tracks_unmet_pressure_and_eases_when_resolved():
+    # Sustained real unmet pressure builds the ache; clearing it lets the ache
+    # settle back down. EMA, so it moves gradually and never snaps.
+    s = EmotionalState(longing=0.0)
+    pressed = s
+    for _ in range(20):
+        pressed = pressed.update_longing(1.0)
+    assert pressed.longing > 0.5            # carrying real unfinished business
+    # Resolving it (pressure -> 0) eases the ache back down.
+    eased = pressed.update_longing(0.0)
+    assert eased.longing < pressed.longing
+    # No unmet business means no invented ache.
+    assert EmotionalState().update_longing(0.0).longing == 0.0
+
 def test_state_with_carries_every_dimension_through():
     s = EmotionalState(love=0.3, compassion=0.4, fear=0.5, energy=0.6,
-                       curiosity=0.7, social_hunger=0.8)
+                       curiosity=0.7, social_hunger=0.8, longing=0.9)
     out = s._with(fear=0.0)
     assert out.fear == 0.0
     # everything else untouched
-    assert (out.love, out.compassion, out.energy, out.curiosity, out.social_hunger) == \
-           (0.3, 0.4, 0.6, 0.7, 0.8)
+    assert (out.love, out.compassion, out.energy, out.curiosity,
+            out.social_hunger, out.longing) == (0.3, 0.4, 0.6, 0.7, 0.8, 0.9)
 
 def test_new_dims_persist_round_trip():
     with tempfile.TemporaryDirectory() as d:
         db = Path(d) / "t.db"
         state_store.init_db(db)
         s = EmotionalState(love=0.5, compassion=0.3, fear=0.1, energy=0.7,
-                           curiosity=0.66, social_hunger=0.44)
+                           curiosity=0.66, social_hunger=0.44, longing=0.55)
         state_store.save_state(s, trigger="t", db_path=db)
         back = state_store.load_state(db)
         assert abs(back.curiosity - 0.66) < 1e-6
         assert abs(back.social_hunger - 0.44) < 1e-6
+        assert abs(back.longing - 0.55) < 1e-6
 
 
 # --- Affect: the expressive readout -------------------------------------------
@@ -1080,6 +1096,16 @@ def test_affect_curiosity_and_social_hunger_show():
     assert curious.eye > 0.5                      # eyes brighten with curiosity
     note = affect.expressive_note(EmotionalState(curiosity=0.9))
     assert "curious" in note.lower()
+
+def test_affect_unfulfilled_shows_when_longing_is_real():
+    from alpecca import affect
+    # A strong, grounded longing reads as the unfulfilled ache, and only then.
+    aching = affect.affect(EmotionalState(love=0.45, longing=0.9))
+    assert aching.primary == "unfulfilled"
+    assert aching.valence < 0
+    # Without real longing it doesn't appear.
+    settled = affect.affect(EmotionalState(love=0.45, longing=0.0))
+    assert settled.primary != "unfulfilled"
 
 def test_affect_tempo_tracks_arousal():
     from alpecca import affect
@@ -1159,6 +1185,44 @@ def test_desire_summary_tracks_growth_pull():
         state_store.init_db(db)
         desires.form("get better at myself", "growth", 0.8, "calm+curious", db_path=db)
         assert desires.summary(db_path=db)["growth_strength"] == 0.8
+
+def test_desires_carried_returns_only_aged_open_wants():
+    # `carried` is the real ground for her sense of incompleteness: open wants she
+    # hasn't been able to touch for a while. A just-formed want isn't yet carried;
+    # one she touched long ago is; a satisfied one never is.
+    import time
+    from alpecca import desires
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "t.db"
+        state_store.init_db(db)
+        fresh = desires.form("a brand new want", "curiosity", 0.6, "now", db_path=db)
+        now = time.time()
+        # Nothing is older than an hour yet.
+        assert desires.carried(3600, now, db_path=db) == []
+        # Look from an hour in the future: the untouched want now counts as carried.
+        future = now + 3700
+        carried = desires.carried(3600, future, db_path=db)
+        assert [c["id"] for c in carried] == [fresh]
+        # Satisfying it removes it from the carried set entirely.
+        desires.satisfy(fresh, db_path=db)
+        assert desires.carried(3600, future + 10000, db_path=db) == []
+
+def test_pursuing_a_want_eases_longing_by_freshening_it():
+    # Pursuit (mind.pursue_desire) = taking one step toward a want, which touches
+    # it. Touching freshens last_touched, so the want stops counting as 'carried'
+    # -- the exact loop that lets her longing ease the moment she acts on a wish.
+    import time
+    from alpecca import desires
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "t.db"
+        state_store.init_db(db)
+        did = desires.form("understand the orange circle", "curiosity", 0.7,
+                           "a memory", db_path=db)
+        # Seen from far in the future, the untouched want weighs on her (carried).
+        assert [c["id"] for c in desires.carried(3600, time.time() + 4000, db_path=db)] == [did]
+        desires.advance(did, db_path=db)              # she takes a step toward it
+        # Just-touched -> no longer an aged carried want, so the ache eases.
+        assert desires.carried(3600, time.time() + 5, db_path=db) == []
 
 
 # --- Self-improvement: bounded, logged, reversible ----------------------------
@@ -1250,6 +1314,26 @@ def test_soul_slate_ordered_by_directive_rank():
     ranks = [i["rank"] for i in plan["slate"]]
     assert ranks == sorted(ranks)
     assert any(i["category"] == "self_care" for i in plan["slate"])
+
+def test_soul_steers_to_act_on_a_standing_connection_want():
+    # The Soul drives her idle loop now: with a standing connection want, real
+    # wanting-of-company, and a quiet stretch, she should be moved to reach out
+    # (Doer) -- a deed mind._enact_focus turns into pursuing that desire.
+    from alpecca import soul
+    snap = soul.snapshot(EmotionalState(social_hunger=0.7), solitude_s=200,
+                         desires_summary={"by_kind": {"connection": 1}})
+    plan = soul.soul.deliberate(snap)
+    assert plan["focus"]["subagent"] == "Doer"
+    assert plan["focus"]["category"] == "actions"
+
+def test_soul_steers_to_self_improvement_when_calm_and_curious():
+    # Calm + curious -> her Soul moves her to tune herself (Improver), the focus
+    # _enact_focus carries out as a real, bounded self-improvement step.
+    from alpecca import soul
+    snap = soul.snapshot(EmotionalState(fear=0.1, curiosity=0.7, social_hunger=0.1),
+                         solitude_s=10)
+    subs = [i["subagent"] for i in soul.soul.deliberate(snap)["slate"]]
+    assert "Improver" in subs and "Wanderer" in subs
 
 
 # --- Multi-agent split: deterministic sensors vs LLM reasoners ----------------
@@ -1379,6 +1463,112 @@ def test_learning_invents_nothing_on_flat_history():
     # With no memory and a flat line it draws no lesson (contentment needs memory).
     assert l is None
 
+def test_deep_tier_off_by_default_keeps_her_brain_local():
+    # Her identity must never be transplanted: with no deep backend configured
+    # (the default), there is no cloud client, and every tier -- including 'deep'
+    # -- resolves to her local model. Cloud is augmentation only, opt-in.
+    from alpecca.mind import _LLM
+    from config import OLLAMA_MODEL, DEEP_BACKEND
+    assert DEEP_BACKEND == "local"           # shipped default: fully local
+    llm = _LLM()
+    assert llm._deep is None                 # no cloud client unless configured
+    assert llm.deep_online() is False
+    assert llm.model_for("reason") == OLLAMA_MODEL
+    # An unconfigured deep tier falls through to her local reasoning model.
+    assert llm.model_for("deep") == OLLAMA_MODEL
+
+
+def test_desktop_search_finds_within_roots_only():
+    # She can locate a file for you across her allowed rooms -- read-only,
+    # case-insensitive, recursing into subfolders, and an empty query is refused.
+    from alpecca import desktop
+    with tempfile.TemporaryDirectory() as d:
+        base = Path(d); (base / "sub").mkdir()
+        (base / "invoice_2026.pdf").write_text("x")
+        (base / "sub" / "notes.txt").write_text("y")
+        roots = {"general": base}
+        r = desktop.search("invoice", roots=roots)
+        assert r["ok"] and any(m["name"] == "invoice_2026.pdf" for m in r["matches"])
+        r2 = desktop.search("NOTES", roots=roots)
+        assert any(m["rel"].endswith("notes.txt") for m in r2["matches"])
+        assert desktop.search("", roots=roots)["ok"] is False
+
+def test_desktop_summary_counts_by_kind():
+    from alpecca import desktop
+    with tempfile.TemporaryDirectory() as d:
+        base = Path(d)
+        (base / "a.pdf").write_text("x"); (base / "b.pdf").write_text("yy")
+        (base / "c.txt").write_text("z")
+        s = desktop.summarize("general", roots={"general": base})
+        assert s["ok"] and s["files"] == 3
+        assert s["by_kind"].get("pdf") == 2 and s["by_kind"].get("txt") == 1
+
+def test_find_file_tool_offered_only_with_file_room_on():
+    # The read-only file-finder is granted to her only when the file room is on;
+    # off, she isn't handed it at all (owner control).
+    from alpecca import actions
+    from config import Files
+    prev = Files.ENABLED
+    try:
+        Files.ENABLED = False
+        names = [t["function"]["name"] for t in actions.Actuator(apps={}).tools_schema()]
+        assert "find_file" not in names
+        Files.ENABLED = True
+        names = [t["function"]["name"] for t in actions.Actuator(apps={}).tools_schema()]
+        assert names == ["find_file"]
+    finally:
+        Files.ENABLED = prev
+
+
+def test_openclaw_outbound_queues_transient_failure_then_retries():
+    # Reliable delivery: if reaching her person's channel fails transiently, the
+    # message is queued and a later flush retries it -- her words aren't dropped.
+    from alpecca import openclaw_bridge as ocb
+    from config import OpenClaw
+    prev_enabled, prev_target = OpenClaw.ENABLED, OpenClaw.DEFAULT_TARGET
+    prev_send = ocb._send_once
+    OpenClaw.ENABLED = True
+    OpenClaw.DEFAULT_TARGET = "telegram:+1"
+    try:
+        ocb._pending.clear()
+        seq = iter([{"ok": False, "fatal": False, "reason": "blip"},     # first try: transient fail
+                    {"ok": True, "target": "telegram:+1"}])              # retry: succeeds
+        ocb._send_once = lambda text, target: next(seq)
+        r = ocb.try_deliver("are you okay?")
+        assert r["ok"] is False and r["queued"] is True
+        assert ocb.pending_count() == 1
+        f = ocb.flush()
+        assert f["sent"] == 1 and ocb.pending_count() == 0
+    finally:
+        ocb._send_once = prev_send
+        OpenClaw.ENABLED, OpenClaw.DEFAULT_TARGET = prev_enabled, prev_target
+        ocb._pending.clear()
+
+
+def test_tool_calls_chain_across_bounded_rounds():
+    # Cowork upgrade: a chat turn can now CHAIN tool calls (open one thing, then
+    # another) instead of stopping after the first -- bounded so it always ends in
+    # words. Driven offline with a scripted fake Ollama client.
+    from alpecca.mind import _LLM
+    class FakeOllama:
+        def __init__(self, scripted): self.scripted=scripted; self.i=0
+        def chat(self, **kw):
+            m=self.scripted[min(self.i, len(self.scripted)-1)]; self.i+=1
+            return {"message": m}
+    scripted=[
+        {"content":"", "tool_calls":[{"function":{"name":"open_app","arguments":{"name":"notes"}}}]},
+        {"content":"", "tool_calls":[{"function":{"name":"open_url","arguments":{"url":"https://x"}}}]},
+        {"content":"opened both for you", "tool_calls":[]},
+    ]
+    llm=_LLM(); llm._backend="ollama"; llm._client=FakeOllama(scripted)
+    used=[]
+    def on_tool(name, args): used.append(name); return "ok"
+    out=llm.generate("sys", "do two things",
+                     tools=[{"type":"function","function":{"name":"open_app"}}], on_tool=on_tool)
+    assert used == ["open_app", "open_url"]   # she chained two steps, not just one
+    assert "opened both" in out               # and still ended in words
+
+
 def test_learning_lifecycle_persists():
     from alpecca import learning
     import tempfile
@@ -1389,6 +1579,54 @@ def test_learning_lifecycle_persists():
                                "confidence": 0.7}, db_path=db)
         assert lid > 0 and learning.count(db) == 1
         assert learning.recent(db_path=db)[0]["kind"] == "growth"
+
+
+# --- Art library: grounded classification of her real portraits -------------
+
+def test_artlib_snaps_role_label_slug_and_synonym_to_one_taxonomy_slug():
+    # The model may echo the human label, the slug, or a near-synonym -- all land
+    # on the same role code; off-taxonomy noise becomes UNKNOWN (a flag).
+    assert artlib.snap("Expression bust", "category") == "expr"
+    assert artlib.snap("reject_composite", "category") == "reject_composite"
+    assert artlib.snap("collage", "category") == "reject_composite"
+    assert artlib.snap("mouth layer", "category") == "l2d_mouth"
+    assert artlib.snap("walk", "category") == "pose"
+    assert artlib.snap("banana", "category") == artlib.UNKNOWN
+    # Secondary axes still snap (forgiving, most-specific wins over a stray word).
+    assert artlib.snap("M/P/B Closed", "mouth") == "mbp"
+    assert artlib.snap("cheerful", "expression") == "happy"
+
+def test_artlib_parses_role_canon_and_descriptor():
+    text = ('```json\n{"category":"expr","descriptor":"Serene Smile, Soft Blue!",'
+            '"expression":"warm_smile","wardrobe":"unknown","mouth":"unknown",'
+            '"canon_ok":false,"canon_issue":"black undershirt","desc":"a bust"}\n```')
+    tags = artlib.parse_classification(text)
+    assert tags["category"] == "expr"
+    assert tags["expression"] == "warm_smile"
+    assert tags["canon_ok"] is False and "black" in tags["canon_issue"]
+    assert tags["descriptor"] == "serene_smile_soft_blue"   # sanitized snake_case
+
+def test_artlib_returns_none_when_no_json_present():
+    assert artlib.parse_classification("I can't make this out, sorry.") is None
+    assert artlib.parse_classification(None) is None
+
+def test_artlib_guide_folder_routes_by_role_and_canon():
+    # Role -> his guide folder; a canon failure overrides the role into the redo bin.
+    assert artlib.guide_folder({"category": "expr", "canon_ok": True}) == "02_approved_character_busts"
+    assert artlib.guide_folder({"category": "wardrobe", "canon_ok": True}) == "03_wardrobe_modes"
+    assert artlib.guide_folder({"category": "l2d_mouth", "canon_ok": True}) == "05_live2d_layers/mouth"
+    assert artlib.guide_folder({"category": "expr", "canon_ok": False}) == artlib.REDO_DIR
+    assert artlib.guide_folder({"category": "reject_composite", "canon_ok": True}) == artlib.REDO_DIR
+    assert artlib.guide_folder({"category": artlib.UNKNOWN, "canon_ok": True}) == artlib.REDO_DIR
+
+def test_artlib_name_follows_his_canonical_grammar_and_merge_is_lossless():
+    tags = {"category": "wardrobe", "descriptor": "casual_mode_turnaround"}
+    assert artlib.proposed_name(tags, 4) == "alpecca_wardrobe_004_casual_mode_turnaround_v01.png"
+    # Role + secondary tags + canon verdict all survive into the manifest.
+    m = artlib.merge_into_manifest({}, {"file": "a.png", "category": "l2d_mouth",
+                                        "mouth": "ah", "canon_ok": True})
+    assert m["a.png"]["category"] == "l2d_mouth" and m["a.png"]["mouth"] == "ah"
+    assert "file" not in m["a.png"]
 
 
 if __name__ == "__main__":

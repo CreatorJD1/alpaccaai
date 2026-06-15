@@ -118,6 +118,10 @@ def init_db(db_path: Path = DB_PATH) -> None:
             conn.execute("ALTER TABLE state ADD COLUMN social_hunger REAL")
         if "location" not in state_cols:
             conn.execute("ALTER TABLE state ADD COLUMN location TEXT")
+        # Her seventh feeling: a grounded sense of incompleteness. Defaults in
+        # for databases that predate it (NULL -> the dataclass default).
+        if "longing" not in state_cols:
+            conn.execute("ALTER TABLE state ADD COLUMN longing REAL")
 
 
 def load_state(db_path: Path = DB_PATH) -> EmotionalState:
@@ -129,13 +133,13 @@ def load_state(db_path: Path = DB_PATH) -> EmotionalState:
     the rest -- the same append-only safety the dataclass itself relies on."""
     with _connect(db_path) as conn:
         row = conn.execute(
-            "SELECT love, compassion, fear, energy, curiosity, social_hunger "
+            "SELECT love, compassion, fear, energy, curiosity, social_hunger, longing "
             "FROM state WHERE id = 1"
         ).fetchone()
     if row is None:
         return EmotionalState()
     fields = {"love": row["love"], "compassion": row["compassion"], "fear": row["fear"]}
-    for newer in ("energy", "curiosity", "social_hunger"):
+    for newer in ("energy", "curiosity", "social_hunger", "longing"):
         if row[newer] is not None:
             fields[newer] = row[newer]
     return EmotionalState(**fields)
@@ -150,8 +154,8 @@ def save_state(state: EmotionalState, trigger: str = "", db_path: Path = DB_PATH
         conn.execute(
             """
             INSERT INTO state (id, love, compassion, fear, energy,
-                               curiosity, social_hunger, updated_at)
-            VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+                               curiosity, social_hunger, longing, updated_at)
+            VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 love=excluded.love,
                 compassion=excluded.compassion,
@@ -159,10 +163,11 @@ def save_state(state: EmotionalState, trigger: str = "", db_path: Path = DB_PATH
                 energy=excluded.energy,
                 curiosity=excluded.curiosity,
                 social_hunger=excluded.social_hunger,
+                longing=excluded.longing,
                 updated_at=excluded.updated_at
             """,
             (state.love, state.compassion, state.fear, state.energy,
-             state.curiosity, state.social_hunger, now),
+             state.curiosity, state.social_hunger, state.longing, now),
         )
         conn.execute(
             "INSERT INTO state_log (ts, love, compassion, fear, trigger) VALUES (?, ?, ?, ?, ?)",

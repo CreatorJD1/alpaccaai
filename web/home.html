@@ -16,10 +16,29 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Alpecca — Home</title>
+<!-- Installable as a phone/desktop app (PWA). The manifest + a root-scoped
+     service worker make her reachable like a native app over a secure tunnel;
+     the worker only caches the static shell, never her live state. -->
+<meta name="theme-color" content="#070b14" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Alpecca" />
+<link rel="apple-touch-icon" href="/web/icon.svg" />
+<link rel="icon" href="/web/icon.svg" type="image/svg+xml" />
+<script>
+  if ("serviceWorker" in navigator) {
+    addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+  }
+</script>
+<!-- Shared soft-tech/glow design system + the live mood-glow channel. app.css
+     defines the :root tokens (--ink/--dim/--core + the live --mood-* vars) this
+     page used to declare inline; glow.js rewrites them from her real mood. -->
+<link rel="stylesheet" href="/web/app.css" />
+<script src="/web/glow.js"></script>
 <style>
-  :root { --ink:#eaf2ff; --dim:#8aa0c6; --core:#7fd9ff; }
   * { box-sizing: border-box; }
   html, body { margin:0; height:100%; background:#070b14; color:var(--ink);
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; }
@@ -173,33 +192,29 @@
     border-radius:14px; border:1px solid #1d2a47; opacity:0; transition:opacity .5s ease;
     pointer-events:none; max-width:62vw; text-align:center; }
   .activity.show { opacity:1; }
-  /* dedicated screen-share view -- she sits at her desk and watches with you */
-  .sharescreen { position:fixed; inset:0; z-index:18; display:none;
-    flex-direction:column; align-items:center; justify-content:center; gap:10px;
-    background:radial-gradient(900px 500px at 50% 24%, rgba(127,217,255,.07), transparent 60%), rgba(6,9,15,.97); }
-  .sharescreen.show { display:flex; }
-  .desk-scene { position:relative; width:min(92vw,980px); height:60vh; }
-  /* her figure, behind, lit from her screen */
-  .share-her { position:absolute; left:50%; bottom:2%; transform:translateX(-50%);
-    height:100%; object-fit:contain; object-position:bottom center; z-index:1;
-    filter:drop-shadow(0 8px 30px rgba(0,0,0,.55)); }
-  /* the shared screen, framed as a monitor in front of her */
-  .share-monitor { position:absolute; left:50%; bottom:9%; transform:translateX(-50%);
-    width:min(54vw,600px); aspect-ratio:16/10; background:#000; border-radius:8px;
-    border:6px solid #161d2b; overflow:hidden; z-index:2;
-    box-shadow:0 18px 44px rgba(0,0,0,.6), 0 0 26px rgba(127,217,255,.14); }
-  .share-monitor video { width:100%; height:100%; object-fit:contain; background:#000; display:block; }
-  .monitor-stand { position:absolute; left:50%; bottom:6%; transform:translateX(-50%) translateY(60%);
-    width:64px; height:20px; background:#161d2b; border-radius:0 0 7px 7px; z-index:2; }
-  .desk-surface { position:absolute; left:50%; bottom:0; transform:translateX(-50%);
-    width:130%; height:13%; background:linear-gradient(#0f1830,#070b14);
-    border-top:1px solid #233a5c; z-index:3; }
-  .sharescreen .cap { max-width:72vw; text-align:center; color:var(--core); font-size:14px; min-height:20px; }
-  .sharescreen .hint { color:var(--dim); font-size:12px; }
-  .sharescreen .ctl { display:flex; gap:10px; }
-  .sharescreen .ctl button { padding:8px 16px; border-radius:10px; border:1px solid #1d2a47;
-    background:#101a30; color:var(--ink); cursor:pointer; font-size:13px; }
-  .sharescreen .ctl button.go { background:var(--core); color:#06121c; border:0; font-weight:600; }
+  /* Observatory video stage. Without an explicit box the embedded iframe/video
+     collapses inside the narrow facet panel and reads as "blocked"; this gives
+     it a real 16:9 stage that any embed or native player fills edge to edge. */
+  .obscreen { position:relative; width:100%; aspect-ratio:16/9; margin:8px 0;
+    background:#070d1a; border:1px solid #1d2a47; border-radius:10px; overflow:hidden; }
+  .obscreen:empty { display:none; }
+  .obscreen iframe, .obscreen video { position:absolute; inset:0;
+    width:100%; height:100%; border:0; border-radius:10px; background:#000; }
+
+  /* Phone layout (PWA on a small screen): declutter the desktop chrome so the
+     scene, her, and the chat dock fit comfortably. Fly between rooms via the nav
+     rail; the room-pull list and the corner bust are hidden to free space. The
+     in-world screens still render in 3D. Safe-area insets respect the notch. */
+  @media (max-width: 640px) {
+    .hud { left:72px; max-width:54vw; padding:8px 10px; }
+    .room-name { font-size:20px; }
+    .hud .mood, .sight { display:none; }       /* keep the strip light on phones */
+    .rooms { display:none; }                    /* room-pulls -> use the nav rail */
+    .profile { width:140px; height:172px; bottom:92px; right:8px; }
+    .chatdock { width:94vw; bottom:max(12px, env(safe-area-inset-bottom)); }
+    .nav { padding-top:max(14px, env(safe-area-inset-top)); }
+    .activity { max-width:80vw; }
+  }
 </style>
 </head>
 <body>
@@ -215,24 +230,11 @@
 <!-- activity ticker: her autonomous acts (roamed, reflected, learned, formed a wish) -->
 <div class="activity" id="activity"></div>
 
-<!-- dedicated screen-share view: she sits at her desk and watches the screen with you -->
-<div class="sharescreen" id="sharescreen">
-  <div class="desk-scene">
-    <img class="share-her" id="shareHer" src="/avatar/expression/thinking" alt="her watching" />
-    <div class="share-monitor">
-      <video id="shareVideo" autoplay muted playsinline></video>
-    </div>
-    <div class="monitor-stand"></div>
-    <div class="desk-surface"></div>
-  </div>
-  <div class="cap" id="shareCap"></div>
-  <div class="hint" id="shareHint">Share a window or your screen — she'll watch it with you at her desk.</div>
-  <div class="ctl">
-    <button class="go" id="shareStart">Share my screen</button>
-    <button id="shareStop">Stop sharing</button>
-    <button id="shareClose">Close</button>
-  </div>
-</div>
+<!-- Screen-share source. Hidden (1px, never display:none so the browser keeps
+     decoding frames) and fed straight into a THREE.VideoTexture: she holds the
+     live screen as a window in her Observatory. The Share nav button toggles it. -->
+<video id="shareVideo" autoplay muted playsinline
+       style="position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;left:0;bottom:0"></video>
 
 <!-- her own cursor: appears and moves as she works the desktop (cowork) -->
 <div class="hercursor" id="hercursor" aria-hidden="true">
@@ -294,8 +296,26 @@ function loadThree(cb){
     s.onload=cb; s.onerror=()=>trySrc(srcs,i+1);
     document.head.appendChild(s);
   }
-  trySrc(["vendor/three.min.js",
+  trySrc(["/web/vendor/three.min.js",
           "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"],0);
+}
+
+/* CSS3DRenderer (a Three.js example addon, global build): it mounts real,
+   interactive DOM as screens positioned in 3D, composited over the WebGL scene.
+   This is what lets her features live as screens *inside her rooms* rather than
+   as flat overlay panels. Vendored-local first, then a pinned CDN. If neither
+   loads, initRoomScreens() no-ops and her features stay in the side drawer --
+   graceful: nothing breaks, you just don't get the in-world screens. */
+function loadCSS3D(cb){
+  if(typeof THREE!=="undefined" && THREE.CSS3DRenderer){ cb(); return; }
+  const srcs=["/web/vendor/CSS3DRenderer.js",
+              "https://unpkg.com/three@0.128.0/examples/js/renderers/CSS3DRenderer.js"];
+  (function trySrc(i){
+    if(i>=srcs.length){ console.warn("CSS3DRenderer unavailable — features stay in the drawer"); cb(); return; }
+    const s=document.createElement("script"); s.src=srcs[i];
+    s.onload=()=>cb(); s.onerror=()=>trySrc(i+1);
+    document.head.appendChild(s);
+  })(0);
 }
 
 /* The five rooms and their floor-plan slots mirror alpecca/home.py exactly.
@@ -325,6 +345,11 @@ function init(){
   renderer.setPixelRatio(Math.min(devicePixelRatio,2));
   renderer.setSize(innerWidth, innerHeight);
   el.appendChild(renderer.domElement);
+  // The WebGL canvas sits ABOVE the CSS3D screen layer (so her opaque figure
+  // correctly occludes a screen behind her) but takes no pointer events, so
+  // clicks pass through to the interactive in-world screens beneath it. The HUD
+  // overlays (nav, chat, pulls) are separate, higher-z, and unaffected.
+  el.style.zIndex = 6; el.style.pointerEvents = "none";
 
   scene.add(new THREE.AmbientLight(0x405070, 0.7));
   const key=new THREE.DirectionalLight(0xbfd4ff, 0.55); key.position.set(6,14,8); scene.add(key);
@@ -370,6 +395,7 @@ function init(){
   addEventListener("resize", onResize);
   buildPullsUI();
   buildNav();                        // super-app facet rail
+  loadCSS3D(initRoomScreens);        // her features as in-world screens per room
   initChat();                        // integrated chat dock + voice/cam/cowork
   initShare();                       // dedicated screen-share desk view
   connectWS();                       // chat + lip-sync + live state, one socket
@@ -432,7 +458,54 @@ function tryTalkingHead(){
   });
 }
 
-/* Tier 1 -- pose-swap from her real art. Loads her idle/thinking/speaking
+/* Tier 1a -- her full POSE LIBRARY (data/avatar/poses/, mood-tagged in
+   poses.json). Richer than the 3-portrait swap: she shows whichever of her real
+   poses fits her mood + what she's doing (rest when sleepy, shy when anxious,
+   reach when joyful…), exactly like the classic chat page. All her own art, no
+   GPU. Falls through to the portrait swap if she has no pose library. */
+function selectPoseName(poses, mood, avState, energy){
+  let best=null, bs=-1;
+  for(const name of Object.keys(poses).sort()){       // sorted -> stable ties
+    const t=poses[name]||{}; let s=0;
+    if((t.moods||[]).includes(mood)) s+=3;            // mood match weighs most
+    if((t.states||[]).includes(avState)) s+=1.5;      // then what she's doing
+    s += 1 - Math.abs(energy - (t.energy!=null?t.energy:0.5));  // then energy
+    if(s>bs){ bs=s; best=name; }
+  }
+  return best;
+}
+function loadPoseTex(name){
+  const pl=her.userData.poseLib;
+  if(pl.texCache[name]) return Promise.resolve(pl.texCache[name]);
+  return new Promise(res=>{
+    new THREE.TextureLoader().load("/poses/img/"+encodeURIComponent(name),
+      t=>{ t.minFilter=THREE.LinearFilter; pl.texCache[name]=t; res(t); },
+      undefined, ()=>res(null));
+  });
+}
+function tryPoseLibrary(){
+  return new Promise(resolve=>{
+    fetch("/poses",{cache:"no-store"}).then(r=>r.json()).then(m=>{
+      if(!m || !m.pose_mode || !m.poses || !Object.keys(m.poses).length){ resolve(false); return; }
+      const poses=m.poses;
+      const first=selectPoseName(poses,"content","idle",0.5) || Object.keys(poses).sort()[0];
+      new THREE.TextureLoader().load("/poses/img/"+encodeURIComponent(first), t=>{
+        t.minFilter=THREE.LinearFilter;
+        const a=(t.image&&t.image.width)? t.image.width/t.image.height : 0.7;
+        const mk=()=>{ const s=new THREE.Sprite(new THREE.SpriteMaterial({transparent:true}));
+          s.scale.set(4.2*a,4.2,1); s.userData.baseScale=[4.2*a,4.2]; return s; };
+        const A=mk(); A.material.map=t;
+        const B=mk(); B.material.opacity=0; B.renderOrder=1;
+        her.add(A); her.add(B);
+        her.userData.rig=false; her.userData.layers={body:[A]};
+        her.userData.poseLib={poses, A, B, cur:first, next:first, fade:0, texCache:{[first]:t}};
+        resolve(true);
+      }, undefined, ()=> resolve(false));
+    }).catch(()=>resolve(false));
+  });
+}
+
+/* Tier 1b -- pose-swap from her real art. Loads her idle/thinking/speaking
    portraits and crossfades between them by state (speaking while she talks,
    thinking while a reply is pending, else idle), over continuous breathing/sway.
    Crisp, her actual art, no GPU. Resolves true once idle loads. */
@@ -501,14 +574,16 @@ async function loadAvatar(){
   const tex=new THREE.TextureLoader();
   // Clear whatever's there.
   while(her.children.length) her.remove(her.children[0]);
-  her.userData.liveTex=null; her.userData.poseSwap=null;
+  her.userData.liveTex=null; her.userData.poseSwap=null; her.userData.poseLib=null;
   // Tier 0a: her rigger figure (full-body posed render, CPU, her art). Best for
   // the laptop -- no GPU. Active when scripts/run_rigger.py is running.
   if(await tryRigger()) return;
   // Tier 0b: THA3 neural face (GPU only). Active when that runner is up.
   if(await tryTalkingHead()) return;
-  // Tier 1: crisp real-art POSE SWAP -- her own idle/thinking/speaking art,
-  // switched by what she's doing, with breathing/sway. No GPU, no warp. Default.
+  // Tier 1a: her full mood-tagged POSE LIBRARY -- the right pose for her mood.
+  if(await tryPoseLibrary()) return;
+  // Tier 1b: crisp real-art POSE SWAP -- her own idle/thinking/speaking art,
+  // switched by what she's doing, with breathing/sway. No GPU, no warp.
   if(await tryPoseSwap()) return;
   // Tier 2: a live RIGFORGE mesh figure (warp) -- only if the art tiers fail.
   if(await tryRigForge()) return;
@@ -636,7 +711,8 @@ function connectWS(){
     else if(m.type==="studio_done"){
       const f=document.getElementById("studioFeed");
       if(f) f.textContent="✓ "+((m.verdict||m.summary)||"design session done");
-      if(openFacet==="studio") setTimeout(()=>showFacet("studio"), 600);  // refresh gallery
+      if(openFacet==="studio") setTimeout(()=>showFacet("studio"), 600);  // refresh drawer gallery
+      if(screens3DActive() && activeScreen==="studio") setTimeout(()=>refreshRoomScreen("studio"), 600);  // …or the in-room screen
     }
     // Observatory: her reaction to whatever you're watching together.
     else if(m.type==="watch_reaction"){
@@ -878,15 +954,28 @@ function buildRig(){ showActivity("building her figure from the PSD…");
 function riggerStart(){ fetch("/rigger/start",{method:"POST"}).then(r=>r.json()).then(d=>{
   showActivity(d.ok?"her figure is starting…":"couldn't start her figure"); studioScreenStart(); }).catch(()=>{}); }
 function riggerStop(){ fetch("/rigger/stop",{method:"POST"}).catch(()=>{}); showActivity("her figure stopped"); }
-// Observatory: watch a video together. Pull the YouTube id so it plays inline.
+// Observatory: watch a video together. Resolve the link to something that
+// actually *plays* inline -- YouTube/Vimeo as an embed, a direct media file as a
+// native player -- instead of falling back to a bare "open in a tab" link (which
+// is what made pasted videos look blocked). Only an unembeddable page still
+// degrades to a link.
 function ytId(u){ try{ const url=new URL(u);
   if(url.hostname.includes("youtu.be")) return url.pathname.slice(1);
   if(url.searchParams.get("v")) return url.searchParams.get("v");
   const m=url.pathname.match(/\/embed\/([^/?]+)/); if(m) return m[1];
 }catch(e){} return ""; }
-function ytEmbed(u){ const id=ytId(u);
-  if(id) return `<iframe width="100%" height="190" style="border-radius:10px;border:0" src="https://www.youtube.com/embed/${id}" allow="autoplay; encrypted-media" allowfullscreen></iframe>`;
-  return `<div class="item"><a href="${esc(u)}" target="_blank" rel="noopener">open the video ↗</a></div>`; }
+function vimeoId(u){ try{ const url=new URL(u);
+  if(!url.hostname.includes("vimeo.com")) return "";
+  const m=url.pathname.match(/\/(\d+)/); return m?m[1]:"";
+}catch(e){} return ""; }
+function isMediaFile(u){ return /\.(mp4|webm|ogg|ogv|mov|m4v)(\?|#|$)/i.test(u); }
+function ytEmbed(u){
+  const yt=ytId(u);
+  if(yt) return `<iframe src="https://www.youtube.com/embed/${yt}?rel=0" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>`;
+  const vm=vimeoId(u);
+  if(vm) return `<iframe src="https://player.vimeo.com/video/${vm}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>`;
+  if(isMediaFile(u)) return `<video controls preload="metadata" playsinline src="${esc(u)}"></video>`;
+  return `<div class="item"><a href="${esc(u)}" target="_blank" rel="noopener">this page can't play inline — open it ↗</a></div>`; }
 function obWatch(){ const inp=document.getElementById("obUrl"); let v=(inp&&inp.value||"").trim(); if(!v) return;
   let title=v, url=""; if(/^https?:/i.test(v)){ url=v; title="this video"; }
   const sc=document.getElementById("obScreen"); if(sc&&url) sc.innerHTML=ytEmbed(url);
@@ -931,6 +1020,7 @@ const FACETS={
         <div class="fbtn" style="margin:0" onclick="riggerStop()">■ Stop</div>
         <label class="fbtn" style="margin:0">⬆ Upload layered PSD<input type="file" accept=".psd" style="display:none" onchange="uploadStudio(this,'psd')"></label>
         <label class="fbtn" style="margin:0">🖼 Upload her art<input type="file" accept="image/*" style="display:none" onchange="uploadStudio(this,'art')"></label>
+        <a class="fbtn" style="margin:0;text-decoration:none" href="/rigcut" target="_blank">✂ Cut her layers (no GPU)</a>
       </div>
       <div class="meta" style="margin-top:6px">See-Through (art → layers) runs free on its <a href="https://huggingface.co/spaces/24yearsold/see-through-demo" target="_blank" rel="noopener">HF Space</a> on a 4&nbsp;GB card; decompose there, then <b>Upload layered PSD</b> here and she builds + runs herself.</div>`;
     h+=`<h5>Watch her design</h5>
@@ -961,7 +1051,7 @@ const FACETS={
       <div class="meta">where she watches — a video with you, or you</div></div></div>`;
     h+=`<h5>Watch together</h5>
       <div style="display:flex;gap:6px;margin:6px 0">
-        <input id="obUrl" placeholder="paste a YouTube link…" style="flex:1;background:#0e1830;border:1px solid #24345a;color:#cfe0ff;border-radius:8px;padding:8px"/>
+        <input id="obUrl" placeholder="paste a video link (YouTube, Vimeo, .mp4…)" style="flex:1;background:#0e1830;border:1px solid #24345a;color:#cfe0ff;border-radius:8px;padding:8px"/>
         <div class="fbtn" style="margin:0" onclick="obWatch()">▶ Watch</div></div>
       <div id="obScreen" class="obscreen">${d.watching&&d.watching.url?ytEmbed(d.watching.url):""}</div>`;
     h+=`<div id="obNow" class="item emph" style="${d.watching?"":"display:none"}">
@@ -1000,6 +1090,14 @@ const FACETS={
   files:{title:"Workstation", url:"/desktop", render:d=>{
     let h=`<div class="fhero"><span class="fico">🗂</span><div><div class="ttl">Her workstation</div>
       <div class="meta">${esc(d.note||"")}</div></div></div>`;
+    h+=`<h5>Find a file</h5>
+      <div style="display:flex;gap:6px;margin:6px 0">
+        <input id="fileQ" placeholder="search Desktop / Pictures / Documents…"
+          onkeydown="if(event.key==='Enter')fileSearch()"
+          style="flex:1;background:var(--bg-2);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:8px"/>
+        <div class="fbtn" style="margin:0" onclick="fileSearch()">🔍 Find</div></div>
+      <div id="fileResults" class="meta">read-only — she can find things across her rooms, never delete them.</div>`;
+    h+=`<h5>Her rooms</h5>`;
     (d.rooms||[]).forEach(r=> h+=`<div class="item"><span class="fico">📁</span><span class="ttl">${r.root}</span><span class="meta"> · ${r.count} items</span></div>`);
     return h; }},
   senses:{title:"Senses", url:"/sight", render:d=>{
@@ -1050,7 +1148,18 @@ function buildNav(){
     b.innerHTML=`<span class="ic">${ic}</span>${label}`;
     b.onclick=()=>{
       if(k==="face"){ toggleProfile(); b.classList.toggle("on",!document.getElementById("profile").classList.contains("hide")); return; }
-      if(k==="share"){ toggleShareScreen(!document.getElementById("sharescreen").classList.contains("show")); return; }
+      if(k==="share"){ toggleShare(); return; }
+      // With in-world screens, the room features (Home/Mind→Parlor, Studio,
+      // Library, Watch, Workshop) fly the camera to that room and light its
+      // screen; the utility facets (Journal/Voice/Senses/Files/Play) still open
+      // the side drawer. Without CSS3D, everything uses the drawer as before.
+      const NAV_ROOM={ home:"parlor", mind:"parlor", studio:"studio", library:"library",
+                       observatory:"observatory", workshop:"workshop" };
+      if(screens3DActive() && NAV_ROOM[k]){
+        hideFacet(); enterRoom(NAV_ROOM[k]);
+        document.querySelectorAll(".nav .nb").forEach(x=>x.classList.toggle("on", x===b));
+        return;
+      }
       if(k==="home"){ hideFacet(); } else if(openFacet===k){ hideFacet(); } else { showFacet(k); }
     };
     nav.appendChild(b);
@@ -1058,6 +1167,21 @@ function buildNav(){
   document.getElementById("facetClose").onclick=hideFacet;
 }
 function esc(s){ return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+// Find a file across her allowed rooms (read-only, charter-confined on the server).
+function fileSearch(){
+  const inp=document.getElementById("fileQ"); const q=(inp&&inp.value||"").trim();
+  const out=document.getElementById("fileResults"); if(!q||!out) return;
+  out.innerHTML="<span class='meta'>searching her rooms…</span>";
+  fetch("/desktop/search?q="+encodeURIComponent(q),{cache:"no-store"}).then(r=>r.json()).then(d=>{
+    if(!d.ok){ out.innerHTML="<span class='meta'>"+esc(d.error||"couldn't search")+"</span>"; return; }
+    const ms=d.matches||[];
+    if(!ms.length){ out.innerHTML="<span class='meta'>nothing named like “"+esc(q)+"” in her rooms</span>"; return; }
+    out.innerHTML=ms.slice(0,30).map(m=>
+      `<div class="item"><span class="fico">${m.is_dir?"📁":"📄"}</span>${esc(m.root)}/<b>${esc(m.rel)}</b></div>`).join("")
+      + (d.truncated?"<div class='meta'>…and more — refine your search</div>":"");
+  }).catch(()=>{ out.innerHTML="<span class='meta'>search failed</span>"; });
+}
 
 /* ===== Live senses indicator: shows what she can perceive + what she sees,
    and makes her cursor appear while she's working the desktop. ===== */
@@ -1077,50 +1201,87 @@ async function pollSight(){
 /* ===== Dedicated screen-share desk: you share a window, she watches it with you,
    sitting at her desk. Frames go to her vision (/sight/push) and she describes
    what's on your screen. ===== */
-let shareStream=null, shareTimer=null;
-function initShare(){
-  const s=document.getElementById("shareStart"), st=document.getElementById("shareStop"),
-        cl=document.getElementById("shareClose");
-  if(s) s.onclick=startShare; if(st) st.onclick=stopShare;
-  if(cl) cl.onclick=()=>toggleShareScreen(false);
+let shareStream=null, shareTimer=null, _heldScreen=null;
+function initShare(){ /* controls are the Share nav button now (toggleShare) */ }
+// Light up the Share nav button while a share is live.
+function _shareNavOn(on){ document.querySelectorAll(".nav .nb").forEach(b=>{
+  if(b.dataset.k==="share") b.classList.toggle("on", on); }); }
+// One toggle: start a share if none, stop the live one.
+function toggleShare(){ if(shareStream) stopShare(); else startShare(); }
+
+// Build the live screen as a framed window she holds in her Observatory: a plane
+// carrying a THREE.VideoTexture of the shared stream, parented to her figure so
+// it rides along with her position, lean and breath. A dark bezel + a soft
+// core-blue rim frame it; a faint blue light spills onto her from the screen.
+function mountHeldScreen(){
+  if(_heldScreen || !scene || !her || typeof THREE==="undefined") return;
+  const v=document.getElementById("shareVideo"); if(!v) return;
+  const tex=new THREE.VideoTexture(v);            // auto-updates each render in r128
+  tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter;
+  tex.generateMipmaps=false; tex.format=THREE.RGBAFormat;
+  if(THREE.sRGBEncoding!==undefined) tex.encoding=THREE.sRGBEncoding;
+  const g=new THREE.Group();
+  g.position.set(1.9, 0.15, 0.45); g.rotation.y=-0.28;   // held to her side, toed in
+  const rim=new THREE.Mesh(new THREE.PlaneGeometry(2.40,1.56),
+    new THREE.MeshBasicMaterial({color:0x7fd9ff, transparent:true, opacity:0.16,
+      blending:THREE.AdditiveBlending, depthWrite:false}));
+  rim.position.z=-0.04;
+  const bezel=new THREE.Mesh(new THREE.PlaneGeometry(2.34,1.50),
+    new THREE.MeshStandardMaterial({color:0x0d1322, roughness:0.7, metalness:0.2}));
+  bezel.position.z=-0.02;
+  const screen=new THREE.Mesh(new THREE.PlaneGeometry(2.20,1.36),
+    new THREE.MeshBasicMaterial({map:tex, toneMapped:false}));
+  screen.renderOrder=10;
+  const spill=new THREE.PointLight(0x7fd9ff, 0.6, 4, 2); spill.position.set(0,0,0.6);
+  g.add(rim); g.add(bezel); g.add(screen); g.add(spill);
+  g.userData.disposables=[tex, rim.geometry, rim.material, bezel.geometry,
+                          bezel.material, screen.geometry, screen.material];
+  her.add(g); _heldScreen=g;
 }
-function toggleShareScreen(show){
-  const el=document.getElementById("sharescreen"); if(!el) return;
-  el.classList.toggle("show", show);
-  document.querySelectorAll(".nav .nb").forEach(b=>{ if(b.dataset.k==="share") b.classList.toggle("on",show); });
-  if(!show) stopShare();
+function unmountHeldScreen(){
+  if(!_heldScreen) return;
+  if(her) her.remove(_heldScreen);
+  (_heldScreen.userData.disposables||[]).forEach(d=>{ try{ d.dispose(); }catch(e){} });
+  _heldScreen=null;
 }
+
 async function startShare(){
+  if(shareStream) return;
   try{
     shareStream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:8}, audio:false});
-    const v=document.getElementById("shareVideo"); v.srcObject=shareStream;
-    document.getElementById("shareHint").textContent="She's watching your screen with you.";
-    document.getElementById("shareHer").src="/avatar/expression/curious";   // a watching look
-    shareStream.getVideoTracks()[0].addEventListener("ended", stopShare);
-    setTimeout(shareFrame, 1300);                          // first look once it's flowing
-    clearInterval(shareTimer); shareTimer=setInterval(shareFrame, 45000);   // vision is heavy
-  }catch(e){ document.getElementById("shareHint").textContent="Screen share cancelled."; }
+  }catch(e){ showActivity("screen share cancelled"); return; }
+  const v=document.getElementById("shareVideo"); v.srcObject=shareStream;
+  // She settles into her Observatory to watch it with you; tell the server so she
+  // stays there, and move the camera there right away so it feels immediate.
+  state.location="observatory"; renderHUD();
+  fetch("/observatory/screen/start",{method:"POST"}).catch(()=>{});
+  mountHeldScreen();
+  _shareNavOn(true);
+  showActivity("she's watching your screen with you");
+  shareStream.getVideoTracks()[0].addEventListener("ended", stopShare);
+  setTimeout(shareFrame, 1300);                          // first look once it's flowing
+  clearInterval(shareTimer); shareTimer=setInterval(shareFrame, 45000);   // vision is heavy
 }
+// Grounding: she still genuinely SEES the shared screen -- a downscaled frame
+// goes to her vision model and her short description shows in the activity ticker.
 function shareFrame(){
   const v=document.getElementById("shareVideo"); if(!v || !v.videoWidth) return;
   const scale=Math.min(1, 1280/v.videoWidth);
   const c=document.createElement("canvas"); c.width=v.videoWidth*scale; c.height=v.videoHeight*scale;
   c.getContext("2d").drawImage(v,0,0,c.width,c.height);
-  document.getElementById("shareCap").textContent="…she's looking…";
   c.toBlob(b=>{ if(!b) return;
     fetch("/sight/push",{method:"POST",headers:{"Content-Type":"image/jpeg"},body:b})
-      .then(r=>r.json()).then(d=>{
-        document.getElementById("shareCap").textContent = d.description
-          ? ("she sees: "+d.description) : "(she couldn't make it out — is her vision model running?)";
-      }).catch(()=>{ document.getElementById("shareCap").textContent="(couldn't reach her vision)"; });
+      .then(r=>r.json()).then(d=>{ if(d.description) showActivity("she sees: "+d.description); })
+      .catch(()=>{});
   }, "image/jpeg", 0.8);
 }
 function stopShare(){
+  unmountHeldScreen();
   if(shareStream){ shareStream.getTracks().forEach(t=>t.stop()); shareStream=null; }
   clearInterval(shareTimer); shareTimer=null;
   const v=document.getElementById("shareVideo"); if(v) v.srcObject=null;
-  document.getElementById("shareHint").textContent="Share a window or your screen — she'll watch it with you at her desk.";
-  document.getElementById("shareCap").textContent="";
+  _shareNavOn(false);
+  fetch("/observatory/screen/stop",{method:"POST"}).catch(()=>{});
 }
 
 /* ===== Live face+torso profile view: a close, reactive bust of her =====
@@ -1262,6 +1423,11 @@ async function poll(){
     demoState(); setSource(true);
   }
   renderHUD();
+  // Keep the live in-world screen in sync with the room she's actually in, so as
+  // she roams of her own accord the lit screen follows her.
+  if(screens3DActive() && state.location!==_lastScreenLoc){
+    _lastScreenLoc=state.location; setActiveScreen(state.location);
+  }
 }
 
 let demoT=0;
@@ -1285,6 +1451,12 @@ function renderHUD(){
   const r=byId[state.location]||ROOMS[0];
   document.getElementById("roomName").textContent=r.name;
   document.getElementById("why").textContent=state.why||"";
+  // The whole UI breathes with her: hand her live mood to the shared glow channel
+  // so every accent (buttons, bars, the core emblem, the screens' rim) drifts hue
+  // and brightness with how she actually feels.
+  if(window.applyMood){ const po=state.pose||{};
+    applyMood({warmth:po.warmth, unease:po.unease, curiosity:po.curiosity,
+               glow:(po.core_glow!=null?po.core_glow:po.warmth)}); }
   // Her workstation panel appears only when she's actually in that room.
   toggleWorkstation(state.location==="workstation");
   const p=state.pose||{};
@@ -1301,13 +1473,78 @@ function renderHUD(){
   });
 }
 
-// Each room opens its real function (the facet panel for what she does there).
-const ROOM_FACET={ studio:"studio", library:"library", observatory:"observatory",
-                   workshop:"workshop", workstation:"files" };
+/* ===== Her features as in-world screens, one per room =====
+   Each room gets a glowing screen on its back wall showing what she does there
+   (Parlor = her Soul, Studio, Library, Observatory, Workshop), reusing the very
+   same FACETS endpoints + renderers as the side drawer -- but mounted as real,
+   interactive DOM in 3D via CSS3DRenderer, so the feature lives in her space.
+   The room she's in (or the one you fly to) is the live, full-bright screen; the
+   rest dim. If CSS3DRenderer didn't load, cssRenderer stays null and everything
+   falls back to the side drawer. */
+let cssRenderer=null, cssScene=null, roomScreens={}, activeScreen=null, _lastScreenLoc=null;
+const ROOM_SCREEN={ parlor:"mind", studio:"studio", library:"library",
+                    observatory:"observatory", workshop:"workshop" };
+function screens3DActive(){ return !!cssRenderer; }
+
+function initRoomScreens(){
+  if(typeof THREE==="undefined" || !THREE.CSS3DRenderer) return;   // drawer fallback
+  cssScene=new THREE.Scene();
+  cssRenderer=new THREE.CSS3DRenderer();
+  cssRenderer.setSize(innerWidth, innerHeight);
+  const dom=cssRenderer.domElement;
+  dom.style.position="fixed"; dom.style.inset="0"; dom.style.zIndex="5";
+  dom.style.pointerEvents="none";          // only the screens themselves catch clicks
+  document.body.appendChild(dom);
+  ROOMS.forEach(r=>{
+    const key=ROOM_SCREEN[r.id]; if(!key) return;
+    const el=document.createElement("div"); el.className="room-screen dim";
+    el.style.pointerEvents="auto";
+    el.innerHTML=`<div class="rs-head"><span>${FACETS[key]?FACETS[key].title:r.name}</span>`+
+                 `<span class="core-emblem breathe"></span></div>`+
+                 `<div class="rs-body"><div class="meta">loading…</div></div>`;
+    const obj=new THREE.CSS3DObject(el);
+    // Stand it on the room's back wall, facing the camera (which sits up and +z).
+    obj.position.set(r.x, 3.2, r.z - 2.2);
+    obj.scale.setScalar(0.0075);            // 460px element -> ~3.45 world units wide
+    obj.rotation.x=-0.12;                    // tip the face up toward the high camera
+    cssScene.add(obj);
+    roomScreens[r.id]={obj, el, key};
+  });
+  addEventListener("resize", ()=>{ if(cssRenderer) cssRenderer.setSize(innerWidth, innerHeight); });
+  setActiveScreen(state.location);
+}
+
+function refreshRoomScreen(id){
+  const sc=roomScreens[id]; if(!sc) return;
+  const f=FACETS[sc.key]; const body=sc.el.querySelector(".rs-body"); if(!f||!body) return;
+  fetch(f.url,{cache:"no-store"}).then(r=>r.json()).then(d=>{ body.innerHTML=f.render(d);
+      if(sc.key==="studio") studioScreenStart();
+      if(sc.key==="voice") voicePollStart(); })
+    .catch(()=>{ body.innerHTML="<div class='meta'>couldn't load this yet</div>"; });
+}
+
+function setActiveScreen(id){
+  if(!screens3DActive()) return;
+  if(!roomScreens[id]) id="parlor";
+  activeScreen=id;
+  studioScreenStop(); voicePollStop();     // stop any prior live sub-panel
+  Object.entries(roomScreens).forEach(([rid,sc])=> sc.el.classList.toggle("dim", rid!==id));
+  refreshRoomScreen(id);                    // the live room always shows fresh content
+}
+
+// Each room opens its real function. We ALWAYS open the readable side drawer with
+// the room's full content -- the in-world 3D screen (when CSS3DRenderer loaded) is
+// tiny, wall-mounted and often occluded by her figure, so on its own it leaves a
+// room looking empty. The drawer is the legible source of truth; the 3D screen
+// rides along as ambiance. Parlor -> her Mind/Soul panel (was unmapped, so the
+// Parlor read as contentless).
+const ROOM_FACET={ parlor:"mind", studio:"studio", library:"library",
+                   observatory:"observatory", workshop:"workshop", workstation:"files" };
 function enterRoom(id){
-  lookAtRoom(id);                                  // camera glances over
+  lookAtRoom(id);                                  // camera flies over
+  if(screens3DActive() && roomScreens[id]) setActiveScreen(id);   // light the in-world screen too
   const f=ROOM_FACET[id];
-  if(f){ showFacet(f); } else { hideFacet(); }     // parlor = home/chat, no panel
+  if(f){ showFacet(f); } else { hideFacet(); }     // always show the readable panel
 }
 function buildPullsUI(){
   const wrap=document.getElementById("pulls");
@@ -1367,6 +1604,27 @@ function animate(){
     }
   }
 
+  // Pose library: pick the pose that fits her mood + what she's doing, lazy-load
+  // her real art for it, and crossfade -- so the 3D home shows her full pose set.
+  const pl=her.userData.poseLib;
+  if(pl){
+    const avState = (now < speakingUntil) ? "speaking" : (waitingReply ? "thinking" : "idle");
+    const mood = state.mood || "content";
+    const energy = (state.pose && state.pose.arousal!=null) ? state.pose.arousal : 0.5;
+    const want = selectPoseName(pl.poses, mood, avState, energy);
+    if(want && want!==pl.cur && pl.fade<=0){
+      loadPoseTex(want).then(t=>{ if(!t || pl.cur===want) return;
+        pl.B.material.map=t; pl.B.material.needsUpdate=true; pl.next=want; pl.fade=0.0001; });
+    }
+    if(pl.fade>0){
+      pl.fade=Math.min(1, pl.fade + dt*4.5);
+      pl.B.material.opacity=pl.fade;
+      if(pl.fade>=1 && pl.texCache[pl.next]){
+        pl.A.material.map=pl.texCache[pl.next]; pl.A.material.needsUpdate=true;
+        pl.B.material.opacity=0; pl.cur=pl.next; pl.fade=0; }
+    }
+  }
+
   // Her glow + light color read from her live affect (grounded).
   const glow=(p.core_glow!=null?p.core_glow:0.6);
   herGlow.intensity = 0.7 + glow*1.6 + Math.sin(now*0.004)*0.15;
@@ -1389,6 +1647,8 @@ function animate(){
   camera.lookAt(camTarget);
 
   renderer.render(scene,camera);
+  // Composite the in-world feature screens (DOM in 3D) with the same camera.
+  if(cssRenderer) cssRenderer.render(cssScene, camera);
 }
 </script>
 </body>

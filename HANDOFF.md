@@ -1,9 +1,40 @@
-# Alpecca — Handoff (updated 2026-06-12)
+# Alpecca — Handoff (updated 2026-06-13)
 
 Snapshot for whoever picks this up next (human or agent): current state, how to
 run her, what was built, what's solid vs. shaky, and what's next. Read `CLAUDE.md`
 for the canonical architecture, `docs/BRINGING_HER_TO_LIFE.md` for the honest
 review + phase plan. (An earlier handoff is folded into the history below.)
+
+---
+
+## Game-state review (2026-06-13) — persistence hardening to-dos
+
+**Save DB is healthy.** `data/alpecca.db` passes `PRAGMA integrity_check` (`ok`),
+1.75 MB / 427 pages, header consistent. (A first pass flagged it as "corrupt" —
+that was the documented sandbox-mount *truncated-read* quirk, not the real file.
+Lesson: copy the DB locally before running integrity checks through the mount.)
+
+No emergency, but persistence has real **hardening gaps** worth closing before
+she's relied on heavily:
+- **No WAL, no `busy_timeout`.** Both `_connect` helpers (`alpecca/state.py`,
+  `alpecca/memory.py`) open plain `sqlite3.connect`. Add
+  `PRAGMA journal_mode=WAL` + `PRAGMA busy_timeout=5000` (and `synchronous=NORMAL`).
+  This matters because the config docstring suggests pointing `ALPECCA_HOME` at a
+  synced Google Drive folder — SQLite on cloud-synced storage without WAL is a
+  known corruption risk. Keep `ALPECCA_HOME` on local disk unless WAL is on.
+- **Concurrent writers aren't serialized.** `mind_lock` (asyncio) only guards the
+  *in-memory* mood mutation; the slow self-directed work (`idle_self_direct`,
+  `compose_volunteer`) runs off the lock via `asyncio.to_thread` and writes the
+  same DB (desires/selfmod/memory) alongside the 8 s drift tick and chat handler.
+  Multiple OS threads on one file with no busy_timeout → possible "database is
+  locked" errors. Serialize DB writes or add the busy_timeout above.
+- **No auto-backup.** Only safety net is a manual copy (`alpecca.backup.db` sits on
+  the Desktop). Add a rotating backup on startup/shutdown.
+- **No validation on load.** `load_state` trusts persisted values are in [0,1] —
+  clamping only happens inside the update rules, so a bad/edited value flows
+  straight into the prompt. Clamp on load too.
+- **`state_log` grows unbounded** — one row per ~8 s tick plus per chat, never
+  pruned. Add periodic pruning/rotation.
 
 ---
 
@@ -40,6 +71,29 @@ the neural-face setup, and prints the exact fix for each. Run it whenever stuck.
   `setup_face.bat`).
 - `python server.py` — private, senses off.
 Open **http://127.0.0.1:8765** ( `/classic` = old chat UI with voice/image ).
+
+### Desktop app + remote access (new)
+She now runs as a **real desktop app**, not just a browser page:
+- **`Alpecca-App.bat`** (or `python app.py`) — a native window via **pywebview**
+  (`pip install pywebview`; falls back to your browser if it's absent). Runs the
+  same FastAPI server in-process, senses on, in its own window.
+- **Remote access** is opt-in and **always token-gated** (server.py `_auth_gate`
+  middleware + `/ws` guard; localhost is *not* special-cased, so a tunnel can't
+  slip past): `ALPECCA_REMOTE=1` binds `0.0.0.0` for LAN devices;
+  `ALPECCA_TUNNEL=cloudflare|ngrok` opens a public internet URL via a tunnel CLI.
+  `app.py` mints `ALPECCA_ACCESS_TOKEN` if unset and prints it; remote clients
+  append `?token=…` once (a cookie carries it after). Knobs in `config.py`
+  (REMOTE_ACCESS / ACCESS_TOKEN / TUNNEL / BIND_HOST). Senses, memory and brain
+  stay local — only chat travels.
+- **Package to one `.exe`:** `pip install pyinstaller && pyinstaller --noconsole
+  --add-data "web;web" --name Alpecca app.py` (add `data/`/config as needed).
+
+### Screen-share in her home (new)
+The **Share** nav button now has her walk to the **Observatory** and *hold the live
+shared screen as a framed window beside her* in the 3D home (THREE.VideoTexture on
+a panel parented to her figure), replacing the old flat fullscreen desk overlay.
+Server: `POST /observatory/screen/start|stop`, `mind.set_screen_sharing()` (she
+stays put while sharing); she still sees the screen via `/sight/push` (grounding).
 
 ### Neural face on the 4 GB laptop GPU (optional)
 THA3 fits *with* the brain via three levers: light model (`separable_half`,
@@ -105,6 +159,10 @@ desires, selfmod, soul, journal, charter guards, learning, pose). LLM brain work
 state persists; the autonomous loop is wired and livened.
 
 **Shaky:**
+- **Persistence hardening pending** (DB itself is healthy — see the game-state
+  review section up top). No WAL, no busy_timeout, off-lock concurrent writers, no
+  auto-backup, no load validation. Close these before relying on her heavily,
+  especially if `ALPECCA_HOME` ever points at synced storage.
 - **`web/home.html` is large and NOT fully syntax-checked.** The dev sandbox mount
   serves a stale truncated copy, so a full `node --check` wasn't possible; blocks
   were verified individually via the editor. **If the page renders blank, it's a
@@ -143,10 +201,13 @@ fresh clone needs her pose/portrait PNGs replaced. The expression face uses
   self-training loop; AutoSprite-generated expression/animation frames.
 
 ## Immediate next steps
-1. `setup_face.bat` → `python scripts\doctor.py` → `start_face.bat`; confirm she
+1. **Harden persistence** (DB is healthy, this is preventive): WAL + `busy_timeout`
+   in both `_connect` helpers, serialized/single-writer DB writes, a rotating
+   auto-backup, clamp-on-load, and keep `ALPECCA_HOME` on local disk.
+2. `setup_face.bat` → `python scripts\doctor.py` → `start_face.bat`; confirm she
    comes up with brain + neural face on the 4 GB GPU.
-2. Phase-4 audit of `web/home.html` on the real checkout (node-check; fix blanks).
-3. Watch the activity ticker a few minutes — confirm the autonomous loop fires.
+3. Phase-4 audit of `web/home.html` on the real checkout (node-check; fix blanks).
+4. Watch the activity ticker a few minutes — confirm the autonomous loop fires.
 
 ## Orientation
 `CLAUDE.md` (architecture) · `docs/` (design + review docs) · `alpecca/` (modules)

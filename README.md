@@ -98,6 +98,14 @@ pull a model.
 her with screen sight, webcam expression sense, voice-tone sensing, and a safe
 default app allowlist. Plain `python server.py` stays the private, senses-off path.
 
+**Reach her from your phone.** She's local-only by default. Set
+`ALPECCA_REMOTE=1` to bind every interface (so another device on your LAN can
+connect), or `ALPECCA_TUNNEL=cloudflare` (or `ngrok`) to open a public URL
+through a tunnel binary — so she's reachable from anywhere, and installable as a
+phone app (PWA) from the browser. Remote and tunnel access are **always** gated by
+a secret: set `ALPECCA_ACCESS_TOKEN`, or one is minted and printed for the run.
+Her senses, memory, and brain never leave the machine — only the chat travels.
+
 ### Background sense, only
 
 ```bash
@@ -167,7 +175,16 @@ actions; screenshots never leave the machine.
 arbitrated by a master/subagent **Soul** (`soul.py`) under a code-enforced
 **charter** (`charter.py`) — her constitution, freedoms, and hard limits
 (never self-deletes; reaches outward only to her creator). She keeps a private
-journal and questions herself recursively (`journal.py`).
+journal and questions herself recursively (`journal.py`). The house runs fully
+local (Three.js vendored, CDN only as a fallback), and every room opens as a
+readable panel of its function — her Soul, studio, library, observatory, workshop.
+
+**Her art library.** When you hand her a batch of her own art with opaque export
+names, her local vision model looks at each image and files it into a curated
+reference scheme by asset role — expression bust, wardrobe sheet, Live2D layer
+candidate, reject — checking each against her canon (`alpecca/artlib.py`,
+`scripts/ingest_art.py`). Nothing is invented: the classification is her own
+perception of her own art.
 
 ## Privacy
 

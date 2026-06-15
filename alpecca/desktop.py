@@ -156,6 +156,95 @@ def rename(root: str, rel: str, new_name: str, roots: dict | None = None) -> dic
     return {"ok": True, "renamed": src.name, "to": new_name}
 
 
+def search(query: str, roots: dict | None = None, limit: int = 40) -> dict:
+    """Find files/folders whose name contains `query` (case-insensitive) across
+    her allowed rooms -- so she can actually help you find something ("where's that
+    invoice?") during cowork. Read-only and charter-gated per room. It never
+    follows a symlink out of a room and skips anything that resolves outside its
+    root, so the same hard sandbox as the rest of this module holds. Returns
+    {ok, query, matches:[{root, rel, name, is_dir, size}], truncated}."""
+    roots = roots or ROOTS
+    q = (query or "").strip().lower()
+    if not q:
+        return {"ok": False, "error": "give me something to look for."}
+    matches: list[dict] = []
+    truncated = False
+    for name in charter.ALLOWED_FILE_ROOTS:
+        ok, _ = charter.file_action_allowed("view", name)
+        if not ok:
+            continue
+        base = roots.get(name)
+        if base is None:
+            continue
+        try:
+            base_r = base.resolve()
+        except Exception:
+            continue
+        if not base_r.exists():
+            continue
+        # os.walk does NOT follow symlinked directories by default, so we can't be
+        # walked out of the room; the relative_to check below also drops any entry
+        # that resolves outside it (e.g. a symlinked file).
+        for dirpath, dirnames, filenames in os.walk(base_r):
+            for entry in list(dirnames) + list(filenames):
+                if q not in entry.lower():
+                    continue
+                full = Path(dirpath) / entry
+                try:
+                    real = full.resolve()
+                    rel = real.relative_to(base_r)
+                except Exception:
+                    continue            # escaped the room -> ignore
+                is_dir = full.is_dir()
+                try:
+                    size = full.stat().st_size if not is_dir else 0
+                except Exception:
+                    size = 0
+                matches.append({"root": name, "rel": str(rel).replace("\\", "/"),
+                                "name": entry, "is_dir": is_dir, "size": size})
+                if len(matches) >= limit:
+                    truncated = True
+                    break
+            if truncated:
+                break
+        if truncated:
+            break
+    return {"ok": True, "query": query, "matches": matches, "truncated": truncated}
+
+
+def summarize(root: str, roots: dict | None = None) -> dict:
+    """A grounded readout of one room: how many files and folders it holds, the
+    total size, and a count by file kind (extension) -- the honest 'what's in
+    Documents' answer. Read-only and charter-gated."""
+    roots = roots or ROOTS
+    ok, why = charter.file_action_allowed("view", root)
+    if not ok:
+        return {"ok": False, "error": why}
+    base = roots.get(root)
+    if base is None:
+        return {"ok": False, "error": f"'{root}' isn't a room I can open."}
+    try:
+        base_r = base.resolve()
+    except Exception:
+        return {"ok": False, "error": "couldn't open that room."}
+    files = folders = total = 0
+    by_kind: dict[str, int] = {}
+    if base_r.exists():
+        for dirpath, dirnames, filenames in os.walk(base_r):
+            folders += len(dirnames)
+            for fn in filenames:
+                files += 1
+                ext = Path(fn).suffix.lower().lstrip(".") or "none"
+                by_kind[ext] = by_kind.get(ext, 0) + 1
+                try:
+                    total += (Path(dirpath) / fn).stat().st_size
+                except Exception:
+                    pass
+    top = dict(sorted(by_kind.items(), key=lambda kv: kv[1], reverse=True)[:8])
+    return {"ok": True, "root": root, "files": files, "folders": folders,
+            "total_bytes": total, "by_kind": top}
+
+
 def overview(roots: dict | None = None) -> dict:
     """A desktop-like snapshot: each allowed room and how many items it holds.
     What the workstation view renders. Honest about what she can and can't do."""

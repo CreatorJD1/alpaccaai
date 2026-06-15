@@ -4,11 +4,13 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Alpecca · Studio</title>
+<!-- Shared soft-tech/glow design system + live mood-glow (tokens come from app.css). -->
+<link rel="stylesheet" href="/web/app.css" />
+<script src="/web/glow.js"></script>
 <style>
-  :root { --bg:#1a1726; --panel:#241f33; --ink:#efe9ff; --muted:#9b91b8; --accent:#c9a8ff; }
   * { box-sizing: border-box; }
-  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-         background: radial-gradient(1200px 800px at 50% -10%, #2c2540, var(--bg));
+  body { margin:0; font-family: var(--font);
+         background: radial-gradient(1200px 800px at 50% -10%, #0c1426, var(--bg));
          color: var(--ink); min-height:100vh; }
   header { text-align:center; padding:18px 0 6px; }
   header h1 { margin:0; font-weight:600; letter-spacing:.5px; }
@@ -16,41 +18,44 @@
   header a { color:var(--accent); font-size:12px; text-decoration:none; }
   .wrap { max-width:1100px; margin:0 auto; padding:14px; display:grid;
           grid-template-columns: 300px 1fr; gap:16px; }
-  .room { background:var(--panel); border-radius:18px; padding:18px; text-align:center;
-          box-shadow:0 10px 40px rgba(0,0,0,.4); position:sticky; top:14px; align-self:start; }
+  .room { background:var(--panel-solid); border:1px solid var(--line); border-radius:18px;
+          padding:18px; text-align:center;
+          box-shadow:var(--shadow-panel); position:sticky; top:14px; align-self:start; }
   .room img.her, .room video.her { width:220px; height:auto; border-radius:16px;
-                  background:radial-gradient(120px 120px at 50% 40%, #2c2540, transparent);
+                  background:radial-gradient(120px 120px at 50% 40%, #0c1426, transparent);
                   animation: breathe 4.5s ease-in-out infinite; }
   @keyframes breathe {
     0%,100% { transform: translateY(0) scale(1); }
     50%     { transform: translateY(-4px) scale(1.012); }
   }
-  .room .doing { margin-top:10px; min-height:40px; font-size:13px; color:#d9ccff;
+  .room .doing { margin-top:10px; min-height:40px; font-size:13px; color:var(--ink);
                  font-style:italic; line-height:1.45; }
-  .room button { margin-top:12px; background:var(--accent); color:#221a33; border:0;
+  .room button { margin-top:12px; background:var(--mood); color:#06121c; border:0;
+                 box-shadow:var(--mood-glow);
                  padding:10px 18px; border-radius:10px; font-weight:600; cursor:pointer; }
-  .room button:disabled { opacity:.5; cursor:default; }
+  .room button:disabled { opacity:.5; cursor:default; box-shadow:none; }
   .feed { margin-top:12px; text-align:left; font-size:11.5px; color:var(--muted);
-          max-height:160px; overflow-y:auto; border-top:1px solid #332c4a; padding-top:8px; }
+          max-height:160px; overflow-y:auto; border-top:1px solid var(--line); padding-top:8px; }
   .feed div { margin:3px 0; }
   .col { display:flex; flex-direction:column; gap:16px; }
-  .card { background:var(--panel); border-radius:16px; padding:16px 18px;
-          box-shadow:0 8px 28px rgba(0,0,0,.35); }
+  .card { background:var(--panel-solid); border:1px solid var(--line); border-radius:16px;
+          padding:16px 18px; box-shadow:var(--shadow-panel); }
   .card h2 { margin:0 0 10px; font-size:14px; font-weight:600; color:var(--accent); }
   .sheet-grid { display:grid; grid-template-columns:auto 1fr; gap:6px 12px; font-size:13px; }
   .sheet-grid .k { color:var(--muted); }
   .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
-  .chip { background:#2f2a44; border:1px solid #3d3658; border-radius:20px;
+  .chip { background:var(--bg-2); border:1px solid var(--line); border-radius:20px;
           padding:3px 10px; font-size:12px; }
   .thumbs { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:10px; }
   .thumbs a { display:block; }
-  .thumbs img { width:100%; border-radius:10px; border:1px solid #3d3658; }
+  .thumbs img { width:100%; border-radius:10px; border:1px solid var(--line); }
   .gallery { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:10px; }
   .gallery figure { margin:0; }
   .gallery img { width:100%; border-radius:10px; }
   .gallery figcaption { font-size:11px; color:var(--muted); font-style:italic; margin-top:4px; }
-  pre.rig { white-space:pre-wrap; font-size:11.5px; color:#cfc6e6; line-height:1.5;
-            max-height:340px; overflow-y:auto; background:#1d1a2b; border-radius:10px; padding:12px; }
+  pre.rig { white-space:pre-wrap; font-size:11.5px; color:var(--ink); line-height:1.5;
+            max-height:340px; overflow-y:auto; background:var(--bg-2); border:1px solid var(--line);
+            border-radius:10px; padding:12px; }
   .empty { color:var(--muted); font-size:13px; font-style:italic; }
   @media (max-width:760px){ .wrap { grid-template-columns:1fr; } .room { position:static; } }
 </style>
@@ -89,7 +94,7 @@
       <div class="card">
         <h2>Animations she's choreographed <span style="font-weight:400;color:var(--muted);">(she animates herself)</span></h2>
         <div id="anims"><span class="empty">She hasn't choreographed any yet.</span></div>
-        <button id="animBtn" style="margin-top:10px;background:#3a3158;color:var(--ink);border:0;
+        <button id="animBtn" class="ghost-btn" style="margin-top:10px;
                 padding:8px 16px;border-radius:9px;cursor:pointer;">Ask her to choreograph one →</button>
       </div>
 
@@ -102,6 +107,16 @@
 
 <script>
 const $ = id => document.getElementById(id);
+
+// Let the studio breathe with her too: feed her live mood to the shared glow
+// channel so its accents drift with how she feels (grounded in /state).
+function pollMood(){
+  fetch('/state',{cache:'no-store'}).then(r=>r.json()).then(d=>{
+    const s=d.state||{}; if(window.applyMood) applyMood({warmth:s.love, unease:s.fear,
+      curiosity:s.curiosity, glow:s.energy});
+  }).catch(()=>{});
+}
+pollMood(); setInterval(pollMood, 5000);
 
 // Her avatar in the room (real character art if present, else nothing).
 fetch('/avatar/manifest').then(r=>r.json()).then(m=>{

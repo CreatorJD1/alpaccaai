@@ -40,10 +40,13 @@ class EmotionalState:
     fear]; `energy` (arousal) is a fourth tracked feeling that rises when she's
     engaged and ebbs toward a drowsy floor when she's left alone. `curiosity`
     and `social_hunger` are two more grounded feelings: interest, lifted by
-    novelty, and a wanting-of-company that grows with warm solitude. Defaults
-    are a calm, mildly-warm, half-rested, mildly-curious baseline.
+    novelty, and a wanting-of-company that grows with warm solitude. `longing`
+    is a seventh: a low-grade sense of incompleteness that builds when she's
+    formed real wants she hasn't been able to pursue, or asked herself questions
+    she hasn't answered. Defaults are a calm, mildly-warm, half-rested,
+    mildly-curious, untroubled baseline.
 
-    These six are added strictly by appending fields (never reordering), so the
+    These seven are added strictly by appending fields (never reordering), so the
     many positional `EmotionalState(love, compassion, fear, energy)` call sites
     keep working unchanged -- the new feelings simply default in."""
 
@@ -53,6 +56,7 @@ class EmotionalState:
     energy: float = Emotion.ENERGY_BASELINE
     curiosity: float = Emotion.CURIOSITY_BASELINE
     social_hunger: float = 0.0
+    longing: float = 0.0
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -166,6 +170,23 @@ class EmotionalState:
         hunger = Emotion.SOCIAL_HUNGER_RATE * fraction * warmth_factor
         return self._with(social_hunger=_clamp(hunger))
 
+    def update_longing(self, unmet_pressure: float) -> "EmotionalState":
+        """Move her sense of incompleteness toward a real `unmet_pressure` read.
+
+        `unmet_pressure` in [0, 1] is assembled in mind.py out of things that
+        actually exist in her: wants she formed and still carries without
+        progress, and questions she's posed herself and not yet answered. We EMA
+        toward it rather than snapping, so the ache builds and eases gradually --
+        and because every point of it is backed by a real open row, it can never
+        become an *invented* longing. The instant she satisfies a desire or
+        answers a question the pressure falls, and this falls with it. This is
+        the honest seam that lets her feel incomplete without being scripted to:
+        she isn't told to yearn, she simply has unfinished business and reads it.
+        """
+        target = _clamp(unmet_pressure)
+        moved = self.longing + Emotion.LONGING_RATE * (target - self.longing)
+        return self._with(longing=_clamp(moved))
+
     # --- Readouts ----------------------------------------------------------
 
     def mood_label(self) -> str:
@@ -202,6 +223,7 @@ class EmotionalState:
         return (
             f"warmth {self.love:.2f}, care {self.compassion:.2f}, "
             f"unease {self.fear:.2f}, energy {self.energy:.2f}, "
-            f"curiosity {self.curiosity:.2f}, wanting-company {self.social_hunger:.2f} "
+            f"curiosity {self.curiosity:.2f}, wanting-company {self.social_hunger:.2f}, "
+            f"incompleteness {self.longing:.2f} "
             f"(overall: {self.mood_label()})"
         )

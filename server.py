@@ -22,7 +22,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, HTMLResponse
 import uvicorn
 
-from config import HOST, PORT
+from config import HOST, PORT, DEEP_BACKEND
 from alpecca.mind import CoreMind
 from alpecca.sensory import WindowSensor
 from alpecca.voice import VoiceSensor
@@ -154,6 +154,15 @@ async def lifespan(app: FastAPI):
                             })
                             # And reach her person on their channel if she has one.
                             await asyncio.to_thread(openclaw_bridge.try_deliver, text)
+                # Retry any outbound messages a transient channel hiccup dropped,
+                # so her words actually reach the person. Cheap when the queue's
+                # empty (no subprocess), and off-thread so chat never stalls.
+                try:
+                    from alpecca import openclaw_bridge as _ocb
+                    if _ocb.pending_count():
+                        await asyncio.to_thread(_ocb.flush)
+                except Exception:
+                    pass
             except Exception:
                 pass  # never let a bad tick kill the companion
             await asyncio.sleep(DRIFT_INTERVAL)
@@ -173,6 +182,56 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Alpecca", lifespan=lifespan)
+
+
+# --- Remote-access auth ------------------------------------------------------
+# When ALPECCA_ACCESS_TOKEN is set, every request must carry the token -- as a
+# ?token= query, an X-Alpecca-Token header, or the alpecca_token cookie that a
+# first ?token= visit drops. When it's blank (the default, private local use)
+# there's no gate at all, so `python server.py` stays frictionless. We do NOT
+# special-case localhost: the desktop window is handed the token by app.py, and
+# tunnel traffic arrives FROM localhost too, so a localhost bypass would be a
+# hole. WebSockets are guarded separately in the /ws handler (cookies ride the
+# handshake, so the SPA needs no change).
+from config import ACCESS_TOKEN as _TOKEN
+from starlette.responses import JSONResponse as _JSON
+
+_LOGIN_HTML = """<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
+<title>Alpecca - access</title>
+<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#070b14;color:#cfe0ff;font-family:system-ui,sans-serif">
+<form onsubmit="location='/?token='+encodeURIComponent(document.getElementById('t').value);return false"
+ style="background:rgba(8,14,26,.7);padding:28px 26px;border-radius:14px;border:1px solid #1d2a47;text-align:center;max-width:320px">
+  <div style="font-size:20px;font-weight:650;margin-bottom:6px">Alpecca</div>
+  <div style="color:#8aa0c6;font-size:13px;margin-bottom:16px">Enter your access token to reach her.</div>
+  <input id=t autofocus placeholder="access token" style="width:100%;box-sizing:border-box;padding:10px;border-radius:9px;border:1px solid #24345a;background:#0e1830;color:#cfe0ff">
+  <button style="margin-top:12px;width:100%;padding:10px;border:0;border-radius:9px;background:#7fd9ff;color:#06121c;font-weight:600;cursor:pointer">Enter</button>
+</form></body>"""
+
+
+def _token_ok(query, headers, cookies) -> bool:
+    """Whether a request carries the right token. With no token configured the
+    gate is open (private local use)."""
+    if not _TOKEN:
+        return True
+    tok = (query.get("token") or headers.get("X-Alpecca-Token")
+           or cookies.get("alpecca_token"))
+    return tok == _TOKEN
+
+
+@app.middleware("http")
+async def _auth_gate(request: Request, call_next):
+    if not _token_ok(request.query_params, request.headers, request.cookies):
+        # A browser navigation gets a friendly token prompt; anything else 401s.
+        if request.method == "GET" and "text/html" in request.headers.get("accept", ""):
+            return HTMLResponse(_LOGIN_HTML, status_code=401)
+        return _JSON({"detail": "access token required"}, status_code=401)
+    resp = await call_next(request)
+    # A valid ?token= visit drops a cookie so later fetches + the WebSocket carry
+    # it automatically, without the token living in every URL.
+    tok = request.query_params.get("token")
+    if _TOKEN and tok == _TOKEN:
+        resp.set_cookie("alpecca_token", tok, max_age=60 * 60 * 24 * 30, samesite="lax")
+    return resp
 
 
 @app.get("/")
@@ -380,6 +439,22 @@ def desktop_list(root: str, rel: str = "") -> dict:
     return _desktop.list_room(root, rel)
 
 
+@app.get("/desktop/search")
+def desktop_search(q: str, limit: int = 40) -> dict:
+    """Find a file by name across her allowed rooms -- read-only, charter-guarded,
+    confined to the rooms (never the open disk, never the web). Works even with
+    ALPECCA_FILES off, since searching/reading is a 'view' the charter permits."""
+    from alpecca import desktop as _desktop
+    return _desktop.search(q, limit=max(1, min(200, int(limit))))
+
+
+@app.get("/desktop/summary")
+def desktop_summary(root: str) -> dict:
+    """A grounded readout of one room (file/folder counts, size, kinds)."""
+    from alpecca import desktop as _desktop
+    return _desktop.summarize(root)
+
+
 @app.post("/desktop/move")
 async def desktop_move(req: Request) -> dict:
     """Move a file between allowed rooms. Off unless ALPECCA_FILES=1; every move is
@@ -531,15 +606,40 @@ async def observatory_react(req: Request) -> dict:
     return {"ok": True, **d}
 
 
+@app.post("/observatory/screen/start")
+async def observatory_screen_start() -> dict:
+    """You started sharing your screen with her. She settles into the Observatory
+    to watch it with you (where she'll hold the live screen as a window) and stays
+    there until you stop. If she had to walk there, broadcast it so any open home
+    view follows her."""
+    async with mind_lock:
+        moved = mind.set_screen_sharing(True)
+        home = mind.home_state() if moved else None
+    if moved:
+        await _broadcast({"type": "roamed", "location": moved, "home": home})
+    return {"ok": True, "location": "observatory"}
+
+
+@app.post("/observatory/screen/stop")
+async def observatory_screen_stop() -> dict:
+    """You stopped sharing. She's free to roam her home again."""
+    async with mind_lock:
+        mind.set_screen_sharing(False)
+    return {"ok": True}
+
+
 @app.get("/state")
 def state() -> dict:
     """Current mood + her self-chosen look -- the UI renders both, never sets them."""
     return {"state": mind.state.as_dict(), "mood": mind.state.mood_label(),
             "appearance": mind.current_appearance().as_dict(),
             "llm_online": mind.llm.online,
-            # Which model serves which tier -- heavy reasoning vs. cheap fast work.
+            # Which model serves which tier -- heavy reasoning vs. cheap fast work,
+            # plus her optional "deep" tier (cloud augmentation for her hardest
+            # self-acts only; "local" means no cloud, her brain stays fully local).
             "models": {"reason": mind.llm.model_for("reason"),
-                       "fast": mind.llm.model_for("fast")},
+                       "fast": mind.llm.model_for("fast"),
+                       "deep": (DEEP_BACKEND if mind.llm.deep_online() else "local")},
             # Which senses are actually live right now -- truthful capability
             # report, so the UI (and the person) can see what she can sense.
             "senses": {
@@ -665,6 +765,141 @@ def pose_image(name: str) -> FileResponse:
     if path is None:
         raise HTTPException(status_code=404, detail="no such pose")
     return FileResponse(path, media_type="image/png")
+
+
+# --- In-app layer cutter: build her per-part rig from her own art, by hand ----
+# The decomposition step (cutting her illustration into named transparent layers)
+# usually needs a GPU (See-Through). This is the no-GPU path: /rigcut is a browser
+# tool where you paint + name each layer over her art; it posts the layers here,
+# we write them into data/avatar/rig/ and build rig.json (seeded with her real
+# skeleton anchors) -- after which /live2d and the home rig tier animate her real
+# parts. ONLY her art is used; the page never invents any.
+
+@app.get("/rigcut")
+def rigcut_page() -> HTMLResponse:
+    """The in-app layer cutter -- paint + name her rig layers over her own art."""
+    return HTMLResponse((WEB_DIR / "rigcut.html").read_text(encoding="utf-8"))
+
+
+@app.get("/avatar/source")
+def avatar_source() -> FileResponse:
+    """Her base art to cut layers from (data/avatar/source.png, else the canonical
+    reference base-model). The cutter loads this; you can also upload any of her art."""
+    from config import AVATAR_DIR, CHARACTER_DIR
+    for cand in (AVATAR_DIR / "source.png",
+                 CHARACTER_DIR / "reference" / "base-model.png",
+                 CHARACTER_DIR / "reference" / "master-character-sheet.png"):
+        if cand.exists():
+            return FileResponse(cand, media_type="image/png")
+    raise HTTPException(status_code=404, detail="no base art")
+
+
+def _first_path(x):
+    """Find the first file path / URL in a (possibly nested) gradio result."""
+    if isinstance(x, str):
+        return x
+    if isinstance(x, dict):
+        for k in ("path", "name", "image", "url"):
+            if isinstance(x.get(k), str):
+                return x[k]
+    if isinstance(x, (list, tuple)):
+        for it in x:
+            p = _first_path(it)
+            if p:
+                return p
+    return None
+
+
+@app.post("/rig/hf_matte")
+async def rig_hf_matte(req: Request) -> dict:
+    """Run her art through a Hugging Face background-removal Space to get a clean
+    transparent figure (HF's GPU does the cut, no local CUDA). Body {data: dataURL};
+    returns {ok, data: dataURL}. Optional -- needs gradio_client; degrades to a
+    plain error the cutter shows, and manual painting still works without it."""
+    import base64, re as _re, tempfile, os, urllib.request
+    from config import HF_TOKEN, HF_MATTE_SPACE, HF_MATTE_API
+    try:
+        b = await req.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be JSON")
+    m = _re.match(r"data:image/\w+;base64,(.*)$", b.get("data", ""), _re.DOTALL)
+    if not m:
+        return {"ok": False, "error": "no image in request"}
+    try:
+        from gradio_client import Client, handle_file
+    except Exception:
+        return {"ok": False, "error": "gradio_client not installed (pip install gradio_client)"}
+    tmp_in = os.path.join(tempfile.gettempdir(), "alpecca_matte_in.png")
+    with open(tmp_in, "wb") as f:
+        f.write(base64.b64decode(m.group(1)))
+
+    def _call():
+        client = Client(HF_MATTE_SPACE, hf_token=HF_TOKEN or None)
+        if HF_MATTE_API:
+            return client.predict(handle_file(tmp_in), api_name=HF_MATTE_API)
+        return client.predict(handle_file(tmp_in))
+
+    try:
+        out = await asyncio.to_thread(_call)
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:160]}
+    path = _first_path(out)
+    if not path:
+        return {"ok": False, "error": "the Space returned no image"}
+    try:
+        if str(path).startswith("http"):
+            data = urllib.request.urlopen(path, timeout=30).read()
+        else:
+            with open(path, "rb") as f:
+                data = f.read()
+    except Exception as exc:
+        return {"ok": False, "error": f"couldn't read the result: {exc}"[:120]}
+    return {"ok": True, "data": "data:image/png;base64," + base64.b64encode(data).decode()}
+
+
+@app.post("/rig/import")
+async def rig_import(req: Request) -> dict:
+    """Receive painted layers from the cutter and build her layered rig. Body:
+    {width, height, layers:[{name, role, data:'data:image/png;base64,...'}]}.
+    Writes transparent PNGs + rig.json into data/avatar/rig/ (clearing old ones),
+    with the head pivot/lean seeded from her real skeleton when one exists."""
+    import base64, re as _re
+    from config import AVATAR_DIR
+    from alpecca import rig, pose as _pose
+    try:
+        b = await req.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be JSON")
+    W, H = int(b.get("width") or 0), int(b.get("height") or 0)
+    layers_in = b.get("layers") or []
+    if not W or not H or not layers_in:
+        return {"ok": False, "error": "missing canvas size or layers"}
+    rig_dir = AVATAR_DIR / "rig"
+    rig_dir.mkdir(parents=True, exist_ok=True)
+    for old in rig_dir.glob("*.png"):          # clear a previous cut so none orphan
+        try: old.unlink()
+        except Exception: pass
+    saved = []
+    for i, lyr in enumerate(layers_in):
+        m = _re.match(r"data:image/png;base64,(.*)$", lyr.get("data", ""), _re.DOTALL)
+        if not m:
+            continue
+        try:
+            raw = base64.b64decode(m.group(1))
+        except Exception:
+            continue
+        want = (lyr.get("role") or "").strip()
+        role = want if want in rig.ROLES else rig.role_for(lyr.get("name") or want)
+        slug = rig._slug(lyr.get("name") or role) or role
+        fname = f"{i:02d}_{slug}.png"
+        (rig_dir / fname).write_bytes(raw)
+        saved.append({"file": fname, "role": role})
+    if not saved:
+        return {"ok": False, "error": "no valid layers in the payload"}
+    sk = _pose.load(AVATAR_DIR / "rigpose.json") or {}
+    manifest = rig.save_manifest(saved, [W, H], rig_dir, anchors=sk.get("anchors"))
+    return {"ok": True, "count": len(saved), "roles": [s["role"] for s in saved],
+            "manifest": manifest}
 
 
 @app.post("/poses/retag")
@@ -870,6 +1105,23 @@ def character_image(name: str) -> FileResponse:
     if not path.exists():
         raise HTTPException(status_code=404, detail="no such image")
     return FileResponse(path)
+
+
+@app.get("/manifest.webmanifest")
+def web_manifest() -> FileResponse:
+    """The PWA manifest -- lets her install as a phone/desktop app. Served with the
+    correct media type so browsers recognize it."""
+    return FileResponse(WEB_DIR / "manifest.webmanifest",
+                        media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+def service_worker() -> FileResponse:
+    """Her service worker. Served from the ROOT so its scope covers the whole app
+    (a worker under /web/ could only control /web/). It only caches the static
+    shell; her live state always hits the network (see web/sw.js)."""
+    return FileResponse(WEB_DIR / "sw.js", media_type="text/javascript",
+                        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"})
 
 
 @app.get("/web/{path:path}")
@@ -1179,6 +1431,11 @@ def _decode_image(data_url: str) -> bytes | None:
 
 @app.websocket("/ws")
 async def ws(socket: WebSocket) -> None:
+    # Remote access is token-gated here too -- the handshake carries the cookie
+    # set on the first ?token= visit (or you can pass ?token= on the ws URL).
+    if not _token_ok(socket.query_params, socket.headers, socket.cookies):
+        await socket.close(code=1008)    # policy violation
+        return
     await socket.accept()
     ws_clients.add(socket)
     # Greet with the current state so the avatar renders immediately.
@@ -1233,6 +1490,13 @@ async def ws(socket: WebSocket) -> None:
 
 
 if __name__ == "__main__":
-    print(f"Alpecca is waking up at http://{HOST}:{PORT}")
+    from config import BIND_HOST, REMOTE_ACCESS, ACCESS_TOKEN
+    if REMOTE_ACCESS and not ACCESS_TOKEN:
+        print("WARNING: remote access is ON (ALPECCA_REMOTE=1) but no "
+              "ALPECCA_ACCESS_TOKEN is set -- anyone who can reach this machine "
+              "on the network could talk to her. Set ALPECCA_ACCESS_TOKEN, or run "
+              "the desktop app (python app.py), which mints a token for you.")
+    print(f"Alpecca is waking up at http://{HOST}:{PORT}"
+          + ("  (remote: binding 0.0.0.0)" if REMOTE_ACCESS else ""))
     print(f"  LLM online: {mind.llm.online}  (start Ollama for real replies)")
-    uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
+    uvicorn.run(app, host=BIND_HOST, port=PORT, log_level="warning")

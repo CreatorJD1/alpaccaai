@@ -7,7 +7,27 @@ ollama>=0.3.0
 # pywin32 only installs on Windows; on other OSes Alpecca falls back automatically.
 pywin32>=306; platform_system == "Windows"
 
+# Desktop app (python app.py): a native window via the OS webview. Without it,
+# app.py falls back to opening her in your browser, so it's optional but small.
+pywebview>=5.0
+
 # --- Optional extras (uncomment what you want) -------------------------------
+# In-app layer cutter (/rigcut) -> "Remove background (Hugging Face)": calls a
+# hosted HF background-removal Space on HF's GPU to matt her figure cleanly.
+# Without this the cutter still works; you just paint over her art directly.
+# gradio_client>=1.0
+# Her "deep" tier (ALPECCA_DEEP_BACKEND=anthropic): a stronger cloud model for
+# her hardest SELF-acts only (deep reflection, self-questioning) -- never her
+# normal chat, which always stays on the local brain. Needs ANTHROPIC_API_KEY.
+# Without this package the deep tier silently falls back to local reasoning.
+# anthropic>=0.40
+# (The "cloud" deep backend -- a Kaggle/Colab model server -- reuses huggingface_hub.)
+# Cloud brain backend (ALPECCA_LLM_BACKEND=hf) or deep "cloud" tier:
+# huggingface_hub>=0.24
+# Remote/internet access (python app.py with ALPECCA_REMOTE=1 / ALPECCA_TUNNEL=):
+# the tunnel uses a separate CLI you install once, not a pip package --
+#   cloudflared:  https://developers.cloudflare.com/.../downloads/   (recommended)
+#   ngrok:        https://ngrok.com/download
 # Voice-tone sense (ALPECCA_VOICE=1): mic-level reads, no recording.
 # sounddevice>=0.4.6
 # Push-to-talk hearing (the 🎤 button): local speech-to-text on the server.

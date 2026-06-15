@@ -33,8 +33,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import AVATAR_DIR
 from alpecca import rig
+from alpecca import pose as _pose
 
 OUT_DIR = AVATAR_DIR / "rig"
+
+
+def _anchors():
+    """Her real skeleton anchors (data/avatar/rigpose.json), so the imported rig's
+    head pivot and lean ride her actual neck/hips instead of a 0.32 estimate.
+    None when no skeleton has been captured yet (then save_manifest keeps the
+    estimate)."""
+    sk = _pose.load(AVATAR_DIR / "rigpose.json")
+    return (sk or {}).get("anchors")
 
 
 def _from_psd(psd_path: Path) -> None:
@@ -63,7 +73,7 @@ def _from_psd(psd_path: Path) -> None:
     if not layers:
         print("No usable layers found in the PSD.")
         sys.exit(1)
-    rig.save_manifest(layers, [W, H], OUT_DIR)
+    rig.save_manifest(layers, [W, H], OUT_DIR, anchors=_anchors())
     print(f"\nImported {len(layers)} layers -> {OUT_DIR}\nReload /live2d to see her rigged.")
 
 
@@ -82,7 +92,7 @@ def _from_folder(folder: Path) -> None:
         Image.open(p).convert("RGBA").save(OUT_DIR / fname)
         layers.append({"file": fname, "role": role})
         print(f"  {p.name:32} -> {role:11} {fname}")
-    rig.save_manifest(layers, [W, H], OUT_DIR)
+    rig.save_manifest(layers, [W, H], OUT_DIR, anchors=_anchors())
     print(f"\nImported {len(layers)} layers -> {OUT_DIR}\nReload /live2d to see her rigged.")
 
 

@@ -1,0 +1,141 @@
+/* Alpecca — shared soft-tech / glow design system.
+ *
+ * One source of truth for how she looks across every page (the 3D home, the
+ * chat, the studio, the avatar view). Before this, each page redefined its own
+ * :root and two clashing palettes drifted apart (home was cyan/navy soft-tech;
+ * the others were purple). This file makes the cyan/navy "soft-tech / glow"
+ * identity -- her own canonical look: glowing eyes, chest power-core, soft light
+ * -- the single shared language, and lets the whole UI subtly *breathe with her*:
+ * `web/glow.js` rewrites the --mood-* variables from her live mood, so every
+ * accent (buttons, bars, active nav, the core emblem) shifts hue and brightness
+ * as she feels. Served at /web/app.css; pages <link> it before their own <style>.
+ */
+
+:root {
+  /* base surfaces (home.html's existing values, now shared) */
+  --bg: #070b14;            /* deep near-black navy */
+  --bg-2: #0a1018;          /* slightly raised panel base */
+  --panel: rgba(8,14,26,.55);      /* glass fill */
+  --panel-solid: rgba(10,16,28,.94);
+  --line: #1d2a47;          /* hairline border */
+  --line-2: #2a3d63;        /* emphasized / active border */
+
+  /* text */
+  --ink: #eaf2ff;
+  --dim: #8aa0c6;
+  /* aliases so the purple pages' existing var(--muted)/var(--accent) recolor
+     to the soft-tech system for free, with no markup churn */
+  --muted: var(--dim);
+  --accent: var(--mood);
+
+  /* the core-glow accent -- her soft-tech signature (cyan) */
+  --core: #7fd9ff;
+  --core-deep: #3aa9e0;
+  --core-12: rgba(127,217,255,.12);
+  --core-35: rgba(127,217,255,.35);
+
+  /* LIVE mood channel -- glow.js rewrites these from her real mood each poll.
+     Defaults equal --core so the UI is correct before any state arrives. */
+  --mood-h: 198;            /* hue (deg): warm/curious -> bright cyan; unease -> colder/violet */
+  --mood-s: 90%;
+  --mood-l: 74%;
+  --mood: hsl(var(--mood-h) var(--mood-s) var(--mood-l));
+  --mood-glow: 0 0 18px hsl(var(--mood-h) var(--mood-s) var(--mood-l) / .35);
+  --mood-intensity: .6;     /* 0..1 -- scales glow strength + breathing depth */
+
+  /* semantic state colours (kept minimal) */
+  --ok: #48e08a;
+  --warn: #ffb648;
+  --alert: #ff5d7f;
+
+  /* glow shadows */
+  --glow-sm: 0 0 8px var(--core-35);
+  --glow-ring: 0 0 0 3px var(--core-12);
+  --shadow-panel: 0 8px 34px rgba(0,0,0,.45);
+
+  /* radii / type / spacing / motion */
+  --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-pill: 999px;
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --t-fast: .18s ease; --t-mid: .28s ease; --t-slow: .5s ease;
+}
+
+/* ---- Reusable components (look only; pages keep their own positioning) ---- */
+
+.glass-panel {
+  background: var(--panel);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-panel);
+}
+
+.glow-btn {
+  background: var(--mood); color: #06121c; border: 0;
+  border-radius: var(--r-pill); cursor: pointer; font-weight: 700;
+  box-shadow: var(--mood-glow);
+  transition: box-shadow var(--t-mid), filter var(--t-fast);
+}
+.glow-btn:hover { filter: brightness(1.08); }
+.glow-btn:disabled { opacity: .4; cursor: default; box-shadow: none; }
+
+.ghost-btn {
+  border: 1px solid var(--line); background: transparent; color: var(--dim);
+  border-radius: var(--r-sm); cursor: pointer;
+  transition: color var(--t-fast), border-color var(--t-fast), box-shadow var(--t-mid);
+}
+.ghost-btn:hover { color: var(--ink); border-color: var(--line-2); }
+.ghost-btn.on { color: var(--mood); border-color: var(--mood); box-shadow: var(--glow-ring); }
+
+.chip {
+  background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: var(--r-pill); padding: 3px 10px; font-size: 12px; color: var(--dim);
+}
+
+.mood-bar { height: 6px; border-radius: 6px; background: #16203a; overflow: hidden; }
+.mood-bar > i { display: block; height: 100%;
+  background: linear-gradient(90deg, var(--core-deep), var(--mood)); }
+
+a { color: var(--mood); }
+:focus-visible { outline: none; }
+input:focus, textarea:focus { border-color: var(--mood) !important; }
+
+/* ---- The chest power-core emblem: her recurring soft-tech signature. A small
+   glowing disc that lives in page headers / the chat dock and breathes + shifts
+   hue with her live mood, so her core motif is present everywhere. ---- */
+.core-emblem {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: radial-gradient(circle at 50% 40%, #fff, var(--mood) 55%, transparent 75%);
+  box-shadow: var(--mood-glow);
+}
+
+/* Ambient "breathing": faster + brighter when she's energized, slow + dim when
+   calm. Applied to glowing elements (.core-emblem, the chat send button…). */
+@keyframes coreBreathe {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(calc(1 + var(--mood-intensity) * 0.20)); }
+}
+.breathe { animation: coreBreathe calc(5s - var(--mood-intensity) * 1.8s) ease-in-out infinite; }
+
+/* ---- In-world room screens (the 3D home's CSS3D feature panels). Each room's
+   feature is mounted into one of these on its back wall, composited over the
+   WebGL scene by CSS3DRenderer. Sized in real pixels (the CSS3DObject scales it
+   down to world units). ---- */
+.room-screen {
+  width: 460px; height: 560px; overflow: hidden;
+  background: var(--panel-solid); backdrop-filter: blur(8px);
+  border: 1px solid var(--line-2); border-radius: 18px;
+  box-shadow: var(--shadow-panel), 0 0 40px hsl(var(--mood-h) var(--mood-s) var(--mood-l) / .12);
+  color: var(--ink); font-family: var(--font);
+  display: flex; flex-direction: column;
+}
+.room-screen .rs-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 16px 18px; border-bottom: 1px solid var(--line);
+  font-size: 19px; font-weight: 650; letter-spacing: .2px;
+}
+.room-screen .rs-head .core-emblem { margin-left: auto; }
+.room-screen .rs-body { padding: 14px 18px; overflow-y: auto; flex: 1;
+  font-size: 14px; line-height: 1.55; }
+.room-screen .rs-body::-webkit-scrollbar { width: 7px; }
+.room-screen .rs-body::-webkit-scrollbar-thumb { background: var(--line); border-radius: 7px; }
+.room-screen.dim { opacity: .42; filter: saturate(.7); transition: opacity var(--t-slow); }

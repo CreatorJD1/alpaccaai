@@ -23,9 +23,21 @@ deliver replies anywhere outside the HTTP response body.
 from __future__ import annotations
 
 import subprocess
+import threading
 from typing import Optional
 
 from config import OpenClaw as OpenClawCfg
+
+# A small, bounded outbound queue. When delivering her words to the person's
+# channel fails transiently (CLI hiccup, a momentary network blip), we hold the
+# message and retry it on the next flush rather than silently dropping it -- so a
+# reply or a proactive check-in she meant for you actually arrives. Bounded so a
+# long outage can't grow it without limit; a *fatal* failure (CLI not installed)
+# is never queued, since retrying it would never succeed.
+_QUEUE_MAX = 50
+_QUEUE_MAX_ATTEMPTS = 5
+_pending: list[dict] = []           # {text, target, attempts}
+_qlock = threading.Lock()
 
 
 def _resolve_target(reply_target: str) -> Optional[str]:
@@ -35,14 +47,67 @@ def _resolve_target(reply_target: str) -> Optional[str]:
     return target or None
 
 
-def try_deliver(text: str, reply_target: str = "") -> dict:
-    """Best-effort outbound delivery via the OpenClaw CLI.
+def _send_once(text: str, target: str) -> dict:
+    """One delivery attempt via the OpenClaw CLI. `fatal` marks failures that
+    will never succeed on retry (CLI absent), so the queue can drop them."""
+    argv = [OpenClawCfg.EXEC, "message", "send",
+            "--target", target, "--message", text]
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    except FileNotFoundError:
+        return {"ok": False, "fatal": True, "reason": "openclaw not on PATH"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "fatal": False, "reason": "openclaw timed out"}
+    except Exception as exc:                  # pragma: no cover -- belt-and-braces
+        return {"ok": False, "fatal": False, "reason": str(exc)}
+    if proc.returncode != 0:
+        return {"ok": False, "fatal": False, "reason": f"exit {proc.returncode}",
+                "stderr": proc.stderr.strip()[:200]}
+    return {"ok": True, "target": target}
 
-    Returns a small status dict the caller can surface in its response. We
-    swallow every error class -- OpenClaw not installed, target malformed,
-    network blip -- because the inbound message has already been answered in
-    Alpecca's HTTP response; this is just the bonus delivery leg.
-    """
+
+def _enqueue(text: str, target: str) -> None:
+    with _qlock:
+        if len(_pending) >= _QUEUE_MAX:
+            _pending.pop(0)                   # drop the oldest -- bounded
+        _pending.append({"text": text, "target": target, "attempts": 0})
+
+
+def pending_count() -> int:
+    """How many outbound messages are waiting to be retried (cheap; no I/O)."""
+    with _qlock:
+        return len(_pending)
+
+
+def flush() -> dict:
+    """Retry every queued outbound message. Call periodically (the server's idle
+    loop does). Succeeded messages leave the queue; transient failures stay (up
+    to a few attempts); fatal failures are dropped. Returns {sent, pending}."""
+    if not OpenClawCfg.ENABLED:
+        return {"sent": 0, "pending": 0}
+    with _qlock:
+        items = list(_pending)
+        _pending.clear()
+    sent, keep = 0, []
+    for it in items:
+        res = _send_once(it["text"], it["target"])
+        if res.get("ok"):
+            sent += 1
+            continue
+        it["attempts"] += 1
+        if not res.get("fatal") and it["attempts"] < _QUEUE_MAX_ATTEMPTS:
+            keep.append(it)
+    if keep:
+        with _qlock:
+            _pending[:0] = keep               # put unsent back at the front, in order
+    return {"sent": sent, "pending": len(keep)}
+
+
+def try_deliver(text: str, reply_target: str = "") -> dict:
+    """Best-effort outbound delivery via the OpenClaw CLI. On a transient failure
+    the message is queued for retry (see `flush`); on a fatal one (CLI absent) or
+    a config miss it's not. The inbound message has already been answered in
+    Alpecca's HTTP response either way -- this is the bonus delivery leg."""
     if not OpenClawCfg.ENABLED:
         return {"attempted": False, "reason": "openclaw bridge disabled"}
     if not text:
@@ -50,20 +115,11 @@ def try_deliver(text: str, reply_target: str = "") -> dict:
     target = _resolve_target(reply_target)
     if not target:
         return {"attempted": False, "reason": "no delivery target"}
-
-    argv = [OpenClawCfg.EXEC, "message", "send",
-            "--target", target, "--message", text]
-    try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)
-    except FileNotFoundError:
-        return {"attempted": True, "ok": False, "reason": "openclaw not on PATH"}
-    except subprocess.TimeoutExpired:
-        return {"attempted": True, "ok": False, "reason": "openclaw timed out"}
-    except Exception as exc:                  # pragma: no cover -- belt-and-braces
-        return {"attempted": True, "ok": False, "reason": str(exc)}
-
-    if proc.returncode != 0:
-        return {"attempted": True, "ok": False,
-                "reason": f"exit {proc.returncode}",
-                "stderr": proc.stderr.strip()[:200]}
-    return {"attempted": True, "ok": True, "target": target}
+    res = _send_once(text, target)
+    if res.get("ok"):
+        return {"attempted": True, "ok": True, "target": target}
+    queued = not res.get("fatal", False)
+    if queued:
+        _enqueue(text, target)                # hold it; flush() will retry
+    return {"attempted": True, "ok": False, "reason": res.get("reason", ""),
+            "queued": queued, **({"stderr": res["stderr"]} if "stderr" in res else {})}
