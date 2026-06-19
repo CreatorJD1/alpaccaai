@@ -1,0 +1,25 @@
+# Secrets — never commit real keys
+.env
+.env.local
+
+# Dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+*.tsbuildinfo
+
+# Native build artifacts
+android/
+ios/
+*.apk
+*.aab
+*.ipa
+
+# OS / editor
+.DS_Store
+*.log
+npm-debug.*
+yarn-error.*
