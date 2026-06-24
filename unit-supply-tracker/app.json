@@ -1,0 +1,30 @@
+{
+  "expo": {
+    "name": "Supply Tracker",
+    "slug": "unit-supply-tracker",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "supplytracker",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#10140c"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.c2218fa.supplytracker"
+    },
+    "android": {
+      "package": "com.c2218fa.supplytracker",
+      "adaptiveIcon": {
+        "backgroundColor": "#10140c"
+      }
+    },
+    "plugins": ["expo-router"],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
