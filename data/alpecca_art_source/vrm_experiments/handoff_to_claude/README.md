@@ -21,4 +21,5 @@ Instructions:
 - Continue design work in the `.vroid` source file.
 - Do not overwrite Jason's current `.vroid` source without inspecting the live state first.
 - Do not publish or upload this test VRM unless Jason explicitly asks.
-
+- Check clothing/body integrity before any later export: the base body should remain fully rendered under clothing, with no missing torso or missing limbs when clothing layers are removed or changed.
+- Use the main passdown document for the design lock, ChatGPT art prompts, and current blocked items.

@@ -1,6 +1,6 @@
 # Alpecca VRoid Claude Code Passdown
 
-Updated: 2026-07-05
+Updated: 2026-07-06
 
 ## Purpose
 
@@ -20,8 +20,14 @@ Active VRoid file:
 
 Latest verified save:
 
-- `LastWriteTime=2026-07-05 03:34:25`
-- `Length=10230113`
+- `LastWriteTime=2026-07-05 09:07:17`
+- `Length=9472191`
+
+Experiment manifest:
+
+`C:\Users\Jason\Documents\GitHub\alpaccaai\data\alpecca_art_source\vrm_experiment_manifest.json`
+
+Do not look for the manifest under `vrm_experiments`; the correct path is one folder higher.
 
 Recent texture files:
 
@@ -65,6 +71,24 @@ Export details:
 Important caveat:
 
 This export is not a final Alpecca model. It is only a first compatibility/test artifact for Claude Code and Jason's VRM/VRoid companion tool. Continue improving the source `.vroid` before any production export.
+
+## Companion App Handoff
+
+Use this artifact for the first VRM companion-app import test:
+
+`C:\Users\Jason\Documents\GitHub\alpaccaai\data\alpecca_art_source\vrm_experiments\companion_tool_drop\alpecca_vroid_proxy_v0_first_test_20260706.vrm`
+
+Companion validation goals:
+
+- Confirm the file imports as VRM 1.0.
+- Confirm scale reads as an adult female Alpecca proxy and does not spawn tiny or oversized.
+- Confirm materials load without missing textures or broken transparency.
+- Confirm expressions/blend shapes are visible enough for a companion app test.
+- Confirm locomotion/idle animation retargeting does not distort hair, hoodie, or legs.
+- Confirm the body mesh is not hidden underneath clothing in a way that would leave a missing torso or missing limbs if clothing visibility changes.
+- Report screenshots from front, 3/4, side, and back views before making any export-quality decision.
+
+This companion drop is for compatibility only. Continue source model design in the `.vroid` file.
 
 ## Current Model Status
 
@@ -116,7 +140,7 @@ What is still not good enough:
 - Hair shape needs more attention: long flowing hair, side pieces, ahoge, and a small blue hair clip.
 - Face still needs stronger Alpecca identity: soft blue eyes, subtle nose shading, gentle anime face proportions, and less generic VRoid look.
 - Hoodie shape is closer, but hoodie texture may still need cleanup for cream fabric, white undershirt, and blue trim details.
-- Do not export the VRM yet. Jason explicitly said the model is not ready for export.
+- Do not make another VRM export unless Jason explicitly asks. The existing 2026-07-06 export is a first test artifact only.
 
 ## Design Lock
 
@@ -160,7 +184,7 @@ Use these as visual truth, not as optional inspiration.
 - Use Edge, not Chrome, if a browser is needed.
 - Do not accept account/security prompts or sign-in prompts on Jason's behalf.
 - Do not upload art to Cloudflare. Use Hugging Face for large art storage when storage is needed.
-- Do not export VRM until Jason confirms the model is close enough.
+- Do not export another VRM until Jason confirms or requests a new test artifact.
 - Do not replace Alpecca's current system. This is a VRoid/VRM experiment only.
 
 ## Immediate Next Tasks
@@ -173,8 +197,12 @@ Use these as visual truth, not as optional inspiration.
    - face shape and eyes;
    - subtle nose shading;
    - hair clip / accessory.
-4. Do not spend the next pass on major clothing beyond preserving the hoodie and underlayer.
-5. Take or inspect screenshots after each visible pass and compare to reference.
+4. Check clothing/body integrity:
+   - base torso and limbs must remain fully rendered under clothing;
+   - inspect VRoid skin mask / clothing mask settings before any future export;
+   - do not accept a model where removing a shirt/hoodie would reveal missing torso geometry.
+5. Do not spend the next pass on major clothing beyond preserving the hoodie and underlayer.
+6. Take or inspect screenshots after each visible pass and compare to reference.
 
 ## ChatGPT Art Generation Instructions For Claude Code
 
@@ -282,7 +310,7 @@ Before telling Jason a pass is done:
 
 ## Do Not Do
 
-- Do not export VRM yet.
+- Do not export another VRM unless Jason asks for a new test export.
 - Do not push unrelated code changes.
 - Do not overwrite Jason's manual VRoid adjustments without checking the current state.
 - Do not revert other repo changes.
