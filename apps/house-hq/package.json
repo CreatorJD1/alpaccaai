@@ -1,0 +1,20 @@
+{
+  "name": "house-exploration-game",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "polish:alpecca-walks": "python scripts/polish_gpt3d_walk_sprites.py"
+  },
+  "dependencies": {
+    "three": "^0.179.1",
+    "vite": "^8.0.16"
+  },
+  "devDependencies": {
+    "@types/three": "^0.184.1",
+    "typescript": "^5.8.3"
+  }
+}

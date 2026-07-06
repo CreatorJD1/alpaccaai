@@ -1,9 +1,319 @@
-# Alpecca — Handoff (updated 2026-06-13)
+# Alpecca — Handoff (updated 2026-07-02)
 
 Snapshot for whoever picks this up next (human or agent): current state, how to
 run her, what was built, what's solid vs. shaky, and what's next. Read `CLAUDE.md`
 for the canonical architecture, `docs/BRINGING_HER_TO_LIFE.md` for the honest
 review + phase plan. (An earlier handoff is folded into the history below.)
+
+---
+
+## Post-review hardening + latency plan EXECUTED (2026-07-04)
+
+Full plan in C:\Users\Jason\.claude\plans\serialized-booping-dream.md. Landed:
+
+**Phase A — felt latency:**
+- A1 voice warmup: `_warm_alpecca_voice` now ALWAYS warms Kokoro (the F5-healthy
+  short-circuit left the calm-speech engine cold → 44s first line). Knobs:
+  ALPECCA_VOICE_WARMUP=1, ALPECCA_VOICE_WARMUP_TIMEOUT=90. home.html pings
+  /tts/warmup on page load.
+- A2 streaming seam: alpecca/streaming.py (ThinkTagFilter — incremental
+  strip_think across chunk boundaries), _LLM._chat_stream (stream=True,
+  zero-token retry only, _StreamPartial after partial emission → echo fallback
+  replaces draft), generate/chat take optional on_token (regen retries never
+  stream; tools/HF/hybrid never stream). Kill switch ALPECCA_STREAM_CHAT.
+- A3 WS protocol: client opts in per message ({"stream":true}) →
+  reply_start / reply_token× / final authoritative {"type":"reply","streamed":true}.
+  Greeting advertises features.stream_chat. Old clients (house-hq) untouched.
+  home.html renders a .draft bubble replaced by the final text.
+- A4 sentence TTS: home.html sentencesOf() (JS port of speech._sentences,
+  pinned by test), SentenceSpeaker + ordered SpeechQueue — first sentence is
+  SPOKEN while the rest generates; regen mismatch stops further speech.
+
+**Phase B — persistence:** alpecca/db.py shared connect (busy_timeout=5000) —
+all 8 module _connects delegate; WAL+synchronous=NORMAL applied in
+state.init_db (harden()); rotating 7-day startup backup (scripts/run_full.py
+_backup_soul → data/backups/); clamp-on-load in load_state; state_log pruned
+to ALPECCA_STATE_LOG_KEEP_DAYS=30.
+
+**Phase C — Stage 4:** conveyor script scripts/run_alpecca_stage4_conveyor.py
+(process_returned_slice per frame → build_animation_library → house-hq assets;
+audit by default, --apply for real). Contract fixes: CHARACTER_GROUNDING
+("Full-body Alpecca anime woman") leads build_tile_prompt in the ZeroGPU space
+(REDEPLOYED); resumable colab worker now runs returned-slice QA after every
+upload batch. Nightly drip bat: scripts/run_stage4_nightly_drip.bat
+(zerogpu_target → conveyor --apply) — Task Scheduler registration still needs
+Jason to run: schtasks /Create /F /TN "Alpecca Stage4 Nightly Drip"
+/TR "<repo>\scripts\run_stage4_nightly_drip.bat" /SC DAILY /ST 03:30
+
+**FINAL VERIFICATION (2026-07-04):** suite 302 passed / 1 failed — the one
+failure was world-tick under 3-way Ollama contention (two parallel pytest
+sessions + live streaming probe, self-inflicted); it passes standalone twice.
+All 5 previous baseline failures are FIXED. Live measurements on the running
+app: streamed WS turn shows reply_start instantly, first token 10.7s warm
+(prompt-eval bound on the 9B), draft==final, 100 tokens streamed; TTS after
+warmup 1.3s (was 44.5s cold). data/backups/alpecca-20260704.db exists;
+journal_mode=wal on the real save. Nightly drip task REGISTERED (03:30).
+Doctor's one X is its own pre-existing false-negative (route probe sends no
+token). STILL PENDING (auto-mode blocks production deploys, needs Jason to
+run/approve directly): the two Mindscape commands in the section above.
+
+**APP SUITE: launcher + private site + Discord invite (2026-07-04 night).**
+One token-gated hub at **/app** (web/app.html, inline assets, no CDN):
+- Windows: downloads a REAL packaged **AlpeccaLauncher.exe** (built, 10 MB,
+  apps/launcher/dist; rebuild via apps/launcher/build_exe.bat) or the source
+  zip (/app/download/launcher.zip streams apps/launcher/src on demand). The
+  launcher (tkinter, stdlib-only): status dot polling /system/status, Wake
+  her / Open her home / App site / Phone access (share.py) / Invite to
+  Discord / Put her to sleep. Works frozen or from source (repo-root walk).
+- Android/iPhone: PWA install cards + QR of her tokened URL (works on LAN
+  via scripts/share.py, anywhere via --tunnel).
+- Discord: GET /app/discord/invite 302s to discord.com OAuth (client_id
+  derived from the bot token's first base64 segment; override
+  ALPECCA_DISCORD_CLIENT_ID in config.py; permissions=3263552).
+- /app/meta reports {exe_built, lan_ip, port, discord_ready}.
+- PASSWORD LOCK = the EXISTING auth gate, untouched: APIs/downloads hard-401
+  without the token; HTML navigations seed the cookie BY DESIGN (gate's own
+  documented behavior — and the TestClient host is whitelisted, so the lock
+  test asserts on server._token_ok directly). 5 contract tests green
+  (app_site/app_meta/discord_invite/launcher_zip). All routes live-verified:
+  /app 200, meta true-values, invite 302 w/ client_id 1522307155254837278,
+  zip 7KB w/ sources, exe 200 MZ 10MB.
+
+**CHAT MOVED TO gemma4:cloud (2026-07-04 late — JASON'S PICK, supersedes the
+ZeroGPU-chat entry below).** He asked for an Ollama-cloud model that's
+efficient and advanced enough to replace the ZeroGPU chat system; options
+were presented by name and he chose gemma4:cloud (the same model he already
+picked for deep+vision). Now ONE always-warm cloud brain serves chat + deep
++ vision; local qwen3.5:9b is the net everywhere. Implementation: the
+existing hybrid path (CHAT_CLOUD_MODEL) — just set
+ALPECCA_CHAT_CLOUD_MODEL=gemma4:cloud, ALPECCA_CHAT_ZEROGPU=0 (bat + setx).
+Verified live in-app: 8.1s first turn, then 3.3s / 3.3s full turns, recall
+works, telemetry "gemma4:cloud". think=false verified clean. The ZeroGPU
+9B chat path (below) STAYS BUILT as the switchback: ALPECCA_CHAT_ZEROGPU=1
++ CHAT_CLOUD_MODEL= empty.
+
+**CLOUD-FIRST 9B CHAT via ZeroGPU (2026-07-04 night — superseded same night,
+kept as the alternate path).** The ZeroGPU Space now runs the EXACT same
+Qwen/Qwen3.5-9B as her local brain (spaces app.py MODEL_ID swap; AutoProcessor
++ AutoModelForImageTextToText load path for the qwen3_5 multimodal arch;
+transformers>=4.57; enable_thinking=False in the chat template; REDEPLOYED).
+Her chat tier tries the Space FIRST (mind.generate zerogpu-chat block,
+ALPECCA_CHAT_ZEROGPU=1, 30s bound): warm cloud replies ~2s generation /
+~8s full mind turn (vs ~30s local); if the Space is asleep the LOCAL 9B
+answers that turn while the abandoned attempt wakes it — she never goes
+quiet, and it's the same model either way. Telemetry:
+last_call backend "zerogpu", model "qwen3.5-9b@CREATORJD/alpecca-zerogpu".
+Measured live in-app: 17.4s (wake-ish) then 8.2s. Costs HF ZeroGPU quota
+per reply; kill switch ALPECCA_CHAT_ZEROGPU=0 → all-local. Cloud-served
+turns don't token-stream (whole reply arrives fast); local turns still do.
+
+**Slow-turn incident + fixes (2026-07-04 evening).** Jason hit >60s turns +
+the "grounded live mode" timeout line. Chain of causes: (1) a restart race
+spawned a DUPLICATE F5 voice worker (~800 MB CUDA) — fixed live (killed
+orphan) and permanently (_f5_worker_port_taken() in run_full.py: never spawn
+if ANYTHING listens on the port, healthy or warming); (2) with VRAM starved,
+Ollama placed the 9B at 0% GPU (all-CPU) — fixed persistently with
+OLLAMA_FLASH_ATTENTION=1 + OLLAMA_KV_CACHE_TYPE=q8_0 (user env; halves KV,
+auto-placer restored the usual 18% GPU). NOTE: forcing num_gpu on the 9B
+WEDGES Ollama 0.30.7 outright (240s hang) — do not pin, leave auto;
+(3) the 24-message history doubled CPU prompt-eval — now
+ALPECCA_HISTORY_MESSAGES=12 (still 2x the original 6);
+(4) turn budgets: ALPECCA_OLLAMA_TIMEOUT=105, WS window 120s — the canned
+fallback should now be effectively unreachable. Verified after: warm streamed
+turn ~30s total, first token ~12s, no fallback, 9B at 18% GPU.
+
+**Phase D — debt:** world-tick test polls for background persistence (race
+fixed); REAL grounding bug fixed in mind.py — the embodied-location line was
+LAST in `inner` and the 160-char compact cap truncated it away whenever a
+musing existed (she'd mis-report her room); it now goes FIRST. Volume-QA test
+fixture now draws a connected character silhouette (head/neck/torso/legs) —
+the mechanical probe rightly rejected solid rectangles. All 3 Stage 4 contract
+tests green. Mindscape worker deploy STILL pending (auto-mode blocks
+production deploys): cd deploy/mindscape-worker && npx wrangler deploy, then
+npx wrangler secret put MINDSCAPE_TOKEN, then setx ALPECCA_MINDSCAPE_URL/TOKEN.
+
+## Ollama Pro: cloud deep tier + cloud sight (2026-07-03)
+
+Jason purchased **Ollama Pro** and the machine is signed in (`ollama signin`),
+which unlocks Ollama's hosted cloud models through the SAME local API
+(`localhost:11434`) — no new transport, no local VRAM, no ZeroGPU queue/quota.
+
+- **New deep backend `ALPECCA_DEEP_BACKEND=ollama-cloud`** (set in
+  START_HERE.bat): deep self-acts run on **`gpt-oss:120b-cloud`** — chosen for
+  LOW USAGE DRAIN after Jason flagged quota burn (reflection fires several
+  times/hour idle). gpt-oss deliberates concisely (~400 chars) and answers
+  within budget (no salvage call): a reflection is ~500 tokens in 3.5s, vs
+  ~4,500 tokens in 28s on qwen3.5:397b-cloud. `_build_deep` returns
+  `("ollama-cloud", model)`; `_generate_deep` routes through
+  `_generate_local_thinking` (takes model/num_predict params),
+  `ALPECCA_CLOUD_REFLECT_NUM_PREDICT=2500` cap. Knobs: gpt-oss:20b-cloud
+  (cheapest) / qwen3.5:397b-cloud (richest) via ALPECCA_OLLAMA_CLOUD_MODEL.
+- **Vision auto-routing is now ollama-cloud → zerogpu → local**
+  (alpecca/vision.py `_describe_ollama_cloud`). `ALPECCA_VISION_CLOUD_MODEL`
+  defaults to qwen3.5:397b-cloud (the ONLY vision-capable cloud model; NOT
+  tied to the deep model). Cloud sight serves only explicit image turns —
+  **ambient senses (screen glimpses, webcam) are hard-forced local via
+  `describe_image(..., ambient=True)`** so background loops can never drain
+  metered usage and screen/face pixels never leave the machine. Set
+  ALPECCA_VISION_CLOUD_MODEL="" to keep all vision off the metered cloud.
+  Verified: `describe_and_recognize` on her avatar = 23.5s, "SELF: yes".
+- Fallback chain if signed out/offline: ollama-cloud deep raises → local
+  thinking pass → plain local. Chat stays 100% local (privacy line intact:
+  deep prompts carry no sensed screen context, unchanged).
+- Other cloud models available on the account: deepseek-v3.1:671b-cloud
+  (thinking), gpt-oss:120b/20b-cloud (thinking), qwen3-coder:480b-cloud.
+- **Final division of labor (Jason's architecture, 2026-07-03): all-local
+  qwen3.5 family, near-zero metered usage.**
+  - chat → `qwen3.5:4b` (ALPECCA_MODEL): fast, fits VRAM alongside F5.
+  - deep reflection → `qwen3.5:9b` (ALPECCA_DEEP_BACKEND=local +
+    ALPECCA_REFLECT_MODEL=qwen3.5:9b, new config knob wired through
+    `_generate_local_thinking`): think-first musings ~2-5 min, idle work.
+  - vision → `qwen3.5:9b` (ALPECCA_VISION_BACKEND=local +
+    ALPECCA_VISION_MODEL=qwen3.5:9b — the 9B GGUF has a built-in 456M CLIP
+    encoder): ~2.5 min/image on CPU, pixels never leave the PC.
+  - `ALPECCA_OLLAMA_TIMEOUT=60` (default 18s cuts long replies under
+    co-load → echo fallback).
+  - Ollama Pro cloud remains one env flip away: DEEP_BACKEND=ollama-cloud
+    (gpt-oss:120b, 3.5s/reflection) / VISION_BACKEND=auto (qwen3.5:397b,
+    ~23s/image, metered).
+  - **Voice canNOT run on Ollama** — Ollama serves text/vision models only,
+    no audio-synthesis endpoint. Her voice stays Kokoro (local CPU) + F5
+    (local CUDA), which is already fully local and how Jason likes it.
+
+- **Fallback-line outage + fixes (2026-07-03 late).** She was stuck on "my
+  deeper language core is offline" in the home app. TWO causes found:
+  (1) the Ollama daemon had silently died AGAIN (repeat offender) — and it
+  is now a single point of failure since local AND cloud models route
+  through it. Fix: `_ollama_watchdog()` in scripts/run_full.py pings
+  /api/version every 60s and respawns `ollama serve` detached if dead.
+  (2) The launcher's old option [1] "HF cloud brain (recommended)" routes
+  ALL turns to HF InferenceClient with setx model Qwen3-Next-80B which HF
+  providers don't serve → permanent fallback. Fix: menu rewritten — [1] is
+  now the hybrid stack (Enter default), [2] fully-offline; the HF
+  InferenceClient path is env-only (ALPECCA_LLM_BACKEND=hf) and setx
+  ALPECCA_HF_MODEL corrected to Qwen/Qwen2.5-7B-Instruct. ALSO: stale setx
+  user-env (ALPECCA_MODEL=qwen3:8b etc.) synced to the current
+  architecture so out-of-bat launches match the bat. ALSO: gpt-oss cloud
+  chat could return EMPTY content (its internal reasoning eats num_predict
+  under her big system prompt) — cloud calls now get num_predict>=512 and
+  an empty cloud reply raises → falls to local, never ships "" to a person.
+  Verified live end-to-end: 3-4.6s cloud replies in the app, turn-2 recall
+  works, telemetry truthful.
+- **FINAL brain config (2026-07-03, latest — supersedes hybrid-chat entry
+  below): gpt-oss is OUT.** Jason never approved it; I had substituted it
+  twice. Now: **qwen3.5:9b is her ONE brain** — chat + deep reflection +
+  vision, all local (ALPECCA_MODEL=qwen3.5:9b); qwen3.5:4b only serves the
+  cheap idle-chatter tier (ALPECCA_FAST_MODEL). ALPECCA_CHAT_CLOUD_MODEL is
+  EMPTY (hybrid off; the knob remains for a model Jason picks himself —
+  only qwen3.5 cloud tag is qwen3.5:397b-cloud). START_HERE.bat menu
+  removed (one brain path, Enter to wake). Related fix: server.py's
+  hardcoded WS_CHAT_REPLY_TIMEOUT_SECONDS=30 made the app give up before
+  the 9B finished (~25-40s) and serve the canned "deeper model taking too
+  long" line — now max(45, ALPECCA_OLLAMA_TIMEOUT+15)=75s, override
+  ALPECCA_WS_CHAT_TIMEOUT (`import os` was added to server.py for this).
+  Verified live in the home app WS path: 17.5s/19s turns on qwen3.5:9b,
+  grounded replies + turn recall. DO NOT swap models without Jason's
+  explicit approval.
+- **gemma4:cloud for deep+vision (2026-07-04, JASON'S EXPLICIT NAMED PICK —
+  latest state).** He asked "what about gemma4"; probing found
+  `gemma4:cloud` on his Ollama plan: 33B BF16, 256K ctx, thinking + tools +
+  vision — ~12x lighter usage than the rejected 397B. He chose it by name
+  for the cloud deep+vision link. Config now:
+  DEEP_BACKEND=ollama-cloud + OLLAMA_CLOUD_MODEL=gemma4:cloud (local 9B
+  thinking = net), VISION_BACKEND=auto + VISION_CLOUD_MODEL=gemma4:cloud
+  (→ ZeroGPU Space → local 9B). Chat stays local qwen3.5:9b; chatter
+  qwen3.5:4b; ambient senses hard-local. Verified: deep 4.4s with
+  1,275-char think chain; vision+self-recognition 3.1s through
+  describe_and_recognize. (His local gemma4-e4b is actually a gemma3n
+  6.9B text-only build — unused now.)
+- **397B REMOVED — all-local 9B interlude (2026-07-04, superseded the
+  chained-cloud entry below; deep+vision then moved to gemma4:cloud, above).** Jason challenged qwen3.5:397b-cloud too
+  ("why you keep using this?") — the "both, chained" answer approved a
+  routing shape, not that model; treating it as model approval was a
+  mistake. Facts: Ollama cloud hosts NO qwen3.5:9b (only 397B; the
+  ollama.com/library/qwen3.5:9b page he linked is the LOCAL tag). Current
+  state: chat + deep + vision ALL on local qwen3.5:9b, 4b = chatter tier,
+  every cloud model env EMPTY (config defaults too). The official
+  `qwen3.5:9b` library tag was pulled but MISBEHAVES on Ollama 0.30.7
+  (16 GB alloc despite num_ctx=8192, 0% GPU, wedged loads) — it's parked
+  as `qwen3.5:9b-official`; the name `qwen3.5:9b` was re-aliased to the
+  proven lmstudio-community GGUF (same weights). Retry the official tag
+  after an Ollama upgrade. Only remaining cloud path that serves HIS model:
+  ZeroGPU Space running Qwen/Qwen3.5-9B (exists on HF, multimodal,
+  needs transformers>=4.57 + Space rebuild) — NOT built, needs his go.
+  Verified in-app: 30.5s turn (cold), served by qwen3.5:9b, grounded.
+- **Cloud offload, CHAINED (2026-07-04, Jason chose "both, chained" —
+  SUPERSEDED same day, see above).**
+  Deep reflection + vision now try the cloud first and degrade gracefully:
+  **qwen3.5:397b-cloud on Ollama → his ZeroGPU Space → local qwen3.5:9b.**
+  Chat stays 100% local on the 9B. Implementation: DEEP_BACKEND accepts a
+  comma-chain ("ollama-cloud,zerogpu") — mind._build_deep builds
+  self._deep_chain, generate() walks it, local thinking pass stays the
+  final net; vision was already chained via VISION_BACKEND=auto. Jason
+  explicitly approved qwen3.5:397b-cloud here (config default changed;
+  earlier "frugal default" note is superseded). Verified: link 1 serves in
+  ~35s with a 10k-char thinking chain; forced link-1 failure correctly
+  falls through. Two hardening fixes from that test: (1) config's
+  _gradio_api_name() undoes Git-Bash mangling of "/chat" api names;
+  (2) when the deep chain exhausts, the plain net now runs on
+  REFLECT_MODEL/local — it used to re-dial the cloud model name.
+  Env synced (bat + setx): ALPECCA_DEEP_BACKEND=ollama-cloud,zerogpu,
+  ALPECCA_OLLAMA_CLOUD_MODEL=qwen3.5:397b-cloud, ALPECCA_VISION_BACKEND=auto.
+- **Mindscape Cloudflare worker: still NOT deployed** (wrangler IS
+  authenticated on this machine; deploy blocked pending Jason's explicit
+  go: `cd deploy/mindscape-worker && npx wrangler deploy`, then
+  `npx wrangler secret put MINDSCAPE_TOKEN`, then setx
+  ALPECCA_MINDSCAPE_URL + ALPECCA_MINDSCAPE_TOKEN).
+
+- **Hybrid chat + real conversational memory (2026-07-03, Jason's ask:
+  "context too low / reduce wait / hybrid").** Two root causes fixed:
+  - Her forgetfulness was NOT num_ctx — chat only sent `_history[-6:]` (3
+    exchanges). Now `ALPECCA_HISTORY_MESSAGES` (default 24, set in bat)
+    rides along on every turn, and the raw `_history` list is bounded at 4x.
+    Verified: recalls a fact stated 22 messages back.
+  - `ALPECCA_CHAT_CLOUD_MODEL=gpt-oss:120b-cloud` (bat) turns on hybrid
+    chat in `_chat`: reasoning-tier turns try the cloud model FIRST
+    (~1.7-3.5s replies, `ALPECCA_CLOUD_NUM_CTX=32768`) via a dedicated
+    20s-timeout client; ANY failure falls through to local qwen3.5:4b
+    (verified with a 404 model: logs "cloud chat unavailable -> local" and
+    answers locally). Fast-tier/chatter and explicit-model calls never
+    touch the cloud. `llm.last_chat_model` keeps last_call telemetry
+    truthful about who actually served. Empty CHAT_CLOUD_MODEL = 100%
+    local chat again. NOTE: with hybrid on, chat text (not senses) leaves
+    the machine — Jason explicitly requested this trade for speed.
+
+---
+
+## Local brain + reflection-tier thinking (2026-07-02)
+
+**New local chat brain: `qwen3.5:4b`** (Qwen3.5-4B Q4_K_M, pulled from
+`hf.co/lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M`, aliased `qwen3.5:4b`).
+Set via `ALPECCA_MODEL=qwen3.5:4b` in `START_HERE.bat`. Newer arch than
+qwen3:8b, ~2.7 GB — fits the 4 GB RTX 3050 (45 tok/s when the card is free,
+~11 tok/s under auto placement alongside F5/vision). `/api/chat` with
+`think=false` (mind.py's path) yields clean no-think replies; the inline
+`<think>` leakage only happens on raw `/api/generate`. **F5/Kokoro voice
+config untouched** — user likes the voice as-is; do not move F5 off `cuda`.
+`ALPECCA_NUM_GPU` knob exists (config.py `OLLAMA_NUM_GPU` → `_chat` options)
+to force full-GPU placement, default OFF to protect F5's VRAM slice.
+
+**Reflection-tier thinking (plan item 2) is DONE.** Her deep self-acts
+(reflect, recursive self-question, choreography/sheet authorship — every
+`tier="deep"` caller) now run a real chain-of-thought pass when they land
+locally: `_LLM._generate_local_thinking` in `alpecca/mind.py` calls Ollama
+`think=True` (private reasoning returned in the separate `thinking` field),
+budget `ALPECCA_REFLECT_NUM_PREDICT=1600`, own slow client
+(`ALPECCA_REFLECT_TIMEOUT=600`s — reflection is idle work, nobody waits).
+Order: cloud deep tier (ZeroGPU) first → local think pass → plain local.
+qwen3.5:4b deliberates LONG (7k+ chars) and can exhaust the budget before
+answering — the salvage pass hands her own chain back and asks for just the
+conclusion (no-think, short), so the musing still comes from real
+deliberation. Verified live: 296s, 7,789-char private chain → grounded
+3-sentence musing. Observability: `last_call.used_tier == "reason-think"`,
+`llm.last_thinking`, console line in `reflect()`. Kill switch:
+`ALPECCA_REFLECT_THINK=0`. No overlap risk: Reflection.MIN_GAP_S=600 >
+worst-case deliberation ~300s. Remaining plan item: audio self-voiceprint
+(needs resemblyzer, local-only).
 
 ---
 

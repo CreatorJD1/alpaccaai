@@ -22,13 +22,13 @@ from __future__ import annotations
 
 import os
 import socket
-import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from alpecca import instance as instance_mod  # noqa: E402
+from alpecca import preview as preview_mod  # noqa: E402
 
 
 def lan_ip() -> str:
@@ -44,36 +44,26 @@ def lan_ip() -> str:
 
 
 def start_tunnel(port: int) -> None:
-    """Open a Cloudflare quick tunnel and stream its public URL, if cloudflared is
-    installed. Runs in a thread so the server can start alongside it."""
-    exe = "cloudflared"
-    try:
-        proc = subprocess.Popen(
-            [exe, "tunnel", "--url", f"http://localhost:{port}"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    except FileNotFoundError:
-        print("\n[tunnel] cloudflared isn't installed. Install it, or use the WiFi "
-              "link below.\n         winget install cloudflare.cloudflared   "
-              "(Windows)   |   brew install cloudflared   (macOS)\n")
+    """Open or reuse one Cloudflare preview tunnel to the existing local server."""
+    url, proc = preview_mod.ensure(port, reuse=True)
+    if not url:
+        print("\n[tunnel] Cloudflare preview unavailable. Install cloudflared or run:\n"
+              "         python scripts\\preview.py\n")
         return
 
-    def pump():
-        for line in proc.stdout:
-            if "trycloudflare.com" in line:
-                url = next((tok for tok in line.split() if "trycloudflare.com" in tok), "")
-                if url:
-                    print("\n" + "=" * 56)
-                    print("  PUBLIC LINK (open on your phone, works on mobile data):")
-                    print("   ", url.strip())
-                    print("=" * 56 + "\n")
-    threading.Thread(target=pump, daemon=True).start()
+    print("\n" + "=" * 56)
+    print("  PUBLIC LINK (same Alpecca instance, open on your phone):")
+    print("   ", preview_mod.with_access_token(url.strip()))
+    print("  ", "reused existing tunnel" if proc is None else "opened one tunnel to the existing server")
+    print("=" * 56 + "\n")
 
 
 def main() -> None:
-    from config import PORT
+    from config import PORT, ACCESS_TOKEN
     # Bind to every interface so other devices on the network can connect.
     os.environ["ALPECCA_SERVER_HOST"] = "0.0.0.0"
     ip = lan_ip()
+    existing = instance_mod.existing_server_url(PORT, token=ACCESS_TOKEN)
     print("\nAlpecca is opening to your network.")
     print(f"  On this computer : http://127.0.0.1:{PORT}")
     print(f"  On your phone (same WiFi) : http://{ip}:{PORT}")
@@ -83,6 +73,14 @@ def main() -> None:
     else:
         print("  For a link that works ANYWHERE: python scripts/share.py --tunnel")
     print()
+
+    if existing:
+        print(f"Alpecca is already awake at {existing}; reusing the same mind instance.")
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            return
 
     # Import after setting the host env so config picks up 0.0.0.0.
     import uvicorn

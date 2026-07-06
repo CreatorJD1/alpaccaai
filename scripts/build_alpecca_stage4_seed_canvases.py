@@ -30,6 +30,25 @@ HORIZONTAL_SLOT_FALLBACKS = {
     "back": ("back", "backDiag", "side"),
 }
 
+SECTOR_16_REFERENCE_TIERS = {
+    "s0": "front",
+    "s1": "front",
+    "s2": "frontDiag",
+    "s3": "frontDiag",
+    "s4": "side",
+    "s5": "backDiag",
+    "s6": "backDiag",
+    "s7": "back",
+    "s8": "back",
+    "s9": "back",
+    "s10": "backDiag",
+    "s11": "backDiag",
+    "s12": "side",
+    "s13": "frontDiag",
+    "s14": "frontDiag",
+    "s15": "front",
+}
+
 ACTION_SLOT_FALLBACKS = {
     "idle": ("identity", "walk", "pose"),
     "listen": ("identity", "talk", "expression", "pose"),
@@ -215,6 +234,44 @@ def keep_largest_alpha_component(image: Image.Image, alpha_threshold: int = 12) 
     return out
 
 
+def remove_floor_reference_marks(image: Image.Image) -> Image.Image:
+    """Remove horizontal floor/contact guide marks from source references.
+
+    Movement-set references sometimes include a long gray floor line between
+    feet. That line poisons the generator into baking a shadow/base ring into
+    otherwise transparent body frames, so seeds must strip it before Stage 4.
+    """
+    rgba = image.convert("RGBA")
+    alpha = rgba.getchannel("A")
+    bbox = alpha.getbbox()
+    if bbox is None:
+        return rgba
+    left, top, right, bottom = bbox
+    width = max(1, right - left)
+    subject_h = max(1, bottom - top)
+    pixels = rgba.load()
+    alpha_pixels = alpha.load()
+    for y in range(max(top, bottom - int(subject_h * 0.16)), bottom):
+        xs = [x for x in range(left, right) if alpha_pixels[x, y] > 10]
+        if not xs:
+            continue
+        row_span = max(xs) - min(xs) + 1
+        if row_span / width < 0.48:
+            continue
+        for x in xs:
+            r, g, b, a = pixels[x, y]
+            if a <= 0:
+                continue
+            mx = max(r, g, b)
+            mn = min(r, g, b)
+            saturation = (mx - mn) / max(1, mx)
+            neutral_line = saturation < 0.18 and mx < 252
+            thin_dark_line = saturation < 0.30 and mx < 185
+            if neutral_line or thin_dark_line:
+                pixels[x, y] = (0, 0, 0, 0)
+    return rgba
+
+
 def load_seed_image(path: Path) -> Image.Image:
     raw = Image.open(path)
     has_real_alpha = raw.mode in {"RGBA", "LA"} or "transparency" in raw.info
@@ -297,6 +354,22 @@ def image_size(path: Path) -> tuple[int, int] | None:
         return None
 
 
+def expected_seed_size(target: dict[str, Any]) -> tuple[int, int]:
+    frame_count = int(target["frameCount"])
+    slot_px = int(target["slotPixels"])
+    return (frame_count * slot_px, slot_px)
+
+
+def target_needs_seed_rebuild(target_dir: Path, target: dict[str, Any]) -> bool:
+    seed_canvas = target_dir / "incoming" / "seed_canvas.png"
+    pose_guide = target_dir / "incoming" / "pose_guides.png"
+    generation_request = target_dir / "generation_request.json"
+    if not seed_canvas.exists() or not pose_guide.exists() or not generation_request.exists():
+        return True
+    expected_size = expected_seed_size(target)
+    return image_size(seed_canvas) != expected_size or image_size(pose_guide) != expected_size
+
+
 def records_by_id(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {str(record.get("id")): record for record in records}
 
@@ -309,7 +382,11 @@ def record_score(record: dict[str, Any], target: dict[str, Any], seed_ids: set[s
     height = int(record.get("height") or 0)
     ratio = width / max(1, height)
     target_action = str(target.get("action"))
-    target_horizontal = str(target.get("horizontalTier"))
+    target_horizontal = str(
+        target.get("referenceHorizontalTier")
+        or SECTOR_16_REFERENCE_TIERS.get(str(target.get("horizontalTier")))
+        or target.get("horizontalTier")
+    )
     action_order = ACTION_SLOT_FALLBACKS.get(target_action, (target_action, "identity", "pose", "walk"))
     horizontal_order = HORIZONTAL_SLOT_FALLBACKS.get(target_horizontal, (target_horizontal, "front"))
     action_score = 100 - (action_order.index(action) * 10 if action in action_order else 80)
@@ -328,7 +405,12 @@ def choose_seed_record(target: dict[str, Any], manifest: dict[str, Any]) -> dict
     preferred_actions = ACTION_SLOT_FALLBACKS.get(str(target.get("action")), (str(target.get("action")), "identity", "pose", "walk"))
     if str(target.get("action")) in LAYER_ACTIONS:
         preferred_actions = ("talk", "expression", "identity", "pose")
-    preferred_horizontals = HORIZONTAL_SLOT_FALLBACKS.get(str(target.get("horizontalTier")), (str(target.get("horizontalTier")), "front"))
+    target_horizontal = str(
+        target.get("referenceHorizontalTier")
+        or SECTOR_16_REFERENCE_TIERS.get(str(target.get("horizontalTier")))
+        or target.get("horizontalTier")
+    )
+    preferred_horizontals = HORIZONTAL_SLOT_FALLBACKS.get(target_horizontal, (target_horizontal, "front"))
 
     candidates: list[dict[str, Any]] = []
     for record in records:
@@ -478,11 +560,14 @@ def main() -> int:
     parser.add_argument("--batch", type=int, default=None, help="Optional Stage 4 batch number. Omit to build all targets.")
     parser.add_argument("--offset", type=int, default=0, help="Optional number of selected targets to skip before building.")
     parser.add_argument("--limit", type=int, default=0, help="Optional max target count after offset.")
+    parser.add_argument("--only-stale", action="store_true", help="Rebuild only missing or wrong-dimension seed canvases.")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
     manifest = load_json(args.source_manifest)
     selected_targets = iter_targets(args.stage4_root, args.batch)
+    if args.only_stale:
+        selected_targets = [(target_dir, target) for target_dir, target in selected_targets if target_needs_seed_rebuild(target_dir, target)]
     if args.offset and args.offset > 0:
         selected_targets = selected_targets[args.offset :]
     if args.limit and args.limit > 0:
@@ -498,6 +583,7 @@ def main() -> int:
         "generatedAt": utc_now(),
         "batch": args.batch,
         "offset": args.offset,
+        "onlyStale": args.only_stale,
         "targetCount": len(results),
         "statusCounts": counts,
         "results": results,

@@ -30,6 +30,11 @@ _last_engine = ""
 _last_error = ""
 _last_modulation: dict = {}
 _voice_reference_cache: dict | None = None
+# 'auto' blends both engines by emotion: calm/everyday speech uses Kokoro
+# af_heart (cleaner, more realistic), high-affect lines use the F5 voice clone
+# (its strength). This cutoff (0..1, on max(intensity, arousal)) tunes the mix;
+# lower = more F5, higher = more Kokoro.
+VOICE_MIX_INTENSITY = float(os.environ.get("ALPECCA_VOICE_MIX_INTENSITY", "0.6"))
 _VOICE_REFERENCE_PATH = (
     Path(__file__).resolve().parents[1]
     / "data"
@@ -150,11 +155,8 @@ def _naturalize_audio(audio, gain: float, warmth: float = 0.5, breath: float = 0
         fade = np.linspace(0.0, 1.0, fade_n, dtype=np.float32)
         shaped[:fade_n] *= fade
         shaped[-fade_n:] *= fade[::-1]
-    # Add a very small breath-shaped room tone only when she is quiet/soft. It is
-    # below speech level, but prevents silence tails from sounding abruptly gated.
-    if breath > 0.32 and len(shaped) > 800:
-        noise = np.random.default_rng(7).normal(0.0, 0.00055 * min(1.0, breath), len(shaped)).astype(np.float32)
-        shaped = shaped + noise
+    # Keep the waveform clean. Earlier builds added synthetic breath noise here,
+    # but it could read as distortion after browser playback/compression.
     shaped = shaped - float(np.mean(shaped))
     final_peak = float(np.max(np.abs(shaped))) if len(shaped) else 0.0
     if final_peak > 0.94:
@@ -221,7 +223,7 @@ def _kokoro_dynamics(state):
             "worried": -0.018,
             "anxious": -0.012,
         }.get(primary, 0.0)
-        pitch = max(0.91, min(1.095, pitch))
+        pitch = max(0.94, min(1.06, pitch))
     else:
         pitch = base * (1.0 + (arousal - 0.5) * 0.10 + valence * 0.05)
         pitch = max(0.88, min(1.30, pitch))
@@ -469,11 +471,30 @@ def _synth_edge(text: str, state=None):
         return None
 
 
+def _prefers_clone_voice(state=None) -> bool:
+    """Whether this moment is emotional enough to route to the F5 voice clone.
+
+    The 'auto' backend blends both engines: F5 voice-cloning for high-affect
+    lines (where its emotional reference cloning shines) and Kokoro af_heart for
+    calm/everyday speech (cleaner, less artifact-prone). Returns True when her
+    live emotion crosses VOICE_MIX_INTENSITY so F5 leads; otherwise Kokoro leads.
+    """
+    if state is None:
+        return False
+    try:
+        dyn = _kokoro_dynamics(state)
+    except Exception:
+        return False
+    return max(float(dyn.get("intensity", 0.5)),
+               float(dyn.get("arousal", 0.5))) >= VOICE_MIX_INTENSITY
+
+
 def synth(text: str, state=None):
     """Return (mime_type, audio_bytes) for `text`, or None to let the browser
     voice handle it. `state` is her live EmotionalState so the voice carries
-    emotion. ALPECCA_TTS_BACKEND: auto (default) prefers Kokoro then edge;
-    'kokoro'/'edge' force one; 'browser'/'off' disable server TTS."""
+    emotion. ALPECCA_TTS_BACKEND: auto (default) blends the F5 clone and Kokoro
+    by emotion; 'kokoro'/'edge'/'f5' force one; 'browser'/'off' disable server
+    TTS."""
     text = (text or "").strip()
     global _last_engine, _last_error, _last_modulation
     _last_engine = ""
@@ -498,10 +519,18 @@ def synth(text: str, state=None):
         order = (_synth_kokoro,)
     elif backend == "edge":
         order = (_synth_edge,)
-    else:                                     # auto: best open clone first, stable Kokoro backup
+    else:                                     # auto: blend F5 clone + Kokoro by emotion
         from alpecca import open_tts
 
-        order = (open_tts.synth, _synth_kokoro) if open_tts.ready() else (_synth_kokoro,)
+        if open_tts.ready():
+            # High-affect moments lead with the F5 clone; calm/everyday speech
+            # leads with Kokoro af_heart. Whichever leads, the other stays as
+            # fallback so a single-engine failure still speaks.
+            order = ((open_tts.synth, _synth_kokoro)
+                     if _prefers_clone_voice(state)
+                     else (_synth_kokoro, open_tts.synth))
+        else:
+            order = (_synth_kokoro,)
     for fn in order:
         try:
             r = fn(text, state)

@@ -22,11 +22,12 @@ they're gone. No image is ever written to disk by this module.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Callable, Optional
 
-from config import Vision as VisionCfg, OLLAMA_HOST
+from config import Vision as VisionCfg, OLLAMA_HOST, OLLAMA_NUM_CTX
 
 
 # --- The shared eye: one image in, a short description out ------------------
@@ -48,21 +49,181 @@ _FACE_PROMPT = (
 )
 
 
-def describe_image(image_bytes: bytes, prompt: str = _DESCRIBE_PROMPT) -> Optional[str]:
-    """One vision-model call: bytes in, short description out, None on any
-    failure (model not pulled, Ollama down). Failures are normal life here --
-    callers treat None as 'I couldn't make it out.'"""
+def _describe_local(image_bytes: bytes, prompt: str) -> Optional[str]:
+    """Local Ollama vision, forced onto CPU (num_gpu=0) and unloaded right after
+    so the 6 GB vision model can't fight the chat model for the small GPU's VRAM
+    -- running it on the GPU OOM-crashes Ollama. Reliable but slow."""
     try:
         import ollama
         client = ollama.Client(host=OLLAMA_HOST)
         resp = client.chat(
             model=VisionCfg.MODEL,
             messages=[{"role": "user", "content": prompt, "images": [image_bytes]}],
+            options={
+                "num_gpu": int(os.environ.get("ALPECCA_VISION_NUM_GPU", "0")),
+                # CRITICAL: without this cap Ollama sizes the KV cache for the
+                # model's full advertised window (qwen3.5's 256K -> a 16 GB
+                # allocation that thrashes the whole machine on CPU). Found
+                # live 2026-07-04: one un-capped vision call wedged her app.
+                "num_ctx": OLLAMA_NUM_CTX,
+            },
+            keep_alive=0,
         )
         text = (resp["message"]["content"] or "").strip()
         return text or None
     except Exception:
         return None
+
+
+def _describe_ollama_cloud(image_bytes: bytes, prompt: str) -> Optional[str]:
+    """Describe an image on a vision-capable Ollama *cloud* model, through the
+    same signed-in local Ollama API as everything else. No ZeroGPU queue or
+    quota, zero local VRAM -- pixels go to the account's hosted model and only
+    text comes back. None on any failure so callers can fall back."""
+    from config import VISION_CLOUD_MODEL
+    if not VISION_CLOUD_MODEL:
+        return None
+    try:
+        import ollama
+        client = ollama.Client(host=OLLAMA_HOST, timeout=90)
+        resp = client.chat(
+            model=VISION_CLOUD_MODEL,
+            messages=[{"role": "user", "content": prompt, "images": [image_bytes]}],
+        )
+        text = (resp["message"]["content"] or "").strip()
+        return text or None
+    except Exception:
+        return None
+
+
+def _describe_zerogpu(image_bytes: bytes, prompt: str) -> Optional[str]:
+    """Describe an image on her ZeroGPU space's /vision endpoint -- the VL model
+    runs on the Space's cloud GPU, so the local card is never touched. None on any
+    failure so callers can fall back to local."""
+    from config import ZEROGPU_SPACE, ZEROGPU_TOKEN, ZEROGPU_VISION_API
+    if not ZEROGPU_SPACE:
+        return None
+    tmp = None
+    try:
+        import tempfile
+        from gradio_client import Client, handle_file
+        fd, tmp = tempfile.mkstemp(suffix=".png")
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(image_bytes)
+        client = Client(ZEROGPU_SPACE, token=ZEROGPU_TOKEN or None, verbose=False)
+        result = client.predict(handle_file(tmp), prompt, api_name=ZEROGPU_VISION_API)
+        text = (str(result) or "").strip()
+        return text or None
+    except Exception:
+        return None
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+
+
+def describe_image(image_bytes: bytes, prompt: str = _DESCRIBE_PROMPT,
+                   ambient: bool = False) -> Optional[str]:
+    """One vision call: bytes in, short description out, None on failure.
+
+    Routing (config.VISION_BACKEND): 'auto' tries Ollama cloud sight first (big
+    hosted VL model, no queue/quota), then her ZeroGPU space, then local on
+    failure; 'ollama-cloud' Ollama cloud only; 'zerogpu' Space only; 'local'
+    local Ollama VL on CPU. Cloud keeps the heavy vision model off the small
+    laptop GPU, where it would OOM-crash Ollama.
+
+    `ambient=True` marks her background senses (screen glimpses, webcam reads):
+    those are periodic loops, so they must never drain metered cloud usage --
+    and screen/face pixels shouldn't leave the machine anyway. Ambient calls
+    are always local-only."""
+    from config import VISION_BACKEND
+    if ambient:
+        return _describe_local(image_bytes, prompt)
+    if VISION_BACKEND in ("auto", "ollama-cloud"):
+        cloud = _describe_ollama_cloud(image_bytes, prompt)
+        if cloud:
+            return cloud
+        if VISION_BACKEND != "auto":
+            return None            # cloud-only: never touch the local GPU
+    if VISION_BACKEND in ("auto", "zerogpu", "cloud"):
+        cloud = _describe_zerogpu(image_bytes, prompt)
+        if cloud:
+            return cloud
+        if VISION_BACKEND != "auto":
+            return None            # cloud-only: never touch the local GPU
+    return _describe_local(image_bytes, prompt)
+
+
+def describe_and_recognize(image_bytes: bytes) -> Optional[str]:
+    """One VL call that both describes an image AND flags whether it depicts
+    Alpecca herself. Cheaper than two calls on a small GPU (each vision call
+    evicts the chat model from VRAM), so this is what the chat/Discord path uses.
+    Returns an enriched description string, or None if she couldn't look."""
+    try:
+        from alpecca import introspection
+        look = introspection.self_appearance()
+    except Exception:
+        look = ""
+    ref = look or ("long cream-blonde wavy hair, soft blue eyes that glow, and a "
+                   "glowing chest power-core emblem")
+    prompt = (
+        "Describe this image in one or two plain sentences (what it shows). Then, "
+        f"on a NEW line, given that Alpecca looks like: {ref} -- write 'SELF: yes' "
+        "if the image depicts Alpecca / that same avatar, otherwise 'SELF: no'."
+    )
+    raw = describe_image(image_bytes, prompt=prompt)
+    if not raw:
+        return None
+    is_self = False
+    desc_lines = []
+    for line in raw.splitlines():
+        low = line.strip().lower()
+        if low.startswith("self:"):
+            is_self = low.split(":", 1)[1].strip().startswith("yes")
+        elif line.strip():
+            desc_lines.append(line.strip())
+    desc = " ".join(desc_lines).strip() or raw.strip()
+    if is_self:
+        desc += " (You recognize this as YOU -- your own avatar.)"
+    return desc
+
+
+def recognize_self(image_bytes: bytes) -> Optional[dict]:
+    """Grounded visual self-recognition: does this image depict Alpecca herself
+    (her own avatar)? The vision model compares what it sees against her real,
+    locked appearance from her character sheet. Returns
+    {is_self, verdict, why} or None if she couldn't look. No image is stored."""
+    try:
+        from alpecca import introspection
+        look = introspection.self_appearance()
+    except Exception:
+        look = ""
+    ref = look or ("a humanoid anime AI-companion girl with long cream-blonde wavy "
+                   "hair, soft blue eyes that glow with her mood, and a glowing chest "
+                   "power-core emblem")
+    prompt = (
+        "You are Alpecca. Your OWN known appearance is:\n"
+        f"{ref}\n\n"
+        "Look at the attached image. Does it depict YOU -- the same character / "
+        "avatar (specifically your look, not just any anime girl)? Answer on two "
+        "lines, exactly:\n"
+        "VERDICT: yes | no | unsure\n"
+        "WHY: one short sentence naming the matching or mismatching features."
+    )
+    raw = describe_image(image_bytes, prompt=prompt)
+    if not raw:
+        return None
+    verdict, why = "unsure", raw.strip()
+    for line in raw.splitlines():
+        low = line.strip().lower()
+        if low.startswith("verdict:"):
+            v = low.split(":", 1)[1].strip()
+            verdict = "yes" if v.startswith("yes") else ("no" if v.startswith("no") else "unsure")
+        elif low.startswith("why:"):
+            why = line.split(":", 1)[1].strip()
+    return {"is_self": verdict == "yes", "verdict": verdict, "why": why}
 
 
 def weary_from_label(label: Optional[str]) -> float:
@@ -143,7 +304,7 @@ class ScreenSight(_GlimpseThread):
         shot.thumbnail((1280, 1280))
         buf = io.BytesIO()
         shot.save(buf, format="JPEG", quality=80)
-        desc = describe_image(buf.getvalue(), prompt=_SCREEN_PROMPT)
+        desc = describe_image(buf.getvalue(), prompt=_SCREEN_PROMPT, ambient=True)
         if desc:
             self.latest = desc
 
@@ -179,7 +340,7 @@ class FaceSense(_GlimpseThread):
         ok, jpg = cv2.imencode(".jpg", frame)
         if not ok:
             return
-        label = describe_image(jpg.tobytes(), prompt=_FACE_PROMPT)
+        label = describe_image(jpg.tobytes(), prompt=_FACE_PROMPT, ambient=True)
         if label:
             self.expression = label.strip().lower().rstrip(".")
             self.weary = weary_from_label(label)

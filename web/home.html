@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <!--
   Her home -- a live, local 3D house of five rooms she roams of her own accord.
 
@@ -17,7 +17,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Alpecca — Home</title>
+<title>Alpecca - Home</title>
 <!-- Installable as a phone/desktop app (PWA). The manifest + a root-scoped
      service worker make her reachable like a native app over a secure tunnel;
      the worker only caches the static shell, never her live state. -->
@@ -94,13 +94,12 @@
     white-space:nowrap; } .tile .menu div:hover { color:var(--core); }
 
   /* ===== Super-app chrome: nav rail, chat dock, facet panel ===== */
-  .nav { position:fixed; left:0; top:0; bottom:0; width:64px; z-index:15;
+  .nav { position:fixed; left:0; top:0; bottom:0; width:84px; z-index:15;
     display:flex; flex-direction:column; align-items:center; gap:4px; padding:14px 0;
     background:linear-gradient(90deg,rgba(8,12,22,.92),rgba(8,12,22,.4)); }
-  .nav .nb { width:48px; height:46px; display:flex; flex-direction:column; gap:2px;
+  .nav .nb { width:72px; min-height:40px; display:flex; flex-direction:column; gap:2px;
     align-items:center; justify-content:center; cursor:pointer; border-radius:10px;
-    color:var(--dim); font-size:9px; letter-spacing:.04em; user-select:none; }
-  .nav .nb .ic { font-size:17px; line-height:1; }
+    color:var(--dim); font-size:9px; letter-spacing:.04em; user-select:none; text-align:center; }
   .nav .nb:hover { color:var(--ink); background:rgba(127,217,255,.07); }
   .nav .nb.on { color:var(--core); background:rgba(127,217,255,.12); }
   .hud, .rooms { left:78px; }                 /* clear the nav rail */
@@ -115,13 +114,14 @@
   .msg.her { align-self:flex-start; background:rgba(14,20,34,.92); color:#dCE7f7;
     border:1px solid #1d2a47; border-bottom-left-radius:4px; }
   .msg.her.think { color:var(--dim); font-style:italic; }
+  .msg.her.draft { opacity:.78; }   /* still writing -- final frame solidifies it */
   .chatrow { display:flex; gap:8px; align-items:center;
     background:rgba(10,16,28,.94); border:1px solid #1d2a47; border-radius:24px;
-    padding:6px 6px 6px 14px; backdrop-filter:blur(6px); }
+    padding:6px 8px; backdrop-filter:blur(6px); }
   .chatrow input { flex:1; background:transparent; border:0; outline:0; color:var(--ink);
     font-size:14px; font-family:inherit; }
-  .chatrow button { width:36px; height:36px; border-radius:50%; border:0; cursor:pointer;
-    background:var(--core); color:#06121c; font-size:16px; font-weight:700; }
+  .chatrow button { min-height:36px; min-width:40px; border-radius:10px; border:0; cursor:pointer;
+    background:var(--core); color:#06121c; font-size:13px; font-weight:700; padding:0 10px; }
   .chatrow button:disabled { opacity:.4; cursor:default; }
 
   .facet { position:fixed; right:0; top:0; bottom:0; width:min(380px,86vw); z-index:16;
@@ -150,8 +150,8 @@
   .facet .fico { font-size:14px; margin-right:7px; opacity:.85; }
   .facet .empty { color:var(--dim); font-size:12px; padding:10px 2px; }
   /* voice / camera / cowork controls in the chat bar */
-  .chatrow .feat { width:32px; height:32px; min-width:32px; border-radius:50%;
-    border:1px solid #1d2a47; background:transparent; color:var(--dim); font-size:14px;
+  .chatrow .feat { width:auto; height:32px; min-width:42px; border-radius:10px;
+    border:1px solid #1d2a47; background:transparent; color:var(--dim); font-size:12px;
     cursor:pointer; padding:0; display:flex; align-items:center; justify-content:center; }
   .chatrow .feat:hover { color:var(--ink); border-color:#2a3d63; }
   .chatrow .feat.on { color:var(--core); border-color:var(--core); box-shadow:0 0 0 3px rgba(127,217,255,.12); }
@@ -246,7 +246,7 @@
   <h4>Where she's drawn</h4>
   <div id="pulls"></div>
 </div>
-<div class="foot"><span class="dot" id="src"></span><span id="srcText">connecting…</span></div>
+<div class="foot"><span class="dot" id="src"></span><span id="srcText">connecting...</span></div>
 
 <div class="ws" id="ws">
   <div class="top">
@@ -264,12 +264,12 @@
 <div class="chatdock">
   <div class="chatlog" id="chatlog"></div>
   <div class="chatrow">
-    <button class="feat" id="micBtn" title="hold to talk">🎤</button>
-    <button class="feat" id="camBtn" title="let her see you (camera)">📷</button>
-    <button class="feat" id="ttsBtn" title="speak her replies aloud">🔊</button>
-    <button class="feat" id="coworkBtn" title="ask her to do something on your PC">🖥</button>
-    <input id="chatin" placeholder="say something to her…" autocomplete="off" />
-    <button id="chatsend" title="send">↑</button>
+    <button class="feat" id="micBtn" title="hold to talk">Mic</button>
+    <button class="feat" id="camBtn" title="let her see you (camera)">Cam</button>
+    <button class="feat" id="ttsBtn" title="speak her replies aloud">Say</button>
+    <button class="feat" id="coworkBtn" title="ask her to do something on your PC">PC</button>
+    <input id="chatin" placeholder="say something to her..." autocomplete="off" />
+    <button id="chatsend" title="send">Send</button>
   </div>
 </div>
 
@@ -283,7 +283,7 @@
 
 <!-- facet side panel -->
 <div class="facet" id="facet">
-  <div class="fh"><b id="facetTitle">Studio</b><span class="x" id="facetClose">✕</span></div>
+  <div class="fh"><b id="facetTitle">Studio</b><span class="x" id="facetClose">[x]</span></div>
   <div class="fb" id="facetBody"></div>
 </div>
 
@@ -311,7 +311,7 @@ function loadCSS3D(cb){
   const srcs=["/web/vendor/CSS3DRenderer.js",
               "https://unpkg.com/three@0.128.0/examples/js/renderers/CSS3DRenderer.js"];
   (function trySrc(i){
-    if(i>=srcs.length){ console.warn("CSS3DRenderer unavailable — features stay in the drawer"); cb(); return; }
+    if(i>=srcs.length){ console.warn("CSS3DRenderer unavailable - features stay in the drawer"); cb(); return; }
     const s=document.createElement("script"); s.src=srcs[i];
     s.onload=()=>cb(); s.onerror=()=>trySrc(i+1);
     document.head.appendChild(s);
@@ -461,7 +461,7 @@ function tryTalkingHead(){
 /* Tier 1a -- her full POSE LIBRARY (data/avatar/poses/, mood-tagged in
    poses.json). Richer than the 3-portrait swap: she shows whichever of her real
    poses fits her mood + what she's doing (rest when sleepy, shy when anxious,
-   reach when joyful…), exactly like the classic chat page. All her own art, no
+   reach when joyful...), exactly like the classic chat page. All her own art, no
    GPU. Falls through to the portrait swap if she has no pose library. */
 function selectPoseName(poses, mood, avState, energy){
   let best=null, bs=-1;
@@ -540,7 +540,7 @@ function tryRigForge(){
     let ifr=document.getElementById("rfFrame");
     if(!ifr){
       ifr=document.createElement("iframe"); ifr.id="rfFrame";
-      // ~her portrait aspect (1122x1402 ≈ 0.80) so she fills the frame, not margins.
+      // ~her portrait aspect (1122x1402 ~ 0.80) so she fills the frame, not margins.
       ifr.style.cssText="position:absolute;width:512px;height:640px;left:-10000px;top:0;border:0;";
       ifr.src="/rigforge?embed=1"; document.body.appendChild(ifr);
     }
@@ -683,6 +683,8 @@ function loadSkeleton(){
   }).catch(()=>{});
 }
 let appWS=null, waitingReply=false;
+let streamFeature=false;     // server advertises stream_chat in its greeting
+let _draft=null;             // live draft bubble: {id, el, text}
 function connectWS(){
   let ws;
   try { ws = new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws"); }
@@ -690,14 +692,38 @@ function connectWS(){
   appWS = ws;
   ws.onmessage = (ev)=>{
     let m; try { m = JSON.parse(ev.data); } catch(e){ return; }
-    if((m.type==="reply" || m.type==="proactive") && m.reply){
+    if(m.type==="state" && m.features){ streamFeature = !!m.features.stream_chat; }
+    // Streamed draft: her words appear as she writes them. The draft is
+    // ephemeral -- the final vetted "reply" frame below replaces its text.
+    else if(m.type==="reply_start"){
+      if(_draft && _draft.id===m.request_id) return;
+      _draft = { id: m.request_id||"", el: addMsg("", "her", true), text: "" };
+    }
+    else if(m.type==="reply_token"){
+      if(!_draft || (_draft.id && m.request_id && _draft.id!==m.request_id)) return;
+      _draft.text += (m.token||"");
+      _draft.el.textContent = _draft.text;
+      const log=document.getElementById("chatlog"); if(log) log.scrollTop=log.scrollHeight;
+      speakingUntil = performance.now() + 1500;        // keep her mouth moving
+      if(_replyWatchdog){ clearTimeout(_replyWatchdog); // she's alive -- extend
+        _replyWatchdog=setTimeout(()=>{ waitingReply=false; setSendEnabled(true); }, 180000); }
+      if(ttsOn && _speaker) _speaker.feed(m.token||"");  // sentence-level speech
+    }
+    else if((m.type==="reply" || m.type==="proactive") && m.reply){
       const ms = Math.max(1200, Math.min(9000, m.reply.length*55));  // ~55ms/char
       speakingUntil = performance.now() + ms;
       if(m.state) state.pose = {...state.pose, ...poseFromState(m.state)};
       // If she moved rooms because you asked, follow her right away.
       if(m.location){ state.location=m.location; renderHUD(); if(m.moved) showActivity("she went to the "+m.location); }
-      addMsg(m.reply, "her");
-      speak(m.reply);                                  // 🔊 if enabled
+      const draftMatch = m.streamed && _draft && (!_draft.id || !m.request_id || _draft.id===m.request_id);
+      if(draftMatch){
+        _draft.el.textContent = m.reply;               // final text is authoritative
+        if(ttsOn && _speaker) _speaker.finish(m.reply, _draft.text);
+        _draft = null;
+      } else {
+        addMsg(m.reply, "her");
+        speak(m.reply);                                // SPEAK if enabled
+      }
       if(m.type==="reply"){ waitingReply=false; setSendEnabled(true);
         if(_replyWatchdog){ clearTimeout(_replyWatchdog); _replyWatchdog=null; } }
     }
@@ -705,14 +731,14 @@ function connectWS(){
     else if(m.type==="activity" && m.text){ showActivity(m.text); }
     // Watch her design: her studio steps stream into the Studio panel feed.
     else if(m.type==="studio_status" && m.text){
-      const f=document.getElementById("studioFeed"); if(f) f.textContent="· "+m.text;
+      const f=document.getElementById("studioFeed"); if(f) f.textContent="- "+m.text;
       showActivity("studio: "+m.text);
     }
     else if(m.type==="studio_done"){
       const f=document.getElementById("studioFeed");
-      if(f) f.textContent="✓ "+((m.verdict||m.summary)||"design session done");
+      if(f) f.textContent="[OK] "+((m.verdict||m.summary)||"design session done");
       if(openFacet==="studio") setTimeout(()=>showFacet("studio"), 600);  // refresh drawer gallery
-      if(screens3DActive() && activeScreen==="studio") setTimeout(()=>refreshRoomScreen("studio"), 600);  // …or the in-room screen
+      if(screens3DActive() && activeScreen==="studio") setTimeout(()=>refreshRoomScreen("studio"), 600);  // ...or the in-room screen
     }
     // Observatory: her reaction to whatever you're watching together.
     else if(m.type==="watch_reaction"){
@@ -725,7 +751,7 @@ function connectWS(){
       if(w.reaction) showActivity("she said something about what you're watching");
     }
     // Cowork (computer use) progress, confirmations, and completion.
-    else if(m.type==="computer_status" && m.text){ addMsg("· "+m.text, "her"); }
+    else if(m.type==="computer_status" && m.text){ addMsg("- "+m.text, "her"); }
     // Her cursor moves to where she's working the desktop (screen fraction).
     else if(m.type==="computer_cursor"){
       const hc=document.getElementById("hercursor"); if(hc){
@@ -735,7 +761,7 @@ function connectWS(){
       }
     }
     else if(m.type==="computer_done"){
-      addMsg(m.ok ? ("✓ "+(m.summary||"done")) : ("stopped: "+(m.error||"")), "her");
+      addMsg(m.ok ? ("[OK] "+(m.summary||"done")) : ("stopped: "+(m.error||"")), "her");
     }
     else if(m.type==="computer_confirm"){
       const ok = confirm("She wants to "+(m.kind||"do")+": "+(m.text||m.reason||"an action")+
@@ -748,16 +774,18 @@ function connectWS(){
   ws.onopen = ()=> setSendEnabled(true);
 }
 function setSendEnabled(on){ const b=document.getElementById("chatsend"); if(b) b.disabled=!on||waitingReply; }
-function addMsg(text, who){
+let _speaker=null;   // SentenceSpeaker (sentence-level TTS); set up in initFeatures
+function addMsg(text, who, draft){
   const log=document.getElementById("chatlog");
-  const el=document.createElement("div"); el.className="msg "+who; el.textContent=text;
+  const el=document.createElement("div"); el.className="msg "+who+(draft?" draft":""); el.textContent=text;
   log.appendChild(el); log.scrollTop=log.scrollHeight;
   while(log.children.length>30) log.removeChild(log.firstChild);
+  return el;
 }
 let actTimer=null;
 function showActivity(text){
   const el=document.getElementById("activity"); if(!el) return;
-  el.textContent="· "+text+" ·"; el.classList.add("show");
+  el.textContent="- "+text+" -"; el.classList.add("show");
   clearTimeout(actTimer); actTimer=setTimeout(()=>el.classList.remove("show"), 6500);
 }
 let _replyWatchdog=null;
@@ -771,7 +799,11 @@ function sendChat(){
   // path used to leave the box stuck disabled when no reply came back).
   if(_replyWatchdog) clearTimeout(_replyWatchdog);
   _replyWatchdog=setTimeout(()=>{ waitingReply=false; setSendEnabled(true); }, 180000);
-  try{ appWS.send(JSON.stringify({text:t})); }
+  // Opt into streamed drafts when the server offers them; a new turn always
+  // resets the previous draft and any queued speech.
+  _draft=null; if(_speaker) _speaker.reset();
+  const rid="c-"+Date.now()+"-"+Math.floor(Math.random()*1e6);
+  try{ appWS.send(JSON.stringify(streamFeature ? {text:t, stream:true, request_id:rid} : {text:t})); }
   catch(e){ waitingReply=false; setSendEnabled(true); }
 }
 function initChat(){
@@ -795,8 +827,8 @@ function pickVoice(){
 let _ttsAudio=null;
 async function speak(text){
   if(!ttsOn || !text) return;
-  // Her real voice first: ask the server to synthesize (Kokoro/edge-tts). If no
-  // engine is installed it answers 204 and we fall back to the browser voice.
+  // Her real voice first: ask the server to synthesize through her F5 reference
+  // voice. Kokoro/Edge are backups; browser speech is last resort.
   try{
     const r=await fetch("/tts",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({text})});
@@ -824,15 +856,115 @@ function speakBrowser(text){
     speechSynthesis.cancel(); speechSynthesis.speak(u);
   }catch(e){}
 }
+// --- Sentence-level speech for streamed replies ------------------------------
+// She starts SAYING the first sentence while the rest is still generating.
+// JS port of alpecca/speech.py:_sentences (pinned by a Python test): protect
+// "..." so an ellipsis never splits, then break on end punctuation + space.
+function sentencesOf(text){
+  const clean=(text||"").split(/\s+/).filter(Boolean).join(" ");
+  if(!clean) return [];
+  const P=String.fromCharCode(1);              // stand-in for "..." while splitting
+  const protectedTxt=clean.split("...").join(P);
+  return protectedTxt.split(/(?<=[.!?])\s+/)
+    .map(p=>p.trim().split(P).join("..."))
+    .filter(Boolean);
+}
+// Ordered speech: /tts fetches run concurrently (prefetch), but playback is
+// strictly first-in-first-out; each sentence falls back to the browser voice
+// if the server can't speak it, so order survives failures too.
+function makeSpeechQueue(){
+  const q=[]; let playing=false, stopped=false;
+  async function playNext(){
+    if(playing || stopped) return;
+    const item=q.shift(); if(!item) return;
+    playing=true;
+    try{
+      const r=await item.fetchP;
+      if(r && r.ok && r.status!==204){
+        const blob=await r.blob();
+        await new Promise((done)=>{
+          try{
+            const url=URL.createObjectURL(blob);
+            _ttsAudio=new Audio(url);
+            _ttsAudio.onended=()=>{ URL.revokeObjectURL(url); done(); };
+            _ttsAudio.onerror=()=>{ URL.revokeObjectURL(url); done(); };
+            _ttsAudio.play().catch(()=>done());
+          }catch(e){ done(); }
+        });
+      } else if(!stopped){ speakBrowser(item.text); }
+    }catch(e){ if(!stopped) speakBrowser(item.text); }
+    playing=false;
+    if(!stopped) playNext();
+  }
+  return {
+    enqueue(text){
+      if(stopped || !text) return;
+      const fetchP=fetch("/tts",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({text})}).catch(()=>null);
+      q.push({text, fetchP});
+      playNext();
+    },
+    stop(){ stopped=true; q.length=0;
+      if(_ttsAudio){ try{_ttsAudio.pause();}catch(e){} }
+      if(window.speechSynthesis) speechSynthesis.cancel(); },
+    reset(){ this.stop(); stopped=false; },
+  };
+}
+// Accumulates streamed tokens, speaks each sentence the moment it completes.
+function makeSentenceSpeaker(){
+  const queue=makeSpeechQueue();
+  let buf="", spoken="";
+  return {
+    feed(delta){
+      buf+=(delta||"");
+      const parts=sentencesOf(buf);
+      // keep the (possibly unfinished) last part in the buffer; speak the rest
+      while(parts.length>1){
+        const s=parts.shift();
+        queue.enqueue(s); spoken+=(spoken?" ":"")+s;
+        buf=parts.join(" ");
+      }
+    },
+    finish(finalText, draftText){
+      // If the vetted final text matches what streamed, speak the tail. If the
+      // regen/echo guard replaced the draft, stop -- we can't unsay what was
+      // spoken, but we won't compound the mismatch aloud.
+      const finalClean=sentencesOf(finalText).join(" ");
+      const draftClean=sentencesOf(draftText).join(" ");
+      if(finalClean===draftClean){
+        const tail=sentencesOf(buf); buf="";
+        tail.forEach(s=>queue.enqueue(s));
+      } else if(!spoken){
+        buf=""; queue.reset(); speak(finalText);   // nothing said yet: speak final whole
+      } else {
+        buf=""; queue.stop();
+      }
+      spoken="";
+    },
+    reset(){ buf=""; spoken=""; queue.reset(); },
+    stop(){ queue.stop(); },
+  };
+}
 function initFeatures(){
   const mic=document.getElementById("micBtn"), cam=document.getElementById("camBtn"),
         tt=document.getElementById("ttsBtn"), cw=document.getElementById("coworkBtn");
+
+  // Kick the server-side voice warmup as soon as the page opens, so Kokoro's
+  // one-time model load happens before the first reply needs speaking.
+  fetch("/tts/warmup",{method:"POST"}).catch(()=>{});
+
+  // Sentence-level speech for streamed replies: she says sentence one while
+  // the rest still generates.
+  _speaker = makeSentenceSpeaker();
 
   // Speak her replies aloud (browser TTS -- no install). Voices load async.
   if(window.speechSynthesis){ speechSynthesis.onvoiceschanged=pickVoice; pickVoice(); }
   tt.onclick=()=>{ ttsOn=!ttsOn; tt.classList.toggle("on",ttsOn);
     if(!ttsOn){ if(window.speechSynthesis) speechSynthesis.cancel();
-      if(_ttsAudio){ try{_ttsAudio.pause();}catch(e){} } } };
+      if(_ttsAudio){ try{_ttsAudio.pause();}catch(e){} }
+      if(_speaker) _speaker.stop(); }
+    else if(_speaker) _speaker.reset(); };
 
   // Hold-to-talk: record, POST to /listen (faster-whisper), send the words.
   async function startRec(){
@@ -848,7 +980,7 @@ function initFeatures(){
           const r=await fetch("/listen",{method:"POST",body:blob});
           const d=await r.json();
           if(d.text){ document.getElementById("chatin").value=d.text; sendChat(); }
-          else addMsg("(didn't catch that — is faster-whisper installed?)","her");
+          else addMsg("(didn't catch that - is faster-whisper installed?)","her");
         }catch(e){ addMsg("(voice transcription unavailable)","her"); }
       };
       mediaRec.start(); mic.classList.add("rec");
@@ -872,9 +1004,9 @@ function initFeatures(){
       c.getContext("2d").drawImage(v,0,0,c.width,c.height);
       const img=c.toDataURL("image/jpeg",0.82);
       stream.getTracks().forEach(t=>t.stop());
-      addMsg("📷 (showing her the camera)","me");
+      addMsg("CAM (showing her the camera)","me");
       if(appWS&&appWS.readyState===1){ waitingReply=true; setSendEnabled(false);
-        appWS.send(JSON.stringify({text:"(I'm showing you my camera — what do you see?)",image:img})); }
+        appWS.send(JSON.stringify({text:"(I'm showing you my camera - what do you see?)",image:img})); }
     }catch(e){ alert("Camera unavailable: "+(e&&e.message||e)); }
     cam.classList.remove("on");
   };
@@ -883,19 +1015,49 @@ function initFeatures(){
   cw.onclick=async ()=>{
     const task=prompt("What should she do on your computer?\n(She pauses for your OK before anything consequential.)");
     if(!task) return;
-    addMsg("🖥 cowork: "+task,"me");
+    addMsg("PC cowork: "+task,"me");
     try{
       const r=await fetch("/computer/task",{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({task})});
       const d=await r.json();
-      if(!d.ok) addMsg("(can't — "+(d.error||"computer use is off")+")","her");
+      if(!d.ok) addMsg("(can't - "+(d.error||"computer use is off")+")","her");
     }catch(e){ addMsg("(couldn't start that task)","her"); }
   };
+}
+function setVoiceButtonState(){
+  const tt=document.getElementById("ttsBtn");
+  if(tt) tt.classList.toggle("on",!!ttsOn);
 }
 
 /* ===== Facet panels: one shell over her existing endpoints ===== */
 function bar(v){ return `<div class="bar2"><i style="width:${Math.round(Math.max(0,Math.min(1,v))*100)}%"></i></div>`; }
 function studioWork(){ fetch("/studio/work",{method:"POST"}).catch(()=>{}); showActivity("she stepped into her studio to design"); }
+async function fetchJson(url){
+  const r=await fetch(url,{cache:"no-store",credentials:"same-origin"});
+  if(!r.ok) throw new Error(url+" returned "+r.status);
+  return await r.json();
+}
+function facetFallbackHTML(key, err){
+  const label=FACETS[key]&&FACETS[key].title?FACETS[key].title:key;
+  if(key==="voice"){
+    return voicePanelHTML({
+      voice:"af_heart",
+      tone:"checking",
+      style:"warming",
+      baseline:"1",
+      primary:"present",
+      profile:"af_heart_original_modulated",
+      personality:"original Alpecca voice is checking in from the live core.",
+      identity_lock:true,
+      engines:{server_enabled:true,primary:"f5-tts-worker",open_tts:{ready:false},kokoro:true,edge:true},
+      last_error:(err&&err.message)||"voice panel is reconnecting"
+    });
+  }
+  return `<div class="fhero"><span class="fico">APP</span><div><div class="ttl">${esc(label)}</div>
+    <div class="meta">this panel is reconnecting to Alpecca's live core</div></div></div>
+    <div class="item emph">The main app is still running. Try the panel again in a moment.</div>
+    <div class="item"><span class="badge">status</span>${esc((err&&err.message)||"loading")}</div>`;
+}
 // Studio mini-screen: stream her live rigger figure into the panel. If the
 // rigger isn't running (no frame), show a placeholder instead -- no dependency
 // on a manifest, just try the frame and react to load/error.
@@ -917,30 +1079,65 @@ function voicePanelHTML(d){
   const pb=clamp(((d.pitch||1)-0.88)/(1.30-0.88));
   const vb=clamp(((d.volume||1)-0.65)/0.70);
   const val=clamp(((d.valence||0)+1)/2);
-  let h=`<div class="fhero"><span class="fico">🎙</span><div><div class="ttl">Her voice</div>
-    <div class="meta">she steers it herself from how she feels — you're watching, not setting it</div></div></div>`;
-  h+=`<div class="item emph"><span class="badge">${esc(d.voice||"af_heart")}</span> tone <b>${esc(d.tone||"even")}</b> · anime baseline ${d.baseline||"—"}</div>`;
+  const e=d.engines||{};
+  const open=e.open_tts||{};
+  const worker=open.worker||e.f5_worker||{};
+  const primary=e.primary||d.active_engine||d.last_engine||"server";
+  const f5Ready=!!(e.open_tts_ready||open.ready||worker.ready);
+  let h=`<div class="fhero"><span class="fico">VOICE</span><div><div class="ttl">Her voice</div>
+    <div class="meta">she steers it herself from how she feels - you're watching, not setting it</div></div></div>`;
+  h+=`<div class="item emph"><span class="badge">${esc(d.voice||"af_heart")}</span> tone <b>${esc(d.tone||"even")}</b> - style <b>${esc(d.style||"present")}</b> - anime baseline ${d.baseline||"-"}</div>`;
+  h+=`<h5>Voice system</h5>`;
+  h+=`<div class="item"><span class="badge">${esc(d.backend||"auto")}</span>
+    server voice ${e.server_enabled?"enabled":"off"}<div class="meta">primary ${esc(primary)} - F5 ${f5Ready?"ready":"warming"}${worker.load_seconds?` in ${esc(worker.load_seconds)}s`:""} - Kokoro backup ${e.kokoro?"ready":"missing"} - Edge backup ${e.edge?"ready":"missing"}</div>
+    ${d.last_engine?`<div class="meta">last spoke via ${esc(d.last_engine)}</div>`:""}
+    ${d.last_error?`<div class="meta">last fallback: ${esc(d.last_error)}</div>`:""}</div>`;
+  h+=`<div class="fbtn" onclick="ttsOn=true;setVoiceButtonState();speak('This is my current Alpecca voice state.')">Hear Alpecca's current voice</div>`;
+  h+=`<div class="item"><b>Voice identity</b><div class="meta">This is a read-only check of how Alpecca sounds right now. Her modulation follows her live affect; the viewer is not choosing a voice mode.</div></div>`;
+  const voiceIdentity=(d.voice==="af_heart"&&d.identity_lock)?"original Alpecca voice":"fallback voice";
+  h+=`<div class="item">identity <b>${voiceIdentity}</b><div class="meta">${esc(d.profile||"")}</div><div class="meta">${esc(d.personality||"original Alpecca modulation")}</div></div>`;
   h+=`<h5>What she's doing with her voice</h5>`;
-  h+=`<div class="item">pitch <b>${d.pitch||"—"}</b>${bar(pb)}</div>`;
-  h+=`<div class="item">volume <b>${d.volume||"—"}</b>${bar(vb)}</div>`;
+  h+=`<div class="item">feeling <b>${esc(d.primary||"content")}</b><div class="meta">style ${esc(d.style||"present")} - tempo ${esc(d.tempo||"measured")} - rate ${d.rate_pct||100}% - pitch cue ${d.pitch_semitones||0}st</div></div>`;
+  h+=`<div class="item">pitch <b>${d.pitch||"-"}</b>${bar(pb)}</div>`;
+  h+=`<div class="item">speed <b>${d.speed||"-"}</b>${bar(clamp(((d.speed||1)-0.78)/(1.22-0.78)))}</div>`;
+  h+=`<div class="item">volume <b>${d.volume||"-"}</b>${bar(vb)}</div>`;
+  h+=`<div class="item">warmth <b>${d.warmth||"-"}</b>${bar(d.warmth||0)}</div>`;
+  h+=`<div class="item">breath <b>${d.breath||"-"}</b>${bar(d.breath||0)}</div>`;
   h+=`<h5>Driven by her feeling, right now</h5>`;
-  h+=`<div class="item">energy <b>${d.arousal||"—"}</b>${bar(d.arousal||0)}</div>`;
-  h+=`<div class="item">mood <b>${d.valence||"—"}</b>${bar(val)}</div>`;
-  h+=`<div class="item">intensity <b>${d.intensity||"—"}</b>${bar(d.intensity||0)}</div>`;
+  h+=`<div class="item">energy <b>${d.arousal||"-"}</b>${bar(d.arousal||0)}</div>`;
+  h+=`<div class="item">mood <b>${d.valence||"-"}</b>${bar(val)}</div>`;
+  h+=`<div class="item">intensity <b>${d.intensity||"-"}</b>${bar(d.intensity||0)}</div>`;
   return h;
 }
 let _voiceTimer=null;
 function voicePollStart(){ voicePollStop();
-  const tick=()=>{ fetch("/voice",{cache:"no-store"}).then(r=>r.json()).then(d=>{
+  const tick=()=>{ fetchJson("/voice").then(d=>{
     if(openFacet==="voice"){ const b=document.getElementById("facetBody"); if(b) b.innerHTML=voicePanelHTML(d); }
-  }).catch(()=>{}); };
+  }).catch(()=>fetchJson("/system/status").then(d=>{
+    if(openFacet==="voice"){ const b=document.getElementById("facetBody"); if(b) b.innerHTML=voicePanelHTML(d.voice||{}); }
+  }).catch(()=>{})); };
   tick(); _voiceTimer=setInterval(tick, 700);   // watch her modulate live
 }
 function voicePollStop(){ if(_voiceTimer){ clearInterval(_voiceTimer); _voiceTimer=null; } }
+function systemStatusHTML(d){
+  d=d||{};
+  const models=d.models||{}, voice=d.voice||{}, engines=voice.engines||{};
+  let h=`<div class="fhero"><span class="fico">CORE</span><div><div class="ttl">Alpecca Core</div>
+    <div class="meta">live health for her model, voice, senses, and fallback state</div></div></div>`;
+  h+=`<div class="item emph"><span class="badge">${esc(d.level||"unknown")}</span>
+    chat ${models.chat_ready?"ready":"offline"}<div class="meta">reason: ${esc(models.reason||"")} - fast: ${esc(models.fast||"")} - deep: ${esc(models.deep||"local")}</div></div>`;
+  h+=`<div class="item"><span class="badge">${voice.server_voice_ready?"server":"fallback"}</span>
+    ${esc(voice.voice||"af_heart")}<div class="meta">primary ${esc(engines.primary||voice.active_engine||"server")} - F5 ${(engines.open_tts_ready||(engines.open_tts||{}).ready)?"ready":"warming"} - Kokoro backup ${engines.kokoro?"ready":"missing"} - browser fallback ${engines.browser_fallback?"ready":"off"}</div></div>`;
+  if((d.issues||[]).length){
+    h+="<h5>What needs attention</h5>";
+    (d.issues||[]).forEach(x=> h+=`<div class="item"><span class="badge">${esc(x.code||"issue")}</span>${esc(x.message||"")}<div class="meta">${esc(x.fix||"")}</div></div>`);
+  }
+  return h;
+}
 // In-app rigging: upload her PSD/art, build her rig, run her figure -- no batch.
 async function uploadStudio(input, kind){
   const f=input&&input.files&&input.files[0]; if(!f) return;
-  showActivity("uploading "+f.name+"…");
+  showActivity("uploading "+f.name+"...");
   try{
     const buf=await f.arrayBuffer();
     const r=await fetch("/studio/upload?kind="+kind,{method:"POST",body:buf});
@@ -949,10 +1146,10 @@ async function uploadStudio(input, kind){
     else showActivity("upload failed: "+(d.error||""));
   }catch(e){ showActivity("upload failed"); }
 }
-function buildRig(){ showActivity("building her figure from the PSD…");
+function buildRig(){ showActivity("building her figure from the PSD...");
   fetch("/rigger/build",{method:"POST"}).catch(()=>{}); }
 function riggerStart(){ fetch("/rigger/start",{method:"POST"}).then(r=>r.json()).then(d=>{
-  showActivity(d.ok?"her figure is starting…":"couldn't start her figure"); studioScreenStart(); }).catch(()=>{}); }
+  showActivity(d.ok?"her figure is starting...":"couldn't start her figure"); studioScreenStart(); }).catch(()=>{}); }
 function riggerStop(){ fetch("/rigger/stop",{method:"POST"}).catch(()=>{}); showActivity("her figure stopped"); }
 // Observatory: watch a video together. Resolve the link to something that
 // actually *plays* inline -- YouTube/Vimeo as an embed, a direct media file as a
@@ -975,7 +1172,7 @@ function ytEmbed(u){
   const vm=vimeoId(u);
   if(vm) return `<iframe src="https://player.vimeo.com/video/${vm}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>`;
   if(isMediaFile(u)) return `<video controls preload="metadata" playsinline src="${esc(u)}"></video>`;
-  return `<div class="item"><a href="${esc(u)}" target="_blank" rel="noopener">this page can't play inline — open it ↗</a></div>`; }
+  return `<div class="item"><a href="${esc(u)}" target="_blank" rel="noopener">this page can't play inline - open it -></a></div>`; }
 function obWatch(){ const inp=document.getElementById("obUrl"); let v=(inp&&inp.value||"").trim(); if(!v) return;
   let title=v, url=""; if(/^https?:/i.test(v)){ url=v; title="this video"; }
   const sc=document.getElementById("obScreen"); if(sc&&url) sc.innerHTML=ytEmbed(url);
@@ -983,7 +1180,7 @@ function obWatch(){ const inp=document.getElementById("obUrl"); let v=(inp&&inp.
     body:JSON.stringify({title,url})}).catch(()=>{});
   showActivity("she settled in to watch with you"); }
 function obReact(){ fetch("/observatory/react",{method:"POST",headers:{"Content-Type":"application/json"},
-  body:JSON.stringify({})}).catch(()=>{}); showActivity("you asked what she thinks…"); }
+  body:JSON.stringify({})}).catch(()=>{}); showActivity("you asked what she thinks..."); }
 // Person recognition: record ~5s and teach her your (creator's) voice.
 async function enrollVoice(){
   try{
@@ -995,12 +1192,12 @@ async function enrollVoice(){
       try{
         const r=await fetch("/people/enroll_voice",{method:"POST",body:new Blob(chunks,{type:"audio/webm"})});
         const d=await r.json();
-        showActivity(d.ok ? "she learned your voice — she'll know it's you" :
+        showActivity(d.ok ? "she learned your voice - she'll know it's you" :
           "couldn't learn your voice (needs: pip install resemblyzer)");
         if(openFacet==="senses") setTimeout(()=>showFacet("senses"),500);
       }catch(e){ showActivity("voice enroll failed"); }
     };
-    rec.start(); showActivity("listening… say a sentence or two");
+    rec.start(); showActivity("listening... say a sentence or two");
     setTimeout(()=>{ try{rec.stop();}catch(e){} }, 5000);   // ~5s sample
   }catch(e){ alert("Microphone unavailable: "+(e&&e.message||e)); }
 }
@@ -1013,30 +1210,30 @@ const FACETS={
     h+=`<h5>Her design screen</h5>
       <div style="position:relative;background:#0b1426;border:1px solid #24345a;border-radius:10px;min-height:160px;display:flex;align-items:center;justify-content:center;overflow:hidden">
         <img id="studioScreen" style="max-width:100%;max-height:240px;display:none" alt="her figure"/>
-        <div id="studioPh" class="meta" style="padding:18px;text-align:center;line-height:1.5">her live figure shows here once it's built and running. Use the buttons below — no batch files.</div>
+        <div id="studioPh" class="meta" style="padding:18px;text-align:center;line-height:1.5">her live figure shows here once it's built and running. Use the buttons below - no batch files.</div>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
-        <div class="fbtn" style="margin:0" onclick="riggerStart()">▶ Start figure</div>
-        <div class="fbtn" style="margin:0" onclick="riggerStop()">■ Stop</div>
-        <label class="fbtn" style="margin:0">⬆ Upload layered PSD<input type="file" accept=".psd" style="display:none" onchange="uploadStudio(this,'psd')"></label>
-        <label class="fbtn" style="margin:0">🖼 Upload her art<input type="file" accept="image/*" style="display:none" onchange="uploadStudio(this,'art')"></label>
-        <a class="fbtn" style="margin:0;text-decoration:none" href="/rigcut" target="_blank">✂ Cut her layers (no GPU)</a>
+        <div class="fbtn" style="margin:0" onclick="riggerStart()">Start figure</div>
+        <div class="fbtn" style="margin:0" onclick="riggerStop()">Stop</div>
+        <label class="fbtn" style="margin:0">Upload layered PSD<input type="file" accept=".psd" style="display:none" onchange="uploadStudio(this,'psd')"></label>
+        <label class="fbtn" style="margin:0">Upload her art<input type="file" accept="image/*" style="display:none" onchange="uploadStudio(this,'art')"></label>
+        <a class="fbtn" style="margin:0;text-decoration:none" href="/rigcut" target="_blank">Cut her layers (no GPU)</a>
       </div>
-      <div class="meta" style="margin-top:6px">See-Through (art → layers) runs free on its <a href="https://huggingface.co/spaces/24yearsold/see-through-demo" target="_blank" rel="noopener">HF Space</a> on a 4&nbsp;GB card; decompose there, then <b>Upload layered PSD</b> here and she builds + runs herself.</div>`;
+      <div class="meta" style="margin-top:6px">See-Through (art -> layers) runs free on its <a href="https://huggingface.co/spaces/24yearsold/see-through-demo" target="_blank" rel="noopener">HF Space</a> on a 4&nbsp;GB card; decompose there, then <b>Upload layered PSD</b> here and she builds + runs herself.</div>`;
     h+=`<h5>Watch her design</h5>
-      <div class="fbtn" onclick="studioWork()">✦ Ask her to design now</div>
-      <div id="studioFeed" class="item" style="min-height:34px">her studio is quiet. Press the button and watch her work — she renders a design, looks at it, judges it against her sheet, and iterates.</div>`;
+      <div class="fbtn" onclick="studioWork()">Ask her to design now</div>
+      <div id="studioFeed" class="item" style="min-height:34px">her studio is quiet. Press the button and watch her work - she renders a design, looks at it, judges it against her sheet, and iterates.</div>`;
     if(d.gallery&&d.gallery.length){ h+="<h5>Kept designs</h5>"; d.gallery.slice(0,6).forEach(g=>
       h+=`<div class="item"><span class="badge">kept</span>${esc(g.because||g.reason||"a design she liked")}</div>`); }
     return h; }},
   library:{title:"Library", url:"/memories", render:d=>{
-    let h=`<div class="fhero"><span class="fico">▤</span><div><div class="ttl">${(d.count||0)} memories</div>
+    let h=`<div class="fhero"><span class="fico">MEM</span><div><div class="ttl">${(d.count||0)} memories</div>
       <div class="meta">the moments and musings she keeps</div></div></div>`;
     if(!(d.recent||[]).length) h+="<div class='empty'>no memories yet</div>";
     (d.recent||[]).slice(0,24).forEach(m=> h+=`<div class="item"><span class="badge">${m.kind||"moment"}</span>${esc((m.content||"").slice(0,170))}</div>`);
     return h; }},
   journal:{title:"Journal", url:"/journal", render:d=>{
-    let h=`<div class="fhero"><span class="fico">✑</span><div><div class="ttl">Her journal</div>
+    let h=`<div class="fhero"><span class="fico">JOURNAL</span><div><div class="ttl">Her journal</div>
       <div class="meta">notes, dreams, and questions she works through alone</div></div></div>`;
     const oq=d.open_questions||[];
     if(oq.length){ h+="<h5>Questions she's pondering</h5>"; oq.forEach(q=>
@@ -1047,78 +1244,78 @@ const FACETS={
     return h; }},
   voice:{title:"Voice", url:"/voice", render:d=>voicePanelHTML(d)},
   observatory:{title:"Observatory", url:"/observatory", render:d=>{
-    let h=`<div class="fhero"><span class="fico">🔭</span><div><div class="ttl">Her observatory</div>
-      <div class="meta">where she watches — a video with you, or you</div></div></div>`;
+    let h=`<div class="fhero"><span class="fico">WATCH</span><div><div class="ttl">Her observatory</div>
+      <div class="meta">where she watches - a video with you, or you</div></div></div>`;
     h+=`<h5>Watch together</h5>
       <div style="display:flex;gap:6px;margin:6px 0">
-        <input id="obUrl" placeholder="paste a video link (YouTube, Vimeo, .mp4…)" style="flex:1;background:#0e1830;border:1px solid #24345a;color:#cfe0ff;border-radius:8px;padding:8px"/>
-        <div class="fbtn" style="margin:0" onclick="obWatch()">▶ Watch</div></div>
+        <input id="obUrl" placeholder="paste a video link (YouTube, Vimeo, .mp4...)" style="flex:1;background:#0e1830;border:1px solid #24345a;color:#cfe0ff;border-radius:8px;padding:8px"/>
+        <div class="fbtn" style="margin:0" onclick="obWatch()">Watch</div></div>
       <div id="obScreen" class="obscreen">${d.watching&&d.watching.url?ytEmbed(d.watching.url):""}</div>`;
     h+=`<div id="obNow" class="item emph" style="${d.watching?"":"display:none"}">
         <span class="badge">watching</span><span id="obTitle">${d.watching?esc(d.watching.title):""}</span></div>
       <div id="obReaction" class="item" style="${d.watching&&d.watching.reaction?"":"display:none"}">
-        <span class="fico">❝</span><span id="obReactionTxt">${d.watching&&d.watching.reaction?esc(d.watching.reaction):""}</span></div>
-      <div class="fbtn" id="obAsk" onclick="obReact()" style="${d.watching?"":"display:none"}">✦ What do you think?</div>`;
-    if(!d.watching) h+=`<div class="empty">nothing playing yet — paste a link and she'll watch it with you</div>`;
+        <span class="fico"></span><span id="obReactionTxt">${d.watching&&d.watching.reaction?esc(d.watching.reaction):""}</span></div>
+      <div class="fbtn" id="obAsk" onclick="obReact()" style="${d.watching?"":"display:none"}">What do you think?</div>`;
+    if(!d.watching) h+=`<div class="empty">nothing playing yet - paste a link and she'll watch it with you</div>`;
     h+=`<h5>Watch you</h5>
-      <div class="item"><span class="fico">📷</span><span class="ttl">webcam</span>
+      <div class="item"><span class="fico">CAM</span><span class="ttl">webcam</span>
         <span class="badge" style="background:${d.face_active?"#16243f":"#16203a"};color:${d.face_active?"#7fd9ff":"#8aa0c6"}">${d.face_active?"on":"off"}</span>
-        <div class="meta">${d.face_active?"she can see you — a weary face lifts her compassion (frames are never stored)":"off — launch with start_full.bat so she can watch you (ALPECCA_FACE=1)"}</div></div>`;
+        <div class="meta">${d.face_active?"she can see you - a weary face lifts her compassion (frames are never stored)":"off - launch with start_full.bat so she can watch you (ALPECCA_FACE=1)"}</div></div>`;
     return h; }},
   mind:{title:"Mind", url:"/soul", render:d=>{
-    let h=`<div class="fhero"><span class="fico">◉</span><div><div class="ttl">Her Soul</div>
+    let h=`<div class="fhero"><span class="fico">CORE</span><div><div class="ttl">Her Soul</div>
       <div class="meta">seven subagents, one focus</div></div></div>`;
     h+="<h5>What she's most moved to do</h5>";
     if(d.focus) h+=`<div class="item emph"><div class="ttl">${esc(d.focus.action)}</div><div class="meta">${esc(d.focus.reason)}</div></div>`;
     h+="<h5>Her subagents</h5>";
-    (d.slate||[]).forEach(i=> h+=`<div class="item"><span class="badge">${i.category}</span><span class="ttl">${esc(i.subagent)}</span> — ${esc(i.action)}<div class="meta">${esc(i.reason)}</div></div>`);
+    (d.slate||[]).forEach(i=> h+=`<div class="item"><span class="badge">${i.category}</span><span class="ttl">${esc(i.subagent)}</span> - ${esc(i.action)}<div class="meta">${esc(i.reason)}</div></div>`);
     if(d.principle) h+=`<div class="meta" style="margin-top:10px">${esc(d.principle)}</div>`;
     return h; }},
   workshop:{title:"Workshop", url:"/growth", render:d=>{
-    let h=`<div class="fhero"><span class="fico">⚙</span><div><div class="ttl">Her workshop</div>
+    let h=`<div class="fhero"><span class="fico">WIP</span><div><div class="ttl">Her workshop</div>
       <div class="meta">the goals she sets and the changes she makes to herself</div></div></div>`;
     h+="<h5>What she wants</h5>";
     if(!(d.desires||[]).length) h+="<div class='empty'>no active wants</div>";
     (d.desires||[]).forEach(x=> h+=`<div class="item"><span class="badge">${x.kind}</span>${esc(x.text)}${bar(x.strength||0)}</div>`);
     h+="<h5>What she's learned about herself</h5>";
-    if(!(d.lessons||[]).length) h+="<div class='empty'>no lessons yet — she draws them from her own history</div>";
+    if(!(d.lessons||[]).length) h+="<div class='empty'>no lessons yet - she draws them from her own history</div>";
     (d.lessons||[]).forEach(x=> h+=`<div class="item emph">${esc(x.text)}<div class="meta">${esc(x.evidence||"")}</div></div>`);
     h+="<h5>Changes she's made to herself</h5>";
     if(!(d.revisions||[]).length) h+="<div class='empty'>none yet</div>";
-    (d.revisions||[]).slice(0,8).forEach(r=> h+=`<div class="item"><span class="badge">${r.status}</span>${esc(r.param)}: ${(r.old_value||0).toFixed(3)} → ${(r.new_value||0).toFixed(3)}</div>`);
+    (d.revisions||[]).slice(0,8).forEach(r=> h+=`<div class="item"><span class="badge">${r.status}</span>${esc(r.param)}: ${(r.old_value||0).toFixed(3)} -> ${(r.new_value||0).toFixed(3)}</div>`);
     return h; }},
   files:{title:"Workstation", url:"/desktop", render:d=>{
-    let h=`<div class="fhero"><span class="fico">🗂</span><div><div class="ttl">Her workstation</div>
+    let h=`<div class="fhero"><span class="fico">FILES</span><div><div class="ttl">Her workstation</div>
       <div class="meta">${esc(d.note||"")}</div></div></div>`;
     h+=`<h5>Find a file</h5>
       <div style="display:flex;gap:6px;margin:6px 0">
-        <input id="fileQ" placeholder="search Desktop / Pictures / Documents…"
+        <input id="fileQ" placeholder="search Desktop / Pictures / Documents..."
           onkeydown="if(event.key==='Enter')fileSearch()"
           style="flex:1;background:var(--bg-2);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:8px"/>
-        <div class="fbtn" style="margin:0" onclick="fileSearch()">🔍 Find</div></div>
-      <div id="fileResults" class="meta">read-only — she can find things across her rooms, never delete them.</div>`;
+        <div class="fbtn" style="margin:0" onclick="fileSearch()"> Find</div></div>
+      <div id="fileResults" class="meta">read-only - she can find things across her rooms, never delete them.</div>`;
     h+=`<h5>Her rooms</h5>`;
-    (d.rooms||[]).forEach(r=> h+=`<div class="item"><span class="fico">📁</span><span class="ttl">${r.root}</span><span class="meta"> · ${r.count} items</span></div>`);
+    (d.rooms||[]).forEach(r=> h+=`<div class="item"><span class="fico"></span><span class="ttl">${r.root}</span><span class="meta"> - ${r.count} items</span></div>`);
     return h; }},
   senses:{title:"Senses", url:"/sight", render:d=>{
     const row=(ic,label,on,extra)=>`<div class="item"><span class="fico">${ic}</span><span class="ttl">${label}</span> <span class="badge" style="background:${on?'#16243f':'#16203a'};color:${on?'#7fd9ff':'#8aa0c6'}">${on?"on":"off"}</span>${extra||""}</div>`;
-    let h=`<div class="fhero"><span class="fico">◍</span><div><div class="ttl">What she can sense</div>
-      <div class="meta">${d.busy?"she's working on a task right now…":"her live perception"}</div></div></div>`;
-    h+=row("👁","screen sight",d.screen_active);
-    h+=row("🎤","voice tone",d.voice_active);
-    h+=row("📷","webcam",d.face_active);
-    h+=row("🖥","cowork",d.computer_use);
+    let h=`<div class="fhero"><span class="fico"></span><div><div class="ttl">What she can sense</div>
+      <div class="meta">${d.busy?"she's working on a task right now...":"her live perception"}</div></div></div>`;
+    h+=row("","screen sight",d.screen_active);
+    h+=row("VOICE","voice tone",d.voice_active);
+    h+=row("CAM","webcam",d.face_active);
+    h+=row("PC","cowork",d.computer_use);
     if(d.screen) h+=`<h5>What she last saw</h5><div class="item emph">${esc(d.screen)}</div>`;
-    if(!d.screen_active && !d.computer_use) h+="<div class='meta' style='margin-top:10px'>most senses are off — launch with <b>START_HERE.bat</b>.</div>";
+    if(!d.screen_active && !d.computer_use) h+="<div class='meta' style='margin-top:10px'>most senses are off - launch with <b>START_HERE.bat</b>.</div>";
     h+=`<h5>Who she's with</h5>
-      <div class="item"><span class="fico">🪪</span><span class="ttl">voice recognition</span>
+      <div class="item"><span class="fico">VR</span><span class="ttl">voice recognition</span>
         <div class="meta">she treats you as her creator by default; teach her your voice and she'll tell you from a guest</div></div>
-      <div class="fbtn" onclick="enrollVoice()">🎙 Teach her my voice (5s)</div>`;
+      <div class="fbtn" onclick="enrollVoice()">MIC Teach her my voice (5s)</div>`;
     return h; }},
   games:{title:"Play", url:"/games", render:d=>{
-    let h=`<div class="fhero"><span class="fico">🎮</span><div><div class="ttl">Play</div>
+    let h=`<div class="fhero"><span class="fico">PLAY</span><div><div class="ttl">Play</div>
       <div class="meta">games she can open for fun (her charter allows it)</div></div></div>`;
-    (d.games||[]).forEach(g=> h+=`<div class="item" style="cursor:pointer" onclick="window.open('${g.url}','_blank')"><span class="fico">${g.emoji||"🎮"}</span><span class="ttl">${esc(g.name)}</span></div>`);
+    (d.games||[]).forEach(g=> h+=`<div class="item" style="cursor:pointer" onclick="window.open('${g.url}','_blank')"><span class="fico">${g.emoji||"PLAY"}</span><span class="ttl">${esc(g.name)}</span></div>`);
     return h; }},
 };
 let openFacet=null;
@@ -1127,29 +1324,31 @@ function showFacet(key){
   openFacet=key;
   document.querySelectorAll(".nav .nb").forEach(b=>b.classList.toggle("on", b.dataset.k===key));
   document.getElementById("facetTitle").textContent=f.title;
-  const body=document.getElementById("facetBody"); body.innerHTML="<div class='meta'>loading…</div>";
+  const body=document.getElementById("facetBody"); body.innerHTML=facetFallbackHTML(key,{message:"loading"});
   document.getElementById("facet").classList.add("show");
   studioScreenStop(); voicePollStop();   // stop prior live panels when switching
-  fetch(f.url,{cache:"no-store"}).then(r=>r.json()).then(d=>{ body.innerHTML=f.render(d);
+  fetchJson(f.url).then(d=>{ body.innerHTML=f.render(d);
       if(key==="studio") studioScreenStart();
       if(key==="voice") voicePollStart(); })
-    .catch(()=>{ body.innerHTML="<div class='item'>couldn't load this yet</div>"; });
+    .catch((e)=>{ body.innerHTML=facetFallbackHTML(key,e); });
 }
 function hideFacet(){ openFacet=null; studioScreenStop(); voicePollStop(); document.getElementById("facet").classList.remove("show");
   document.querySelectorAll(".nav .nb").forEach(b=>b.classList.remove("on")); }
 function buildNav(){
   const nav=document.getElementById("nav");
-  const items=[["home","⌂","Home"],["face","☺","Face"],["share","⧉","Share"],
-    ["senses","◍","Senses"],["voice","🎙","Voice"],["studio","✎","Studio"],
-    ["observatory","🔭","Watch"],["library","▤","Library"],["journal","✑","Journal"],
-    ["mind","◉","Mind"],["workshop","⚙","Workshop"],["files","🗂","Files"],["games","🎮","Play"]];
+  const items=[
+    ["home","HQ","Home"], ["face","AI","AI"], ["share","Share","Share"], ["senses","Sense","Senses"],
+    ["voice","Voice","Voice"], ["studio","Lab","Studio"], ["observatory","Watch","Watch"], ["library","Mem","Library"],
+    ["journal","Journal","Journal"], ["mind","Mind","Mind"], ["workshop","Work","Workshop"],
+    ["files","Files","Files"], ["games","Play","Play"]
+  ];
   items.forEach(([k,ic,label])=>{
     const b=document.createElement("div"); b.className="nb"; b.dataset.k=k;
-    b.innerHTML=`<span class="ic">${ic}</span>${label}`;
+    b.innerHTML=label;
     b.onclick=()=>{
       if(k==="face"){ toggleProfile(); b.classList.toggle("on",!document.getElementById("profile").classList.contains("hide")); return; }
       if(k==="share"){ toggleShare(); return; }
-      // With in-world screens, the room features (Home/Mind→Parlor, Studio,
+      // With in-world screens, the room features (Home/Mind->Parlor, Studio,
       // Library, Watch, Workshop) fly the camera to that room and light its
       // screen; the utility facets (Journal/Voice/Senses/Files/Play) still open
       // the side drawer. Without CSS3D, everything uses the drawer as before.
@@ -1172,14 +1371,13 @@ function esc(s){ return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">"
 function fileSearch(){
   const inp=document.getElementById("fileQ"); const q=(inp&&inp.value||"").trim();
   const out=document.getElementById("fileResults"); if(!q||!out) return;
-  out.innerHTML="<span class='meta'>searching her rooms…</span>";
+  out.innerHTML="<span class='meta'>searching her rooms...</span>";
   fetch("/desktop/search?q="+encodeURIComponent(q),{cache:"no-store"}).then(r=>r.json()).then(d=>{
     if(!d.ok){ out.innerHTML="<span class='meta'>"+esc(d.error||"couldn't search")+"</span>"; return; }
     const ms=d.matches||[];
-    if(!ms.length){ out.innerHTML="<span class='meta'>nothing named like “"+esc(q)+"” in her rooms</span>"; return; }
-    out.innerHTML=ms.slice(0,30).map(m=>
-      `<div class="item"><span class="fico">${m.is_dir?"📁":"📄"}</span>${esc(m.root)}/<b>${esc(m.rel)}</b></div>`).join("")
-      + (d.truncated?"<div class='meta'>…and more — refine your search</div>":"");
+    if(!ms.length){ out.innerHTML="<span class='meta'>nothing named like \""+esc(q)+"\" in her rooms</span>"; return; }
+    out.innerHTML=ms.slice(0,30).map(m=>'<div class="item"><span class="fico">'+(m.is_dir?"DIR":"FIL")+'</span>'+esc(m.root)+'/<b>'+esc(m.rel)+'</b></div>').join("")
+      + (d.truncated?"<div class='meta'>...and more - refine your search</div>":"");
   }).catch(()=>{ out.innerHTML="<span class='meta'>search failed</span>"; });
 }
 
@@ -1187,8 +1385,7 @@ function fileSearch(){
    and makes her cursor appear while she's working the desktop. ===== */
 async function pollSight(){
   let d; try{ d=await (await fetch("/sight",{cache:"no-store"})).json(); }catch(e){ return; }
-  const items=[["👁 screen",d.screen_active,d.busy],["🎤 voice",d.voice_active,false],
-               ["📷 face",d.face_active,false],["🖥 cowork",d.computer_use,d.busy]];
+  const items=[[" screen",d.screen_active,d.busy], ["voice",d.voice_active,false], ["face",d.face_active,false], ["cowork",d.computer_use,d.busy]];
   const strip=document.getElementById("senses");
   if(strip) strip.innerHTML=items.map(([label,on,busy])=>
     `<span class="sense ${on?'on':''} ${(busy&&on)?'busy':''}"><span class="d"></span>${label}</span>`).join("");
@@ -1363,12 +1560,12 @@ async function loadWsRoot(){
   if(!d.entries.length){ grid.innerHTML='<div class="note">empty</div>'; return; }
   d.entries.forEach(e=>{
     const t=document.createElement("div"); t.className="tile";
-    t.innerHTML = `<div class="ico">${e.is_dir?"📁":"📄"}</div><div class="nm">${escapeHtml(e.name)}</div>`;
+    t.innerHTML = `<div class="ico">${e.is_dir?"":"FILE"}</div><div class="nm">${escapeHtml(e.name)}</div>`;
     if(!e.is_dir && window._wsEnabled){
-      const mv=document.createElement("span"); mv.className="mv"; mv.textContent="⋯";
+      const mv=document.createElement("span"); mv.className="mv"; mv.textContent="...";
       const menu=document.createElement("div"); menu.className="menu";
       (window._wsRoots||[]).filter(r=>r!==wsRoot).forEach(dest=>{
-        const opt=document.createElement("div"); opt.textContent="→ "+dest;
+        const opt=document.createElement("div"); opt.textContent="-> "+dest;
         opt.onclick=(ev)=>{ ev.stopPropagation(); moveFile(e.name, dest); };
         menu.appendChild(opt);
       });
@@ -1444,7 +1641,7 @@ function demoState(){
 function setSource(demo){
   document.getElementById("src").className="dot"+(demo?" demo":"");
   document.getElementById("srcText").textContent= demo
-    ? "demo mode — wire /home to go live" : "live — her real state";
+    ? "demo mode - wire /home to go live" : "live - her real state";
 }
 
 function renderHUD(){
@@ -1460,10 +1657,10 @@ function renderHUD(){
   // Her workstation panel appears only when she's actually in that room.
   toggleWorkstation(state.location==="workstation");
   const p=state.pose||{};
-  const f=(k)=> (p[k]!=null? Number(p[k]).toFixed(2): "—");
+  const f=(k)=> (p[k]!=null? Number(p[k]).toFixed(2): "-");
   document.getElementById("mood").innerHTML=
-    `warmth <b>${f("warmth")}</b> · unease <b>${f("unease")}</b> · `+
-    `curiosity <b>${f("curiosity")}</b> · wanting-company <b>${f("wanting_company")}</b>`;
+    `warmth <b>${f("warmth")}</b> - unease <b>${f("unease")}</b> - `+
+    `curiosity <b>${f("curiosity")}</b> - wanting-company <b>${f("wanting_company")}</b>`;
   // pull bars
   ROOMS.forEach(rm=>{
     const row=document.getElementById("pull-"+rm.id); if(!row) return;
@@ -1501,7 +1698,7 @@ function initRoomScreens(){
     el.style.pointerEvents="auto";
     el.innerHTML=`<div class="rs-head"><span>${FACETS[key]?FACETS[key].title:r.name}</span>`+
                  `<span class="core-emblem breathe"></span></div>`+
-                 `<div class="rs-body"><div class="meta">loading…</div></div>`;
+                 `<div class="rs-body"><div class="meta">loading...</div></div>`;
     const obj=new THREE.CSS3DObject(el);
     // Stand it on the room's back wall, facing the camera (which sits up and +z).
     obj.position.set(r.x, 3.2, r.z - 2.2);
@@ -1517,10 +1714,10 @@ function initRoomScreens(){
 function refreshRoomScreen(id){
   const sc=roomScreens[id]; if(!sc) return;
   const f=FACETS[sc.key]; const body=sc.el.querySelector(".rs-body"); if(!f||!body) return;
-  fetch(f.url,{cache:"no-store"}).then(r=>r.json()).then(d=>{ body.innerHTML=f.render(d);
+  fetchJson(f.url).then(d=>{ body.innerHTML=f.render(d);
       if(sc.key==="studio") studioScreenStart();
       if(sc.key==="voice") voicePollStart(); })
-    .catch(()=>{ body.innerHTML="<div class='meta'>couldn't load this yet</div>"; });
+    .catch((e)=>{ body.innerHTML=facetFallbackHTML(sc.key,e); });
 }
 
 function setActiveScreen(id){
@@ -1653,3 +1850,7 @@ function animate(){
 </script>
 </body>
 </html>
+
+
+
+

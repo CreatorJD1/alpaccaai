@@ -28,6 +28,8 @@ REFERENCE_BOARD_FILES = {
     "movement": "reference_boards/movement_direction_reference.jpg",
     "expression": "reference_boards/expression_talk_reference.jpg",
     "scale": "reference_boards/scale_anchor_reference.jpg",
+    "external360": "external_360_references/external_360_reference_preview.jpg",
+    "externalWalkCycle": "external_walk_cycle_references/walk_cycle_3d_pose_guide.jpg",
 }
 
 
@@ -65,6 +67,16 @@ def prompt_for_target(target: dict[str, Any]) -> str:
     layer_role = target.get("layerRole") or "base-body"
     strip_px = int(target["targetFrameCount"]) * int(target["targetSlotPixels"])
     runtime_slot_px = int(target.get("runtimeSlotPixels") or 512)
+    walk_contract = ""
+    if target["action"] == "walk":
+        walk_contract = """
+## Walk Cycle Contract
+- Use `external_walk_cycle_references/walk_cycle_3d_pose_guide.jpg` for body mechanics and `docs/ALPECCA_STAGE4_WALK_CYCLE_POSE_LOCK.md` for the 16-frame phase map.
+- The 16 frames must form one natural loop: contact, down, passing, up, opposite contact, opposite down, opposite passing, opposite up, then useful in-betweens.
+- Do not repeat leg positions to fill frames; each frame must advance foot contact, weight shift, hip/shoulder counter-swing, cloth follow-through, or foot lift.
+- Walking must stay calm and grounded, not running or dashing.
+- Keep bottom-center foot anchors, 5ft 7in standing height, adult thigh width, leg length, boot size, and white thigh-high stocking coverage stable across the whole strip.
+"""
     return f"""# Alpecca Stage 4 Generation Prompt
 
 Generate one complete transparent animation strip for Alpecca.
@@ -90,22 +102,29 @@ Generate one complete transparent animation strip for Alpecca.
 - `reference_boards/movement_direction_reference.jpg`
 - `reference_boards/expression_talk_reference.jpg`
 - `reference_boards/scale_anchor_reference.jpg`
+- `external_360_references/external_360_reference_preview.jpg`
+- `external_walk_cycle_references/walk_cycle_3d_pose_guide.jpg`
+- Drive 360 reference folder: `https://drive.google.com/drive/folders/1TCaawZt7idE7ib-Kw8T-sq23z5cIXJmw`
 - `ALPECCA_DESIGN_LOCK.md`
 
 Use these source slots as the strongest references: {refs}.
 
 ## Hard Requirements
 {gates}
+{walk_contract}
 
 ## Style And Composition
 - Use existing Alpecca art as identity lock and direction reference only.
 - Generate new coherent production art; do not collage loose existing frames.
+- Match the external 360 references for turnaround behavior: adjacent 16-view sectors must feel like a real body rotating through space, with shoulders, hips, hair mass, leg spacing, side thickness, and back/side silhouettes changing coherently.
+- Build the 360 set like the Drive reference: every sector `s0` through `s15` is a native, slightly different camera angle around the same body, not a duplicate frame, not a width-scaled billboard, and not a 5-view approximation.
+- Do not solve rotation by keeping one flat front-facing billboard and only flipping or narrowing it. Side views must keep believable adult body depth and Alpecca's leg/stocking/boot proportions.
 - Keep her an adult woman at 5ft 7in / 1.704m in standing actions.
 - Follow `ALPECCA_DESIGN_LOCK.md` exactly. Do not redesign her.
 - Keep the same face, blue eyes, long white-silver hair with pale lavender-blue lower accents, single ahoge strand, and one small blue X/bow hair clip on her left side.
 - Keep the oversized warm ivory/cream hoodie-jacket with pale blue trim, blue sleeve/zipper/pocket accents, black sleeve tech patch, white inner shirt, blue lanyard, and Alpecca ID badge.
 - Keep black high-waist shorts.
-- Keep white full-length thigh-high stockings reaching the upper thigh under the shorts; stocking length, thickness, and white color must stay consistent in every frame.
+- Keep both legs fully covered by white full-length thigh-high stockings reaching the upper thigh under the shorts; stocking length, thickness, and white color must stay consistent in every frame.
 - Keep the black right-leg thigh strap where that side of the leg is visible.
 - Keep chunky cream/white comfort boots with pale blue soles and blue details. Do not turn the boots into sneakers.
 - Keep leg length, thigh width, boot size, head size, and body proportions stable across frames.
@@ -118,7 +137,7 @@ Use these source slots as the strongest references: {refs}.
 - Exactly one row of equal frame slots.
 - Generate at 4K minimum per frame slot. Do not upscale a low-resolution result and call it 4K.
 - No scenery, labels, UI, duplicate characters, poster layout, or camera background.
-- Whole-strip generation only; do not create isolated frames.
+- Whole-strip generation is preferred for full animation strips; if a tiled worker is used, each tile must still be generated against the same 16-sector reference contract and stitched only after all frames pass QA.
 """
 
 

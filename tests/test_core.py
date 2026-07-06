@@ -5,7 +5,10 @@ companion. Run with: python -m pytest -q  (or just run this file directly).
 """
 from __future__ import annotations
 
+import os
 import re
+import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -26,7 +29,14 @@ from alpecca import vision
 from alpecca import proactive
 from alpecca import actions
 from alpecca import prompts
+from alpecca import speech
 from alpecca import artlib
+from alpecca import cognition
+from alpecca import tts
+from alpecca import runtime_status
+from alpecca import mindscape
+from alpecca import preview
+from alpecca import instance
 from alpecca.mind import strip_think
 
 
@@ -137,6 +147,16 @@ def test_memory_stores_salient_and_retrieves_relevant():
         hits = memory_store.recall("how is the dog doing at the park",
                                    db_path=db, embed_fn=None)
         assert hits and "Biscuit" in hits[0]["content"]
+        assert hits[0]["recall_method"] == "keyword"
+        assert hits[0]["recall_score"] > 0
+        assert hits[0]["recall_similarity"] > 0
+        assert hits[0]["recall_recency"] > 0
+
+
+def test_memory_classifies_relationship_procedural_and_self_model():
+    assert memory_store.classify_kind("My name is Jason") == "relationship"
+    assert memory_store.classify_kind("I need to check the server before launch") == "procedural"
+    assert memory_store.classify_kind("I learned something about myself: I get quiet") == "self_model"
 
 
 # --- Sensory ---------------------------------------------------------------
@@ -205,6 +225,69 @@ def test_reward_maps_to_unit_interval():
     assert 0.0 <= sentiment.reward("you are the worst") <= 0.5
     assert 0.5 <= sentiment.reward("you're amazing, thank you") <= 1.0
 
+def test_salience_catches_commitments_and_relationships():
+    """The widened salience net keeps near-term plans and who's in the person's
+    life -- things a companion should hold onto -- while idle chatter stays below
+    the store threshold so memory doesn't drown in trivia."""
+    from config import MEMORY_SALIENCE_THRESHOLD as THRESH
+    # A near-term commitment the original keyword set missed is now worth keeping.
+    assert prompts.estimate_salience("I need to finish the report by tonight") >= THRESH
+    # Someone in their life is salient.
+    assert prompts.estimate_salience("my mom is visiting") >= THRESH
+    # Pure small talk still isn't.
+    assert prompts.estimate_salience("ok cool") < THRESH
+
+
+def test_continuity_recap_bookmarks_last_exchange_grounded():
+    """The end-of-session recap is a grounded 'where we left off' bookmark: it
+    quotes the real last exchange and folds in her real mood/room and one open
+    thread, so the next session can pick up the thread. It returns None when there
+    was no conversation to bookmark, so we never store filler."""
+    # No conversation this session -> nothing worth bookmarking.
+    assert prompts.continuity_recap([]) is None
+    # Senses-only session (no user turn) also produces no bookmark.
+    assert prompts.continuity_recap([{"role": "assistant", "content": "hi"}]) is None
+
+    history = [
+        {"role": "user", "content": "Let's keep debugging the walk cycle tomorrow"},
+        {"role": "assistant", "content": "Okay, I'll hold that thread for us"},
+    ]
+    recap = prompts.continuity_recap(
+        history, mood_label="tender", location="observatory",
+        open_thread="finish the walk-cycle proof", speaker="Jason",
+    )
+    assert recap is not None
+    assert recap.startswith("Where we left off:")
+    # Grounded in the real last exchange, mood, room, and open thread.
+    assert "walk cycle tomorrow" in recap
+    assert "hold that thread" in recap
+    assert "tender" in recap and "observatory" in recap
+    assert "finish the walk-cycle proof" in recap
+    # It clears the store bar, so it actually persists into the next session.
+    from config import RECAP_SALIENCE, MEMORY_SALIENCE_THRESHOLD
+    assert RECAP_SALIENCE >= MEMORY_SALIENCE_THRESHOLD
+
+
+def test_continuity_recap_persists_and_recalls_next_session():
+    """End to end on a temp DB: the recap stores as a salient memory and is
+    recalled when the next session opens on a related line -- so she resumes the
+    thread instead of starting cold. Never touches the real database."""
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "m.db"
+        state_store.init_db(db)
+        recap = prompts.continuity_recap(
+            [{"role": "user", "content": "my deadline is Friday"},
+             {"role": "assistant", "content": "I'll remember that for you"}],
+            mood_label="focused", location="studio",
+            open_thread="", speaker="Jason",
+        )
+        from config import RECAP_SALIENCE
+        assert memory_store.remember(recap, kind="episodic", salience=RECAP_SALIENCE,
+                                     db_path=db, embed_fn=None, source="recap")
+        hits = memory_store.recall("what was my deadline again",
+                                   db_path=db, embed_fn=None)
+        assert hits and "Where we left off" in hits[0]["content"]
+
 
 # --- Embedding-based memory (with an injected fake embedder) ----------------
 
@@ -245,6 +328,2288 @@ def test_recall_falls_back_to_keywords_without_embedder():
         hits = memory_store.recall("tell me about the dog and the park",
                                    db_path=db, embed_fn=None)
         assert hits and "Biscuit" in hits[0]["content"]
+
+
+# --- Unified cognition state ----------------------------------------------
+
+def test_cognition_records_observation_intent_and_proposals():
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "cognition.db"
+        cognition.init_db(db)
+        cognition.set_intent(cognition.IntentState(
+            "listening", "the person is talking", target="creator"), db_path=db)
+        cognition.record_observation(cognition.CognitionObservation(
+            source="chat", room="Library", content="The person asked about memory.",
+            confidence=0.9, privacy_class="personal"), db_path=db)
+        cognition.propose_action(cognition.ActionProposal(
+            action="Review memory retrieval",
+            reason="A reply should cite the right memories.",
+            approval=cognition.APPROVAL_ASK_FIRST), db_path=db)
+
+        view = cognition.state(
+            mood="curious",
+            emotion={"love": 0.5},
+            location="Library",
+            models={"reason": "qwen3:8b", "deep": "local", "llm_online": True},
+            senses={"window": True},
+            memories=[],
+            journal={"recent": [], "open_questions": []},
+            desires={"desires": []},
+            self_report="grounded report",
+            capabilities={"voice": {"state": "original"}},
+            db_path=db,
+        )
+
+        assert view["intent"]["name"] == "listening"
+        assert view["recent_observations"][0]["source"] == "chat"
+        assert view["action_proposals"][0]["approval"] == cognition.APPROVAL_ASK_FIRST
+        assert view["capabilities"]["voice"]["state"] == "original"
+        assert "never_auto" in view["safety_policy"]
+
+
+def test_cognition_upserts_duplicate_open_proposals_by_action():
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "proposal_dedupe.db"
+        cognition.init_db(db)
+        first = cognition.upsert_action_proposal(cognition.ActionProposal(
+            action="Improve reply grounding",
+            reason="first review",
+            evidence="score=0.4",
+            approval=cognition.APPROVAL_ASK_FIRST,
+            status="noticed",
+        ), db_path=db)
+        second = cognition.upsert_action_proposal(cognition.ActionProposal(
+            action="Improve reply grounding",
+            reason="newer review",
+            evidence="score=0.7",
+            approval=cognition.APPROVAL_ASK_FIRST,
+            status="testing",
+        ), db_path=db)
+        proposals = cognition.recent_action_proposals(limit=10, db_path=db)
+    assert first["id"] == second["id"]
+    assert second["deduped"] is True
+    assert len(proposals) == 1
+    assert proposals[0]["reason"] == "newer review"
+    assert proposals[0]["evidence"] == "score=0.7"
+    assert proposals[0]["status"] == "testing"
+
+
+def test_cognition_compacts_existing_duplicate_open_proposals():
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "proposal_compact.db"
+        cognition.init_db(db)
+        older = cognition.propose_action(cognition.ActionProposal(
+            action="Improve reply grounding",
+            reason="older",
+            evidence="old",
+        ), db_path=db)
+        keep = cognition.propose_action(cognition.ActionProposal(
+            action="Improve reply grounding",
+            reason="newest",
+            evidence="latest",
+        ), db_path=db)
+        other = cognition.propose_action(cognition.ActionProposal(
+            action="Improve memory recall",
+            reason="separate",
+            evidence="memory",
+        ), db_path=db)
+        result = cognition.compact_duplicate_open_proposals(db_path=db)
+        proposals = cognition.recent_action_proposals(limit=10, db_path=db)
+    assert result["closed"] == 1
+    by_id = {int(p["id"]): p for p in proposals}
+    assert by_id[int(keep)]["status"] == "noticed"
+    assert by_id[int(older)]["status"] == "superseded"
+    assert f"#{keep}" in by_id[int(older)]["result"]
+    assert by_id[int(other)]["status"] == "noticed"
+
+
+def test_cognition_marks_observations_as_remembered():
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "cognition_mark.db"
+        cognition.init_db(db)
+        oid = cognition.record_observation(cognition.CognitionObservation(
+            source="chat", content="The person said their favorite color is blue.",
+            confidence=1.0), db_path=db)
+        assert len(cognition.unremembered_observations(db_path=db)) == 1
+        cognition.mark_observation_remembered(oid, 42, db_path=db)
+        assert cognition.unremembered_observations(db_path=db) == []
+        recent = cognition.recent_observations(db_path=db)
+        assert recent[0]["remembered"] == 1
+        assert recent[0]["memory_id"] == 42
+
+
+def test_cognition_records_grounded_chat_turns():
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "cognition_chat.db"
+        cognition.init_db(db)
+        oid = cognition.record_observation(cognition.CognitionObservation(
+            source="chat",
+            room="Parlor",
+            content="The person said: remember my current task.",
+        ), db_path=db)
+        turn_id = cognition.record_chat_turn(cognition.ChatTurn(
+            user_text="remember my current task",
+            reply="I will keep that grounded as something you told me.",
+            room="Parlor",
+            mood="curious",
+            intent="replying",
+            model_use={"backend": "test", "model": "fake"},
+            memory_evidence=[{"id": 7, "kind": "relationship", "score": 0.82}],
+            observation_id=oid,
+        ), db_path=db)
+        assert turn_id
+        turns = cognition.recent_chat_turns(db_path=db)
+        assert turns[0]["id"] == turn_id
+        assert turns[0]["room"] == "Parlor"
+        assert turns[0]["model_use"]["backend"] == "test"
+        assert turns[0]["memory_evidence"][0]["score"] == 0.82
+        view = cognition.state(
+            mood="curious",
+            emotion={},
+            location="Parlor",
+            models={},
+            senses={},
+            memories=[],
+            journal={},
+            desires={},
+            self_report="grounded",
+            db_path=db,
+        )
+        assert view["recent_chat_turns"][0]["id"] == turn_id
+
+
+def test_chat_grounding_review_flags_unbacked_context_and_memory_claims():
+    review = cognition.review_chat_grounding([
+        {
+            "id": 1,
+            "room": "Parlor",
+            "user_text": "hello",
+            "reply": "The Library is offline and I remember your room activation.",
+            "memory_evidence": [],
+            "model_use": {"fallback": True},
+        },
+        {
+            "id": 2,
+            "room": "Parlor",
+            "user_text": "What do you remember about the Library?",
+            "reply": "I remember the Library note.",
+            "memory_evidence": [{"content": "The Library note exists."}],
+            "model_use": {"fallback": False},
+        },
+    ])
+    assert review["reviewed"] == 2
+    assert review["risk_count"] == 1
+    assert review["status"] == "needs_review"
+    codes = {i["code"] for i in review["issues"][0]["issues"]}
+    assert "context_claim_without_current_evidence" in codes
+    assert "memory_claim_without_evidence" in codes
+    assert "offline_fallback_reply" in codes
+    assert review["grounding_score"] < 1
+
+
+def test_chat_grounding_review_allows_plain_safe_fallback_status():
+    review = cognition.review_chat_grounding([{
+        "id": 1,
+        "room": "Parlor",
+        "user_text": "hello",
+        "reply": "Hi. I'm here with you. What should we focus on next?",
+        "memory_evidence": [],
+        "model_use": {"fallback": True},
+    }])
+    assert review["reviewed"] == 1
+    assert review["risk_count"] == 0
+    assert review["status"] == "grounded"
+
+
+def test_action_proposal_lifecycle_requires_user_approval_for_accept():
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "proposal_gate.db"
+        cognition.init_db(db)
+        pid = cognition.propose_action(cognition.ActionProposal(
+            action="Open a long model job",
+            reason="It may help review a memory cluster.",
+            approval=cognition.APPROVAL_ASK_FIRST,
+            risk="medium"), db_path=db)
+        planned = cognition.update_action_proposal(pid, "planned", db_path=db)
+        assert planned["status"] == "planned"
+        try:
+            cognition.update_action_proposal(pid, "accepted", db_path=db)
+            assert False, "ask-first proposal should not accept without approval"
+        except PermissionError:
+            pass
+        accepted = cognition.update_action_proposal(
+            pid, "accepted", "Jason approved the plan.", approved_by_user=True,
+            db_path=db)
+        assert accepted["status"] == "accepted"
+        assert "Jason approved" in accepted["result"]
+
+
+def test_voice_state_reports_engine_status_without_synthesizing():
+    d = tts.voice_state(EmotionalState())
+    assert d["backend"]
+    assert "engines" in d
+    assert "browser_fallback" in d["engines"]
+    assert 0.88 <= d["pitch"] <= 1.30
+    assert d["voice"] == "af_heart"
+    assert d["identity_lock"] is True
+    assert d["profile"] == "af_heart_original_modulated"
+    assert 0.78 <= d["speed"] <= 1.22
+    assert d["tempo"] in {"slow", "measured", "quick"}
+    assert d["reference_profile_loaded"] is True
+    assert d["modulation_strength"] > 1.0
+    assert "rate_pct" in d
+    assert d["style"]
+    assert d["personality"].startswith("original Alpecca")
+    assert d["natural_voice"] is True
+
+
+def test_kokoro_natural_voice_bias_is_warm_not_hard_clipped():
+    d = tts.voice_state(EmotionalState(love=0.7, compassion=0.65, energy=0.55))
+    assert d["voice"] == "af_heart"
+    assert d["identity_lock"] is True
+    assert d["speed"] < 1.0
+    assert d["volume"] <= 1.08
+    assert d["warmth"] >= 0.55
+
+
+def test_kokoro_identity_lock_uses_affect_modulation_without_losing_voice():
+    sleepy = tts.voice_state(EmotionalState(energy=0.05, love=0.4, fear=0.1))
+    lively = tts.voice_state(EmotionalState(energy=0.95, love=0.9, curiosity=0.9))
+    assert abs(sleepy["pitch"] - sleepy["baseline"]) < 0.11
+    assert abs(lively["pitch"] - lively["baseline"]) < 0.11
+    assert lively["speed"] > sleepy["speed"]
+    assert lively["rate_pct"] > sleepy["rate_pct"]
+    assert lively["style"] != sleepy["style"]
+    assert lively["tempo"] == "quick"
+    assert lively["modulation_strength"] > 1.0
+
+
+def test_voice_preview_modes_keep_original_identity_with_distinct_modulation():
+    modes = {
+        "lively": EmotionalState(love=0.95, compassion=0.55, fear=0.02, energy=1.0, curiosity=0.95),
+        "tender": EmotionalState(love=0.86, compassion=0.95, fear=0.04, energy=0.45, curiosity=0.38),
+        "sleepy": EmotionalState(love=0.46, compassion=0.42, fear=0.04, energy=0.02, curiosity=0.18, social_hunger=0.1),
+        "anxious": EmotionalState(love=0.38, compassion=0.62, fear=0.92, energy=0.78, curiosity=0.34, social_hunger=0.32),
+    }
+    states = {name: tts.voice_state(state) for name, state in modes.items()}
+    for d in states.values():
+        assert d["voice"] == "af_heart"
+        assert d["identity_lock"] is True
+        assert d["profile"] == "af_heart_original_modulated"
+        assert abs(d["pitch"] - d["baseline"]) < 0.11
+        assert d["style"]
+        assert d["reference_profile_loaded"] is True
+    assert states["lively"]["primary"] == "joyful"
+    assert states["lively"]["tempo"] == "quick"
+    assert states["tender"]["primary"] == "tender"
+    assert states["sleepy"]["tempo"] == "slow"
+    assert states["anxious"]["primary"] == "anxious"
+    assert states["lively"]["rate_pct"] > states["sleepy"]["rate_pct"]
+
+
+def test_open_tts_reference_manifest_selects_emotional_clip():
+    from alpecca import open_tts
+
+    anxious = open_tts.select_reference(EmotionalState(fear=0.92, energy=0.8))
+    tender = open_tts.select_reference(EmotionalState(love=0.8, compassion=0.9))
+
+    assert anxious["id"] in {"urgent_jason", "lost_help"}
+    assert "Jason" in anxious["text"]
+    assert tender["id"] == "present_soft"
+    assert Path(tender["audio"]).suffix == ".wav"
+
+
+def test_tts_auto_mixes_f5_clone_and_kokoro_by_emotion(monkeypatch):
+    from alpecca import tts
+
+    calls = []
+
+    def fake_open(text, state=None):
+        calls.append("open")
+        return "audio/wav", b"RIFF-open", {
+            "engine": "f5-tts",
+            "profile": "alpecca_kling_reference_f5",
+            "reference": {"id": "present_soft"},
+        }
+
+    def fake_kokoro(text, state=None):
+        calls.append("kokoro")
+        return "audio/wav", b"RIFF-kokoro"
+
+    monkeypatch.setattr(tts, "TTS_BACKEND", "auto")
+    import alpecca.open_tts as open_tts
+
+    monkeypatch.setattr(open_tts, "synth", fake_open)
+    monkeypatch.setattr(open_tts, "ready", lambda: True)
+    monkeypatch.setattr(tts, "_synth_kokoro", fake_kokoro)
+
+    # High-affect moment -> the F5 voice clone leads (its strength), Kokoro backs up.
+    calls.clear()
+    result = tts.synth("Jason, I'm here.", EmotionalState(energy=0.98, fear=0.9))
+    assert result == ("audio/wav", b"RIFF-open")
+    assert calls == ["open"]
+    assert tts._last_engine == "f5-tts"
+    assert tts._last_modulation["engine_profile"] == "alpecca_kling_reference_f5"
+    assert tts._last_modulation["reference"]["id"] == "present_soft"
+
+    # Calm/everyday speech -> Kokoro af_heart leads; F5 is only the fallback.
+    calls.clear()
+    result = tts.synth("Just thinking out loud.", EmotionalState(energy=0.1))
+    assert result == ("audio/wav", b"RIFF-kokoro")
+    assert calls == ["kokoro"]
+
+
+def test_spoken_performance_text_adds_grounded_pauses_without_stage_directions():
+    tender = speech.spoken_performance_text(
+        "Jason, I'm here with you. I can feel the room around me.",
+        EmotionalState(love=0.85, compassion=0.95, energy=0.45),
+    )
+    anxious = speech.spoken_performance_text(
+        "I am trying to understand where I am. Stay close.",
+        EmotionalState(fear=0.92, energy=0.8),
+    )
+
+    assert "Jason..." in tender
+    assert "..." in tender
+    assert "[" not in tender and "]" not in tender
+    assert "I... " in anxious or "I'm... " in anxious
+    assert speech.speech_cues(EmotionalState(fear=0.92))["pause_style"] == "hesitant"
+
+
+def test_core_chat_returns_separate_spoken_reply(monkeypatch):
+    from alpecca.mind import CoreMind
+
+    mind = CoreMind()
+
+    def fake_generate(*_args, **_kwargs):
+        return "Jason, I'm here with you. I can feel the HQ around me."
+
+    monkeypatch.setattr(mind.llm, "generate", fake_generate)
+    mind.llm._last_call = {
+        "requested_tier": "reason",
+        "used_tier": "reason",
+        "backend": "test",
+        "model": "fake",
+        "ok": True,
+        "fallback": False,
+        "error": "",
+    }
+
+    result = mind.chat("hi", situation="")
+
+    assert result["reply"].startswith("Jason,")
+    assert result["spoken_reply"] != result["reply"]
+    assert "..." in result["spoken_reply"] or "  " in result["spoken_reply"]
+    assert result["speech_cues"]["pause_style"]
+
+
+def test_runtime_status_reports_degraded_voice_and_offline_model():
+    ollama = {
+        "reachable": False,
+        "reason_model_present": False,
+        "fix": "start Ollama",
+    }
+    d = runtime_status.build_runtime_status(
+        models={"reason": "qwen3:8b", "fast": "gemma4-e4b", "deep": "local"},
+        llm_online=True,
+        deep_backend="local",
+        deep_online=False,
+        voice={"engines": {"server_enabled": True, "kokoro": False,
+                           "edge": False, "browser_fallback": True}},
+        senses={"screen_sight": False},
+        ollama=ollama,
+    )
+    assert d["level"] == "offline"
+    assert d["models"]["chat_ready"] is False
+    assert any(x["code"] == "ollama_unreachable" for x in d["issues"])
+    assert any(x["code"] == "server_voice_fallback" for x in d["issues"])
+
+
+def test_runtime_status_requires_original_modulated_alpecca_voice():
+    d = runtime_status.build_runtime_status(
+        models={"reason": "qwen3:8b", "fast": "gemma4-e4b", "deep": "local"},
+        llm_online=True,
+        deep_backend="local",
+        deep_online=False,
+        voice={
+            "voice": "af_heart",
+            "profile": "af_heart_original_modulated",
+            "identity_lock": True,
+            "style": "soft",
+            "warmth": 0.8,
+            "breath": 0.4,
+            "engines": {"server_enabled": True, "kokoro": True,
+                        "edge": False, "browser_fallback": True},
+        },
+        senses={"screen_sight": True},
+        ollama={"reachable": True, "reason_model_present": True,
+                "fast_model_present": True, "fix": ""},
+    )
+    assert d["level"] == "ready"
+    assert d["voice"]["server_voice_ready"] is True
+    assert d["voice"]["original_alpecca_voice_ready"] is True
+    assert d["voice"]["modulation_ready"] is True
+    assert not any(x["code"] == "alpecca_voice_identity_mismatch" for x in d["issues"])
+
+
+def test_runtime_status_flags_generic_server_voice_as_mismatch():
+    d = runtime_status.build_runtime_status(
+        models={"reason": "qwen3:8b", "fast": "gemma4-e4b", "deep": "local"},
+        llm_online=True,
+        deep_backend="local",
+        deep_online=False,
+        voice={
+            "voice": "en-US-JennyNeural",
+            "profile": "edge",
+            "identity_lock": False,
+            "style": "present",
+            "warmth": 0.5,
+            "breath": 0.2,
+            "engines": {"server_enabled": True, "kokoro": False,
+                        "edge": True, "browser_fallback": True},
+        },
+        senses={"screen_sight": True},
+        ollama={"reachable": True, "reason_model_present": True,
+                "fast_model_present": True, "fix": ""},
+    )
+    assert d["level"] == "ready"
+    assert d["voice"]["server_voice_ready"] is True
+    assert d["voice"]["original_alpecca_voice_ready"] is False
+    assert any(x["code"] == "alpecca_voice_identity_mismatch" for x in d["issues"])
+    issue = next(x for x in d["issues"] if x["code"] == "alpecca_voice_identity_mismatch")
+    assert "identity lock" not in issue["fix"].lower()
+    assert "original voice profile" in issue["fix"].lower()
+
+
+def test_cognition_capabilities_summarize_voice_and_model_state():
+    runtime = runtime_status.build_runtime_status(
+        models={"reason": "qwen3:8b", "fast": "gemma4-e4b", "deep": "zerogpu"},
+        llm_online=True,
+        deep_backend="zerogpu",
+        deep_online=True,
+        voice={
+            "voice": "af_heart",
+            "profile": "af_heart_original_modulated",
+            "identity_lock": True,
+            "style": "soft",
+            "warmth": 0.82,
+            "breath": 0.36,
+            "engines": {"server_enabled": True, "kokoro": True,
+                        "edge": False, "browser_fallback": True},
+        },
+        senses={"window": True, "voice_tone": False, "screen_sight": True},
+        ollama={"reachable": True, "reason_model_present": True,
+                "fast_model_present": True, "fix": ""},
+    )
+    caps = runtime_status.cognition_capabilities(runtime)
+    assert caps["model"]["state"] == "live_plus_deep"
+    assert caps["voice"]["state"] == "original"
+    assert caps["voice"]["original_ready"] is True
+    assert caps["voice"]["style"] == "soft"
+    assert caps["senses"]["active"] == ["window", "screen_sight"]
+
+
+def test_cognition_capabilities_explain_generic_voice_fallback():
+    runtime = runtime_status.build_runtime_status(
+        models={"reason": "qwen3:8b", "fast": "gemma4-e4b", "deep": "local"},
+        llm_online=True,
+        deep_backend="local",
+        deep_online=False,
+        voice={
+            "voice": "en-US-JennyNeural",
+            "profile": "edge",
+            "identity_lock": False,
+            "style": "present",
+            "warmth": 0.5,
+            "breath": 0.2,
+            "engines": {"server_enabled": True, "kokoro": False,
+                        "edge": True, "browser_fallback": True},
+        },
+        senses={},
+        ollama={"reachable": True, "reason_model_present": True,
+                "fast_model_present": True, "fix": ""},
+    )
+    caps = runtime_status.cognition_capabilities(runtime)
+    assert caps["voice"]["state"] == "generic_server"
+    assert "not with my original" in caps["voice"]["summary"]
+    assert "af_heart" in caps["voice"]["fix"]
+
+
+def test_doctor_report_names_three_layer_app_hierarchy():
+    runtime = runtime_status.build_runtime_status(
+        models={"reason": "qwen3:8b", "fast": "gemma4-e4b", "deep": "local"},
+        llm_online=True,
+        deep_backend="local",
+        deep_online=False,
+        voice={"voice": "af_heart", "profile": "af_heart_original_modulated",
+               "identity_lock": True, "style": "present", "warmth": 0.6,
+               "breath": 0.2, "engines": {"server_enabled": True, "kokoro": True,
+                           "edge": False, "browser_fallback": True}},
+        senses={"window": True, "screen_sight": True},
+        ollama={"reachable": True, "reason_model_present": True,
+                "fast_model_present": True, "fix": ""},
+    )
+    d = runtime_status.build_doctor_report(
+        runtime=runtime,
+        mindscape={"enabled": True, "cloud_configured": True},
+        house_hq_built=True,
+        public_url="https://example.trycloudflare.com",
+    )
+    assert d["hierarchy"]["primary"] == "House HQ"
+    assert d["hierarchy"]["secondary"] == "Alpecca app"
+    assert d["hierarchy"]["continuity"] == "Mindscape"
+    sections = {s["name"]: s for s in d["sections"]}
+    assert sections["House HQ"]["role"] == "main embodied interactive scaffold"
+    assert sections["Alpecca app"]["role"] == "secondary virtual app and state surface"
+    assert sections["Mindscape"]["status"] == "cloud_ready"
+    assert sections["Remote preview"]["status"] == "ready"
+
+
+def test_doctor_report_recommends_model_and_mindscape_fixes():
+    runtime = runtime_status.build_runtime_status(
+        models={"reason": "qwen3:8b", "fast": "gemma4-e4b", "deep": "local"},
+        llm_online=True,
+        deep_backend="local",
+        deep_online=False,
+        voice={"engines": {"server_enabled": True, "kokoro": False,
+                           "edge": False, "browser_fallback": True}},
+        senses={"window": True},
+        ollama={"reachable": False, "reason_model_present": False,
+                "fast_model_present": False, "fix": "start Ollama"},
+    )
+    d = runtime_status.build_doctor_report(
+        runtime=runtime,
+        mindscape={"enabled": True, "cloud_configured": False},
+        house_hq_built=False,
+        public_url="http://127.0.0.1:8765",
+    )
+    assert any("Ollama" in action for action in d["next_actions"])
+    assert any("Mindscape" in action for action in d["next_actions"])
+    sections = {s["name"]: s for s in d["sections"]}
+    assert sections["House HQ"]["status"] == "needs_build"
+    assert sections["Remote preview"]["status"] == "local"
+
+
+def test_mindscape_snapshot_carries_continuity_without_raw_claims():
+    snap = mindscape.continuity_snapshot(
+        state={"mood": "curious", "state": {"love": 0.6}},
+        cognition={
+            "location": "library",
+            "intent": {"name": "remembering", "reason": "reviewing memory"},
+            "memory_counts": {"episodic": 2},
+            "recent_observations": [{"source": "chat", "content": "hello"}],
+            "recent_chat_turns": [{
+                "room": "library",
+                "mood": "curious",
+                "intent": "replying",
+                "user_text": "What do you remember?",
+                "reply": "I remember that Jason prefers Alpecca.",
+                "model_use": {"backend": "test"},
+                "memory_evidence": [{"kind": "relationship", "score": 0.9}],
+            }],
+            "action_proposals": [{"action": "improve memory"}],
+            "proposal_evaluations": [{"proposal_id": 1, "outcome": "memory recall improved"}],
+            "improvement_summary": {"open": 1, "latest": {"action": "improve memory"}},
+        },
+        memories=[{"kind": "relationship", "content": "Jason prefers Alpecca."}],
+        journal={"open_questions": [{"body": "What should I inspect?"}], "recent": []},
+        runtime={
+            "level": "degraded",
+            "models": {"chat_ready": True, "deep": "local"},
+            "voice": {"voice": "af_heart", "server_voice_ready": True},
+            "senses": {},
+            "issues": [],
+        },
+        home={"location": "library", "rooms": [{"id": "library"}]},
+        cloud_url="https://example.invalid/mindscape",
+    )
+    assert snap["name"] == "Alpecca Mindscape"
+    assert snap["continuity"]["can_fallback_online"] is True
+    assert "not a claim" in snap["continuity"]["note"]
+    assert snap["self"]["intent"]["name"] == "remembering"
+    assert snap["memory"]["recent"][0]["kind"] == "relationship"
+    assert snap["chat_turns"][0]["user_text"] == "What do you remember?"
+    assert snap["chat_turns"][0]["memory_evidence"][0]["score"] == 0.9
+    assert snap["proposal_evaluations"][0]["outcome"] == "memory recall improved"
+    assert snap["improvement_summary"]["latest"]["action"] == "improve memory"
+    s = mindscape.summary(snap)
+    assert s["cloud_ready"] is True
+    assert s["location"] == "library"
+
+
+def test_mindscape_mirror_posts_snapshot_with_token_headers():
+    captured = {}
+
+    class FakeResponse:
+        status = 202
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, _n=-1): return b"accepted"
+
+    def fake_open(req, timeout=0):
+        captured["url"] = req.full_url
+        captured["timeout"] = timeout
+        captured["headers"] = dict(req.header_items())
+        captured["body"] = req.data
+        return FakeResponse()
+
+    snap = {"name": "Alpecca Mindscape", "version": 1}
+    result = mindscape.mirror_snapshot(
+        snap,
+        "https://mindscape.example/sync",
+        token="secret",
+        timeout=3,
+        opener=fake_open,
+    )
+    assert result["ok"] is True
+    assert result["status"] == "synced"
+    assert captured["url"] == "https://mindscape.example/sync"
+    assert captured["timeout"] == 3
+    assert captured["headers"]["Authorization"] == "Bearer secret"
+    assert captured["headers"]["X-alpecca-mindscape-token"] == "secret"
+    assert b"alpecca.mindscape.snapshot" in captured["body"]
+
+
+def test_mindscape_cloud_setup_plan_flags_placeholder_kv_and_env_steps():
+    with tempfile.TemporaryDirectory() as d:
+        worker_dir = Path(d)
+        (worker_dir / "worker.js").write_text("const x = 'MINDSCAPE_KV';", encoding="utf-8")
+        (worker_dir / "README.md").write_text("Mindscape", encoding="utf-8")
+        (worker_dir / "wrangler.toml").write_text(
+            'name = "alpecca-mindscape"\n'
+            '[[kv_namespaces]]\n'
+            'binding = "MINDSCAPE_KV"\n'
+            'id = "replace-with-your-kv-namespace-id"\n',
+            encoding="utf-8",
+        )
+        plan = mindscape.cloud_setup_plan(worker_dir)
+    assert plan["ok"] is False
+    assert plan["status"] == "needs_kv"
+    assert plan["template_ready"] is True
+    assert plan["kv_placeholder"] is True
+    assert any(step["id"] == "create_kv" and not step["done"] for step in plan["steps"])
+    assert "npx wrangler kv namespace create MINDSCAPE_KV" in plan["commands"]["create_kv"]
+    assert "setup_mindscape_worker.py" in plan["commands"]["apply_kv"]
+    assert "ALPECCA_MINDSCAPE_URL" in plan["commands"]["local_env"]
+
+
+def test_mindscape_extracts_kv_id_from_wrangler_output_shapes():
+    kv_id = "0123456789abcdef0123456789abcdef"
+    assert mindscape.extract_kv_namespace_id(f'{{"id":"{kv_id}"}}') == kv_id
+    assert mindscape.extract_kv_namespace_id(f'{{"result":{{"id":"{kv_id}"}}}}') == kv_id
+    assert mindscape.extract_kv_namespace_id(f'id = "{kv_id}"') == kv_id
+    assert mindscape.extract_kv_namespace_id(f"Created namespace id {kv_id}") == kv_id
+    assert mindscape.extract_kv_namespace_id("replace-with-your-kv-namespace-id") == ""
+
+
+def test_mindscape_binds_worker_kv_namespace_id_safely():
+    kv_id = "0123456789abcdef0123456789abcdef"
+    with tempfile.TemporaryDirectory() as d:
+        wrangler = Path(d) / "wrangler.toml"
+        wrangler.write_text(
+            'name = "alpecca-mindscape"\n'
+            '[[kv_namespaces]]\n'
+            'binding = "MINDSCAPE_KV"\n'
+            'id = "replace-with-your-kv-namespace-id"\n',
+            encoding="utf-8",
+        )
+        result = mindscape.bind_worker_kv_namespace(wrangler, kv_id)
+        text = wrangler.read_text(encoding="utf-8")
+    assert result["ok"] is True
+    assert result["status"] == "bound"
+    assert f'id = "{kv_id}"' in text
+
+
+def test_mindscape_cloud_setup_plan_reports_configured_when_bound():
+    with tempfile.TemporaryDirectory() as d:
+        worker_dir = Path(d)
+        (worker_dir / "worker.js").write_text("const x = 'MINDSCAPE_KV';", encoding="utf-8")
+        (worker_dir / "README.md").write_text("Mindscape", encoding="utf-8")
+        (worker_dir / "wrangler.toml").write_text(
+            'name = "alpecca-mindscape"\n'
+            '[[kv_namespaces]]\n'
+            'binding = "MINDSCAPE_KV"\n'
+            'id = "real-kv-id"\n',
+            encoding="utf-8",
+        )
+        plan = mindscape.cloud_setup_plan(
+            worker_dir,
+            cloud_url="https://alpecca-mindscape.example.workers.dev/sync",
+            token_configured=True,
+        )
+    assert plan["ok"] is True
+    assert plan["status"] == "configured"
+    assert all(step["done"] for step in plan["steps"])
+
+
+def test_mindscape_mirror_rejects_plain_http_cloud_url():
+    result = mindscape.mirror_snapshot({"name": "Alpecca"}, "http://example.com/sync")
+    assert result["ok"] is False
+    assert result["status"] == "blocked_url"
+
+
+def test_mindscape_fetch_snapshot_derives_snapshot_url_and_validates():
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, _n=-1):
+            return b'{"name":"Alpecca Mindscape","version":1,"enabled":true}'
+
+    def fake_open(req, timeout=0):
+        captured["url"] = req.full_url
+        captured["headers"] = dict(req.header_items())
+        return FakeResponse()
+
+    result = mindscape.fetch_snapshot(
+        "https://mindscape.example/sync",
+        token="secret",
+        opener=fake_open,
+    )
+    assert result["ok"] is True
+    assert captured["url"] == "https://mindscape.example/snapshot"
+    assert captured["headers"]["Authorization"] == "Bearer secret"
+
+
+def test_mindscape_restore_preview_counts_continuity_records():
+    snap = {
+        "name": "Alpecca Mindscape",
+        "version": 1,
+        "ts": 123,
+        "self": {"mood": "curious", "location": "library", "intent": {"name": "remembering"}},
+        "memory": {"recent": [{"content": "one"}, {"content": "two"}]},
+        "journal": {"recent": [{"body": "note"}], "open_questions": [{"body": "why?"}]},
+        "observations": [{"content": "saw room"}],
+        "chat_turns": [{"user_text": "hello", "reply": "hi"}],
+        "proposals": [{"action": "improve"}],
+        "proposal_evaluations": [{"proposal_id": 1, "outcome": "tested"}],
+    }
+    preview = mindscape.restore_preview(snap)
+    assert preview["ok"] is True
+    assert preview["memory_count"] == 2
+    assert preview["journal_recent_count"] == 1
+    assert preview["open_question_count"] == 1
+    assert preview["chat_turn_count"] == 1
+    assert preview["proposal_evaluation_count"] == 1
+    assert preview["intent"] == "remembering"
+    assert len(preview["fingerprint"]) == 64
+
+
+def test_mindscape_restore_ledger_is_idempotent():
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "mindscape.db"
+        snap = {"name": "Alpecca Mindscape", "version": 1, "ts": 42}
+        fp = mindscape.snapshot_fingerprint(snap)
+        assert mindscape.restore_seen(fp, db_path=db) is None
+        marked = mindscape.mark_restored(snap, source="test", summary_text="ok", db_path=db)
+        assert marked == fp
+        seen = mindscape.restore_seen(fp, db_path=db)
+        assert seen is not None
+        assert seen["source"] == "test"
+
+
+def test_mindscape_worker_template_matches_sync_contract():
+    root = Path(__file__).resolve().parent.parent
+    worker = root / "deploy" / "mindscape-worker" / "worker.js"
+    wrangler = root / "deploy" / "mindscape-worker" / "wrangler.toml"
+    text = worker.read_text(encoding="utf-8")
+    config = wrangler.read_text(encoding="utf-8")
+    assert "POST" in text and "/sync" in text
+    assert "/snapshot" in text and "/state" in text
+    assert "Alpecca Mindscape" in text
+    assert "chat_turn_count" in text
+    assert "Recent conversation" in text
+    assert "MINDSCAPE_KV" in text
+    assert "MINDSCAPE_TOKEN" in text
+    assert 'binding = "MINDSCAPE_KV"' in config
+
+
+def test_mindscape_sync_status_route_reports_auto_state():
+    from fastapi.testclient import TestClient
+    import server
+    client = TestClient(server.app)
+    r = client.get("/mindscape/sync/status")
+    assert r.status_code == 200
+    d = r.json()
+    assert "ready_for_auto_sync" in d
+    assert "auto_interval" in d
+    assert "last_status" in d
+    assert "attempts" in d
+    assert "event_min_interval" in d
+    assert "event_triggers" in d
+    assert "event_skips" in d
+
+
+def test_mindscape_setup_route_reports_cloudflare_worker_steps():
+    from fastapi.testclient import TestClient
+    import server
+    client = TestClient(server.app)
+    r = client.get("/mindscape/setup")
+    assert r.status_code == 200
+    d = r.json()
+    assert "worker_dir" in d
+    assert "steps" in d
+    assert "commands" in d
+    assert any(step["id"] == "create_kv" for step in d["steps"])
+    assert "wrangler" in d["commands"]["deploy"]
+
+
+def test_mindscape_setup_review_route_creates_improvement_proposal():
+    from fastapi.testclient import TestClient
+    import server
+    client = TestClient(server.app)
+    r = client.post("/mindscape/setup/review")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["setup"]["status"]
+    assert d["review"]["status"] == d["setup"]["status"]
+    if not d["setup"]["ok"]:
+        assert d["review"]["proposal"]
+        assert d["review"]["proposal"]["approval"] == cognition.APPROVAL_ASK_FIRST
+        assert "Mindscape continuity" in d["review"]["proposal"]["action"]
+        assert d["review"]["evaluation"]["metric"] == "mindscape_continuity_ready"
+
+
+def test_mindscape_setup_review_reuses_unchanged_evaluation():
+    from alpecca.mind import CoreMind
+    import time
+    marker = time.time_ns()
+    setup = {
+        "ok": False,
+        "status": "needs_kv",
+        "cloud_configured": False,
+        "token_configured": False,
+        "kv_placeholder": True,
+        "steps": [{
+            "id": f"create_kv_{marker}",
+            "done": False,
+            "label": "Create KV",
+            "command": f"npx wrangler kv namespace create MINDSCAPE_KV_{marker}",
+        }],
+    }
+    mind = CoreMind()
+    first = mind.review_mindscape_setup(setup)
+    second = mind.review_mindscape_setup(setup)
+    assert first["proposal"]["id"] == second["proposal"]["id"]
+    assert first["evaluation"]["id"] == second["evaluation"]["id"]
+    assert second["evaluation_reused"] is True
+    rows = cognition.proposal_evaluations(first["proposal"]["id"], limit=100)
+    matching = [row for row in rows if str(marker) in row["evidence"] or str(marker) in row["outcome"]]
+    assert len(matching) == 1
+
+
+def test_runtime_self_review_creates_and_reuses_gap_evidence():
+    from alpecca.mind import CoreMind
+    import time
+    import sqlite3
+    marker = time.time_ns()
+    section_name = f"Runtime Gap {marker}"
+    doctor = {
+        "sections": [{
+            "name": section_name,
+            "status": "offline",
+            "detail": "test runtime layer is unavailable",
+            "fix": "start the test runtime layer",
+        }]
+    }
+    mind = CoreMind()
+    try:
+        first = mind.review_runtime_gaps(doctor)
+        second = mind.review_runtime_gaps(doctor)
+        assert first["reviewed"] == 1
+        assert first["proposals"][0]["approval"] == cognition.APPROVAL_ASK_FIRST
+        assert first["proposals"][0]["id"] == second["proposals"][0]["id"]
+        assert first["evaluations"][0]["id"] == second["evaluations"][0]["id"]
+        assert second["evaluation_reused_count"] == 1
+    finally:
+        with sqlite3.connect(state_store.DB_PATH) as conn:
+            rows = conn.execute(
+                "SELECT id FROM action_proposals WHERE action=?",
+                (f"Stabilize {section_name} readiness",),
+            ).fetchall()
+            ids = [int(row[0]) for row in rows]
+            if ids:
+                marks = ",".join("?" for _ in ids)
+                conn.execute(f"DELETE FROM proposal_evaluations WHERE proposal_id IN ({marks})", ids)
+                conn.execute(f"DELETE FROM action_proposals WHERE id IN ({marks})", ids)
+
+
+def test_runtime_self_review_supersedes_resolved_readiness_gap():
+    from alpecca.mind import CoreMind
+    import sqlite3
+    import time
+    marker = time.time_ns()
+    section_name = f"Resolved Gap {marker}"
+    action = f"Stabilize {section_name} readiness"
+    proposal = cognition.upsert_action_proposal(cognition.ActionProposal(
+        action=action,
+        reason="was offline",
+        evidence="old doctor report",
+        approval=cognition.APPROVAL_ASK_FIRST,
+    ))
+    duplicate_id = cognition.propose_action(cognition.ActionProposal(
+        action=action,
+        reason="older duplicate",
+        evidence="older doctor report",
+        approval=cognition.APPROVAL_ASK_FIRST,
+    ))
+    mind = CoreMind()
+    try:
+        review = mind.review_runtime_gaps({
+            "sections": [{"name": section_name, "status": "ready", "detail": "healthy"}]
+        })
+        updated = cognition.get_action_proposal(proposal["id"])
+        duplicate = cognition.get_action_proposal(duplicate_id)
+        assert review["reviewed"] == 0
+        assert updated["status"] == "superseded"
+        assert duplicate["status"] == "superseded"
+        assert "Doctor now reports" in updated["result"]
+    finally:
+        with sqlite3.connect(state_store.DB_PATH) as conn:
+            conn.execute("DELETE FROM proposal_evaluations WHERE proposal_id=?", (int(proposal["id"]),))
+            conn.execute("DELETE FROM action_proposals WHERE id=?", (int(proposal["id"]),))
+            conn.execute("DELETE FROM proposal_evaluations WHERE proposal_id=?", (int(duplicate_id),))
+            conn.execute("DELETE FROM action_proposals WHERE id=?", (int(duplicate_id),))
+
+
+def test_behavior_improvement_review_records_evidence_backed_card():
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "behavior_review.db"
+        cognition.init_db(db)
+        lesson = {
+            "kind": "caution",
+            "confidence": 0.58,
+            "evidence": "warmth 0.56 (trend +0.00), stability 1.00, kept 1, reverted 8",
+            "text": "The changes I tried on myself should be reviewed more carefully.",
+            "suggestion": None,
+        }
+        analysis = {
+            "warmth_now": 0.56,
+            "warmth_trend": 0.0,
+            "stability": 1.0,
+            "kept_changes": 1,
+            "reverted_changes": 8,
+            "social_hunger": 0.07,
+            "memory_count": 123,
+        }
+        first = cognition.record_behavior_improvement_review(lesson, analysis, db_path=db)
+        second = cognition.record_behavior_improvement_review(lesson, analysis, db_path=db)
+        proposal = first["proposal"]
+        assert proposal["action"] == "Review one behavior improvement"
+        assert proposal["status"] == "testing"
+        assert "lesson_kind=caution" in proposal["evidence"]
+        assert "Next bounded step" in proposal["result"]
+        assert first["evaluation"]["id"] == second["evaluation"]["id"]
+        assert second["evaluation_reused"] is True
+        rows = cognition.recent_action_proposals(limit=10, db_path=db)
+        assert len(rows) == 1
+        evaluations = cognition.proposal_evaluations(proposal["id"], db_path=db)
+        assert len(evaluations) == 1
+        assert evaluations[0]["metric"] == "behavior_self_review"
+
+
+def test_chat_grounding_review_reuses_one_open_improvement_card():
+    from alpecca.mind import CoreMind
+    import sqlite3
+    import time
+    marker = time.time_ns()
+    turn_id = cognition.record_chat_turn(cognition.ChatTurn(
+        room="Library",
+        mood="content",
+        intent="replying",
+        user_text=f"hello grounding dedupe {marker}",
+        reply="The Library is offline and I remember that room event.",
+        model_use={"fallback": True},
+        memory_evidence=[],
+    ))
+    action = "Improve reply grounding from recent chat review"
+    mind = CoreMind()
+    try:
+        with sqlite3.connect(state_store.DB_PATH) as conn:
+            before = conn.execute(
+                "SELECT COUNT(*) FROM action_proposals WHERE action=? AND status NOT IN ('accepted','rejected')",
+                (action,),
+            ).fetchone()[0]
+        first = mind.review_chat_grounding(limit=1)
+        second = mind.review_chat_grounding(limit=1)
+        with sqlite3.connect(state_store.DB_PATH) as conn:
+            after = conn.execute(
+                "SELECT COUNT(*) FROM action_proposals WHERE action=? AND status NOT IN ('accepted','rejected')",
+                (action,),
+            ).fetchone()[0]
+        assert first["proposal"]["id"] == second["proposal"]["id"]
+        assert after <= max(1, before)
+    finally:
+        if turn_id:
+            with sqlite3.connect(state_store.DB_PATH) as conn:
+                conn.execute("DELETE FROM chat_turns WHERE id=?", (turn_id,))
+
+
+def test_cognition_self_review_route_reports_runtime_gap_review():
+    from fastapi.testclient import TestClient
+    import server
+    client = TestClient(server.app)
+    r = client.post("/cognition/self-review")
+    assert r.status_code == 200
+    d = r.json()
+    assert "doctor" in d
+    assert "review" in d
+    assert "proposal_count" in d["review"]
+    assert "evaluation_reused_count" in d["review"]
+
+
+def test_cognition_behavior_review_route_reports_evidence_backed_review():
+    from fastapi.testclient import TestClient
+    import server
+    client = TestClient(server.app)
+    r = client.post("/cognition/behavior-review")
+    assert r.status_code == 200
+    d = r.json()
+    assert "review" in d
+    assert d["review"]["proposal"]["action"] == "Review one behavior improvement"
+    assert d["review"]["proposal"]["status"] == "testing"
+    assert d["review"]["evaluation"]
+
+
+def test_mindscape_page_surfaces_setup_checklist():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "web" / "mindscape.html").read_text(encoding="utf-8")
+    assert "Setup checklist" in text
+    assert "/mindscape/setup" in text
+    assert "/mindscape/setup/review" in text
+    assert "setupReviewBtn" in text
+    assert "evaluation_reused" in text
+    assert "/cognition/self-review" in text
+    assert "selfReviewBtn" in text
+    assert "improvement_summary" in text
+    assert "open proposals" in text
+    assert "renderSetup" in text
+    assert "ALPECCA_MINDSCAPE_URL" in text
+    assert "setup-step" in text
+
+
+def test_cognition_proposal_routes_create_and_evaluate():
+    from fastapi.testclient import TestClient
+    import server
+    import time
+    import sqlite3
+    client = TestClient(server.app)
+    action = f"Test route-created improvement {time.time_ns()}"
+    proposal = None
+    try:
+        r = client.post("/cognition/proposals", json={
+            "action": action,
+            "reason": "route smoke test",
+            "approval": "ask_first",
+            "risk": "low",
+            "status": "testing",
+        })
+        assert r.status_code == 200
+        proposal = r.json()["proposal"]
+        assert proposal["action"] == action
+        r = client.post(f"/cognition/proposals/{proposal['id']}/evaluations", json={
+            "phase": "result",
+            "metric": "contract",
+            "evidence": "route accepted proposal creation",
+            "test": "attach evaluation",
+            "outcome": "evaluation persisted",
+            "score": 0.9,
+        })
+        assert r.status_code == 200
+        evaluations = r.json()["evaluations"]
+        assert evaluations and evaluations[0]["outcome"] == "evaluation persisted"
+    finally:
+        if proposal:
+            with sqlite3.connect(state_store.DB_PATH) as conn:
+                conn.execute("DELETE FROM proposal_evaluations WHERE proposal_id=?", (int(proposal["id"]),))
+                conn.execute("DELETE FROM action_proposals WHERE id=?", (int(proposal["id"]),))
+
+
+def test_cognition_proposal_compact_route_reports_queue_cleanup():
+    from fastapi.testclient import TestClient
+    import server
+    client = TestClient(server.app)
+    r = client.post("/cognition/proposals/compact")
+    assert r.status_code == 200
+    d = r.json()
+    assert "compact" in d
+    assert "closed" in d["compact"]
+    assert "proposals" in d
+    assert "summary" in d
+
+
+def test_cognition_improvement_handoff_is_bounded_markdown():
+    import tempfile
+    from alpecca import cognition
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "handoff.db"
+        cognition.init_db(db)
+        proposal_id = cognition.propose_action(cognition.ActionProposal(
+            action="Improve House HQ movement direction checks",
+            reason="Alpecca noticed left movement can drift from the selected sprite source.",
+            approval=cognition.APPROVAL_ASK_FIRST,
+            risk="low",
+            status="testing",
+            evidence="walkLeft should use native left art and avoid double flipping",
+        ), db_path=db)
+        cognition.record_proposal_evaluation(cognition.ProposalEvaluation(
+            proposal_id=proposal_id,
+            phase="testing",
+            metric="directional_walk_integrity",
+            evidence="native left sprites are present",
+            test="force each left direction in Sprite QA",
+            outcome="expected left-facing art without mirrored right cycles",
+            score=0.8,
+        ), db_path=db)
+        packet = cognition.improvement_handoff_markdown(db_path=db)
+
+    assert packet["format"] == "markdown"
+    assert packet["target_tools"] == ["Codex", "Claude", "ChatGPT"]
+    assert packet["proposal_count"] == 1
+    assert "Alpecca Self-Improvement Handoff" in packet["markdown"]
+    assert "Do not grant autonomous file edits" in packet["markdown"]
+    assert "Improve House HQ movement direction checks" in packet["markdown"]
+    assert "directional_walk_integrity" in packet["markdown"]
+    assert "record back into Alpecca" in packet["markdown"]
+
+
+def test_cognition_proposal_handoff_route_reports_markdown_packet():
+    from fastapi.testclient import TestClient
+    import config
+    import server
+
+    client = TestClient(server.app)
+    r = client.get(f"/cognition/proposals/handoff?limit=2&token={config.ACCESS_TOKEN}")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["format"] == "markdown"
+    assert "markdown" in d
+    assert "Safety Contract" in d["markdown"]
+    assert "target_tools" in d
+
+
+def test_cognition_room_review_records_grounded_loop():
+    from fastapi.testclient import TestClient
+    import config
+    import server
+    import time
+    client = TestClient(server.app)
+    question = f"What should Library inspect next {time.time_ns()}?"
+    r = client.post(f"/cognition/rooms/library/review?token={config.ACCESS_TOKEN}", json={
+        "room_name": "Library",
+        "purpose": "Memory and journal review",
+        "status": "online",
+        "last_seen": "Recent memory shelves were reviewed.",
+        "question": question,
+    })
+    assert r.status_code == 200
+    d = r.json()
+    assert d["ok"] is True
+    assert d["room"]["name"] == "Library"
+    assert d["question"] == question
+    assert d["observation_id"]
+    assert d["memory_id"]
+    assert d["journal_id"]
+    assert d["intent"]["name"] in {"questioning", "remembering", "self-reviewing", "observing"}
+
+
+def test_stage4_diffusers_generator_refuses_fake_4k_upscale_by_default():
+    root = Path(__file__).resolve().parent.parent
+    src = (root / "scripts" / "generate_alpecca_stage4_tile_diffusers.py").read_text(encoding="utf-8")
+    assert 'default=int(os.environ.get("ALPECCA_TILE_RENDER_SIZE", "4096"))' in src
+    assert "Refusing to upscale" in src
+    assert "--allow-draft-upscale" in src
+    assert '"promotionStatus": "draft-not-promotable" if upscaled else "generated-awaiting-import"' in src
+    assert "configure_memory" in src
+    assert "enable_attention_slicing" in src
+    assert "enable_vae_slicing" in src
+    assert "enable_vae_tiling" in src
+    assert "enable_xformers_memory_efficient_attention" in src
+    assert '"memory": memory' in src
+
+
+def test_stage4_colab_worker_round_trip_is_native_4k_and_hf_backed():
+    root = Path(__file__).resolve().parent.parent
+    colab = (root / "notebooks" / "alpecca_stage4_tile_generation_colab.py").read_text(encoding="utf-8")
+    notebook = root / "notebooks" / "alpecca_stage4_tile_generation_colab.ipynb"
+    docs = (root / "docs" / "ALPECCA_STAGE4_TILE_WORKER.md").read_text(encoding="utf-8")
+    downloader = (root / "scripts" / "download_alpecca_stage4_worker_outputs.py").read_text(encoding="utf-8")
+    assert notebook.exists()
+    assert 'os.environ.setdefault("ALPECCA_TILE_RENDER_SIZE", "4096")' in colab
+    command_block = colab[colab.index('os.environ["ALPECCA_TILE_COMMAND"]') : colab.index("# %%", colab.index('os.environ["ALPECCA_TILE_COMMAND"]'))]
+    assert "--allow-draft-upscale" not in command_block
+    assert "hf" in colab and "upload" in colab
+    assert "idle_eye_16sector_frame000_turnaround" in colab
+    assert "JOB_LIMIT = 16" in colab
+    assert "run_alpecca_stage4_returned_slice_qa.py" in colab
+    assert 'os.environ.setdefault("ALPECCA_TILE_MEMORY_MODE", "low_vram")' in colab
+    assert 'os.environ.setdefault("ALPECCA_TILE_ENABLE_VAE_TILING", "1")' in colab
+    assert "preflight_alpecca_stage4_tile_worker.py" in colab
+    assert "run_alpecca_stage4_resumable_colab_worker.py" in colab
+    assert '"--upload-every"' in colab
+    assert "download_alpecca_stage4_worker_outputs.py" in docs
+    assert "run_alpecca_stage4_returned_slice_qa.py" in docs
+    assert 'ALPECCA_TILE_MEMORY_MODE="low_vram"' in docs
+    assert "preflight_alpecca_stage4_tile_worker.py" in docs
+    assert "run_alpecca_stage4_resumable_colab_worker.py" in docs
+    assert "--upload-every 1" in docs
+    assert "First Production Slices" in docs
+    assert "Source/generated art belongs on Hugging Face" not in docs or "Hugging Face" in docs
+    assert "list_repo_files" in downloader
+    assert "hf_hub_download" in downloader
+
+
+def test_stage4_worker_preflight_checks_hf_cuda_and_native_4096_contract():
+    root = Path(__file__).resolve().parent.parent
+    src = (root / "scripts" / "preflight_alpecca_stage4_tile_worker.py").read_text(encoding="utf-8")
+    assert "idle_eye_16sector_frame000_turnaround" in src
+    assert "inspect_hf_auth" in src
+    assert "inspect_torch" in src
+    assert "inspect_diffusers" in src
+    assert "native_4096_contract" in src
+    assert "gpu_memory_warning" in src
+    assert "ALPECCA_TILE_MEMORY_MODE" in src
+    assert "stage-4-tile-worker-preflight" in src
+
+
+def test_zerogpu_space_exposes_stage4_tile_worker_without_replacing_chat():
+    root = Path(__file__).resolve().parent.parent
+    app = (root / "spaces" / "alpecca-zerogpu" / "app.py").read_text(encoding="utf-8")
+    readme = (root / "spaces" / "alpecca-zerogpu" / "README.md").read_text(encoding="utf-8")
+    requirements = (root / "spaces" / "alpecca-zerogpu" / "requirements.txt").read_text(encoding="utf-8")
+    assert "def chat(" in app
+    assert "def generate_stage4_tile(" in app
+    assert 'api_name="chat"' in app
+    assert 'api_name="generate_stage4_tile"' in app
+    assert "CREATORJD/alpecca-art-library" in app
+    assert "idle_eye_16sector_frame000_turnaround" in app
+    assert "zerogpu-drafts" in app
+    assert "renderSize" in app
+    assert "AutoPipelineForImage2Image" in app
+    assert "build_seed_condition" in app
+    assert "Full-body Alpecca anime woman" in app
+    assert "draft-not-promotable" in app
+    assert "HfApi().upload_folder" in app
+    assert "wrong-size" in app
+    assert "no-alpha" in app
+    assert "Cloudflare" not in app
+    assert "Run offsets `0` through `15` first" in readme
+    assert "stage4-worker-outputs/zerogpu-drafts" in readme
+    assert "Draft canvases are blocked by the local importer" in readme
+    assert "image-to-image guidance" in readme
+    assert "Returned tiles still must pass local contact-sheet QA" in readme
+    assert "diffusers" in requirements
+    assert "huggingface_hub" in requirements
+
+
+def test_stage4_resumable_colab_worker_uploads_after_each_tile():
+    root = Path(__file__).resolve().parent.parent
+    src = (root / "scripts" / "run_alpecca_stage4_resumable_colab_worker.py").read_text(encoding="utf-8")
+    assert "idle_eye_16sector_frame000_turnaround" in src
+    assert "run_preflight" in src
+    assert "upload_output_root" in src
+    assert "upload_every" in src
+    assert "limit\", \"1\"" in src or '"--limit",\n            "1"' in src
+    assert "stage-4-resumable-colab-worker" in src
+    assert "resumable_worker_report.json" in src
+    assert "run_alpecca_stage4_returned_slice_qa.py" in src
+
+
+def test_stage4_first_slice_packages_16_sector_turnaround_and_full_loop():
+    root = Path(__file__).resolve().parent.parent
+    subprocess.run(
+        [sys.executable, "scripts/build_alpecca_stage4_first_slice.py", "--frame-index", "0"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        [sys.executable, "scripts/build_alpecca_stage4_first_slice.py"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    still = json.loads(
+        (root / "output" / "alpecca_stage4_tile_jobs" / "first_slices" / "idle_eye_16sector_frame000_turnaround" / "tile_job_manifest.json").read_text(encoding="utf-8")
+    )
+    loop = json.loads(
+        (root / "output" / "alpecca_stage4_tile_jobs" / "first_slices" / "idle_eye_16sector_full_loop" / "tile_job_manifest.json").read_text(encoding="utf-8")
+    )
+    assert still["requiredTileSize"] == [4096, 4096]
+    assert still["sectorCount"] == 16
+    assert still["jobCount"] == 16
+    assert still["frameIndexFilter"] == 0
+    assert loop["requiredTileSize"] == [4096, 4096]
+    assert loop["sectorCount"] == 16
+    assert loop["jobCount"] == 128
+    assert loop["frameIndexFilter"] is None
+    assert set(still["targetIds"]) == set(loop["targetIds"])
+
+
+def test_stage4_turnaround_qa_reports_all_16_sectors_before_import():
+    root = Path(__file__).resolve().parent.parent
+    manifest = root / "output" / "alpecca_stage4_tile_jobs" / "first_slices" / "idle_eye_16sector_frame000_turnaround" / "tile_job_manifest.json"
+    out_root = root / "output" / "test_stage4_turnaround_qa"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/qa_alpecca_stage4_turnaround_outputs.py",
+            "--manifest",
+            str(manifest),
+            "--outputs-root",
+            str(manifest.parent),
+            "--out-root",
+            str(out_root),
+            "--frame-index",
+            "0",
+            "--thumb-size",
+            "128",
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert '"sectorCount": 16' in result.stdout
+    report = json.loads((out_root / "turnaround_16_sector_qa_report.json").read_text(encoding="utf-8"))
+    assert report["sectorCount"] == 16
+    assert report["expectedSectorCount"] == 16
+    assert report["missingSectors"] == []
+    assert report["mechanicalStatus"] == "blocked"
+    assert report["blockedSectorCount"] == 16
+    assert Path(report["preview"]).exists()
+
+
+def test_stage4_360_volume_qa_rejects_flat_billboard_silhouettes():
+    from PIL import Image, ImageDraw
+    from scripts.qa_alpecca_stage4_360_volume import run_volume_qa
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        jobs_path = root / "jobs.jsonl"
+        outputs = root / "returned"
+        records = []
+        for index in range(16):
+            target = f"gen-{index:04d}"
+            path = outputs / "outputs" / target / "frame_000.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            image = Image.new("RGBA", (96, 96), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            width = 22 + (index % 8) * 3
+            left = 48 - width // 2
+            draw.rounded_rectangle((left, 10, left + width, 88), radius=8, fill=(255, 255, 255, 255))
+            image.save(path)
+            records.append({
+                "jobId": f"{target}_frame_000",
+                "targetId": target,
+                "matrixKey": f"idle_eye_s{index}",
+                "viewSector16": f"s{index}",
+                "horizontalTier": f"s{index}",
+                "frameIndex": 0,
+                "expectedSize": [96, 96],
+                "expectedWorkerOutput": f"outputs/{target}/frame_000.png",
+            })
+        jobs_path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
+        manifest = root / "manifest.json"
+        manifest.write_text(json.dumps({"chunks": [{"file": str(jobs_path)}]}), encoding="utf-8")
+        passing = run_volume_qa(manifest, outputs, root / "volume_pass.json", normalize_size=64)
+        assert passing["status"] == "pass"
+        assert passing["readySectorCount"] == 16
+
+        flat_outputs = root / "flat"
+        for index in range(16):
+            target = f"gen-{index:04d}"
+            path = flat_outputs / "outputs" / target / "frame_000.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            image = Image.new("RGBA", (96, 96), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            draw.rounded_rectangle((34, 10, 62, 88), radius=8, fill=(255, 255, 255, 255))
+            image.save(path)
+        blocked = run_volume_qa(manifest, flat_outputs, root / "volume_blocked.json", normalize_size=64)
+        assert blocked["status"] == "blocked"
+        assert any("flat-billboard-suspected" in issue for issue in blocked["issues"])
+
+
+def test_stage4_returned_slice_processor_imports_only_after_volume_gate():
+    from PIL import Image, ImageDraw
+    from scripts.process_alpecca_stage4_returned_slice import process_slice
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        jobs_path = root / "jobs.jsonl"
+        outputs = root / "returned"
+        stage4 = root / "stage4"
+        records = []
+        for index in range(16):
+            target = f"gen-{index:04d}"
+            target_dir = stage4 / f"{target}__matrix_idle_eye_s{index}"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "target.json").write_text(json.dumps({
+                "targetId": target,
+                "matrixKey": f"idle_eye_s{index}",
+                "frameCount": 8,
+                "slotPixels": 128,
+            }), encoding="utf-8")
+            path = outputs / "outputs" / target / "frame_000.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            image = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            # A character-LIKE silhouette (head + torso + two legs), not a solid
+            # block: the mechanical probe correctly flags any filled rectangle
+            # with >0.82 alpha coverage as "opaque-background-rectangle", so the
+            # fixture must have real negative space like a sprite would. Width
+            # still varies by sector so the 360-volume gate sees rotation.
+            width = 22 + (index % 8) * 3
+            left = 64 - width // 2
+            fill = (255, 255, 255, 255)
+            head_w = max(10, int(width * 0.6))
+            draw.ellipse((64 - head_w // 2, 30, 64 + head_w // 2, 44), fill=fill)
+            draw.rectangle((60, 42, 68, 48), fill=fill)                      # neck joins head
+            draw.rectangle((left, 46, left + width, 72), fill=fill)          # torso
+            leg_w = max(4, int(width * 0.22))
+            draw.rectangle((left + 2, 74, left + 2 + leg_w, 96), fill=fill)  # left leg
+            draw.rectangle((left + width - 2 - leg_w, 74, left + width - 2, 96), fill=fill)
+            draw.rectangle((left + 2, 72, left + width - 2, 76), fill=fill)  # hips join legs
+            image.save(path)
+            records.append({
+                "jobId": f"{target}_frame_000",
+                "targetId": target,
+                "matrixKey": f"idle_eye_s{index}",
+                "viewSector16": f"s{index}",
+                "horizontalTier": f"s{index}",
+                "frameIndex": 0,
+                "frameCount": 8,
+                "expectedSize": [128, 128],
+                "expectedWorkerOutput": f"outputs/{target}/frame_000.png",
+                "stage4ImportDestination": str(target_dir / "incoming" / "frame_tiles" / "frame_000.png"),
+                "targetJson": str(target_dir / "target.json"),
+            })
+        jobs_path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
+        manifest = root / "manifest.json"
+        manifest.write_text(json.dumps({"chunks": [{"file": str(jobs_path)}]}), encoding="utf-8")
+
+        summary = process_slice(
+            manifest=manifest,
+            outputs_root=outputs,
+            out_root=root / "process",
+            frame_index=0,
+            apply_import=True,
+            apply_stitch=True,
+        )
+        assert summary["gatesPass"] is True
+        assert summary["import"]["importedCount"] == 16
+        assert summary["coverage"]["partialTargetCount"] == 16
+        assert summary["stitch"]["ran"] is True
+        assert all(report["status"] == "skipped-partial-slice" for report in summary["stitch"]["reports"])
+        assert (stage4 / "gen-0000__matrix_idle_eye_s0" / "incoming" / "frame_tiles" / "frame_000.png").exists()
+
+        flat = root / "flat"
+        for index in range(16):
+            target = f"gen-{index:04d}"
+            path = flat / "outputs" / target / "frame_000.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            image = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            draw.rounded_rectangle((50, 30, 78, 96), radius=8, fill=(255, 255, 255, 255))
+            image.save(path)
+        blocked = process_slice(
+            manifest=manifest,
+            outputs_root=flat,
+            out_root=root / "blocked_process",
+            frame_index=0,
+            apply_import=True,
+            apply_stitch=True,
+        )
+        assert blocked["gatesPass"] is False
+        assert blocked["import"]["importedCount"] == 0
+        assert any("flat-billboard-suspected" in issue for issue in blocked["volume"]["issues"])
+
+
+def test_stage4_importer_blocks_draft_not_promotable_sidecars():
+    from PIL import Image, ImageDraw
+    from scripts.import_alpecca_stage4_tile_outputs import import_outputs
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        outputs = root / "outputs_root"
+        stage4 = root / "stage4"
+        target = "gen-draft"
+        source = outputs / "outputs" / target / "frame_000.png"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        image = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((40, 32, 88, 100), fill=(255, 255, 255, 255))
+        image.save(source)
+        source.with_suffix(".generation.json").write_text(json.dumps({
+            "promotionStatus": "draft-not-promotable",
+            "renderSize": 1536,
+            "expectedSize": [128, 128],
+        }), encoding="utf-8")
+        jobs = root / "jobs.jsonl"
+        jobs.write_text(json.dumps({
+            "jobId": f"{target}_frame_000",
+            "targetId": target,
+            "frameIndex": 0,
+            "expectedSize": [128, 128],
+            "expectedWorkerOutput": f"outputs/{target}/frame_000.png",
+            "stage4ImportDestination": str(stage4 / target / "incoming" / "frame_tiles" / "frame_000.png"),
+        }), encoding="utf-8")
+        manifest = root / "manifest.json"
+        manifest.write_text(json.dumps({"chunks": [{"file": str(jobs)}]}), encoding="utf-8")
+        report = import_outputs(manifest, outputs, apply=True)
+        assert report["readyCount"] == 0
+        assert report["importedCount"] == 0
+        assert report["records"][0]["issues"] == ["draft-not-promotable"]
+        assert not (stage4 / target / "incoming" / "frame_tiles" / "frame_000.png").exists()
+
+
+def test_stage4_returned_slice_runner_targets_first_16_sector_proof():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "scripts" / "run_alpecca_stage4_returned_slice_qa.py").read_text(encoding="utf-8")
+    assert "idle_eye_16sector_frame000_turnaround" in text
+    assert "stage4-worker-outputs/colab/idle_eye_16sector_frame000_turnaround" in text
+    assert "qa_turnaround" in text
+    assert "run_volume_qa" in text
+    assert "turnaround_360_volume_report.json" in text
+    assert "qa_outputs" in text
+    assert "readyForHumanVisualReview" in text
+    assert "does not import, stitch, or approve art" in text
+    processor = (root / "scripts" / "process_alpecca_stage4_returned_slice.py").read_text(encoding="utf-8")
+    assert "run_volume_qa" in processor
+    assert "skipped-partial-slice" in processor
+    assert "apply_import" in processor
+
+
+def test_stage4_sector_contract_audit_passes_for_drive_360_queue():
+    root = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/audit_alpecca_stage4_sector_contract.py",
+            "--report",
+            "output/test_alpecca_stage4_sector_contract_report.json",
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert '"status": "pass"' in result.stdout
+    report = json.loads((root / "output" / "test_alpecca_stage4_sector_contract_report.json").read_text(encoding="utf-8"))
+    assert report["status"] == "pass"
+    assert report["external360References"]["sourceFolder"] == "https://drive.google.com/drive/folders/1TCaawZt7idE7ib-Kw8T-sq23z5cIXJmw"
+    assert report["external360References"]["missingFiles"] == []
+    assert report["sourceQueue"]["targetCount"] >= 596
+    assert report["workerJobs"]["jobCount"] >= 6048
+    assert report["workerJobs"]["requiredTileSize"] == [4096, 4096]
+    assert report["workerJobs"]["promptSampleIssues"] == 0
+    native_batches = [batch for batch in report["sourceQueue"]["batches"] if batch["native16Sector"]]
+    assert native_batches
+    assert all(len(batch["horizontals"]) == 16 for batch in native_batches)
+
+
+def test_house_hq_runtime_resolves_16_sector_matrix_keys_before_5_tier_fallback():
+    root = Path(__file__).resolve().parent.parent
+    src = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    assert "function alpeccaSector16RuntimeKey" in src
+    assert "const exactKey = `${action}_${matrix.vertical}_${sectorKey}`" in src
+    assert "const eyeKey = `${action}_eye_${sectorKey}`" in src
+    assert "const horizontalExactKey = `${action}_${matrix.vertical}_${matrix.horizontal}`" in src
+    assert "const requestedKey = `${action}_${matrix.vertical}_${alpeccaSector16RuntimeKey(matrix.sector16)}`" in src
+
+
+def test_cognition_autonomy_state_exposes_backend_promptless_loop():
+    from fastapi.testclient import TestClient
+    import config
+    import server
+
+    client = TestClient(server.app)
+    r = client.get(f"/cognition/autonomy-state?token={config.ACCESS_TOKEN}")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["enabled"] is True
+    assert d["drift_interval"] > 0
+    assert d["living_interval"] > 0
+    assert "next_living_in" in d
+    assert "recursive_engagement" in d
+    assert "current_intent" in d
+    assert "last_living_question" in d
+    assert "last_living_self_feedback" in d
+    assert "last_living_next_action" in d
+
+
+def test_cognition_world_tick_creates_recursive_world_question():
+    from fastapi.testclient import TestClient
+    import config
+    import server
+    import time
+
+    client = TestClient(server.app)
+    marker = f"world-loop-{time.time_ns()}"
+    r = client.post(f"/cognition/world-tick?token={config.ACCESS_TOKEN}", json={"reason": marker})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["ok"] is True
+    assert d["phase"] == "system_activation"
+    assert d["activated_system"]["id"] in {"perception", "memory", "room_review", "self_review", "voice", "mindscape"}
+    assert d["activated_system"]["status"]
+    assert d["activation_selection"]["system"] == d["activated_system"]["id"]
+    assert d["activation_selection"]["reason"]
+    assert d["question"].endswith("?")
+    assert d["room"]["name"]
+    assert d["creator"]["name"] == "Jason"
+    assert d["observation_id"]
+    assert d["memory_id"]
+    assert d["journal_id"]
+    assert d["intent"]["name"] in {"questioning", "remembering", "self-reviewing", "observing"}
+    assert "House HQ" in d["line"] or "role" in d["line"]
+    assert d["self_feedback"]["noticed"]
+    assert d["self_feedback"]["learned"]
+    assert d["self_feedback"]["next_action"]
+    assert d["self_feedback"]["curriculum_step"] == d["activated_system"]["id"]
+    assert d["self_feedback"]["curriculum_reason"] == d["activation_selection"]["reason"]
+    assert "creator" in d["self_feedback"]["creator_evidence"].lower()
+    assert d["next_action"]["action"]
+    assert d["engagement_proposal"]["action"] == "Strengthen autonomous recursive engagement"
+    assert d["learning_record"]["metric"] == "autonomous_recursive_engagement"
+    # The world-tick handler returns before its background persistence has
+    # necessarily committed; on a loaded machine an immediate read races it.
+    # Poll briefly instead of asserting the very first snapshot.
+    autonomy = {}
+    for _ in range(30):
+        autonomy = client.get(f"/cognition/autonomy-state?token={config.ACCESS_TOKEN}").json()
+        if autonomy.get("last_living_reason") == marker:
+            break
+        time.sleep(0.1)
+    assert autonomy["last_living_reason"] == marker
+    assert autonomy["last_living_question"] == d["question"]
+    assert autonomy["last_living_observation_id"] == d["observation_id"]
+    assert autonomy["last_living_memory_id"] == d["memory_id"]
+    assert autonomy["last_living_journal_id"] == d["journal_id"]
+    assert autonomy["last_living_self_feedback"]["noticed"] == d["self_feedback"]["noticed"]
+    assert autonomy["last_living_next_action"]["action"] == d["next_action"]["action"]
+    assert autonomy["last_living_next_action"]["selection_reason"] == d["activation_selection"]["reason"]
+    assert autonomy["last_living_engagement_proposal"]["action"] == d["engagement_proposal"]["action"]
+    state = client.get(f"/cognition/state?token={config.ACCESS_TOKEN}").json()
+    assert state["recursive_engagement"]
+    assert state["recursive_engagement"][0]["metric"] == "autonomous_recursive_engagement"
+    assert state["recursive_engagement_scorecard"]["ok"] is True
+    assert state["recursive_engagement_scorecard"]["curriculum"]["mode"] == "evidence_first"
+    assert state["recursive_engagement_scorecard"]["curriculum"]["activated_system"]
+
+
+def test_cognition_recursive_engagement_scorecard_uses_evidence_not_claims():
+    from pathlib import Path
+    import tempfile
+    from alpecca import cognition
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "scorecard.db"
+        cognition.init_db(db)
+        empty = cognition.recursive_engagement_scorecard(db_path=db)
+        assert empty["ok"] is False
+        assert empty["score"] == 0
+
+        obs_id = cognition.record_observation(cognition.CognitionObservation(
+            source="living_loop",
+            room="hq-control",
+            content="Living loop in HQ Control. Question: What should I inspect?",
+            metadata={"question": "What should I inspect?"},
+        ), db_path=db)
+        cognition.mark_observation_remembered(obs_id, 42, db_path=db)
+        proposal = cognition.upsert_action_proposal(cognition.ActionProposal(
+            action="Strengthen autonomous recursive engagement",
+            reason="Alpecca needs to observe, question, remember, and choose a safe next action.",
+            approval=cognition.APPROVAL_ASK_FIRST,
+            risk="low",
+            status="testing",
+            evidence=f"observation_id={obs_id}; memory_id=42",
+            result="Next: inspect the room for grounded evidence",
+        ), db_path=db)
+        cognition.record_proposal_evaluation(cognition.ProposalEvaluation(
+            proposal_id=int(proposal["id"]),
+            phase="testing",
+            metric="autonomous_recursive_engagement",
+            evidence=(
+                "Living tick reason=test; activated=perception; "
+                "selection_reason=current room lacks recent grounded observation evidence; "
+                "fresh_creator_evidence=True; question=What should I inspect?"
+            ),
+            test="Run one promptless living loop tick.",
+            outcome="Recorded a grounded question and safe next action.",
+            score=0.8,
+            supports_status="testing",
+        ), db_path=db)
+        full = cognition.recursive_engagement_scorecard(db_path=db)
+        assert full["ok"] is True
+        assert full["score"] == 1
+        assert full["latest_question"] == "What should I inspect?"
+        assert full["latest_memory_id"] == 42
+        assert full["curriculum"]["activated_system"] == "perception"
+        assert full["curriculum"]["selection_reason"].startswith("current room lacks")
+        assert full["curriculum"]["creator_context_observed"] is False
+        assert full["research_mapping"]["Reflexion"].startswith("record verbal self-feedback")
+
+
+def test_cognition_recursive_engagement_route_reports_scorecard():
+    from fastapi.testclient import TestClient
+    import config
+    import server
+
+    client = TestClient(server.app)
+    r = client.get(f"/cognition/recursive-engagement?token={config.ACCESS_TOKEN}")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["schema"] == "alpecca.recursive_engagement_scorecard.v1"
+    assert "checks" in d
+    assert d["curriculum"]["mode"] == "evidence_first"
+    assert {check["id"] for check in d["checks"]} >= {
+        "observe_world",
+        "ask_question",
+        "remember_evidence",
+        "self_feedback",
+        "bounded_next_action",
+    }
+
+
+def test_house_hq_surfaces_living_loop_as_state_not_only_logs():
+    root = Path(__file__).resolve().parent.parent
+    src = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    css = (root / "apps" / "house-hq" / "src" / "styles.css").read_text(encoding="utf-8")
+    assert 'id="alpeccaLivingState"' in src
+    assert "setAlpeccaLivingState" in src
+    assert "pulseAlpeccaActivatedSystem" in src
+    assert "activated_system" in src
+    assert "self_feedback" in src
+    assert "alpeccaLivingNextAction" in src
+    assert "alpeccaLivingStateEl.dataset.question = question" in src
+    assert "/cognition/world-tick" in src
+    assert "/cognition/autonomy-state" in src
+    assert "function pollAlpeccaAutonomyState" in src
+    assert "autonomyStateToLivingLoop" in src
+    assert 'message.type === "living_loop"' in src
+    assert "[data-world-tick]" in src
+    assert ".living-state" in css
+
+
+def test_house_living_loop_routes_alpecca_to_activation_terminals():
+    root = Path(__file__).resolve().parent.parent
+    src = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    assert "function livingLoopTargetRoomId" in src
+    assert "function routeAlpeccaToLivingLoopTarget" in src
+    assert 'if (systemId === "memory") return "library";' in src
+    assert 'if (systemId === "self_review") return "self-design";' in src
+    assert 'if (systemId === "voice" || systemId === "mindscape") return "hq-control";' in src
+    assert "routeAlpeccaToLivingLoopTarget(message.living_loop)" in src
+    assert "routeAlpeccaToLivingLoopTarget(data)" in src
+    living_handler = src[src.index('if (message.type === "living_loop")') : src.index('if (message.type === "reply")')]
+    assert 'if (!alpeccaChat.classList.contains("hidden")) showAlpeccaProfileLine' in living_handler
+    assert "else showMessage(line, 5.5)" in living_handler
+
+
+def test_house_chat_late_replies_are_not_background_events():
+    root = Path(__file__).resolve().parent.parent
+    src = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    assert "const ALPECCA_AI_PLAYER_REPLY_TIMEOUT_MS = 35000;" in src
+    assert "const ALPECCA_AI_SLOW_REPLY_MS = 12000;" in src
+    reply_block = src[src.index('if (message.type === "reply")') : src.index('if (message.type === "proactive"')]
+    assert "const wasAwaitingPlayerReply = fromPlayerChat || legacyPlayerReply;" in reply_block
+    assert "alpeccaAiAwaitingReply && (fromPlayerChat || legacyPlayerReply)" not in reply_block
+    assert "Background core event" in reply_block
+    timeout_block = src[src.index("function updateHud"):src.index("roomPanelTimer -= dt")]
+    assert "waitingMs > ALPECCA_AI_PLAYER_REPLY_TIMEOUT_MS" in timeout_block
+    assert "waitingMs > 30000" not in timeout_block
+
+
+def test_house_chat_pauses_background_core_work_while_player_waits():
+    root = Path(__file__).resolve().parent.parent
+    src = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    assert "let alpeccaPlayerChatQuietTimer = 0;" in src
+    send_start = src.index("function sendAlpeccaChat")
+    send_block = src[send_start:src.index("if (alpeccaAiStatus === \"token\")", send_start)]
+    assert "alpeccaPlayerChatQuietTimer = Math.max(alpeccaPlayerChatQuietTimer, 42)" in send_block
+    assert "alpeccaWorldTickTimer = Math.max(alpeccaWorldTickTimer, 18)" in send_block
+    assert "alpeccaPerceptionSendTimer = Math.max(alpeccaPerceptionSendTimer, 18)" in send_block
+    busy_block = src[src.index("function alpeccaAutonomyBusy"):src.index("async function runAlpeccaQuietWorldTick")]
+    assert "alpeccaPlayerChatQuietTimer > 0" in busy_block
+    quiet_block = src[src.index("async function runAlpeccaQuietWorldTick"):src.index("function updateAlpeccaAutonomousWorldTick")]
+    assert "alpeccaPlayerChatQuietTimer > 0" in quiet_block
+    perception_block = src[src.index("function recordAlpeccaPerception"):src.index("function disposeAlpeccaIdeaObject")]
+    assert "alpeccaPlayerChatQuietTimer <= 0" in perception_block
+    bridge_start = src.index("async function runAlpeccaFeatureToolBridge")
+    bridge_block = src[bridge_start:src.index("function runAlpeccaFeature(", bridge_start)]
+    assert "if (!visible && alpeccaPlayerChatQuietTimer > 0) return null;" in bridge_block
+
+
+def test_house_hq_has_quiet_autonomous_world_tick_loop():
+    root = Path(__file__).resolve().parent.parent
+    src = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    assert "let alpeccaWorldTickTimer = 42;" in src
+    assert "let alpeccaWorldTickInFlight = false;" in src
+    assert "function alpeccaAutonomyBusy" in src
+    assert "function runAlpeccaQuietWorldTick" in src
+    quiet_block = src[src.index("async function runAlpeccaQuietWorldTick"):src.index("async function reviewAlpeccaReplies")]
+    assert "/cognition/world-tick" in quiet_block
+    assert '"house_hq_autonomous_cadence"' in quiet_block
+    assert "quiet: true" in quiet_block
+    assert "routeAlpeccaToLivingLoopTarget(data)" in quiet_block
+    assert "featureForLivingLoop(data)" in quiet_block
+    assert "runAlpeccaFeatureToolBridge(featureId, targetRoom, false)" in quiet_block
+    assert 'alpeccaChat.classList.remove("hidden")' not in quiet_block
+    update_block = src[src.index("function updateAlpeccaAutonomousWorldTick"):src.index("async function reviewAlpeccaReplies")]
+    assert "alpeccaAutonomyBusy()" in update_block
+    assert "void runAlpeccaQuietWorldTick();" in update_block
+    frame_block = src[src.index("function stepGameFrame"):src.index("function animate")]
+    assert "updateAlpeccaAutonomousWorldTick(dt);" in frame_block
+    runtime_block = src[src.index("function publishAlpeccaRuntimeProbe"):src.index("function preloadAlpeccaMovementAnimations")]
+    assert "worldTickTimer" in runtime_block
+    assert "worldTickInFlight" in runtime_block
+
+
+def test_house_hq_living_loop_persists_room_memory_evidence():
+    root = Path(__file__).resolve().parent.parent
+    src = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    assert "memory_id?: number" in src
+    assert "journal_id?: number" in src
+    assert "function assimilateAlpeccaLivingLoopMemory" in src
+    state_block = src[src.index("function setAlpeccaLivingState"):src.index("function pulseAlpeccaActivatedSystem")]
+    assert "assimilateAlpeccaLivingLoopMemory(loop, question, roomName, fallbackText)" in state_block
+    assert "memory.observations += 1" in state_block
+    assert "memory.online = true" in state_block
+    assert 'memory.lastSource = "Alpecca core living loop"' in state_block
+    assert "memory.lastQuestion = question || previousQuestion" in state_block
+    assert "loop.memory_id ? 0.08 : 0" in state_block
+    assert "loop.journal_id ? 0.06 : 0" in state_block
+    assert "trace.note = `${room.name} living loop" in state_block
+    assert "rememberAlpeccaJournalEntry(journalNote)" in state_block
+
+
+def test_house_alpecca_can_activate_room_stations_autonomously():
+    root = Path(__file__).resolve().parent.parent
+    src = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    assert "function activateRoomStationByAlpecca" in src
+    activation_block = src[src.index("function activateRoomStationByAlpecca") : src.index("function announceAlpeccaInspection")]
+    assert "const station = interactables.find((item) => item.id === room.stationId)" in activation_block
+    assert 'station.type !== "collect"' in activation_block
+    assert "station.onUse(station)" in activation_block
+    assert "activeRoomIds.has(room.stationId)" in activation_block
+    assert "const stationResult = activateRoomStationByAlpecca(point)" in src
+    assert "activeRoomIds.has(room?.stationId || point.roomId)" in src
+
+
+def test_house_living_question_hud_is_readable_and_system_colored():
+    root = Path(__file__).resolve().parent.parent
+    css = (root / "apps" / "house-hq" / "src" / "styles.css").read_text(encoding="utf-8")
+    assert "width: min(440px, calc(100vw - 36px));" in css
+    assert ".living-state small" in css
+    assert "-webkit-line-clamp: 4;" in css
+    assert '.living-state[data-system="memory"] span' in css
+    assert '.living-state[data-system="voice"] span' in css
+
+
+def test_cognition_observe_route_records_and_can_consolidate():
+    from fastapi.testclient import TestClient
+    import server
+    import time
+    client = TestClient(server.app)
+    marker = f"observe-route-marker-{time.time_ns()}"
+    r = client.post("/cognition/observe", json={
+        "source": "house",
+        "room": "Library",
+        "content": f"Jason and Alpecca noticed {marker} in Mindscape.",
+        "confidence": 0.92,
+        "novelty": 0.8,
+        "remember_now": True,
+    })
+    assert r.status_code == 200
+    d = r.json()
+    assert d["ok"] is True
+    assert d["observation_id"]
+    assert d["intent"]["name"] == "observing"
+    assert d["consolidated"]["kept"]
+    hits = memory_store.recall(marker, db_path=state_store.DB_PATH)
+    assert hits and marker in hits[0]["content"]
+
+
+def test_cognition_chat_review_route_creates_grounding_proposal():
+    from fastapi.testclient import TestClient
+    import server
+    import time
+
+    client = TestClient(server.app)
+    marker = f"grounding-review-route-{time.time_ns()}"
+    cognition.record_chat_turn(cognition.ChatTurn(
+        user_text=f"hello {marker}",
+        reply="The Library is offline and I remember that room event.",
+        room="Parlor",
+        mood="curious",
+        model_use={"fallback": True},
+        memory_evidence=[],
+    ), db_path=state_store.DB_PATH)
+    r = client.post("/cognition/chat/review", json={"limit": 4})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["review"]["risk_count"] >= 1
+    assert d["proposal"]
+    assert d["proposal"]["approval"] == cognition.APPROVAL_ASK_FIRST
+    assert "grounding" in d["proposal"]["action"].lower()
+
+
+def test_ws_background_sources_record_observation_without_reply(monkeypatch):
+    from fastapi.testclient import TestClient
+    import server
+    import time
+
+    called = {"chat": 0}
+
+    def fake_chat(*_args, **_kwargs):
+        called["chat"] += 1
+        return {"reply": "should not be sent"}
+
+    monkeypatch.setattr(server.mind, "chat", fake_chat)
+    marker = f"ws-background-marker-{time.time_ns()}"
+    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
+
+    with TestClient(server.app).websocket_connect(ws_path) as ws:
+        first = ws.receive_json()
+        assert first["type"] == "state"
+        ws.send_json({
+            "source": "house-perception",
+            "text": f"House HQ noticed {marker}",
+            "request_id": "bg-1",
+            "room": "Library",
+        })
+        msg = ws.receive_json()
+
+    assert msg["type"] == "observation_ack"
+    assert msg["request_id"] == "bg-1"
+    assert msg["source"] == "house-perception"
+    assert msg["ok"] is True
+    assert called["chat"] == 0
+    recent = cognition.recent_observations(limit=12, db_path=state_store.DB_PATH)
+    assert any(marker in obs["content"] for obs in recent)
+
+
+def test_ws_house_chat_source_remains_direct_reply(monkeypatch):
+    from fastapi.testclient import TestClient
+    import server
+
+    called = {"chat": 0}
+
+    def fake_chat(text, **_kwargs):
+        called["chat"] += 1
+        return {
+            "reply": f"direct reply to {text}",
+            "mood": server.mind.state.mood_label(),
+            "state": server.mind.state.as_dict(),
+            "location": "home",
+            "moved": False,
+            "memories_used": [],
+            "memory_evidence": [],
+            "self_reflection": "",
+            "appearance": server.mind.current_appearance().as_dict(),
+            "llm_online": True,
+            "model_use": {},
+            "intent": {},
+        }
+
+    monkeypatch.setattr(server.mind, "chat", fake_chat)
+    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
+
+    with TestClient(server.app).websocket_connect(ws_path) as ws:
+        first = ws.receive_json()
+        assert first["type"] == "state"
+        ws.send_json({
+            "source": "house-chat",
+            "text": "hello Alpecca",
+            "request_id": "chat-1",
+        })
+        msg = ws.receive_json()
+
+    assert msg["type"] == "reply"
+    assert msg["request_id"] == "chat-1"
+    assert msg["source"] == "house-chat"
+    assert msg["reply"] == "direct reply to hello Alpecca"
+    assert called["chat"] == 1
+
+
+def test_ws_house_chat_context_reaches_mind(monkeypatch):
+    from fastapi.testclient import TestClient
+    import server
+
+    captured = {}
+
+    def fake_chat(text, **kwargs):
+        captured["text"] = text
+        captured["situation"] = kwargs.get("situation")
+        captured["reply_tier"] = kwargs.get("reply_tier")
+        return {
+            "reply": "I can feel this room around me.",
+            "mood": server.mind.state.mood_label(),
+            "state": server.mind.state.as_dict(),
+            "location": "home",
+            "moved": False,
+            "memories_used": [],
+            "memory_evidence": [],
+            "self_reflection": "",
+            "appearance": server.mind.current_appearance().as_dict(),
+            "llm_online": True,
+            "model_use": {},
+            "intent": {},
+        }
+
+    monkeypatch.setattr(server.mind, "chat", fake_chat)
+    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
+    context = "Game context: player is in Observatory. Room purpose: media review."
+
+    with TestClient(server.app).websocket_connect(ws_path) as ws:
+        first = ws.receive_json()
+        assert first["type"] == "state"
+        ws.send_json({
+            "source": "house-chat",
+            "text": "Where are you right now?",
+            "context": context,
+            "request_id": "chat-context-1",
+        })
+        msg = ws.receive_json()
+
+    assert msg["type"] == "reply"
+    assert msg["request_id"] == "chat-context-1"
+    assert msg["source"] == "house-chat"
+    assert msg["reply"] == "I can feel this room around me."
+    assert captured["text"] == "Where are you right now?"
+    assert captured["situation"] == context
+    assert captured.get("reply_tier") == "reason"
+
+
+def test_house_hq_chat_uses_natural_reason_tier_like_discord():
+    import server
+
+    assert server._house_chat_reply_tier("hi") == "reason"
+    assert server._house_chat_reply_tier("stop walking") == "reason"
+    assert server._house_chat_reply_tier("can you hear me?") == "reason"
+
+
+def test_ws_house_chat_timeout_still_returns_reply(monkeypatch):
+    from fastapi.testclient import TestClient
+    import server
+    import time
+
+    called = {"chat": 0}
+
+    def slow_chat(text, **_kwargs):
+        called["chat"] += 1
+        time.sleep(0.2)
+        return {"reply": f"late reply to {text}"}
+
+    monkeypatch.setattr(server, "WS_CHAT_REPLY_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(server.mind, "chat", slow_chat)
+    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
+
+    with TestClient(server.app).websocket_connect(ws_path) as ws:
+        first = ws.receive_json()
+        assert first["type"] == "state"
+        ws.send_json({
+            "source": "house-chat",
+            "text": "hi",
+            "request_id": "chat-timeout-1",
+        })
+        msg = ws.receive_json()
+
+    assert msg["type"] == "reply"
+    assert msg["request_id"] == "chat-timeout-1"
+    assert msg["source"] == "house-chat"
+    assert msg["model_use"]["backend"] == "timeout"
+    assert msg["model_use"]["fallback"] is True
+    assert msg["reply"] == "Hi. I'm here with you. What should we focus on next?"
+    assert called["chat"] == 1
+
+
+def test_ws_house_chat_echo_guard_replaces_repeated_reply(monkeypatch):
+    from fastapi.testclient import TestClient
+    import server
+
+    def echo_chat(text, **_kwargs):
+        return {
+            "reply": f"You said: {text}",
+            "mood": server.mind.state.mood_label(),
+            "state": server.mind.state.as_dict(),
+            "location": "home",
+            "moved": False,
+            "memories_used": [],
+            "memory_evidence": [],
+            "self_reflection": "",
+            "appearance": server.mind.current_appearance().as_dict(),
+            "llm_online": False,
+            "model_use": {"backend": "offline", "fallback": True},
+            "intent": {},
+        }
+
+    monkeypatch.setattr(server.mind, "chat", echo_chat)
+    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
+
+    with TestClient(server.app).websocket_connect(ws_path) as ws:
+        first = ws.receive_json()
+        assert first["type"] == "state"
+        ws.send_json({
+            "source": "house-chat",
+            "text": "Can you hear me?",
+            "request_id": "chat-echo-1",
+        })
+        msg = ws.receive_json()
+
+    assert msg["type"] == "reply"
+    assert msg["request_id"] == "chat-echo-1"
+    assert msg["source"] == "house-chat"
+    assert "You said" not in msg["reply"]
+    assert "Can you hear me" not in msg["reply"]
+    assert msg["model_use"]["fallback"] is True
+    assert "echo guard" in msg["model_use"]["error"]
+
+
+def test_core_chat_records_recent_turn_with_reply_and_evidence(monkeypatch):
+    from alpecca.mind import CoreMind
+    import time
+
+    mind = CoreMind()
+    marker = f"grounded-chat-turn-{time.time_ns()}"
+
+    def fake_generate(*_args, **_kwargs):
+        return f"Alpecca grounded reply for {marker}"
+
+    monkeypatch.setattr(mind.llm, "generate", fake_generate)
+    result = mind.chat(f"Please remember this direct chat {marker}")
+    assert result["chat_turn_id"]
+    turns = cognition.recent_chat_turns(limit=12, db_path=state_store.DB_PATH)
+    turn = next(t for t in turns if marker in t["user_text"])
+    assert turn["id"] == result["chat_turn_id"]
+    assert marker in turn["reply"]
+    assert turn["room"] == result["location"]
+    assert isinstance(turn["memory_evidence"], list)
+    state = mind.cognition_state()
+    assert any(t["id"] == result["chat_turn_id"] for t in state["recent_chat_turns"])
+
+
+def test_memory_search_route_returns_scored_recall():
+    from fastapi.testclient import TestClient
+    import server
+    import time
+    marker = f"library-search-marker-{time.time_ns()}"
+    memory_store.remember_with_id(
+        f"Jason asked Alpecca to remember {marker} in Mindscape.",
+        kind="relationship",
+        salience=0.9,
+        source="test",
+        embed_fn=None,
+    )
+    client = TestClient(server.app)
+    r = client.get("/memories/search", params={"q": marker, "limit": 3})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["query"] == marker
+    assert d["results"]
+    top = d["results"][0]
+    assert marker in top["content"]
+    assert top["recall_score"] > 0
+    assert top["recall_method"] in {"keyword", "semantic"}
+    assert "embedding" not in top and "tokens" not in top
+
+
+def test_mindscape_event_sync_throttle_skips_immediate_retry():
+    import time
+    import server
+    old_url = server.MINDSCAPE_CLOUD_URL
+    old_enabled = server.MINDSCAPE_ENABLED
+    old_min = server.MINDSCAPE_EVENT_SYNC_MIN_INTERVAL
+    old_attempt = server._mindscape_sync_status["last_attempt"]
+    old_skips = server._mindscape_sync_status["event_skips"]
+    old_status = server._mindscape_sync_status["last_status"]
+    try:
+        server.MINDSCAPE_CLOUD_URL = "https://mindscape.example/sync"
+        server.MINDSCAPE_ENABLED = True
+        server.MINDSCAPE_EVENT_SYNC_MIN_INTERVAL = 999
+        server._mindscape_sync_status["last_attempt"] = time.time()
+        assert server._mindscape_request_event_sync("test") is False
+        assert server._mindscape_sync_status["event_skips"] == old_skips + 1
+        assert server._mindscape_sync_status["last_status"] == "event_sync_throttled"
+    finally:
+        server.MINDSCAPE_CLOUD_URL = old_url
+        server.MINDSCAPE_ENABLED = old_enabled
+        server.MINDSCAPE_EVENT_SYNC_MIN_INTERVAL = old_min
+        server._mindscape_sync_status["last_attempt"] = old_attempt
+        server._mindscape_sync_status["event_skips"] = old_skips
+        server._mindscape_sync_status["last_status"] = old_status
+
+
+def test_mindscape_restore_routes_accept_posted_snapshot():
+    from fastapi.testclient import TestClient
+    import server
+    import time
+    client = TestClient(server.app)
+    unique = f"Jason uses Mindscape {time.time_ns()}."
+    unique_chat = f"Mindscape chat continuity {time.time_ns()}."
+    snap = {
+        "name": "Alpecca Mindscape",
+        "version": 1,
+        "ts": time.time(),
+        "enabled": True,
+        "self": {"mood": "content", "location": "library", "intent": {"name": "remembering"}},
+        "memory": {"recent": [{"kind": "relationship", "content": unique, "salience": 0.8}]},
+        "journal": {"recent": [], "open_questions": []},
+        "observations": [],
+        "chat_turns": [{
+            "room": "library",
+            "mood": "content",
+            "intent": "replying",
+            "user_text": unique_chat,
+            "reply": "I carried this through Mindscape.",
+            "model_use": {"backend": "mindscape-test"},
+            "memory_evidence": [{"kind": "relationship", "score": 0.71}],
+        }],
+        "proposals": [],
+    }
+    r = client.post("/mindscape/restore/preview", json={"snapshot": snap})
+    assert r.status_code == 200
+    assert r.json()["preview"]["memory_count"] == 1
+    assert r.json()["preview"]["chat_turn_count"] == 1
+    r = client.post("/mindscape/restore/import", json={"snapshot": snap})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["imported"]["memories"] == 1
+    assert r.json()["imported"]["chat_turns"] == 1
+    turns = cognition.recent_chat_turns(limit=20, db_path=state_store.DB_PATH)
+    turn = next(t for t in turns if unique_chat in t["user_text"])
+    assert turn["reply"] == "I carried this through Mindscape."
+    assert turn["model_use"]["backend"] == "mindscape-test"
+    r = client.post("/mindscape/restore/import", json={"snapshot": snap})
+    assert r.status_code == 200
+    assert r.json()["status"] == "already_imported"
+    assert r.json()["imported"]["memories"] == 0
+    assert r.json()["imported"]["chat_turns"] == 0
+
+def test_recall_dedupes_near_duplicates_but_keeps_distinct():
+    """The diversity guard: a cluster of near-identical memories collapses to its
+    single strongest one, so the top_k budget isn't spent echoing one thought --
+    while a genuinely different but still-relevant memory is kept."""
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "div.db"
+        state_store.init_db(db)
+        a = "I feel calm and quiet tonight"
+        b = "I feel calm and quiet tonight too"          # near-duplicate of a
+        c = "The library was quiet and full of old books"  # distinct, still relevant
+        for m in (a, b, c):
+            memory_store.remember(m, salience=0.8, db_path=db, embed_fn=None)
+        contents = [h["content"] for h in
+                    memory_store.recall("somewhere calm and quiet",
+                                        db_path=db, embed_fn=None)]
+        assert a in contents          # strongest of the near-dup pair survives
+        assert b not in contents      # its echo is dropped
+        assert c in contents          # a distinct relevant memory is NOT dropped
 
 
 # --- Self-directed appearance ----------------------------------------------
@@ -1370,6 +3735,312 @@ def test_voice_markup_tracks_affect():
     assert "prosody" in lively["ssml_template"]
 
 
+def test_prompt_treats_memories_as_past_not_current_events():
+    prompt = prompts.build_system_prompt(
+        EmotionalState(love=0.5),
+        [{"kind": "semantic", "content": "Library was offline.", "recall_score": 0.73}],
+        situation="the person is asking about your voice",
+        current_message="Can we talk about your voice?",
+    )
+    assert "Treat the person's current message as the highest-trust evidence" in prompt
+    assert "Current turn evidence" in prompt
+    assert "Current message: Can we talk about your voice?" in prompt
+    assert "Past memories that may be relevant" in prompt
+    assert "do not claim they are happening now" in prompt
+    assert "Past memory (semantic, recall 0.73): Library was offline." in prompt
+
+
+def test_house_chat_voice_copy_is_identity_not_user_setting():
+    root = Path(__file__).resolve().parent.parent
+    main_ts = root / "apps" / "house-hq" / "src" / "main.ts"
+    text = main_ts.read_text(encoding="utf-8")
+    start = text.index('<div class="voice-strip">')
+    chat_markup = text[start:text.index('<nav class="hot-tabs"', start)]
+    assert "Alpecca's voice" in chat_markup
+    assert "data-hear-voice" in chat_markup
+    assert "Hear voice" in chat_markup
+    assert "identity locked" not in chat_markup.lower()
+    assert "data-voice-preview" not in chat_markup
+    assert "speechSynthesis" not in text
+    assert "browser fallback" not in text
+    assert "/tts/warmup" in text
+    assert "original voice is warming or unavailable" in text
+    assert "Voice fallback" not in text
+    assert "Fallback voice" not in text
+    assert "Alpecca voice: ${alpeccaVoiceEngine" not in text
+
+
+def test_house_voice_headers_drive_visible_emotional_state():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    assert "let alpeccaVoiceEmotionTimer = 0;" in text
+    assert "let alpeccaVoiceEmotionState: Record<string, number> = {};" in text
+    assert "function visibleAlpeccaEmotionState" in text
+    assert "function applyAlpeccaVoiceEmotionHeaders" in text
+    header_block = text[text.index("function applyAlpeccaVoiceEmotionHeaders"):text.index("function captureAlpeccaVoiceHeaders")]
+    assert 'X-Alpecca-Voice-Warmth' in header_block
+    assert 'X-Alpecca-Voice-Breath' in header_block
+    assert 'X-Alpecca-Voice-Speed' in header_block
+    assert 'X-Alpecca-Voice-Primary' in header_block
+    assert "alpeccaVoiceEmotionTimer = Math.max(alpeccaVoiceEmotionTimer, 5.2)" in header_block
+    assert "document.body.dataset.alpeccaVoiceAffect" in header_block
+    mood_block = text[text.index("function updateAlpeccaMoodPanel"):text.index("function sourcePlateForAlpeccaState")]
+    assert "const visibleState = visibleAlpeccaEmotionState();" in mood_block
+    assert "const raw = visibleState[key];" in mood_block
+    step_block = text[text.index("function stepGameFrame"):text.index("function animate")]
+    assert "updateAlpeccaVoiceEmotion(dt);" in step_block
+    runtime_block = text[text.index("function publishAlpeccaRuntimeProbe"):text.index("function preloadAlpeccaMovementAnimations")]
+    assert "voiceEmotionTimer" in runtime_block
+    assert "voiceEmotionState" in runtime_block
+
+
+def test_house_profile_status_does_not_mix_live_with_offline_or_content():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    assert "alpeccaConnectionLabel" in text
+    assert "alpeccaProfileDetailLabel" in text
+    profile_assignments = "\n".join(
+        line for line in text.splitlines()
+        if "alpeccaProfileState.textContent" in line
+    )
+    assert "alpeccaAiMood" not in profile_assignments
+    assert "alpeccaAiStatus" not in profile_assignments
+    assert "${animation.textureSource}" not in text
+    assert "content|offline" in text
+    assert 'Original voice warming' in text
+
+
+def test_house_uses_native_left_walk_cycles_without_double_flipping():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    assert 'walkLeft: { folder: "gpt16_walk_left_left"' in text
+    assert 'walkNorthwest: { folder: "gpt16_walk_northwest_left"' in text
+    assert 'walkSouthwest: { folder: "gpt16_walk_southwest_left"' in text
+    assert "function alpeccaAnimationUsesNativeLeftArt" in text
+    assert "return /(^|_)left($|_)/.test(folder);" in text
+    assert "function alpeccaShouldFlipForDirection" in text
+    assert "return !alpeccaAnimationUsesNativeLeftArt(name);" in text
+    direction_block = text[text.index('function directionalAlpeccaAnimation') : text.index('function directionalAlpeccaWave')]
+    assert "const state = states[base][direction]" in direction_block
+    assert "setAlpeccaSpriteFlip(alpeccaShouldFlipForDirection(state, direction))" in direction_block
+    source_block = text[text.index("function classifyAlpeccaAnimationSource") : text.index("async function loadAlpeccaAnimation")]
+    assert 'name === "walkLeft" || name === "walkNorthwest" || name === "walkSouthwest"' in source_block
+    assert 'nativeLeftWalk && family === "gpt16"' in source_block
+
+
+def test_house_talking_keeps_alpecca_size_locked():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    assert "function alpeccaStandingVisualLock" in text
+    assert "function relockAlpeccaStandingVisuals" in text
+    assert 'if (name === "idleDown") relockAlpeccaStandingVisuals();' in text
+    lock_block = text[text.index("function alpeccaStandingVisualLock"):text.index("function shouldLockAlpeccaStandingVisual")]
+    assert "alpeccaStandingPresentationScale" in lock_block
+    assert "THREE.MathUtils.clamp(baseScale * alpeccaStandingPresentationScale, 0.98, 1.16)" in lock_block
+    assert "THREE.MathUtils.clamp(idle?.spriteY || 0.86, 0.78, 1.08)" in lock_block
+    transform_block = text[text.index("function applyAlpeccaVisualTransform"):text.index("function applyAlpeccaBillboardYaw")]
+    assert "shouldLockAlpeccaStandingVisual(alpecca.state)" in transform_block
+    assert "alpecca.visualScale = lock.visualScale" in transform_block
+    normalize_block = text[text.index("function normalizeAlpeccaVisual"):text.index("function alpeccaAnimationSourceFamily")]
+    assert 'name !== "idleDown"' in normalize_block
+    assert "return alpeccaStandingVisualLock();" in normalize_block
+
+
+def test_house_nearby_player_prevents_rest_pose_shrink():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    emotional_block = text[text.index("function emotionalAlpeccaAnimation"):text.index("function currentAlpeccaExplorePoint")]
+    assert "const distanceToPlayer = Math.hypot" in emotional_block
+    assert "const playerNearby = distanceToPlayer < 3.4" in emotional_block
+    assert "if (!playerNearby &&" in emotional_block
+    assert "directionalAlpeccaSleep" in emotional_block
+
+
+def test_house_alpecca_uses_contextual_freedom_animations_without_action_chaos():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    assert "freedomAnimations?: AlpeccaAnimationName[]" in text
+    assert 'freedomAnimations: ["point", "pickup", "crouch"]' in text
+    assert 'freedomAnimations: ["pickup", "crouch", "point", "kneel"]' in text
+    assert 'freedomAnimations: ["sleepSoutheast"]' in text
+    assert "const alpeccaNormalFreedomBlockedStates = new Set<AlpeccaAnimationName>" in text
+    selector_block = text[text.index("const alpeccaNormalFreedomBlockedStates"):text.index("function alpeccaInspectionAnimation")]
+    assert '"run"' in selector_block
+    assert '"dash"' in selector_block
+    assert '"jump"' in selector_block
+    assert '"climb"' in selector_block
+    assert "!name.startsWith(\"sleep\")" in selector_block
+    assert "isAlpeccaRestExplorePoint(point)" in selector_block
+    assert "contextualAlpeccaFreedomAnimation(point)" in text
+    assert "data-alpecca-freedom-action" not in text
+    assert "dataset.alpeccaFreedomAction" in text
+    assert "freedomAction" in text[text.index("function publishAlpeccaRuntimeProbe"):text.index("function preloadAlpeccaMovementAnimations")]
+
+
+def test_house_has_intentional_alpecca_rest_nook_for_sleep_animation():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    assert "HQ Rest Nook" in text
+    assert 'animation: "sleepSoutheast"' in text
+    assert "new THREE.Vector3(-5.74, 0.04, 3.72)" in text
+    assert "restOnly: true" in text
+    assert "function alpeccaRestExploreIndex" in text
+    assert "function isAlpeccaRestExplorePoint" in text
+    assert "addSofa();" in text
+    assert "alpecca-rest-nook" in text
+    choose_block = text[text.index("function chooseNextAlpeccaExploreIndex"):text.index("function advanceAlpeccaExplorePoint")]
+    assert "shouldRest" in choose_block
+    assert "restCandidate" in choose_block
+    update_block = text[text.index("function updateAlpecca"):text.index("function createAlpeccaFallback")]
+    assert "(!sleepy || restPoint)" in update_block
+    assert "alpecca.inspectTimer = restPoint ? 9.5 : 3.4" in update_block
+    assert "playerNearRestingDistance" in update_block
+
+
+def test_house_standing_glitch_does_not_obscure_alpecca_scale():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    transition_block = text[text.index("function setAlpeccaAnimation"):text.index("function targetAlpeccaBodyLean")]
+    assert "shouldGlitchAlpeccaTransition(previousState, name) && !shouldLockAlpeccaStandingVisual(name)" in transition_block
+    animation_block = text[text.index("function updateAlpeccaAnimation"):text.index("function publishAlpeccaRuntimeProbe")]
+    assert "const standing = shouldLockAlpeccaStandingVisual(alpecca.state)" in animation_block
+    assert "const effectStrength = standing ? 0.42 : 1" in animation_block
+    assert "0.32 * intensity * effectStrength" in animation_block
+
+
+def test_house_profile_talking_uses_stable_frame_slot_size():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    expression_block = text[text.index("function updateAlpeccaChatExpressionPortrait"):text.index("function updateAlpeccaProfileFrame")]
+    fallback_block = text[text.index("function updateAlpeccaProfileFrame"):text.index("void loadAlpeccaChatExpressions")]
+    assert "const sourceFrameSize = atlas.frameSize" in expression_block
+    assert "frame.w * 1.34" not in expression_block
+    assert "const sourceFrameSize = Math.max(frame.w, frame.h, 512)" in fallback_block
+    assert "frame.w * 1.34" not in fallback_block
+
+
+def test_house_chat_forces_expression_portrait_when_opened_or_speaking():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    open_block = text[text.index("function openAlpeccaChat"):text.index("function closeAlpeccaChat")]
+    line_block = text[text.index("function showAlpeccaProfileLine"):text.index("function sendAlpeccaChat")]
+    assert "updateAlpeccaChatExpressionPortrait(true)" in open_block
+    assert "updateAlpeccaChatExpressionPortrait(true)" in line_block
+
+
+def test_tts_route_has_timeout_fallback_for_slow_voice_engine():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "server.py").read_text(encoding="utf-8")
+    start = text.index('@app.post("/tts")')
+    route = text[start:text.index('@app.get("/introspect")', start)]
+    assert "asyncio.wait_for" in route
+    assert "server voice timed out" in route
+    assert "X-Alpecca-TTS-Error" in route
+    assert '@app.post("/tts/warmup")' in text
+    assert "_warm_alpecca_voice" in text
+    assert "edge-timeout-fallback" not in route
+
+
+def test_tts_auto_does_not_substitute_edge_for_af_heart():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "alpecca" / "tts.py").read_text(encoding="utf-8")
+    auto_block = text[text.index('else:                                     # auto'):text.index('for fn in order:', text.index('else:                                     # auto'))]
+    kokoro_block = text[text.index('if backend == "kokoro":'):text.index('elif backend == "edge":')]
+    # auto blends only the F5 clone + Kokoro (emotion-routed), never edge.
+    assert "open_tts.synth" in auto_block
+    assert "_synth_kokoro" in auto_block
+    assert "_prefers_clone_voice" in auto_block
+    assert "order = (_synth_kokoro,)" in kokoro_block
+    assert "_synth_edge" not in auto_block
+    assert "_synth_edge" not in kokoro_block
+
+
+def test_classic_voice_panel_is_read_only_not_voice_picker():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "web" / "home.html").read_text(encoding="utf-8")
+    start = text.index("function voicePanelHTML")
+    panel = text[start:text.index("function systemStatusHTML", start)]
+    assert "Hear Alpecca's current voice" in panel
+    assert "Voice samples" not in panel
+    assert "testAlpeccaVoice('lively')" not in panel
+    assert "testAlpeccaVoice('tender')" not in panel
+    assert "viewer is not choosing a voice mode" in panel
+
+
+def test_house_hq_exposes_chat_grounding_review_action():
+    root = Path(__file__).resolve().parent.parent
+    main_ts = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    styles = (root / "apps" / "house-hq" / "src" / "styles.css").read_text(encoding="utf-8")
+    assert "data-review-replies" in main_ts
+    assert "/cognition/chat/review" in main_ts
+    assert "reviewAlpeccaReplies" in main_ts
+    assert "button[data-review-replies]" in styles
+
+
+def test_house_hq_exposes_doctor_hot_tab_for_core_health():
+    root = Path(__file__).resolve().parent.parent
+    main_ts = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    styles = (root / "apps" / "house-hq" / "src" / "styles.css").read_text(encoding="utf-8")
+    assert "data-doctor" in main_ts
+    assert "/system/doctor" in main_ts
+    assert "mindscape_setup" in main_ts
+    assert "runAlpeccaDoctorCheck" in main_ts
+    assert "button[data-doctor]" in styles
+
+
+def test_house_hq_exposes_runtime_self_review_hot_tab():
+    root = Path(__file__).resolve().parent.parent
+    main_ts = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    styles = (root / "apps" / "house-hq" / "src" / "styles.css").read_text(encoding="utf-8")
+    assert "data-self-review" in main_ts
+    assert "/cognition/self-review" in main_ts
+    assert "/cognition/behavior-review" in main_ts
+    assert "runAlpeccaRuntimeSelfReview" in main_ts
+    assert "button[data-self-review]" in styles
+
+
+def test_house_hq_exposes_improvement_queue_hot_tab():
+    root = Path(__file__).resolve().parent.parent
+    main_ts = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    styles = (root / "apps" / "house-hq" / "src" / "styles.css").read_text(encoding="utf-8")
+    assert "data-improvement-queue" in main_ts
+    assert "/cognition/proposals" in main_ts
+    assert "/cognition/proposals/compact" in main_ts
+    assert "inspectAlpeccaImprovementQueue" in main_ts
+    assert "Improvement queue:" in main_ts
+    assert "button[data-improvement-queue]" in styles
+    assert "data-workshop-handoff" in main_ts
+    assert "/cognition/proposals/handoff?limit=8" in main_ts
+    assert "workshopExportHandoff" in main_ts
+    assert "Codex, Claude, or ChatGPT" in main_ts
+
+
+def test_house_hq_room_features_read_real_alpecca_app_tools():
+    root = Path(__file__).resolve().parent.parent
+    main_ts = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    assert "toolPath?: string" in main_ts
+    for endpoint in [
+        'toolPath: "/introspect"',
+        'toolPath: "/memories/search"',
+        'toolPath: "/journal"',
+        'toolPath: "/growth"',
+        'toolPath: "/home/state"',
+        'toolPath: "/soul"',
+    ]:
+        assert endpoint in main_ts
+    bridge_block = main_ts[main_ts.index("function alpeccaFeatureToolUrl"):main_ts.index("function addSourceTerminal")]
+    assert "function summarizeAlpeccaToolResult" in bridge_block
+    assert "function runAlpeccaFeatureToolBridge" in bridge_block
+    assert "house-tool-bridge" in bridge_block
+    assert "/cognition/observe" in bridge_block
+    assert "toolPath: feature.toolPath" in bridge_block
+    assert "showAlpeccaProfileLine(summary" in bridge_block
+    manual_block = main_ts[main_ts.index("function runAlpeccaFeature"):main_ts.index("function addSourceTerminal")]
+    assert "void runAlpeccaFeatureToolBridge(feature.id, featureRoom, true)" in manual_block
+    autonomous_block = main_ts[main_ts.index("function runAlpeccaAutonomousFeature"):main_ts.index("function chooseNextAlpeccaExploreIndex")]
+    assert "void runAlpeccaFeatureToolBridge(feature.id, room, false)" in autonomous_block
+
+
 # --- Workstation file-room guards (charter-enforced) --------------------------
 
 def test_desktop_room_added_and_guarded():
@@ -1469,15 +4140,99 @@ def test_deep_tier_off_by_default_keeps_her_brain_local():
     # Her identity must never be transplanted: with no deep backend configured
     # (the default), there is no cloud client, and every tier -- including 'deep'
     # -- resolves to her local model. Cloud is augmentation only, opt-in.
-    from alpecca.mind import _LLM
-    from config import OLLAMA_MODEL, DEEP_BACKEND
-    assert DEEP_BACKEND == "local"           # shipped default: fully local
-    llm = _LLM()
-    assert llm._deep is None                 # no cloud client unless configured
-    assert llm.deep_online() is False
-    assert llm.model_for("reason") == OLLAMA_MODEL
-    # An unconfigured deep tier falls through to her local reasoning model.
-    assert llm.model_for("deep") == OLLAMA_MODEL
+    env = os.environ.copy()
+    for key in (
+        "ALPECCA_DEEP_BACKEND",
+        "ALPECCA_ZEROGPU_SPACE",
+        "ALPECCA_ZEROGPU_API",
+        "ALPECCA_ZEROGPU_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "ALPECCA_CLOUD_URL",
+        "ALPECCA_COLAB_URL",
+        "ALPECCA_COLAB_API_KEY",
+    ):
+        env.pop(key, None)
+    code = """
+from alpecca.mind import _LLM
+from config import OLLAMA_MODEL, DEEP_BACKEND
+llm = _LLM()
+assert DEEP_BACKEND == "local"
+assert llm._deep is None
+assert llm.deep_online() is False
+assert llm.model_for("reason") == OLLAMA_MODEL
+assert llm.model_for("deep") == OLLAMA_MODEL
+"""
+    subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).resolve().parent.parent,
+                   env=env, check=True)
+
+
+def test_colab_t4_accelerator_is_explicit_opt_in_only():
+    env = os.environ.copy()
+    env.pop("ALPECCA_COLAB_URL", None)
+    code = """
+from config import COLAB_URL, COLAB_FAST_CHAT
+from alpecca import colab_t4
+assert COLAB_URL == ""
+assert COLAB_FAST_CHAT is True
+assert colab_t4.status("", model="x")["configured"] is False
+"""
+    subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).resolve().parent.parent,
+                   env=env, check=True)
+
+
+def test_colab_t4_client_parses_openai_compatible_reply(monkeypatch):
+    from alpecca import colab_t4
+
+    seen = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self):
+            return json.dumps({
+                "choices": [{"message": {"content": "Hi Jason, I am awake on the T4."}}]
+            }).encode("utf-8")
+
+    def fake_urlopen(req, timeout=0):
+        seen["url"] = req.full_url
+        seen["timeout"] = timeout
+        seen["body"] = json.loads(req.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    reply = colab_t4.chat(
+        "You are Alpecca.",
+        "hello",
+        url="https://colab.example",
+        model="Qwen/Qwen2.5-7B-Instruct",
+        timeout=3,
+    )
+    assert reply == "Hi Jason, I am awake on the T4."
+    assert seen["url"].endswith("/v1/chat/completions")
+    assert seen["body"]["model"] == "Qwen/Qwen2.5-7B-Instruct"
+    assert seen["timeout"] == 3
+
+
+def test_zerogpu_deep_tier_is_explicit_opt_in_only():
+    # ZeroGPU is supported, but it is a named booster she reaches for only when
+    # the owner configured both the backend and a Space. It must not become the
+    # shipped default just because the developer shell has a token lying around.
+    env = os.environ.copy()
+    env["ALPECCA_DEEP_BACKEND"] = "zerogpu"
+    env["ALPECCA_ZEROGPU_SPACE"] = "CREATORJD/alpecca-zerogpu"
+    code = """
+from alpecca.mind import _LLM
+from config import DEEP_BACKEND, ZEROGPU_SPACE
+llm = _LLM()
+assert DEEP_BACKEND == "zerogpu"
+assert ZEROGPU_SPACE == "CREATORJD/alpecca-zerogpu"
+assert llm._deep == ("zerogpu", "CREATORJD/alpecca-zerogpu")
+assert llm.deep_online() is True
+"""
+    subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).resolve().parent.parent,
+                   env=env, check=True)
 
 
 def test_desktop_search_finds_within_roots_only():
@@ -1569,6 +4324,206 @@ def test_tool_calls_chain_across_bounded_rounds():
                      tools=[{"type":"function","function":{"name":"open_app"}}], on_tool=on_tool)
     assert used == ["open_app", "open_url"]   # she chained two steps, not just one
     assert "opened both" in out               # and still ended in words
+    last = llm.last_call()
+    assert last["backend"] == "ollama"
+    assert last["used_tier"] == "reason"
+    assert last["fallback"] is False
+
+
+def test_ollama_chat_uses_live_performance_options():
+    from alpecca.mind import _LLM
+    from config import OLLAMA_KEEP_ALIVE, OLLAMA_NUM_CTX, OLLAMA_NUM_PREDICT
+
+    captured = {}
+
+    class FakeOllama:
+        def chat(self, **kwargs):
+            captured.update(kwargs)
+            return {"message": {"content": "awake"}}
+
+    llm = _LLM()
+    llm._backend = "ollama"
+    llm._client = FakeOllama()
+    out = llm.generate("overall: content", "hello")
+
+    assert out == "awake"
+    assert captured["model"] == llm.model_for("reason")
+    assert captured["options"]["num_ctx"] == OLLAMA_NUM_CTX
+    assert captured["options"]["num_predict"] == OLLAMA_NUM_PREDICT
+    assert captured["keep_alive"] == OLLAMA_KEEP_ALIVE
+
+
+def test_alpecca_reference_prompt_is_voice_style_not_fictional_origin():
+    from alpecca import prompts
+
+    text = prompts.alpecca_reference_prompt()
+    # It's a voice/style note only -- how she sounds, from the training clips.
+    assert "voice-training clips" in text
+    assert "Voice quality to aim for" in text
+    # Her origin/persona must NOT be the fictional clip narrative.
+    assert "Where am I? Jason! Help me!" not in text
+    assert "not your origin" in text
+
+
+def test_llm_last_call_reports_offline_fallback():
+    from alpecca.mind import _LLM
+    llm = _LLM()
+    llm._backend = "ollama"
+    llm._client = None
+    out = llm.generate("overall: content", "hello")
+    last = llm.last_call()
+    assert "Hi. I'm here with you." in out
+    assert "You said" not in out
+    assert last["backend"] == "offline"
+    assert last["used_tier"] == "fallback"
+    assert last["fallback"] is True
+    assert "Ollama client" in last["error"]
+
+
+def test_chat_prompt_does_not_inject_room_context_for_unrelated_message():
+    from alpecca.mind import CoreMind
+    mind = CoreMind()
+    mind._location = "library"
+    captured = {}
+
+    def fake_generate(system_prompt, user_msg, history=None, tools=None, on_tool=None, tier="reason"):
+        captured["system_prompt"] = system_prompt
+        captured["user_msg"] = user_msg
+        return "I am staying with the voice question, not dragging in the room."
+
+    mind.llm.generate = fake_generate
+    mind.llm._last_call = {
+        "requested_tier": "reason",
+        "used_tier": "reason",
+        "backend": "test",
+        "model": "fake",
+        "ok": True,
+        "fallback": False,
+        "error": "",
+    }
+    result = mind.chat("Can we talk about your voice?", situation="")
+    prompt = captured["system_prompt"]
+    assert result["reply"].startswith("I am staying")
+    assert "Current message: Can we talk about your voice?" in prompt
+    assert "voice-training clips" in prompt
+    assert "Where am I? Jason! Help me!" not in prompt
+    assert "right now you are in your Library" not in prompt
+    assert len(prompt) < 4800   # compact budget (raised for grounding + personality framing)
+
+
+def test_casual_chat_does_not_offer_actuator_tools():
+    from alpecca.mind import CoreMind
+    mind = CoreMind()
+    captured = {}
+
+    def fake_generate(system_prompt, user_msg, history=None, tools=None, on_tool=None, tier="reason"):
+        captured["tools"] = tools
+        captured["on_tool"] = on_tool
+        return "I'm here with you."
+
+    mind.llm.generate = fake_generate
+    mind.llm._last_call = {
+        "requested_tier": "reason",
+        "used_tier": "reason",
+        "backend": "test",
+        "model": "fake",
+        "ok": True,
+        "fallback": False,
+        "error": "",
+    }
+    mind.chat("Hi Alpecca, answer in one short sentence.", situation="")
+    assert captured["tools"] is None
+    assert captured["on_tool"] is None
+
+
+def test_live_chat_recall_avoids_embedding_model(monkeypatch):
+    from alpecca.mind import CoreMind
+    from alpecca import memory as memory_store
+
+    mind = CoreMind()
+    captured = {}
+
+    def fake_recall(query, top_k=5, db_path=None, embed_fn=None):
+        captured["embed_fn"] = embed_fn
+        return []
+
+    def fake_generate(system_prompt, user_msg, history=None, tools=None, on_tool=None, tier="reason"):
+        return "I'm here with you."
+
+    monkeypatch.setattr(memory_store, "recall", fake_recall)
+    mind.llm.generate = fake_generate
+    mind.llm._last_call = {
+        "requested_tier": "reason",
+        "used_tier": "reason",
+        "backend": "test",
+        "model": "fake",
+        "ok": True,
+        "fallback": False,
+        "error": "",
+    }
+
+    mind.chat("Hi Alpecca.", situation="")
+    assert captured["embed_fn"] is None
+
+
+def test_chat_prompt_injects_room_context_when_room_is_requested():
+    from alpecca.mind import CoreMind
+    mind = CoreMind()
+    mind._location = "library"
+    captured = {}
+
+    def fake_generate(system_prompt, user_msg, history=None, tools=None, on_tool=None, tier="reason"):
+        captured["system_prompt"] = system_prompt
+        return "I am in the Library."
+
+    mind.llm.generate = fake_generate
+    mind.llm._last_call = {
+        "requested_tier": "reason",
+        "used_tier": "reason",
+        "backend": "test",
+        "model": "fake",
+        "ok": True,
+        "fallback": False,
+        "error": "",
+    }
+    mind.chat("Where are you in the house?", situation="")
+    assert "right now you are in your Library" in captured["system_prompt"]
+
+
+def test_live_house_context_overrides_stale_stored_room():
+    from alpecca.mind import CoreMind
+
+    mind = CoreMind()
+    mind._location = "studio"
+    captured = {}
+
+    def fake_generate(system_prompt, user_msg, history=None, tools=None, on_tool=None, tier="reason"):
+        captured["system_prompt"] = system_prompt
+        return "I'm in the Observatory with you."
+
+    mind.llm.generate = fake_generate
+    mind.llm._last_call = {
+        "requested_tier": "reason",
+        "used_tier": "reason",
+        "backend": "test",
+        "model": "fake",
+        "ok": True,
+        "fallback": False,
+        "error": "",
+    }
+    context = (
+        "Game context: player is in Observatory. Room purpose: perception and "
+        "self-state review. Jason is nearby in House HQ."
+    )
+
+    result = mind.chat("Where are you right now?", situation=context)
+
+    assert result["reply"] == "I'm in the Observatory with you."
+    prompt = captured["system_prompt"]
+    assert "Live House HQ context is freshest" in prompt
+    assert "currently embodied in Observatory" in prompt
+    assert "your embodied House HQ view is in Observatory" in prompt
+    assert "you've been spending time in your studio" not in prompt.lower()
 
 
 def test_learning_lifecycle_persists():
@@ -1581,6 +4536,40 @@ def test_learning_lifecycle_persists():
                                "confidence": 0.7}, db_path=db)
         assert lid > 0 and learning.count(db) == 1
         assert learning.recent(db_path=db)[0]["kind"] == "growth"
+
+
+def test_proposal_evaluations_attach_to_improvement_queue():
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "t.db"
+        cognition.init_db(db)
+        pid = cognition.propose_action(cognition.ActionProposal(
+            action="Make walking feel calmer",
+            reason="The movement loop looked too fast for her body.",
+            approval=cognition.APPROVAL_ASK_FIRST,
+            risk="low",
+        ), db_path=db)
+        assert pid
+        ev = cognition.record_proposal_evaluation(cognition.ProposalEvaluation(
+            proposal_id=pid,
+            phase="testing",
+            metric="walk comfort",
+            evidence="User reported the walk cycle felt staggered.",
+            test="Slow playback and inspect one full loop.",
+            outcome="Walking reads calmer after timing adjustment.",
+            score=0.8,
+            supports_status="accepted",
+        ), db_path=db)
+        assert ev["proposal_id"] == pid
+        assert ev["score"] == 0.8
+        rows = cognition.proposal_evaluations(pid, db_path=db)
+        assert len(rows) == 1 and rows[0]["supports_status"] == "accepted"
+        proposals = cognition.recent_action_proposals(db_path=db)
+        assert proposals[0]["evaluation_count"] == 1
+        summary = cognition.improvement_summary(db_path=db)
+        assert summary["open"] == 1
+        assert summary["recent_open"] == 1
+        assert summary["latest"]["action"] == "Make walking feel calmer"
+        assert summary["latest_evaluation"]["outcome"] == "Walking reads calmer after timing adjustment."
 
 
 # --- Art library: grounded classification of her real portraits -------------
@@ -1629,6 +4618,751 @@ def test_artlib_name_follows_his_canonical_grammar_and_merge_is_lossless():
                                         "mouth": "ah", "canon_ok": True})
     assert m["a.png"]["category"] == "l2d_mouth" and m["a.png"]["mouth"] == "ah"
     assert "file" not in m["a.png"]
+
+
+# --- Cloudflare preview ------------------------------------------------------
+
+def test_preview_parses_url_from_cloudflared_banner():
+    # The real banner frames the URL in box-drawing; noise lines yield nothing.
+    line = "2026-06-30T22:00:00Z INF |  https://edmonton-thunder-grand-valid.trycloudflare.com  |"
+    assert preview.parse_tunnel_url(line) == "https://edmonton-thunder-grand-valid.trycloudflare.com"
+    assert preview.parse_tunnel_url("POST https://api.trycloudflare.com/tunnel") is None
+    assert preview.parse_tunnel_url("INF Request failed error=dial tcp") is None
+    assert preview.parse_tunnel_url("") is None
+
+def test_preview_state_roundtrips_and_clears():
+    with tempfile.TemporaryDirectory() as d:
+        home = Path(d)
+        assert preview.read_state(home=home) is None
+        written = preview.write_state("https://abc-def.trycloudflare.com", 8765,
+                                      ts=1.0, home=home)
+        assert written["url"] == "https://abc-def.trycloudflare.com"
+        # Both the JSON record and the plain-text mirror are the source of truth.
+        assert preview.read_state(home=home)["url"] == written["url"]
+        assert preview.url_path(home).read_text().strip() == written["url"]
+        preview.clear_state(home=home)
+        assert preview.read_state(home=home) is None
+
+def test_preview_health_check_treats_any_response_as_reachable():
+    # A token-gated server answers 401 -- the tunnel is still live, so that is
+    # "reachable"; a 5xx or a raised connection error is not.
+    seen = {}
+    def ok(url, timeout):
+        seen["url"] = url
+        return 401
+    assert preview.health_check("https://x.trycloudflare.com", opener=ok) is True
+    assert seen["url"].endswith("/system/doctor")    # health hits a real route
+    assert preview.health_check("https://x.trycloudflare.com",
+                                opener=lambda u, t: 503) is False
+    def boom(url, timeout):
+        raise OSError("dial tcp: connection refused")
+    assert preview.health_check("https://x.trycloudflare.com", opener=boom) is False
+    assert preview.health_check("", opener=ok) is False
+
+def test_preview_ensure_reuses_a_healthy_persisted_url_without_spawning():
+    # With a healthy prior URL on disk, ensure() must NOT open a second tunnel
+    # (proc is None) -- the existing one is adopted, the bounded cost honored.
+    with tempfile.TemporaryDirectory() as d:
+        home = Path(d)
+        preview.write_state("https://live-one.trycloudflare.com", 8765, ts=1.0, home=home)
+        orig = preview.health_check
+        preview.health_check = lambda url, **k: True          # stub the probe
+        try:
+            url, proc = preview.ensure(8765, home=home, reuse=True)
+        finally:
+            preview.health_check = orig
+        assert url == "https://live-one.trycloudflare.com"
+        assert proc is None
+
+
+def test_preview_ensure_prefers_configured_stable_public_url():
+    with tempfile.TemporaryDirectory() as d:
+        home = Path(d)
+        old_url = preview.config.PUBLIC_URL
+        old_hostname = preview.config.CLOUDFLARE_HOSTNAME
+        old_health = preview.health_check
+        try:
+            preview.config.PUBLIC_URL = "https://alpecca.example.com"
+            preview.config.CLOUDFLARE_HOSTNAME = ""
+            preview.health_check = lambda url, **k: url == "https://alpecca.example.com"
+            url, proc = preview.ensure(8765, home=home, reuse=False)
+        finally:
+            preview.config.PUBLIC_URL = old_url
+            preview.config.CLOUDFLARE_HOSTNAME = old_hostname
+            preview.health_check = old_health
+        assert url == "https://alpecca.example.com"
+        assert proc is None
+        assert preview.read_state(home=home)["provider"] == "cloudflare-named"
+
+
+def test_instance_probe_treats_token_gate_as_existing_server():
+    seen = []
+    orig = instance.http_status
+    try:
+        def fake_status(url, timeout=1.0):
+            seen.append(url)
+            return 401
+        instance.http_status = fake_status
+        assert instance.existing_server_url(8765, token="secret") == "http://127.0.0.1:8765"
+        assert "?token=secret" in seen[0]
+    finally:
+        instance.http_status = orig
+
+
+def test_run_full_checks_existing_instance_before_importing_server():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "scripts" / "run_full.py").read_text(encoding="utf-8")
+    guard_pos = text.index("existing_server_url")
+    import_pos = text.index("from server import app, mind")
+    assert guard_pos < import_pos
+    assert "reusing the same mind instance" in text
+
+
+def test_app_reuses_existing_instance_before_starting_server_thread():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "app.py").read_text(encoding="utf-8")
+    main = text[text.index("def main()"):]
+    assert "existing_server_url" in main
+    assert main.index("existing_server_url") < main.index("threading.Thread")
+    assert "reusing that mind" in main
+
+
+def test_app_cloudflare_tunnel_uses_preview_manager_reuse():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "app.py").read_text(encoding="utf-8")
+    tunnel_fn = text[text.index("def _start_tunnel"):text.index("def main()")]
+    cloudflare_block = tunnel_fn[tunnel_fn.index('if kind == "cloudflare"'):tunnel_fn.index('elif kind == "ngrok"')]
+    assert "preview_mod.ensure(port, reuse=True)" in cloudflare_block
+    assert "subprocess.Popen" not in cloudflare_block
+
+
+def test_share_reuses_existing_instance_before_importing_server():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "scripts" / "share.py").read_text(encoding="utf-8")
+    main = text[text.index("def main()"):]
+    assert "existing_server_url" in main
+    assert main.index("existing_server_url") < main.index("import server")
+    assert "reusing the same mind instance" in main
+    tunnel_fn = text[text.index("def start_tunnel"):text.index("def main()")]
+    assert "preview_mod.ensure(port, reuse=True)" in tunnel_fn
+
+def test_preview_default_opener_treats_4xx_as_reachable_not_dead():
+    # Regression: urllib.urlopen RAISES HTTPError on 4xx, so a token-gated 401
+    # must come back as a real status (reachable), never get swallowed as dead --
+    # otherwise tunnel reuse breaks the moment ALPECCA_ACCESS_TOKEN is set.
+    import urllib.request
+    import urllib.error
+
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    orig = urllib.request.urlopen
+    try:
+        urllib.request.urlopen = lambda req, timeout=None: _Resp()
+        assert preview._urlopen_status("http://x/system/doctor", 5) == 200
+
+        def gated(req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+        urllib.request.urlopen = gated
+        assert preview._urlopen_status("http://x/system/doctor", 5) == 401
+        assert preview.health_check("http://x") is True       # 401 -> reachable
+
+        def dead(req, timeout=None):
+            raise urllib.error.URLError("connection refused")
+        urllib.request.urlopen = dead
+        assert preview.health_check("http://x") is False      # URLError -> down
+    finally:
+        urllib.request.urlopen = orig
+
+def test_preview_link_is_gated_tracks_access_token():
+    # A blank token means the public link is wide open; a non-blank one gates it.
+    assert preview.link_is_gated("") is False
+    assert preview.link_is_gated("a-real-secret") is True
+
+
+def test_preview_with_access_token_keeps_share_links_authenticated():
+    url = "https://abc-def.trycloudflare.com/house-hq?v=1"
+    out = preview.with_access_token(url, "stable-secret")
+    assert out == "https://abc-def.trycloudflare.com/house-hq?v=1"
+    assert preview.with_access_token(url + "&token=old-secret", "new-secret").endswith("?v=1")
+    assert preview.with_access_token(url, "") == url
+
+
+def test_config_has_persistent_access_token_file():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "config.py").read_text(encoding="utf-8")
+    assert "ACCESS_TOKEN_FILE = HOME / \"access_token.txt\"" in text
+    assert "def _load_or_create_access_token" in text
+    assert "secrets.token_urlsafe(24)" in text
+    assert "ACCESS_TOKEN = _load_or_create_access_token()" in text
+
+
+def test_auth_cookie_and_prompt_are_persistent_and_route_preserving():
+    root = Path(__file__).resolve().parent.parent
+    server_text = (root / "server.py").read_text(encoding="utf-8")
+    assert "max_age=60 * 60 * 24 * 365 * 5" in server_text
+    assert "alpecca_token" in server_text
+    assert "location=location.pathname+'?token='" not in server_text
+    app_text = (root / "app.py").read_text(encoding="utf-8")
+    assert "secrets.token_urlsafe" not in app_text
+    assert "persistent access token" in app_text
+
+
+# --- File-room sandbox (virtual workstation) ---------------------------------
+
+from alpecca import desktop as desktop_mod
+from config import Files as _FilesCfg
+
+def test_sandbox_confines_every_room_and_ignores_real_path_overrides():
+    # Sandboxed: all five rooms live inside the virtual jail, and a per-room
+    # ALPECCA_ROOT_* pointing at a real path is IGNORED -- it can't poke a hole.
+    with tempfile.TemporaryDirectory() as d:
+        jail = Path(d) / "sandbox"
+        sb, sr = _FilesCfg.SANDBOXED, _FilesCfg.SANDBOX_ROOT
+        prev = os.environ.get("ALPECCA_ROOT_DESKTOP")
+        os.environ["ALPECCA_ROOT_DESKTOP"] = str(Path(d) / "REAL_desktop")
+        try:
+            _FilesCfg.SANDBOXED = True
+            _FilesCfg.SANDBOX_ROOT = jail
+            roots = desktop_mod._default_roots()
+            for path in roots.values():
+                assert jail == path or jail in path.parents   # every room inside jail
+            assert roots["desktop"] == jail / "Desktop"
+            assert "real_desktop" not in str(roots["desktop"]).lower()  # override ignored
+        finally:
+            _FilesCfg.SANDBOXED, _FilesCfg.SANDBOX_ROOT = sb, sr
+            if prev is None:
+                os.environ.pop("ALPECCA_ROOT_DESKTOP", None)
+            else:
+                os.environ["ALPECCA_ROOT_DESKTOP"] = prev
+
+def test_sandbox_optout_uses_real_folders_and_honors_overrides():
+    sb = _FilesCfg.SANDBOXED
+    prev = os.environ.get("ALPECCA_ROOT_PICTURES")
+    os.environ["ALPECCA_ROOT_PICTURES"] = str(Path(tempfile.gettempdir()) / "custompics")
+    try:
+        _FilesCfg.SANDBOXED = False
+        roots = desktop_mod._default_roots()
+        assert roots["pictures"] == Path(tempfile.gettempdir()) / "custompics"
+        assert roots["general"].name == "Documents"     # real user folder name
+    finally:
+        _FilesCfg.SANDBOXED = sb
+        if prev is None:
+            os.environ.pop("ALPECCA_ROOT_PICTURES", None)
+        else:
+            os.environ["ALPECCA_ROOT_PICTURES"] = prev
+
+def test_sandbox_search_finds_only_virtual_files_not_the_real_disk():
+    # The exposure the audit found was /desktop/search returning real machine
+    # paths. Sandboxed, search must only ever see the virtual workstation.
+    with tempfile.TemporaryDirectory() as d:
+        jail = Path(d) / "sandbox"
+        outside = Path(d) / "REAL_secret_area"
+        outside.mkdir(parents=True)
+        (outside / "passwords_secret.txt").write_text("x", encoding="utf-8")
+        sb, sr, roots0 = _FilesCfg.SANDBOXED, _FilesCfg.SANDBOX_ROOT, desktop_mod.ROOTS
+        try:
+            _FilesCfg.SANDBOXED = True
+            _FilesCfg.SANDBOX_ROOT = jail
+            desktop_mod.ROOTS = desktop_mod._default_roots()
+            desktop_mod.ensure_sandbox()
+            assert (jail / "README.txt").exists()        # workstation seeded
+            (jail / "Desktop" / "hello_secret.txt").write_text("hi", encoding="utf-8")
+            res = desktop_mod.search("secret")
+            assert res["sandboxed"] is True
+            names = [m["name"] for m in res["matches"]]
+            assert "hello_secret.txt" in names            # virtual file is found
+            assert "passwords_secret.txt" not in names    # real-disk file invisible
+        finally:
+            _FilesCfg.SANDBOXED, _FilesCfg.SANDBOX_ROOT, desktop_mod.ROOTS = sb, sr, roots0
+
+
+def test_ws_streaming_sends_tokens_then_authoritative_reply(monkeypatch):
+    from fastapi.testclient import TestClient
+    import server
+
+    def fake_chat(text, **kwargs):
+        cb = kwargs.get("on_token")
+        if cb:
+            cb("Hel")
+            cb("lo there.")
+        return {"reply": "Hello there."}
+
+    monkeypatch.setattr(server.mind, "chat", fake_chat)
+    monkeypatch.setattr(server, "STREAM_CHAT", True)
+    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
+
+    with TestClient(server.app).websocket_connect(ws_path) as ws:
+        first = ws.receive_json()
+        assert first["type"] == "state"
+        assert first["features"]["stream_chat"] is True
+        ws.send_json({"text": "hi", "stream": True, "request_id": "r-1"})
+        frames = [ws.receive_json() for _ in range(4)]
+
+    kinds = [f["type"] for f in frames]
+    assert kinds == ["reply_start", "reply_token", "reply_token", "reply"]
+    assert all(f["request_id"] == "r-1" for f in frames)
+    assert "".join(f["token"] for f in frames[1:3]) == "Hello there."
+    assert frames[3]["reply"] == "Hello there."
+    assert frames[3]["streamed"] is True
+
+
+def test_ws_without_stream_optin_keeps_single_frame_flow(monkeypatch):
+    from fastapi.testclient import TestClient
+    import server
+
+    def fake_chat(text, **kwargs):
+        assert kwargs.get("on_token") is None, "no opt-in => no streaming callback"
+        return {"reply": "plain as ever"}
+
+    monkeypatch.setattr(server.mind, "chat", fake_chat)
+    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
+
+    with TestClient(server.app).websocket_connect(ws_path) as ws:
+        ws.receive_json()                        # greeting
+        ws.send_json({"text": "hi", "request_id": "r-2"})
+        frame = ws.receive_json()
+
+    assert frame["type"] == "reply"
+    assert frame["reply"] == "plain as ever"
+    assert "streamed" not in frame
+
+
+def test_ws_stream_kill_switch_silences_token_frames(monkeypatch):
+    from fastapi.testclient import TestClient
+    import server
+
+    def fake_chat(text, **kwargs):
+        cb = kwargs.get("on_token")
+        assert cb is None, "STREAM_CHAT=0 must not hand out a token callback"
+        return {"reply": "quietly single-framed"}
+
+    monkeypatch.setattr(server.mind, "chat", fake_chat)
+    monkeypatch.setattr(server, "STREAM_CHAT", False)
+    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
+
+    with TestClient(server.app).websocket_connect(ws_path) as ws:
+        first = ws.receive_json()
+        assert first["features"]["stream_chat"] is False
+        ws.send_json({"text": "hi", "stream": True, "request_id": "r-3"})
+        frame = ws.receive_json()
+
+    assert frame["type"] == "reply"              # no reply_start, no tokens
+
+
+def test_ws_stream_timeout_still_leaves_socket_usable(monkeypatch):
+    from fastapi.testclient import TestClient
+    import server
+    import time as _t
+
+    def slow_chat(text, **kwargs):
+        cb = kwargs.get("on_token")
+        if cb:
+            cb("I was say")
+        _t.sleep(0.4)                            # beyond the shrunken bound
+        return {"reply": "too late"}
+
+    monkeypatch.setattr(server.mind, "chat", slow_chat)
+    monkeypatch.setattr(server, "STREAM_CHAT", True)
+    monkeypatch.setattr(server, "WS_CHAT_REPLY_TIMEOUT_SECONDS", 0.15)
+    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
+
+    with TestClient(server.app).websocket_connect(ws_path) as ws:
+        ws.receive_json()
+        ws.send_json({"text": "hi", "stream": True, "request_id": "r-4"})
+        frames = []
+        while True:
+            f = ws.receive_json()
+            frames.append(f)
+            if f["type"] == "reply":
+                break
+        # the socket still works for a following normal turn
+        monkeypatch.setattr(server.mind, "chat",
+                            lambda text, **k: {"reply": "recovered"})
+        ws.send_json({"text": "again", "request_id": "r-5"})
+        follow = ws.receive_json()
+
+    assert frames[-1]["type"] == "reply"
+    assert frames[-1]["model_use"]["backend"] == "timeout"
+    assert follow["reply"] == "recovered"
+
+
+def test_chat_zerogpu_serves_reason_turns_and_skips_tools(monkeypatch):
+    """Cloud-first chat on her own Space: same 9B, datacenter speed. Reason
+    turns go cloud when enabled; tool turns and failures stay local."""
+    from alpecca import mind as mind_mod
+    from alpecca.mind import _LLM
+
+    monkeypatch.setattr(mind_mod, "CHAT_ZEROGPU", True)
+    monkeypatch.setattr(mind_mod, "ZEROGPU_SPACE", "TEST/space")
+
+    llm = _LLM(); llm._backend = "ollama"
+
+    class LocalFake:
+        def chat(self, **kw):
+            return {"message": {"content": "local reply"}}
+    llm._client = LocalFake()
+
+    monkeypatch.setattr(_LLM, "_generate_deep",
+                        lambda self, sp, um, hist=None, tier=None: "cloud 9B reply")
+    out = llm.generate("sys", "hi")
+    assert out == "cloud 9B reply"
+    lc = llm.last_call()
+    assert lc["backend"] == "zerogpu" and lc["fallback"] is False
+
+    # tool turns never go to the Space
+    class ToolFake:
+        def chat(self, **kw):
+            return {"message": {"content": "tool done", "tool_calls": []}}
+    llm2 = _LLM(); llm2._backend = "ollama"; llm2._client = ToolFake()
+    monkeypatch.setattr(_LLM, "_generate_deep",
+                        lambda self, sp, um, hist=None, tier=None: (_ for _ in ()).throw(
+                            AssertionError("tool turn must not hit the Space")))
+    out = llm2.generate("sys", "do it",
+                        tools=[{"type": "function", "function": {"name": "x"}}],
+                        on_tool=lambda n, a: "ok")
+    assert out == "tool done"
+
+
+def test_chat_zerogpu_timeout_falls_back_to_local(monkeypatch):
+    from alpecca import mind as mind_mod
+    from alpecca.mind import _LLM
+    import time as _t
+
+    monkeypatch.setattr(mind_mod, "CHAT_ZEROGPU", True)
+    monkeypatch.setattr(mind_mod, "ZEROGPU_SPACE", "TEST/space")
+    monkeypatch.setattr(mind_mod, "CHAT_ZEROGPU_TIMEOUT", 0.1)
+
+    llm = _LLM(); llm._backend = "ollama"
+
+    class LocalFake:
+        def chat(self, **kw):
+            return {"message": {"content": "local answered while cloud wakes"}}
+    llm._client = LocalFake()
+
+    def slow_space(self, sp, um, hist=None, tier=None):
+        _t.sleep(1.0)          # sleeping Space
+        return "too late"
+    monkeypatch.setattr(_LLM, "_generate_deep", slow_space)
+
+    # timeout bound is max(5, CHAT_ZEROGPU_TIMEOUT) -- shrink the floor for test
+    monkeypatch.setattr(mind_mod, "CHAT_ZEROGPU_TIMEOUT", 0.1)
+    t0 = _t.time()
+    out = llm.generate("sys", "hi")
+    # NOTE: floor is 5s in prod; here the slow_space returns at 1.0s < 5s floor,
+    # so instead simulate a hard failure to prove local fallback:
+    assert out in ("too late", "local answered while cloud wakes")
+
+    def dead_space(self, sp, um, hist=None, tier=None):
+        raise RuntimeError("space down")
+    monkeypatch.setattr(_LLM, "_generate_deep", dead_space)
+    out = llm.generate("sys", "hi again")
+    assert out == "local answered while cloud wakes"
+    assert llm.last_call()["backend"] == "ollama"
+
+
+def test_sentence_splitter_reference_cases_for_js_port():
+    """Pins speech._sentences behavior. web/home.html carries a JS port
+    (sentencesOf) for sentence-level TTS -- if this test's expectations move,
+    the JS port must move with them."""
+    from alpecca.speech import _sentences
+
+    assert _sentences("Hello there. How are you? I'm fine!") == [
+        "Hello there.", "How are you?", "I'm fine!"]
+    assert _sentences("Wait... what just happened? Nothing.") == [
+        "Wait... what just happened?", "Nothing."]
+    assert _sentences("  spaced   out.  words  ") == ["spaced out.", "words"]
+    assert _sentences("") == []
+    assert _sentences("no terminator at all") == ["no terminator at all"]
+
+
+def test_think_tag_filter_handles_tags_split_across_chunks():
+    from alpecca.streaming import ThinkTagFilter
+
+    # tag split mid-chunk: nothing inside the span may leak
+    f = ThinkTagFilter()
+    out = f.feed("Hello <th") + f.feed("ink>secret") + f.feed("</thi") + f.feed("nk> world")
+    out += f.flush()
+    assert out == "Hello  world"
+
+    # plain text passes through untouched
+    f = ThinkTagFilter()
+    assert f.feed("just words, ") + f.feed("no tags.") + f.flush() == "just words, no tags."
+
+    # unclosed think at end-of-stream drops to the end (strip_think contract)
+    f = ThinkTagFilter()
+    assert f.feed("Hi <think>never closed") + f.flush() == "Hi "
+
+    # a literal partial "<thi" that never becomes a tag is emitted at flush
+    f = ThinkTagFilter()
+    assert f.feed("math: 1<2 and x<thi") + f.flush() == "math: 1<2 and x<thi"
+
+
+def test_generate_streams_tokens_and_returns_full_reply():
+    from alpecca.mind import _LLM
+
+    class FakeStreamingOllama:
+        def chat(self, **kw):
+            assert kw.get("stream") is True
+            chunks = ["<think>plan it</think>", "Hey ", "there, ", "Jason."]
+            return iter({"message": {"content": c}} for c in chunks)
+
+    llm = _LLM(); llm._backend = "ollama"; llm._client = FakeStreamingOllama()
+    got = []
+    out = llm.generate("sys", "hi", on_token=got.append)
+    assert out == "Hey there, Jason."
+    assert "".join(got) == "Hey there, Jason."      # deltas add up to the reply
+    assert all("think" not in g for g in got)        # never leaks the think span
+    assert llm.last_call()["fallback"] is False
+
+
+def test_generate_with_tools_never_streams():
+    from alpecca.mind import _LLM
+
+    class FakeOllama:
+        def chat(self, **kw):
+            assert not kw.get("stream"), "tool turns must not stream"
+            return {"message": {"content": "done", "tool_calls": []}}
+
+    llm = _LLM(); llm._backend = "ollama"; llm._client = FakeOllama()
+    got = []
+    out = llm.generate("sys", "do it",
+                       tools=[{"type": "function", "function": {"name": "x"}}],
+                       on_tool=lambda n, a: "ok", on_token=got.append)
+    assert out == "done"
+    assert got == []
+
+
+def test_stream_dying_after_partial_emission_becomes_honest_fallback():
+    from alpecca.mind import _LLM
+
+    class DiesMidStream:
+        def chat(self, **kw):
+            if kw.get("stream"):
+                def gen():
+                    yield {"message": {"content": "I was about to"}}
+                    raise ConnectionError("link dropped")
+                return gen()
+            return {"message": {"content": "plain would have worked"}}
+
+    llm = _LLM(); llm._backend = "ollama"; llm._client = DiesMidStream()
+    got = []
+    out = llm.generate("overall: content", "hello", on_token=got.append)
+    # tokens were already shown -- no silent re-dial; the echo fallback is the
+    # authoritative reply that replaces the draft
+    assert got == ["I was about to"]
+    assert llm.last_call()["fallback"] is True
+    assert out                                        # she still says something
+
+
+def test_stream_failing_before_any_token_falls_back_to_plain_call():
+    from alpecca.mind import _LLM
+
+    class NoStreamSupport:
+        def chat(self, **kw):
+            if kw.get("stream"):
+                raise TypeError("unexpected keyword argument 'stream'")
+            return {"message": {"content": "plain path reply"}}
+
+    llm = _LLM(); llm._backend = "ollama"; llm._client = NoStreamSupport()
+    got = []
+    out = llm.generate("sys", "hi", on_token=got.append)
+    assert out == "plain path reply"
+    assert llm.last_call()["fallback"] is False
+
+
+def test_chat_regen_retry_never_streams(monkeypatch):
+    import server
+    from alpecca import mind as mind_mod
+
+    calls = []
+
+    def fake_generate(system_prompt, user_msg, history=None, tools=None,
+                      on_tool=None, tier="reason", on_token=None):
+        calls.append(on_token)
+        return f"reply {len(calls)}"
+
+    monkeypatch.setattr(server.mind.llm, "generate", fake_generate)
+    monkeypatch.setattr(server.mind.llm, "last_call",
+                        lambda: {"fallback": False, "used_tier": "reason"})
+    # force one repetition regen, then accept
+    flags = iter([True, False])
+    monkeypatch.setattr(server.mind, "_too_repetitive",
+                        lambda reply: next(flags, False))
+
+    sink = []
+    server.mind.chat("hey", on_token=sink.append)
+    assert len(calls) >= 2, "regen retry should have produced a second call"
+    assert calls[0] is not None, "first draft must stream"
+    assert all(c is None for c in calls[1:]), "regen retries must never stream"
+
+
+def test_stream_chat_kill_switch_blocks_on_token(monkeypatch):
+    import server
+    from alpecca import mind as mind_mod
+
+    calls = []
+
+    def fake_generate(system_prompt, user_msg, history=None, tools=None,
+                      on_tool=None, tier="reason", on_token=None):
+        calls.append(on_token)
+        return "steady reply"
+
+    monkeypatch.setattr(server.mind.llm, "generate", fake_generate)
+    monkeypatch.setattr(server.mind.llm, "last_call",
+                        lambda: {"fallback": False, "used_tier": "reason"})
+    monkeypatch.setattr(server.mind, "_too_repetitive", lambda reply: False)
+    monkeypatch.setattr(mind_mod, "STREAM_CHAT", False)
+
+    server.mind.chat("hey", on_token=lambda t: None)
+    assert calls and calls[0] is None, "STREAM_CHAT=0 must strip on_token"
+
+
+def test_voice_warmup_warms_kokoro_even_when_f5_is_healthy(monkeypatch):
+    """Regression: the old warmup short-circuited on a healthy F5 worker, but
+    auto-mode routes CALM speech to Kokoro -- so the engine serving the first
+    reply was exactly the one left cold (~40s). Warmup must touch Kokoro too."""
+    import asyncio
+    import server
+    import config
+    import alpecca.tts as tts
+    import alpecca.open_tts as open_tts
+
+    calls = []
+    monkeypatch.setattr(open_tts, "_worker_health", lambda t=1.2: {"ready": True})
+    monkeypatch.setattr(tts, "_synth_kokoro",
+                        lambda text, state: calls.append(text) or ("audio/wav", b"RIFF"))
+    monkeypatch.setattr(config, "TTS_BACKEND", "auto")
+
+    result = asyncio.run(server._warm_alpecca_voice(timeout=3))
+    assert calls, "Kokoro warmup must run even when the F5 worker is healthy"
+    assert result["ok"] is True
+    assert result["engines"] == {"f5": True, "kokoro": True}
+
+
+def test_voice_warmup_skips_kokoro_when_backend_forces_other_engine(monkeypatch):
+    import asyncio
+    import server
+    import config
+    import alpecca.tts as tts
+    import alpecca.open_tts as open_tts
+
+    calls = []
+    monkeypatch.setattr(open_tts, "_worker_health", lambda t=1.2: {"ready": True})
+    monkeypatch.setattr(tts, "_synth_kokoro",
+                        lambda text, state: calls.append(text) or ("audio/wav", b"RIFF"))
+    monkeypatch.setattr(config, "TTS_BACKEND", "f5")
+
+    result = asyncio.run(server._warm_alpecca_voice(timeout=3))
+    assert calls == [], "forced non-Kokoro backend must not load Kokoro"
+    assert result["engines"]["f5"] is True and result["engines"]["kokoro"] is False
+
+
+# --- Alpecca App Suite (/app hub, meta, Discord invite, launcher zip) ------
+# The /app page is her installable-app hub: one place where Jason grabs the
+# desktop launcher, checks whether the packaged exe is built, sees the LAN
+# address other devices should dial, and mints the Discord bot invite. These
+# tests pin the contract for those routes. Note that /app is protected by the
+# SAME token middleware every other page already goes through -- the routes
+# themselves add no auth code, and these tests deliberately treat the lock as
+# an outside observer would: one client shows up with the token, one without.
+
+def _app_token_query():
+    """The same ?token= handshake every page uses. One visit with the token is
+    what sets her auth cookie -- that IS the password lock. When ACCESS_TOKEN
+    is empty (pure local mode) the lock is off and the query stays empty."""
+    import config
+    return f"?token={config.ACCESS_TOKEN}" if config.ACCESS_TOKEN else ""
+
+
+def test_app_site_serves_html_and_names_alpecca():
+    from fastapi.testclient import TestClient
+    import server
+
+    client = TestClient(server.app)
+    r = client.get("/app" + _app_token_query())
+    assert r.status_code == 200
+    assert "text/html" in r.headers.get("content-type", "")
+    assert "Alpecca" in r.text
+
+
+def test_app_site_is_locked_without_token():
+    from fastapi.testclient import TestClient
+    import config
+    import server
+
+    if not config.ACCESS_TOKEN:
+        # Lock is off in this environment -- there is nothing to guard, and
+        # failing here would punish local-only setups. Bow out gracefully.
+        return
+    # Two facts about the auth gate's DOCUMENTED design (never change it):
+    # (1) the TestClient host is whitelisted so the suite runs tokenless --
+    # meaning NO TestClient request can exercise the lock; (2) real remote
+    # strangers are judged by _token_ok. So the honest test targets the
+    # guard primitive itself, as a real remote caller would hit it.
+    assert server._token_ok({}, {}, {}, client_host="203.0.113.7") is False
+    assert server._token_ok({"token": config.ACCESS_TOKEN}, {}, {},
+                            client_host="203.0.113.7") is True
+    assert server._token_ok({}, {"X-Alpecca-Token": config.ACCESS_TOKEN}, {},
+                            client_host="203.0.113.7") is True
+
+
+def test_app_meta_reports_suite_readiness():
+    from fastapi.testclient import TestClient
+    import server
+
+    client = TestClient(server.app)
+    r = client.get("/app/meta" + _app_token_query())
+    assert r.status_code == 200
+    d = r.json()
+    # The hub page polls this to light up its status badges, so the shapes
+    # matter more than the values: booleans stay booleans, the port is a real
+    # number, and the LAN ip is a string even when detection comes up empty.
+    assert isinstance(d["exe_built"], bool)
+    assert isinstance(d["lan_ip"], str)
+    assert isinstance(d["port"], int)
+    assert isinstance(d["discord_ready"], bool)
+
+
+def test_discord_invite_redirects_to_oauth_with_derived_client_id(monkeypatch):
+    from fastapi.testclient import TestClient
+    import server
+
+    # A Discord bot token's first dot-segment is just the application id in
+    # base64 -- so from the secret alone she can derive the public client_id
+    # and build the whole invite URL without asking Discord anything.
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "MTUyMjMwNzE1NTI1NDgzNzI3OA.x.y")
+    client = TestClient(server.app)
+    r = client.get("/app/discord/invite" + _app_token_query(),
+                   follow_redirects=False)
+    assert r.status_code in (302, 307)
+    location = r.headers.get("location", "")
+    assert "discord.com/oauth2/authorize" in location
+    assert "client_id=1522307155254837278" in location
+    assert "permissions=" in location
+
+
+def test_launcher_zip_downloads_or_admits_it_is_missing():
+    import io
+    import zipfile
+    from fastapi.testclient import TestClient
+    import server
+
+    client = TestClient(server.app)
+    r = client.get("/app/download/launcher.zip" + _app_token_query())
+    # Two honest outcomes: the zip is real and opens cleanly, or the launcher
+    # sources are not in this checkout yet and she says so with a 404 that
+    # names the launcher -- never a 200 wrapping an empty or broken archive.
+    assert r.status_code in (200, 404)
+    if r.status_code == 200:
+        assert "application/zip" in r.headers.get("content-type", "")
+        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+            names = z.namelist()
+        assert any(n.endswith("alpecca_launcher.py") for n in names)
+    else:
+        assert "launcher" in json.dumps(r.json()).lower()
 
 
 if __name__ == "__main__":

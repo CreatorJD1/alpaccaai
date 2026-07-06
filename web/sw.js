@@ -6,7 +6,7 @@
  *
  * Served from "/sw.js" (root) so its scope covers the whole app.
  */
-const CACHE = "alpecca-v1";
+const CACHE = "alpecca-v2";
 const SHELL = ["/", "/web/app.css", "/web/glow.js"];
 
 self.addEventListener("install", (e) => {
@@ -21,7 +21,7 @@ self.addEventListener("activate", (e) => {
 });
 
 // Live endpoints that must always go to the network -- never served stale.
-const LIVE = /^\/(ws|state|home\/state|sight|voice|history|introspect|character|puppet|soul|memories|journal|growth|desktop|games|observatory|talkinghead|rigger|spine|rig|live2d\/|avatar|tts|listen|computer|channel|people)/;
+const LIVE = /^\/(ws|state|home\/state|system|cognition|mindscape\/state|mindscape\/snapshot|mindscape\/sync|mindscape\/restore|sight|voice|history|introspect|character|puppet|soul|memories|journal|growth|desktop|games|observatory|talkinghead|rigger|spine|rig|live2d\/|avatar|tts|listen|computer|channel|people)/;
 
 self.addEventListener("fetch", (e) => {
   const req = e.request;

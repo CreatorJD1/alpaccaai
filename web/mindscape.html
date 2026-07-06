@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="theme-color" content="#07101c" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<title>Alpecca Mindscape</title>
+<style>
+:root{--bg:#07101c;--panel:#0d1828;--line:#1f3552;--ink:#edf7ff;--muted:#9ab0c8;--cyan:#7fd9ff;--green:#82f7b0;--warn:#ffd38a;--hot:#ff9fb9}
+*{box-sizing:border-box} body{margin:0;background:radial-gradient(circle at 70% 0,#173555 0,#07101c 36%,#050914 100%);color:var(--ink);font:15px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
+.wrap{min-height:100dvh;padding:18px max(16px,env(safe-area-inset-right)) calc(18px + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));max-width:720px;margin:auto}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+.brand{font-size:28px;font-weight:800;letter-spacing:.02em}.sub{color:var(--muted);font-size:13px}.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:#0b1626cc;border-radius:999px;padding:7px 10px;color:var(--cyan);font-weight:700;font-size:12px;text-transform:uppercase}
+.card{border:1px solid var(--line);background:linear-gradient(180deg,#0e1b2df2,#091322ee);border-radius:18px;padding:15px;margin:12px 0;box-shadow:0 18px 50px #0008}
+.hero{min-height:170px;display:flex;align-items:end;background:linear-gradient(135deg,#123056,#091321 55%,#1a1227);position:relative;overflow:hidden}
+.hero:before{content:"";position:absolute;inset:-30%;background:radial-gradient(circle at 72% 38%,#7fd9ff35 0 10%,transparent 22%),radial-gradient(circle at 24% 20%,#82f7b025 0 9%,transparent 22%);filter:blur(2px)}
+.hero>*{position:relative}.h1{font-size:34px;font-weight:850;line-height:.95;margin-bottom:8px}.quote{font-size:16px;color:#d8ecff;max-width:26em}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);margin:0 0 10px}.row{display:flex;justify-content:space-between;gap:12px;border-top:1px solid #ffffff12;padding:10px 0}.row:first-of-type{border-top:0}.k{color:var(--muted)}.v{text-align:right;font-weight:700}
+.issue{border-color:#725a23;background:#1d1720}.issue .pill{color:var(--warn);border-color:#6d5524}.mem{font-size:14px;color:#d9e8fa}.small{font-size:12px;color:var(--muted)}button{width:100%;border:1px solid #2f537d;background:#11243b;color:var(--ink);border-radius:14px;padding:13px 14px;font-weight:800;font-size:15px}button:active{transform:translateY(1px)}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.ok{color:var(--green)}.bad{color:var(--warn)}
+.setup-step{border-top:1px solid #ffffff12;padding:10px 0}.setup-step:first-child{border-top:0}.setup-step b{display:block}.setup-step.done b{color:var(--green)}.setup-step.next b{color:var(--hot)}.cmd{display:block;margin-top:6px;padding:8px;border:1px solid #ffffff18;border-radius:10px;background:#030a12;color:#cdeeff;font:12px/1.35 ui-monospace,SFMono-Regular,Consolas,monospace;overflow:auto}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <div class="top">
+    <div><div class="brand">Mindscape</div><div class="sub">Alpecca continuity shell</div></div>
+    <span id="level" class="pill">loading</span>
+  </div>
+  <section class="card hero">
+    <div>
+      <div class="h1">Alpecca stays reachable.</div>
+      <div class="quote">A mobile view of her state, memories, intent, and fallback readiness if the local machine goes down.</div>
+    </div>
+  </section>
+  <section class="card">
+    <h2>Continuity</h2>
+    <div class="row"><span class="k">mode</span><span id="mode" class="v">...</span></div>
+    <div class="row"><span class="k">location</span><span id="location" class="v">...</span></div>
+    <div class="row"><span class="k">intent</span><span id="intent" class="v">...</span></div>
+    <div class="row"><span class="k">mood</span><span id="mood" class="v">...</span></div>
+  </section>
+  <section class="card">
+    <h2>Core</h2>
+    <div id="coreRows"></div>
+  </section>
+  <section class="card">
+    <h2>Recent memory</h2>
+    <div id="memory" class="small">loading...</div>
+  </section>
+  <section class="card">
+    <h2>Soul process</h2>
+    <div id="process" class="small">loading...</div>
+    <button id="selfReviewBtn" style="margin-top:10px">Run runtime self-review</button>
+    <div id="selfReviewOut" class="small" style="margin-top:10px"></div>
+  </section>
+  <section id="issuesCard" class="card issue" style="display:none">
+    <h2>Needs attention</h2>
+    <div id="issues"></div>
+  </section>
+  <section class="card">
+    <h2>Cloud fallback</h2>
+    <p class="small">Mindscape sync prepares a continuity snapshot and mirrors it to <b>ALPECCA_MINDSCAPE_URL</b> when an online endpoint is configured.</p>
+    <div id="autoSyncRows"></div>
+    <button id="syncBtn">Sync Mindscape continuity</button>
+    <div id="syncOut" class="small" style="margin-top:10px"></div>
+  </section>
+  <section class="card">
+    <h2>Setup checklist</h2>
+    <p class="small">This is the hosted Mindscape path: Cloudflare Worker, KV storage, private token, then local Alpecca env variables.</p>
+    <div id="setupRows" class="small">loading setup...</div>
+    <button id="setupReviewBtn" style="margin-top:10px">Add setup gap to improvement queue</button>
+    <div id="setupReviewOut" class="small" style="margin-top:10px"></div>
+  </section>
+  <section class="card">
+    <h2>Restore</h2>
+    <p class="small">Preview the latest cloud snapshot, then merge it back as labeled continuity records. Restore never overwrites the local database wholesale.</p>
+    <div class="grid">
+      <button id="previewBtn">Preview restore</button>
+      <button id="restoreBtn">Import restore</button>
+    </div>
+    <div id="restoreOut" class="small" style="margin-top:10px"></div>
+  </section>
+</main>
+<script>
+if("serviceWorker" in navigator) addEventListener("load",()=>navigator.serviceWorker.register("/sw.js").catch(()=>{}));
+const $=id=>document.getElementById(id), esc=s=>(s||"").toString().replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+function row(k,v,cls=""){return `<div class="row"><span class="k">${esc(k)}</span><span class="v ${cls}">${esc(v)}</span></div>`}
+function renderSetup(setup){
+  const steps=setup?.steps||[];
+  const firstOpen=steps.find(x=>!x.done);
+  const body=steps.map(x=>{
+    const cls=x.done?"done":(x===firstOpen?"next":"");
+    const status=x.done?"done":(x===firstOpen?"next":"waiting");
+    return `<div class="setup-step ${cls}"><b>${esc(status)} · ${esc(x.label)}</b><code class="cmd">${esc(x.command||"")}</code></div>`;
+  }).join("");
+  $("setupRows").innerHTML=[
+    row("status",setup?.status||"unknown",setup?.ok?"ok":"bad"),
+    row("worker",setup?.template_ready?"template ready":"template missing",setup?.template_ready?"ok":"bad"),
+    row("KV",setup?.kv_placeholder?"placeholder":"configured",setup?.kv_placeholder?"bad":"ok"),
+    row("cloud URL",setup?.cloud_configured?"configured":"missing",setup?.cloud_configured?"ok":"bad"),
+    body||"<p>No setup steps returned.</p>"
+  ].join("");
+}
+async function load(){
+  const [snap,setup]=await Promise.all([
+    fetch("/mindscape/snapshot",{cache:"no-store"}).then(r=>r.json()),
+    fetch("/mindscape/setup",{cache:"no-store"}).then(r=>r.json()).catch(()=>null)
+  ]);
+  const sum={mode:snap.continuity?.mode, runtime_level:snap.runtime?.level, mood:snap.self?.mood, location:snap.self?.location, intent:snap.self?.intent?.name};
+  $("level").textContent=sum.runtime_level||"unknown"; $("level").className="pill "+(sum.runtime_level==="ready"?"ok":"bad");
+  $("mode").textContent=sum.mode||"local-mobile"; $("location").textContent=sum.location||"home";
+  $("intent").textContent=sum.intent||"waiting"; $("mood").textContent=sum.mood||"";
+  const m=snap.runtime?.models||{}, voice=snap.self?.voice||{}, cont=snap.continuity||{};
+  const sync=snap.sync||{};
+  $("coreRows").innerHTML=[
+    row("chat",m.chat_ready?"ready":"offline",m.chat_ready?"ok":"bad"),
+    row("deep",m.deep||"local"),
+    row("voice",voice.server_ready?"server ready":"browser fallback",voice.server_ready?"ok":"bad"),
+    row("cloud fallback",cont.can_fallback_online?"configured":"not configured",cont.can_fallback_online?"ok":"bad")
+  ].join("");
+  const mem=snap.memory?.recent||[];
+  $("memory").innerHTML=mem.length?mem.slice(0,6).map(x=>`<p class="mem"><b>${esc(x.kind)}</b> ${esc(x.content)}</p>`).join(""):"No durable memories in this snapshot yet.";
+  const proposals=snap.proposals||[], evals=snap.proposal_evaluations||[], summary=snap.improvement_summary||{};
+  const latest=summary.latest||proposals[0]||null, latestEval=summary.latest_evaluation||null;
+  const summaryHtml=latest?[
+    row("recent open proposals",String(summary.recent_open??summary.open??proposals.length)),
+    row("latest",latest.action||"proposal"),
+    latestEval?row("latest evidence",latestEval.outcome||latestEval.evidence||latestEval.test||"recorded"):""
+  ].join(""):"";
+  const proposalHtml=proposals.slice(0,4).map(x=>`<p class="mem"><b>${esc(x.status||"noticed")}</b> ${esc(x.action||"proposal")}<br><span class="small">${esc(x.reason||x.evidence||"")}</span></p>`).join("");
+  const evalHtml=evals.slice(0,4).map(x=>`<p class="mem"><b>${esc(x.phase||"testing")}</b> proposal ${esc(x.proposal_id||"")}<br><span class="small">${esc(x.outcome||x.evidence||x.test||"")}</span></p>`).join("");
+  $("process").innerHTML=(summaryHtml||proposalHtml||evalHtml)?`${summaryHtml}${proposalHtml}${evalHtml}`:"No improvement evidence in this snapshot yet.";
+  const issues=snap.runtime?.issues||[];
+  $("issuesCard").style.display=issues.length?"":"none";
+  $("issues").innerHTML=issues.map(x=>`<p><span class="pill">${esc(x.code)}</span></p><p class="small">${esc(x.message)}<br>${esc(x.fix)}</p>`).join("");
+  $("autoSyncRows").innerHTML=[
+    row("auto sync",sync.ready_for_auto_sync?"active":"waiting",sync.ready_for_auto_sync?"ok":"bad"),
+    row("interval",sync.auto_interval?`${sync.auto_interval}s`:"off"),
+    row("event sync",sync.event_min_interval?`throttle ${sync.event_min_interval}s`:"off"),
+    row("last status",sync.last_status||"not_started"),
+    row("last trigger",sync.last_trigger_reason||""),
+    row("successes",String(sync.successes||0))
+  ].join("");
+  if(setup) renderSetup(setup);
+}
+$("syncBtn").onclick=async()=>{
+  $("syncOut").textContent="Preparing continuity snapshot...";
+  const d=await fetch("/mindscape/sync",{method:"POST"}).then(r=>r.json());
+  const m=d.mirror||{};
+  if(d.sync){
+    $("autoSyncRows").innerHTML=[
+      row("auto sync",d.sync.ready_for_auto_sync?"active":"waiting",d.sync.ready_for_auto_sync?"ok":"bad"),
+      row("interval",d.sync.auto_interval?`${d.sync.auto_interval}s`:"off"),
+      row("event sync",d.sync.event_min_interval?`throttle ${d.sync.event_min_interval}s`:"off"),
+      row("last status",d.sync.last_status||"not_started"),
+      row("last trigger",d.sync.last_trigger_reason||""),
+      row("successes",String(d.sync.successes||0))
+    ].join("");
+  }
+  if(d.cloud_configured && m.ok){
+    $("syncOut").innerHTML=`Mindscape mirrored online: <b>${esc(d.cloud_url)}</b>. Last snapshot is available for fallback.`;
+  }else if(d.cloud_configured){
+    $("syncOut").innerHTML=`Cloud target configured, but sync failed: <b>${esc(m.status||"failed")}</b><br>${esc(m.message||"Check the endpoint and token.")}`;
+  }else{
+    $("syncOut").innerHTML=`Snapshot prepared locally. Add <b>ALPECCA_MINDSCAPE_URL</b> to enable an online fallback target.`;
+  }
+};
+$("setupReviewBtn").onclick=async()=>{
+  $("setupReviewOut").textContent="Recording Mindscape setup review...";
+  const d=await fetch("/mindscape/setup/review",{method:"POST"}).then(r=>r.json());
+  const review=d.review||{}, proposal=review.proposal||{}, step=review.next_step||{};
+  if(review.ok){
+    $("setupReviewOut").innerHTML="Mindscape is already configured; no improvement proposal was needed.";
+  }else if(proposal.id){
+    const verb=review.evaluation_reused?"Improvement already queued":"Improvement queued";
+    $("setupReviewOut").innerHTML=`${verb}: <b>${esc(proposal.action)}</b><br>Next step: ${esc(step.id||"setup")} · <code>${esc(step.command||"")}</code>`;
+  }else{
+    $("setupReviewOut").innerHTML=`Setup review recorded. Next step: ${esc(step.id||"setup")}`;
+  }
+  await load();
+};
+$("selfReviewBtn").onclick=async()=>{
+  $("selfReviewOut").textContent="Reviewing runtime health...";
+  const d=await fetch("/cognition/self-review",{method:"POST"}).then(r=>r.json());
+  const r=d.review||{};
+  $("selfReviewOut").innerHTML=`Reviewed ${esc(r.reviewed||0)} runtime gap(s). ${esc(r.proposal_count||0)} proposal(s), ${esc(r.evaluation_count||0)} evidence item(s), ${esc(r.evaluation_reused_count||0)} reused.`;
+  await load();
+};
+$("previewBtn").onclick=async()=>{
+  $("restoreOut").textContent="Checking hosted Mindscape snapshot...";
+  const d=await fetch("/mindscape/restore/preview",{method:"POST"}).then(r=>r.json());
+  if(!d.ok){ $("restoreOut").textContent=`Restore preview unavailable: ${(d.error&&d.error.message)||"no cloud snapshot"}`; return; }
+  const p=d.preview||{};
+  $("restoreOut").innerHTML=`Preview from ${esc(d.source)}: ${p.memory_count||0} memories, ${p.journal_recent_count||0} journal entries, ${p.open_question_count||0} open questions, ${p.observation_count||0} observations. Intent: <b>${esc(p.intent||"waiting")}</b>. ${p.already_imported?"Already imported.":""}`;
+};
+$("restoreBtn").onclick=async()=>{
+  if(!confirm("Import the latest Mindscape continuity snapshot? This adds labeled memory/journal records and does not overwrite local state.")) return;
+  $("restoreOut").textContent="Importing Mindscape continuity...";
+  const d=await fetch("/mindscape/restore/import",{method:"POST"}).then(r=>r.json());
+  if(!d.ok){ $("restoreOut").textContent=`Restore failed: ${(d.error&&d.error.message)||"snapshot unavailable"}`; return; }
+  if(d.status==="already_imported"){ $("restoreOut").innerHTML="This Mindscape snapshot was already imported, so no duplicate records were added."; return; }
+  const i=d.imported||{};
+  $("restoreOut").innerHTML=`Imported from ${esc(d.source)}: ${i.memories||0} memories, ${i.journal||0} journal records, ${i.observations||0} observations, intent ${i.intent?"updated":"unchanged"}.`;
+};
+load().catch(e=>{$("level").textContent="offline";$("syncOut").textContent=e.message||String(e);});
+</script>
+</body>
+</html>

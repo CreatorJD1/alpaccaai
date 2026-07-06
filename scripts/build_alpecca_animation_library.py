@@ -130,6 +130,8 @@ MATRIX_FALLBACKS = {
 
 GENERATION_QUALITY_GATES = [
     "complete strip generated as one coherent pass, not isolated frames",
+    "360 turnaround continuity: adjacent 16-sector views must change shoulders, hips, legs, hair mass, and back/side silhouette like a real rotating character, not a flat billboard",
+    "sector-to-sector volume stays coherent: no ultra-thin side views, no duplicated front/back designs, and no sudden silhouette collapse while circling the character",
     "same adult 5ft 7in body class for standing frames",
     "same Alpecca design lock: face, hair volume, blue X hair clip, hoodie-jacket, black shorts, lanyard, stockings, right thigh strap, and boots",
     "white full-length thigh-high stockings must reach the upper thigh under the black shorts and stay consistent across frames",

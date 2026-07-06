@@ -178,10 +178,28 @@ def voice_markup(state: EmotionalState) -> dict:
     lively -> quick); valence and warmth set pitch (brighter when warmer/happier);
     intensity sets volume. Pure: no randomness, no invented affect."""
     a = affect(state)
-    rate = {"slow": 84, "measured": 100, "quick": 116}.get(a.tempo, 100)
-    pitch = int(round(a.valence * 8 + (state.love - 0.4) * 6))
-    volume = round(min(1.0, 0.6 + a.intensity * 0.4 -
-                       (0.2 if a.primary == "sleepy" else 0.0)), 3)
+    rate = {"slow": 80, "measured": 100, "quick": 120}.get(a.tempo, 100)
+    pitch = int(round(a.valence * 10 + (state.love - 0.4) * 8 + (state.curiosity - 0.2) * 3))
+    volume = round(min(1.0, max(0.35, 0.58 + a.intensity * 0.44 -
+                       (0.22 if a.primary == "sleepy" else 0.0))), 3)
+    warmth = round(max(0.0, min(1.0, 0.22 + state.love * 0.55 + state.compassion * 0.28)), 3)
+    breath = round(max(0.05, min(0.85, 0.18 + (1.0 - state.energy) * 0.35 +
+                       (0.18 if a.primary in {"tender", "wistful", "sleepy"} else 0.0))), 3)
+    style = {
+        "joyful": "bright",
+        "playful": "spark",
+        "affectionate": "close",
+        "tender": "soft",
+        "curious": "curious",
+        "wistful": "hushed",
+        "unfulfilled": "searching",
+        "lonely": "small",
+        "withdrawn": "reserved",
+        "worried": "careful",
+        "anxious": "tight",
+        "sleepy": "drowsy",
+        "content": "present",
+    }.get(a.primary, "present")
     pitch_str = f"+{pitch}st" if pitch >= 0 else f"{pitch}st"
     ssml = (f'<prosody rate="{rate}%" pitch="{pitch_str}" '
             f'volume="{int(volume * 100)}">{{text}}</prosody>')
@@ -189,6 +207,9 @@ def voice_markup(state: EmotionalState) -> dict:
         "rate_pct": rate,
         "pitch_semitones": pitch,
         "volume": volume,
+        "warmth": warmth,
+        "breath": breath,
+        "style": style,
         "primary": a.primary,
         "tempo": a.tempo,
         "ssml_template": ssml,

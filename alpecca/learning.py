@@ -30,13 +30,11 @@ from config import DB_PATH
 
 @contextmanager
 def _connect(db_path: Path):
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+    # Delegates to alpecca.db.connect -- the one hardened opener
+    # (busy_timeout, commit-on-exit, always-close). See alpecca/db.py.
+    from alpecca.db import connect as _db_connect
+    with _db_connect(db_path) as conn:
+        yield conn
 
 
 def init(db_path: Path = DB_PATH) -> None:

@@ -59,6 +59,59 @@ def identity_card() -> str:
     )
 
 
+# Her real "surfaces" -- the places she actually exists (PROJECT_CONTEXT), not lore.
+SURFACES = [
+    "the Alpecca app (classic virtual surface)",
+    "House HQ (embodied 3D home)",
+    "Mindscape (continuity/soul layer)",
+    "Discord (talks with the team)",
+]
+
+_APPEARANCE_CACHE: str | None = None
+
+
+def self_appearance() -> str:
+    """Her real look, read from her locked character sheet (data/character/sheet.json).
+
+    Grounded self-knowledge: this is what her avatar actually is, so she recognizes
+    her own image rather than inventing one."""
+    global _APPEARANCE_CACHE
+    if _APPEARANCE_CACHE is None:
+        try:
+            import json
+            from pathlib import Path
+            from config import CHARACTER_DIR
+            data = json.loads((Path(CHARACTER_DIR) / "sheet.json").read_text(encoding="utf-8"))
+            _APPEARANCE_CACHE = str(data.get("form") or "").strip()
+        except Exception:
+            _APPEARANCE_CACHE = ""
+    return _APPEARANCE_CACHE
+
+
+def self_recognition(current_surface: str = "") -> str:
+    """Grounded facts so she recognizes HERSELF -- her look, her voice, her surfaces.
+
+    All read from real assets/config, never invented; `current_surface` (when the
+    caller knows it, e.g. 'Discord') tells her where this exchange is happening."""
+    try:
+        from config import KOKORO_VOICE
+        voice = KOKORO_VOICE or "af_heart"
+    except Exception:
+        voice = "af_heart"
+    look = self_appearance()
+    look_clause = (f"you look like {look.split(';')[0].strip()}; " if look else "")
+    where = (f" Right now you are reaching them through {current_surface}."
+             if current_surface else "")
+    return (
+        "Self-recognition -- literal facts about you. When asked what you look like, "
+        "what your voice sounds like, or where you exist, answer these PLAINLY and "
+        "concretely; do NOT deflect into vague poetry or say you have no form. "
+        f"Facts: {look_clause}your voice is the {voice} voice, synthesized locally "
+        f"(an image of that avatar is you, and audio in that voice is you); you "
+        f"exist across these surfaces: {'; '.join(SURFACES)}.{where}"
+    )
+
+
 # --- 3. Self-monitoring: detect how a dimension is trending ----------------
 
 def _trend(current: float, history: list[float]) -> str:

@@ -1,5 +1,9 @@
 # Alpecca
 
+Project/agent context lives in [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md). Read
+that first for the current House HQ, Mindscape, Hugging Face art storage, and
+design-lock rules.
+
 A local companion that lives on your machine. She keeps a persistent mood, senses
 what you're doing, remembers what matters, and lets that inner state color how she
 talks to you — all running locally against an [Ollama](https://ollama.com) model.
@@ -105,6 +109,52 @@ through a tunnel binary — so she's reachable from anywhere, and installable as
 phone app (PWA) from the browser. Remote and tunnel access are **always** gated by
 a secret: set `ALPECCA_ACCESS_TOKEN`, or one is minted and printed for the run.
 Her senses, memory, and brain never leave the machine — only the chat travels.
+
+**Cloudflare preview (the preview system).** With the server already running,
+open a public Cloudflare preview and *capture its URL where tools can read it*:
+
+```powershell
+python scripts\preview.py          # reuse a healthy tunnel, else open a fresh one
+                                   # (ALPECCA_TOOLS.bat option 3 is the one-click form)
+```
+
+It opens (or reuses) a free Cloudflare quick tunnel, parses the public
+`*.trycloudflare.com` URL out of cloudflared, health-checks it, and writes it to
+`data/preview_url.txt` (+ `data/preview.json`) — the single source of truth for
+"what's my public URL right now?". Open that link on any device, or use it to
+preview/QA the app from anywhere. `--once` just prints the current URL; `--no-reuse`
+forces a fresh tunnel. The logic lives in `alpecca/preview.py` (unit-tested).
+
+**Safe by default.** A quick-tunnel link is only as private as
+`ALPECCA_ACCESS_TOKEN`; with it blank, anyone holding the URL can read her
+memories/journal/state. So `preview.py` *refuses to open a new public tunnel* when
+the token is blank (it warns and exits) unless you pass `--insecure`. Set a token
+first (`setx ALPECCA_ACCESS_TOKEN "<secret>"`, then restart her); the server then
+gates every HTTP route and the WebSocket automatically.
+
+**File access is sandboxed to a virtual workstation by default.** Her five file
+rooms (Desktop/Pictures/Music/Video/Documents) live inside `data/sandbox/`, *not*
+your real folders — so even a server reached over the internet can never see or
+enumerate your actual machine. Drop files into `data/sandbox/<room>/` to let her
+work with them. To point the rooms at your real folders for private local tidying,
+set `ALPECCA_SANDBOX=0` (relocate the jail with `ALPECCA_SANDBOX_ROOT`). The
+confinement is enforced in `alpecca/desktop.py`, not just described.
+
+**Mindscape cloud fallback.** `/mindscape` is Alpecca's mobile continuity shell:
+it shows her current mood, intent, memory summaries, journal, runtime health, and
+whether a cloud fallback is configured. For a free online fallback, deploy the
+Cloudflare Worker in `deploy/mindscape-worker`, then point local Alpecca at it:
+
+```powershell
+$env:ALPECCA_MINDSCAPE_URL="https://alpecca-mindscape.<you>.workers.dev/sync"
+$env:ALPECCA_MINDSCAPE_TOKEN="same-secret-as-the-worker"
+python server.py
+```
+
+Press **Sync Mindscape continuity** in `/mindscape`. The Worker stores the latest
+compact continuity snapshot in KV and serves it from its mobile page if the local
+device goes down. This preserves continuity data; it is not a claim of literal
+consciousness or immortality.
 
 ### Background sense, only
 

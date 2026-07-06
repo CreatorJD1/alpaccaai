@@ -1,0 +1,12 @@
+gradio>=5.0
+spaces>=0.30
+torch
+transformers>=4.57
+accelerate
+sentencepiece
+diffusers>=0.30.0
+safetensors>=0.4.3
+huggingface_hub>=0.24.0
+pillow>=10.0.0
+qwen-vl-utils
+torchvision
