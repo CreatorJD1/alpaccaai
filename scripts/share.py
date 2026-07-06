@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import socket
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -46,6 +47,18 @@ def start_tunnel(port: int) -> None:
     print("=" * 64 + "\n")
 
 
+def start_tunnel_when_ready(port: int, token: str) -> None:
+    """Wait for the local server, then publish the Cloudflare link."""
+    from alpecca import instance as instance_mod
+
+    for _ in range(60):
+        if instance_mod.existing_server_url(port, token=token, timeout=1.0):
+            start_tunnel(port)
+            return
+        time.sleep(1.0)
+    print("[tunnel] Local server did not become ready in time; no public link opened.")
+
+
 def main() -> None:
     os.environ["ALPECCA_SERVER_HOST"] = "0.0.0.0"
 
@@ -62,8 +75,7 @@ def main() -> None:
     print(f"  Access token              : {ACCESS_TOKEN}")
 
     if "--tunnel" in sys.argv[1:]:
-        start_tunnel(PORT)
-        time.sleep(1.0)
+        print("  Cloudflare tunnel will open after the local server is ready.")
     else:
         print("  For a link that works ANYWHERE: python scripts/share.py --tunnel")
     print()
@@ -71,6 +83,8 @@ def main() -> None:
     existing = instance_mod.existing_server_url(PORT, token=ACCESS_TOKEN)
     if existing:
         print(f"Alpecca is already awake at {existing}; reusing the same mind instance.")
+        if "--tunnel" in sys.argv[1:]:
+            start_tunnel(PORT)
         try:
             while True:
                 time.sleep(3600)
@@ -79,6 +93,13 @@ def main() -> None:
 
     import uvicorn
     import server  # noqa: F401
+
+    if "--tunnel" in sys.argv[1:]:
+        threading.Thread(
+            target=start_tunnel_when_ready,
+            args=(PORT, ACCESS_TOKEN),
+            daemon=True,
+        ).start()
 
     uvicorn.run(server.app, host=HOST, port=PORT, log_level="warning")
 
