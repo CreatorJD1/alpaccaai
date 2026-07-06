@@ -8,8 +8,38 @@ data/
 # Python
 __pycache__/
 *.pyc
+
+# Frontend app build/cache output.
+node_modules/
+apps/*/node_modules/
+apps/*/dist/
+output/
+*.log
+.wrangler/
 # Dedicated Python 3.12 venv for talk mode (pyaudio has no 3.14 wheels).
 .venv-talk/
+.venv-f5-tts/
+
+# Alpecca source/generated/runtime art blobs live in Hugging Face datasets.
+# Keep code and JSON manifests in GitHub, but do not commit large image/audio/video
+# payloads from the 400+ image animation library or voice reference pipeline.
+apps/*/public/assets/**/*.png
+apps/*/public/assets/**/*.webp
+apps/*/public/assets/**/*.jpg
+apps/*/public/assets/**/*.jpeg
+apps/*/public/assets/**/*.gif
+apps/*/public/assets/**/*.mp4
+apps/*/public/assets/**/*.mov
+apps/*/public/assets/**/*.webm
+apps/*/public/assets/**/*.wav
+apps/*/public/assets/**/*.mp3
+apps/*/public/assets/**/*.ogg
+apps/*/public/assets/**/*.flac
+apps/*/public/assets/**/*.zip
+apps/*/public/assets/**/*.safetensors
+apps/*/public/assets/**/*.ckpt
+apps/*/public/assets/**/*.pt
+apps/*/public/assets/**/*.pth
 
 # Local machine-specific Claude Code settings.
 .claude/settings.local.json

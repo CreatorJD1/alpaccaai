@@ -1,0 +1,249 @@
+{
+  "schemaVersion": 1,
+  "stage": "superplan-stage-4-tile-qa-ready",
+  "updated": "2026-07-02",
+  "activeStage": {
+    "number": 4,
+    "name": "Generate 400+ Source-Art Pieces",
+    "status": "in-progress"
+  },
+  "completed": [
+    {
+      "number": 0,
+      "name": "HQ / prototype void foundation",
+      "evidence": [
+        "RoomStageSpec staging pads exist",
+        "Prototype void mode exists",
+        "Stage QA and cylinder QA routes exist"
+      ]
+    },
+    {
+      "number": 1,
+      "name": "Source library and manifests",
+      "evidence": [
+        "data/alpecca_art_source contains design lock, source manifest, reference board, generation queue, and audit files",
+        "Hugging Face source-art dataset is CREATORJD/alpecca-art-library",
+        "Hugging Face runtime-assets dataset is CREATORJD/alpecca-runtime-assets"
+      ]
+    }
+  ],
+  "inProgress": [
+    {
+      "number": 2,
+      "name": "Runtime matrix adapter",
+      "goal": "Resolve action + vertical tier + 16 horizontal sectors to compiled atlas folders, with local fallback and clear debug readout.",
+      "status": "adapter-present-runtime-fallback-active"
+    },
+    {
+      "number": 3,
+      "name": "Reference boards and design lock",
+      "goal": "Keep Alpecca's locked outfit, proportions, white thigh-high leggings, no baked halo/shadow, transparent cutouts, 5ft7 standing class.",
+      "status": "source-board-present-needs-generation-review"
+    },
+    {
+      "number": 4,
+      "name": "Generate 400+ source-art pieces",
+      "goal": "Generate complete 4K source strips for 16 view sectors, low/eye/high pitch tiers, body actions, mouth shapes, eyes, head turns, hair dynamics, and reactions.",
+      "status": "batch-1-seeded-awaiting-generation",
+      "batch1": {
+        "name": "standing-16-sector-foundation",
+        "targetCount": 144,
+        "statusCounts": {
+          "seeded-awaiting-generation": 144
+        },
+        "frameContract": "8 frames per target at 4096px source slots, compiled later to 512px runtime slots after approval",
+        "covers": [
+          "idle/listen/talk/neutral standing foundation",
+          "16 horizontal sectors",
+          "low/eye/high vertical camera tiers"
+        ]
+      }
+    },
+    {
+      "number": 4.1,
+      "name": "First generated draft QA",
+      "goal": "Generate a first visual draft for gen-0001 / idle_low_s0 and prove the QA gate rejects non-production output.",
+      "status": "draft-generated-rejected-for-production",
+      "target": "gen-0001__matrix_idle_low_s0",
+      "draftQa": {
+        "file": "data/alpecca_art_source/stage4_generation_batches/batch_01_standing-16-sector-foundation/targets/gen-0001__matrix_idle_low_s0/incoming/draft_qa.json",
+        "promotionStatus": "draft-rejected",
+        "reason": "Built-in draft preserved useful visual direction but did not meet 32768x4096 source strip size, true transparency, or 4K-per-frame promotion requirements."
+      }
+    },
+    {
+      "number": 4.2,
+      "name": "4K frame-tile generation bridge",
+      "goal": "Allow generators that cannot emit a 32768px-wide strip to produce exact 4096x4096 tiles that stitch into the canonical raw_strip.png.",
+      "status": "tile-plan-ready-awaiting-4k-frame-tiles",
+      "target": "gen-0001__matrix_idle_low_s0",
+      "tilePlan": {
+        "file": "data/alpecca_art_source/stage4_generation_batches/batch_01_standing-16-sector-foundation/targets/gen-0001__matrix_idle_low_s0/incoming/tile_generation_plan.json",
+        "tileDirectory": "data/alpecca_art_source/stage4_generation_batches/batch_01_standing-16-sector-foundation/targets/gen-0001__matrix_idle_low_s0/incoming/frame_tiles",
+        "frameCount": 8,
+        "tileSize": [4096, 4096],
+        "stitchReport": "data/alpecca_art_source/stage4_generation_batches/batch_01_standing-16-sector-foundation/targets/gen-0001__matrix_idle_low_s0/incoming/tile_stitch_report.json"
+      },
+      "batchTilePlan": {
+        "file": "data/alpecca_art_source/stage4_generation_batches/batch_01_standing-16-sector-foundation/tile_generation_index.json",
+        "stitchAudit": "data/alpecca_art_source/stage4_generation_batches/batch_01_standing-16-sector-foundation/tile_stitch_index.json",
+        "targetCount": 144,
+        "frameTilePromptCount": 1344,
+        "readyTargetCount": 0,
+        "missingTileCount": 1344,
+        "statusCounts": {
+          "blocked-not-stitched": 144
+        }
+      }
+    },
+    {
+      "number": 4.3,
+      "name": "Cloud generation job package",
+      "goal": "Export batch-1 frame-tile prompts into portable JSONL jobs for Hugging Face, Colab, or another generator, with a safe importer for returned tiles.",
+      "status": "job-package-uploaded-awaiting-generated-tiles",
+      "batch": 1,
+      "jobPackage": {
+        "localManifest": "output/alpecca_stage4_tile_jobs/batch_01/tile_job_manifest.json",
+        "jobCount": 1344,
+        "chunkCount": 21,
+        "huggingFacePath": "CREATORJD/alpecca-art-library/stage4-tile-jobs/batch_01",
+        "huggingFaceCommit": "https://huggingface.co/datasets/CREATORJD/alpecca-art-library/commit/100511b3a741425352c8847957868512ca8b8349"
+      },
+      "importGate": {
+        "script": "scripts/import_alpecca_stage4_tile_outputs.py",
+        "dryRun": {
+          "jobCount": 1344,
+          "readyCount": 0,
+          "missingCount": 1344
+        }
+      }
+    },
+    {
+      "number": 4.4,
+      "name": "HF/Colab tile worker bridge",
+      "goal": "Run exported JSONL chunks from Hugging Face or disk through any external 4K image generator, while keeping approval/import/stitch gates unchanged.",
+      "status": "worker-ready-awaiting-generator-command",
+      "script": "scripts/run_alpecca_stage4_tile_worker.py",
+      "guide": "docs/ALPECCA_STAGE4_TILE_WORKER.md",
+      "validated": {
+        "localDryRun": {
+          "selectedJobCount": 2,
+          "generatedCount": 0,
+          "readyCount": 0
+        },
+        "huggingFacePullDryRun": {
+          "source": "CREATORJD/alpecca-art-library/stage4-tile-jobs/batch_01/tile_jobs_batch_01_chunk_000.jsonl",
+          "selectedJobCount": 1,
+          "generatedCount": 0,
+          "readyCount": 0
+        }
+      }
+    },
+    {
+      "number": 4.5,
+      "name": "Open-source Diffusers tile generator adapter",
+      "goal": "Provide a first concrete generator command that can run in Colab/HF GPU environments and output exact 4096x4096 RGBA PNG tiles for the Stage 4 worker contract.",
+      "status": "adapter-ready-needs-gpu-art-run-and-visual-qa",
+      "scripts": [
+        "scripts/generate_alpecca_stage4_tile_diffusers.py",
+        "notebooks/alpecca_stage4_tile_generation_colab.py"
+      ],
+      "requirements": "requirements-stage4-art.txt",
+      "defaultModel": "stabilityai/stable-diffusion-xl-base-1.0",
+      "huggingFaceGuideCommit": "https://huggingface.co/datasets/CREATORJD/alpecca-art-library/commit/cb165829464b1da6efb886756bf4c9b18b49d306",
+      "notes": [
+        "Uses the same Stage 4 JSONL job format and the existing worker command template.",
+        "Crops the correct frame slot from strip-style seed canvases before generation.",
+        "Writes exact 4096x4096 RGBA PNG output, then relies on importer, stitcher, and visual QA before promotion.",
+        "This is a first open-source adapter; stronger reference-lock/anime generators can replace the command without changing the pipeline."
+      ]
+    },
+    {
+      "number": 4.6,
+      "name": "Returned-tile visual QA gate",
+      "goal": "Create mechanical reports and contact-sheet previews for generated 4K frame tiles before import, stitch, or runtime promotion.",
+      "status": "qa-tool-ready-awaiting-generated-tiles",
+      "script": "scripts/qa_alpecca_stage4_tile_outputs.py",
+      "guide": "docs/ALPECCA_STAGE4_TILE_WORKER.md",
+      "checks": [
+        "exact tile size",
+        "alpha channel presence",
+        "non-empty alpha bounds",
+        "cropped-edge risk",
+        "foot baseline variance",
+        "alpha width and height variance",
+        "checkerboard contact-sheet preview"
+      ],
+      "validated": {
+        "target": "gen-0001",
+        "jobCount": 8,
+        "readyJobCount": 0,
+        "missingJobCount": 8,
+        "blockedJobCount": 8,
+        "readyTargetCount": 0,
+        "expectedStatus": "blocked until generated tiles exist"
+      },
+      "huggingFaceGuideCommit": "https://huggingface.co/datasets/CREATORJD/alpecca-art-library/commit/a813be335d8a30e60b5c69e71735d553f3aca8aa"
+    }
+  ],
+  "nextGeneratorRequirement": {
+    "target": "gen-0001__matrix_idle_low_s0",
+    "requiredOutput": "incoming/raw_strip.png",
+    "minimumSize": [32768, 4096],
+    "background": "transparent alpha preferred; perfectly flat chroma key acceptable only if QA passes",
+    "modelNeed": "Use an external/source-art generator capable of 4K-per-frame strip output or segmented 4K source tiles that are stitched and QA checked before approval.",
+    "approvalPath": "raw_strip.png -> visual QA -> approved/spritesheet.png -> Stage 5 compile --apply"
+  },
+  "blockedUntilArtExists": [
+    {
+      "number": 5,
+      "name": "Compile approved runtime atlases",
+      "reason": "Approved 4K source strips are not present yet; current compile report skips targets with missing approved/spritesheet.png."
+    },
+    {
+      "number": 6,
+      "name": "Layered body/expression runtime",
+      "reason": "Needs approved base-body and overlay atlases before promotion."
+    },
+    {
+      "number": 7,
+      "name": "Advanced depth/shadow/normal integration",
+      "reason": "Should wait until base matrix assets are visually stable."
+    }
+  ],
+  "pipelineImprovements": [
+    {
+      "name": "stale-only 4K seed rebuild",
+      "command": "python scripts/build_alpecca_stage4_seed_canvases.py --batch 1 --only-stale",
+      "benefit": "Rebuilds only missing or wrong-dimension source canvases instead of reprocessing an entire 4K batch."
+    },
+    {
+      "name": "runtime metadata-only Hugging Face sync",
+      "command": "python scripts/publish_alpecca_art_library_hf.py --skip-source --skip-generated --runtime-metadata-only",
+      "benefit": "Publishes stage/status/runtime JSON quickly without uploading PNG/WebP/audio payloads."
+    },
+    {
+      "name": "HF/Colab tile worker bridge",
+      "command": "python scripts/run_alpecca_stage4_tile_worker.py --hf-path stage4-tile-jobs/batch_01/tile_jobs_batch_01_chunk_000.jsonl --output-root output/alpecca_stage4_tile_jobs/batch_01 --limit 8",
+      "benefit": "Lets external 4K generators process uploaded Stage 4 jobs while preserving the existing importer, stitcher, QA, and runtime atlas compile gates."
+    },
+    {
+      "name": "Diffusers tile generator adapter",
+      "command": "python scripts/generate_alpecca_stage4_tile_diffusers.py --prompt <prompt.md> --job-json <job.json> --seed <seed_canvas.png> --pose <pose_guides.png> --out <frame.png>",
+      "benefit": "Provides the first runnable open-source generation command for Stage 4 frame tiles, suitable for Colab/HF GPU environments."
+    },
+    {
+      "name": "returned-tile visual QA",
+      "command": "python scripts/qa_alpecca_stage4_tile_outputs.py --manifest output/alpecca_stage4_tile_jobs/batch_01/tile_job_manifest.json --outputs-root output/alpecca_stage4_tile_jobs/batch_01",
+      "benefit": "Creates mechanical QA reports and preview sheets before any generated 4K tile can enter the import/stitch/promotion path."
+    }
+  ],
+  "qaRules": [
+    "Do not promote fallback walk art as final 16-view art.",
+    "Do not upload source/generated art to Cloudflare.",
+    "Do not commit large PNG/WebP/audio/video payloads to GitHub.",
+    "Do not remove Alpecca's white thigh-high leggings or locked identity details.",
+    "Do not bake halo or ground shadow into character source art; render those as separate runtime layers.",
+    "Runtime should request compiled atlases, not hundreds of loose images."
+  ]
+}

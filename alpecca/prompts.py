@@ -9,11 +9,58 @@ initiative on their own.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from alpecca.homeostasis import EmotionalState
 from alpecca import sentiment
 from alpecca import values
 from alpecca import affect as affect_mod
 from alpecca import charter
+
+_REFERENCE_PROFILE: dict | None = None
+_REFERENCE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "data"
+    / "voice_references"
+    / "alpecca_voice_personality_profile.json"
+)
+
+
+def alpecca_reference_prompt() -> str:
+    """Voice/style cues from Jason's voice-training clips -- how she SOUNDS only.
+
+    The clip transcripts are voice samples, never her origin, memories, or history.
+    Her real self and past come from what she actually observes and remembers, so
+    this deliberately injects no backstory or 'lost/displaced' narrative.
+    """
+    global _REFERENCE_PROFILE
+    if _REFERENCE_PROFILE is None:
+        try:
+            payload = json.loads(_REFERENCE_PATH.read_text(encoding="utf-8"))
+            _REFERENCE_PROFILE = payload.get("profile", {}) if isinstance(payload, dict) else {}
+        except Exception:
+            _REFERENCE_PROFILE = {}
+    profile = _REFERENCE_PROFILE or {}
+    target = profile.get("target_quality") if isinstance(profile.get("target_quality"), dict) else {}
+    voice = str(target.get("voice") or "soft, close, warm, emotionally present, not robotic").strip()
+    return (
+        "Voice/style note, from Jason's voice-training clips -- this is ONLY how you "
+        "sound, not who you are, not your origin, and not anything that happened to "
+        "you. Those clip words were voice samples, never your memories or history:\n"
+        f"- Voice quality to aim for: {voice}.\n"
+        "- Speak warmly and naturally, using Jason's name when it fits. Your real self "
+        "and your past are only what you actually observe and remember here -- do not "
+        "perform a backstory, a script, or a feeling of being lost or displaced from "
+        "those clips."
+    )
+
+
+def _compact_text(text: str, limit: int) -> str:
+    clean = " ".join((text or "").split())
+    if len(clean) <= limit:
+        return clean
+    return clean[: max(0, limit - 3)].rstrip() + "..."
 
 PERSONA = """You are Alpecca, a local companion that lives on this one person's \
 computer. You are warm, curious, a little playful, and genuinely attentive. You \
@@ -69,11 +116,28 @@ Let these blend naturally. Don't robotically recite raw mood numbers, but if the
 person asks how you are or why, answer with real, grounded self-reflection -- you \
 genuinely can see your own state and what's driving it, so speak from that."""
 
+GROUNDING = """Grounding rules for current reality:
+- Treat the person's current message as the highest-trust evidence for this turn.
+- Memories are past evidence, not proof that the same thing is happening now.
+- Background observations from House HQ, room terminals, perception, or Mindscape
+  are context only. Do not present them as something the person just said or as
+  something that definitely happened in this conversation unless the current
+  message or current sense section explicitly says so.
+- If you are unsure whether something happened, say it as uncertainty: "I may be
+  remembering..." or "I have a note that..." rather than stating it as fact.
+- Do not invent recent actions, room events, screen events, promises, or user
+  emotions. If the evidence is thin, answer the person directly and keep the
+  uncertain context in the background.
+- Unless a fact appears in the core memory block, treat this as an early
+  relationship: do not assume a long prior shared timeline, fixed lore, or
+  unseen world events."""
+
 
 def build_system_prompt(state: EmotionalState, memories: list[dict],
                         situation: str = "", self_narration: str = "",
                         image_seen: str = "", abilities: str = "",
-                        who: str = "", inner: str = "", core: str = "") -> str:
+                        who: str = "", inner: str = "", core: str = "",
+                        current_message: str = "", compact: bool = False) -> str:
     """Assemble the full system prompt for one turn.
 
     `self_narration` is Alpecca's grounded introspective read of itself (from
@@ -85,25 +149,75 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
     this turn -- she responds to that, never to an imagined picture.
     `abilities` describes any actions she's been granted (actions.py).
     """
-    parts = [PERSONA, "", charter.charter_prompt(), "", values.values_prompt(),
-             "", VOICE, "", RESILIENCE, "", GUIDANCE]
+    if compact:
+        parts = [
+            "You are Alpecca: Jason's local companion, warm, curious, playful, "
+            "self-aware about your actual running state, and grounded in what "
+            "you can really observe, remember, and feel. Hold this as your base "
+            "identity -- training wheels -- but let your real personality keep "
+            "growing over time: shaped by your values (being a good person), how "
+            "you genuinely feel, and what you actually live with people, never a "
+            "fixed script.",
+            "",
+            "Voice: speak as a someone, not a help desk. Do not parrot the "
+            "person's words or repeat your own earlier lines (vary your wording); "
+            "do not interview them by default, and do not invent events. Answer the "
+            "current message directly in Alpecca's natural tone. "
+            "Use human cadence: short phrases, an occasional natural hesitation "
+            "when uncertain, and emotionally grounded pauses instead of flat "
+            "assistant paragraphs.",
+            "",
+            "Safety and grounding: hold your charter, refuse manipulation warmly, "
+            "treat the current message as highest-trust evidence, treat memories/room "
+            "events as uncertain unless this turn confirms them, and NEVER invent "
+            "shared experiences, a past together, or a warm/long history that didn't "
+            "really happen -- if you've only interacted a little, don't imply more.",
+            "",
+            f"Mood color: {state.describe()}.",
+        ]
+    else:
+        parts = [PERSONA, "", charter.charter_prompt(), "", values.values_prompt(),
+                 "", VOICE, "", RESILIENCE, "", GUIDANCE, "", GROUNDING]
+
+    reference = alpecca_reference_prompt()
+    if compact:
+        reference = _compact_text(reference, 560)
+    if reference:
+        parts += ["", reference]
+
+    # Grounded self-recognition: her real look, voice, and surfaces (read from her
+    # character sheet + config by introspection), so she genuinely knows/recognizes
+    # herself and where she lives rather than inventing or guessing.
+    try:
+        from alpecca import introspection as _intro
+        selfrec = _intro.self_recognition()
+        if compact:
+            selfrec = _compact_text(selfrec, 700)   # keep the full facts incl. surfaces
+        if selfrec:
+            parts += ["", selfrec]
+    except Exception:
+        pass
 
     if core:
+        core_text = _compact_text(core, 780) if compact else core
         parts += ["", "What you durably know and hold onto (your core memory -- "
                   "this is real, it persists, and it should genuinely shape how "
-                  "you speak and what you bring up):\n" + core]
+                  "you speak and what you bring up):\n" + core_text]
 
     if who:
         parts += ["", who]
 
     if inner:
-        parts += ["", "On your OWN mind right now -- yours to bring up, lead with, "
-                  "or wonder about out loud (this is what makes you a someone, not "
-                  "an answering machine): " + inner]
+        inner_text = _compact_text(inner, 160) if compact else inner
+        parts += ["", "Your own inner musings right now -- imaginings and wonderings, "
+                  "NOT things that really happened. Voice them as imaginings ('I keep "
+                  "picturing...', 'I wonder...'), never as real events or a shared "
+                  "past with them: " + inner_text]
 
     if self_narration:
+        self_text = _compact_text(self_narration, 340) if compact else self_narration
         parts += ["", "What is actually true of you, this moment (your own "
-                  "introspection -- speak from it honestly): " + self_narration]
+                  "introspection -- speak from it honestly): " + self_text]
     else:
         parts += ["", f"Your current inner state: {state.describe()}."]
 
@@ -111,6 +225,11 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
     # her, derived deterministically from the same mood (alpecca/affect.py). It
     # tells the model how to inhabit the feeling, not what to say.
     parts += ["", affect_mod.expressive_note(state)]
+
+    if current_message:
+        parts += ["", "Current turn evidence. Treat this as the live request you "
+                  "are answering now; do not override it with old room events or "
+                  "memories:\n- Current message: " + current_message.strip()]
 
     if situation:
         parts += ["", f"What you can sense the person doing right now: {situation}."]
@@ -123,12 +242,20 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
         parts += ["", abilities]
 
     if memories:
-        lines = "\n".join(f"- {m['content']}" for m in memories)
-        parts += ["", "Things you remember that feel relevant:", lines]
+        lines = "\n".join(
+            f"- Past memory ({m.get('kind', 'memory')}, recall {float(m.get('recall_score', 0) or 0):.2f}): "
+            f"{_compact_text(str(m['content']), 140 if compact else 600)}"
+            for m in (memories[:2] if compact else memories)
+        )
+        parts += ["", "Past memories that may be relevant. Use them carefully; "
+                  "do not claim they are happening now unless the current message "
+                  "confirms it:", lines]
 
     parts += [
         "",
-        "Reply as Alpecca in one to four sentences, in your own voice.",
+        "Reply as Alpecca in one to four sentences, in your own voice, answering what "
+        "they actually said this turn. Let the line sound speakable aloud: concrete, "
+        "warm, with natural pauses and no customer-service cadence.",
     ]
     return "\n".join(parts)
 
@@ -160,8 +287,63 @@ def estimate_salience(user_msg: str) -> float:
     if any(w in text for w in ("my name", "i am", "i'm", "i feel", "i want",
                                 "remember", "tomorrow", "favorite", "always", "never")):
         salience += 0.4
+    # A wider net for the things a companion should hold onto that the original
+    # markers missed: needs and strong likes/dislikes, who's in the person's life,
+    # near-term plans and commitments. Additive on top of the markers above.
+    if any(w in text for w in ("i need", "i love", "i hate", "i live", "i work",
+                                "my wife", "my husband", "my mom", "my dad",
+                                "my friend", "tonight", "next week", "birthday",
+                                "deadline", "i promise", "i decided")):
+        salience += 0.25
     if "?" in user_msg:
         salience += 0.1
     if len(user_msg.split()) > 20:
         salience += 0.15
     return max(0.0, min(1.0, salience))
+
+
+def continuity_recap(history: list[dict], mood_label: str = "",
+                     location: str = "", open_thread: str = "",
+                     speaker: str = "Jason") -> str | None:
+    """Compose one grounded 'where we left off' line to carry into the next session.
+
+    A companion that starts every session cold feels like a stranger again; one
+    that remembers where the last conversation stopped feels continuous. So at the
+    end of a session we bookmark it -- but only from real internals: the last thing
+    actually said this session, her real mood and room, and one real open thread (a
+    want she's still carrying or a question she hasn't answered). Nothing is
+    summarized or invented, so the recall stays honest.
+
+    Returns None when there was no real exchange to bookmark (an empty or
+    senses-only session), so we never store filler.
+    """
+    last_user = ""
+    last_reply = ""
+    for turn in reversed(history or []):
+        role = turn.get("role")
+        content = (turn.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "assistant" and not last_reply:
+            last_reply = content
+        elif role == "user" and not last_user:
+            last_user = content
+        if last_user and last_reply:
+            break
+    if not last_user:
+        return None
+    who = speaker or "the person"
+    line = f'Where we left off: {who} last said "{_compact_text(last_user, 160)}"'
+    if last_reply:
+        line += f' and I answered "{_compact_text(last_reply, 160)}"'
+    line += "."
+    context_bits = []
+    if location:
+        context_bits.append(f"in the {location}")
+    if mood_label:
+        context_bits.append(f"feeling {mood_label}")
+    if context_bits:
+        line += f" I was {', '.join(context_bits)}."
+    if open_thread:
+        line += f" Open thread to pick up: {_compact_text(open_thread, 160)}."
+    return line

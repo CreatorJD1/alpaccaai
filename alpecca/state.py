@@ -28,17 +28,20 @@ def _connect(db_path: Path = DB_PATH):
     which surfaces both as test flakes (TemporaryDirectory can't unlink) and as
     real "disk I/O error"-class problems on synced filesystems.
     """
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+    # Delegates to alpecca.db.connect -- the one hardened opener
+    # (busy_timeout, commit-on-exit, always-close). See alpecca/db.py.
+    from alpecca.db import connect as _db_connect
+    with _db_connect(db_path) as conn:
+        yield conn
 
 
 def init_db(db_path: Path = DB_PATH) -> None:
     """Create tables if they don't exist. Safe to call on every startup."""
+    # Persistent per-database safety: WAL + synchronous=NORMAL. This is what
+    # keeps the save from corrupting under concurrent writers or a cloud-sync
+    # client snapshotting mid-write. Idempotent and cheap.
+    from alpecca.db import harden
+    harden(db_path)
     with _connect(db_path) as conn:
         conn.executescript(
             """
@@ -122,6 +125,13 @@ def init_db(db_path: Path = DB_PATH) -> None:
         # for databases that predate it (NULL -> the dataclass default).
         if "longing" not in state_cols:
             conn.execute("ALTER TABLE state ADD COLUMN longing REAL")
+        # Keep the mood log bounded: one row per ~8s tick forever was the only
+        # unbounded growth in her save file. Trend introspection reads days,
+        # not months -- see config.STATE_LOG_KEEP_DAYS (0 = never prune).
+        from config import STATE_LOG_KEEP_DAYS
+        if STATE_LOG_KEEP_DAYS > 0:
+            cutoff = time.time() - STATE_LOG_KEEP_DAYS * 86400.0
+            conn.execute("DELETE FROM state_log WHERE ts < ?", (cutoff,))
 
 
 def load_state(db_path: Path = DB_PATH) -> EmotionalState:
@@ -142,6 +152,13 @@ def load_state(db_path: Path = DB_PATH) -> EmotionalState:
     for newer in ("energy", "curiosity", "social_hunger", "longing"):
         if row[newer] is not None:
             fields[newer] = row[newer]
+    # Clamp on load: the update rules keep values in [0,1] at runtime, but a
+    # hand-edited or damaged row would otherwise flow straight into her prompt.
+    # Non-numeric garbage falls back to a fresh baseline rather than crashing.
+    try:
+        fields = {k: min(1.0, max(0.0, float(v))) for k, v in fields.items()}
+    except (TypeError, ValueError):
+        return EmotionalState()
     return EmotionalState(**fields)
 
 

@@ -14,9 +14,10 @@ The same server keeps running underneath, so this is also how she's reached from
   - INTERNET (tunnel):  set ALPECCA_TUNNEL=cloudflare (or ngrok) -> a public URL
                         is opened through a tunnel binary.
 
-Remote and tunnel access are ALWAYS gated by a secret token: if you didn't set
-ALPECCA_ACCESS_TOKEN, one is minted for this run and printed here. Her senses,
-memory and brain never leave this machine -- only the chat travels.
+Remote and tunnel access are ALWAYS gated by a secret token. If you didn't set
+ALPECCA_ACCESS_TOKEN, Alpecca keeps one stable local token in data/access_token.txt
+and reuses it for future launches. Her senses, memory and brain never leave this
+machine -- only the chat travels.
 
 Run:
     python app.py
@@ -24,7 +25,6 @@ Run:
 from __future__ import annotations
 
 import os
-import secrets
 import shutil
 import subprocess
 import sys
@@ -49,20 +49,19 @@ os.environ.setdefault(
 )
 
 import config  # noqa: E402  (after the env defaults above)
+from alpecca import instance as instance_mod  # noqa: E402
+from alpecca import preview as preview_mod  # noqa: E402
+
+_tunnel_proc = None
 
 
 def _ensure_token() -> None:
-    """If remote access or a tunnel is on, she must be behind a token. When you
-    haven't set one, mint a strong one for this run and make it visible. Must run
+    """Remote/tunnel launches must be behind Alpecca's persistent token. Must run
     BEFORE server is imported, since server.py binds the token at import time."""
     remote = config.REMOTE_ACCESS or config.TUNNEL not in ("", "off", "none")
-    if remote and not config.ACCESS_TOKEN:
-        tok = secrets.token_urlsafe(18)
-        config.ACCESS_TOKEN = tok
-        os.environ["ALPECCA_ACCESS_TOKEN"] = tok
-        print(f"[app] remote access is on -- access token for this run:\n"
-              f"        {tok}\n"
-              f"      append  ?token={tok}  to the URL on any remote device.")
+    if remote:
+        os.environ["ALPECCA_ACCESS_TOKEN"] = config.ACCESS_TOKEN
+        print("[app] remote access is on -- using Alpecca's persistent access token.")
 
 
 def _serve() -> None:
@@ -92,14 +91,17 @@ def _start_tunnel(kind: str, port: int) -> None:
     """Open a public internet URL to the local server via a tunnel CLI. Best
     effort: if the binary isn't installed we say so and stay local. The token
     still guards every request, so the public URL alone can't reach her."""
+    global _tunnel_proc
     if kind == "cloudflare":
-        exe = shutil.which("cloudflared")
-        if not exe:
-            print("[app] cloudflared not on PATH -- internet tunnel skipped. Install:\n"
-                  "      https://developers.cloudflare.com/cloudflare-one/connections/"
-                  "connect-networks/downloads/", file=sys.stderr)
+        url, proc = preview_mod.ensure(port, reuse=True)
+        if not url:
+            print("[app] Cloudflare tunnel unavailable or not installed. Use:\n"
+                  "      python scripts\\preview.py", file=sys.stderr)
             return
-        cmd = [exe, "tunnel", "--url", f"http://127.0.0.1:{port}"]
+        _tunnel_proc = proc
+        print(f"[app] Cloudflare preview: {preview_mod.with_access_token(url)}")
+        print("[app] Reused the existing tunnel." if proc is None else "[app] Opened one tunnel to the existing Alpecca server.")
+        return
     elif kind == "ngrok":
         exe = shutil.which("ngrok")
         if not exe:
@@ -120,12 +122,15 @@ def _start_tunnel(kind: str, port: int) -> None:
 
 def main() -> None:
     _ensure_token()
-    threading.Thread(target=_serve, daemon=True).start()
-
     local_url = f"http://127.0.0.1:{config.PORT}/"
-    if not _wait_until_up(local_url):
-        print("[app] the server didn't come up in time -- check the errors above.",
-              file=sys.stderr)
+    existing = instance_mod.existing_server_url(config.PORT, token=config.ACCESS_TOKEN)
+    if existing:
+        print(f"[app] Alpecca is already awake at {existing}; reusing that mind.")
+    else:
+        threading.Thread(target=_serve, daemon=True).start()
+        if not _wait_until_up(local_url):
+            print("[app] the server didn't come up in time -- check the errors above.",
+                  file=sys.stderr)
     # The window authenticates itself with the token (when one is set) so the
     # local webview isn't blocked by its own gate.
     window_url = local_url + (f"?token={config.ACCESS_TOKEN}" if config.ACCESS_TOKEN else "")

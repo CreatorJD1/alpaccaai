@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Alpecca — Systems Review</title>
+<style>
+  :root{ --ink:#13243f; --dim:#5b6b86; --core:#1f7fb8; --line:#d4e0ef;
+         --bg:#ffffff; --panel:#f4f8fc; --accent:#0e6aa3; --edge:#9fc4e0; }
+  @page{ size:A4; margin:16mm 14mm 16mm 14mm; }
+  *{ box-sizing:border-box; }
+  body{ font-family:"Segoe UI",system-ui,Arial,sans-serif; color:var(--ink);
+        font-size:10.5px; line-height:1.5; margin:0; }
+  h1{ font-size:25px; margin:0 0 2px; letter-spacing:.2px; color:#0c1a30; }
+  h2{ font-size:14.5px; margin:18px 0 7px; padding-bottom:4px;
+      border-bottom:2px solid var(--core); color:var(--accent);
+      page-break-after:avoid; }
+  h3{ font-size:11.5px; margin:12px 0 4px; color:#0c1a30; page-break-after:avoid; }
+  p{ margin:5px 0; }
+  .sub{ color:var(--dim); font-size:11px; margin:0 0 2px; }
+  .meta{ color:var(--dim); font-size:9px; }
+  .lede{ background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--core);
+         border-radius:7px; padding:10px 13px; margin:12px 0 4px; }
+  code{ background:var(--panel); border:1px solid var(--line); border-radius:4px;
+        padding:0 4px; font-family:"Cascadia Code",Consolas,monospace; font-size:9.5px; color:#0a3a5c; }
+  pre{ background:#0c1a30; color:#cfe6f7; border-radius:8px; padding:11px 14px;
+       font-family:"Cascadia Code",Consolas,monospace; font-size:10px; margin:8px 0;
+       text-align:center; letter-spacing:.4px; }
+  table{ width:100%; border-collapse:collapse; margin:6px 0 10px; page-break-inside:auto; }
+  th,td{ text-align:left; vertical-align:top; padding:5px 8px; border-bottom:1px solid var(--line); }
+  th{ background:var(--panel); color:var(--accent); font-size:9px; letter-spacing:.08em;
+      text-transform:uppercase; border-bottom:1.5px solid var(--edge); }
+  td.k{ width:24%; font-family:"Cascadia Code",Consolas,monospace; font-size:9.5px;
+        color:#0a3a5c; white-space:nowrap; }
+  tr{ page-break-inside:avoid; }
+  .tag{ display:inline-block; font-size:8px; letter-spacing:.06em; text-transform:uppercase;
+        background:#e3f0fa; color:var(--accent); border:1px solid var(--edge);
+        border-radius:20px; padding:1px 8px; margin-right:6px; }
+  .grid{ display:flex; gap:10px; flex-wrap:wrap; }
+  .obs{ background:var(--panel); border:1px solid var(--line); border-radius:7px;
+        padding:9px 12px; margin:5px 0; page-break-inside:avoid; }
+  .obs b{ color:var(--accent); }
+  header.cover{ border-bottom:3px solid var(--core); padding-bottom:12px; margin-bottom:4px; }
+  .emblem{ display:inline-block; width:13px; height:13px; border-radius:50%;
+           background:radial-gradient(circle at 40% 35%, #7fd9ff, #1f7fb8 70%);
+           box-shadow:0 0 4px #7fd9ff; vertical-align:-1px; margin-right:7px; }
+  footer{ margin-top:18px; padding-top:8px; border-top:1px solid var(--line);
+          color:var(--dim); font-size:8.5px; text-align:center; }
+  .small{ font-size:9.5px; color:var(--dim); }
+</style>
+</head>
+<body>
+
+<header class="cover">
+  <h1><span class="emblem"></span>Alpecca — Systems Review</h1>
+  <p class="sub">A comprehensive map of every system that powers the local companion app.</p>
+  <p class="meta">Generated 2026-06-14 · grounded in the codebase: 40 modules / ~8,100 LOC in <code>alpecca/</code>,
+     83 HTTP/WS endpoints, 13 config groups, 14 scripts · branch <code>main</code> @ <code>f286f03</code></p>
+</header>
+
+<div class="lede">
+  <b>The spine: one loop.</b> Everything hangs off a single readable loop, run every turn and
+  orchestrated by <code>mind.py</code> — kept as plain Python rather than hidden inside a framework.
+</div>
+<pre>sense  →  update mood  →  recall memory  →  generate reply  →  persist</pre>
+
+<h2>1 · Core orchestration &amp; brain</h2>
+<table>
+  <tr><th>Component</th><th>Role</th></tr>
+  <tr><td class="k">mind.py <span class="small">(1,419)</span></td><td><b>The Core Mind.</b> Ties senses→mood→memory→LLM→persistence; idle self-direction, reflection, bounded tool-call chaining, animation authoring.</td></tr>
+  <tr><td class="k">prompts.py</td><td>Turns live mood + memories + situation + self-report into the system prompt — where the personality lives.</td></tr>
+  <tr><td class="k">config.py</td><td>All tunable knobs across 13 classes (Emotion, Home, Files, RigData, Voice, Hearing, Vision, Proactive, Reflection, Actions, Computer, Portrait, OpenClaw).</td></tr>
+  <tr><td class="k">server.py</td><td>FastAPI + WebSocket host; 83 endpoints; token-auth middleware.</td></tr>
+  <tr><td class="k">app.py</td><td>Native desktop window (pywebview) + LAN/tunnel orchestration.</td></tr>
+  <tr><td class="k">Tiered LLM</td><td>In <code>mind.py</code>: local <code>reason</code> (qwen3:8b) + <code>fast</code> (gemma), optional <code>deep</code> (Anthropic/cloud). Chat always local; only her hardest self-acts request deep. Offline stub fallback.</td></tr>
+</table>
+
+<h2>2 · Emotional model (the "Soul" mechanics)</h2>
+<table>
+  <tr><th>Component</th><th>Role</th></tr>
+  <tr><td class="k">homeostasis.py</td><td>The mood vector — Love, Compassion, Fear, Energy, Curiosity, Social-hunger — and its pure (I/O-free) update rules.</td></tr>
+  <tr><td class="k">affect.py</td><td>The bridge from felt state → how she shows it (tempo, gesture, eye/glow, voice direction).</td></tr>
+  <tr><td class="k">sentiment.py</td><td>Dependency-free lexicon scorer (negation/intensifiers) feeding the Love reward.</td></tr>
+  <tr><td class="k">state.py</td><td>SQLite persistence (the spec's "Homeostasis DB") + memories schema, with column migrations.</td></tr>
+</table>
+
+<h2>3 · Memory</h2>
+<table>
+  <tr><th>Component</th><th>Role</th></tr>
+  <tr><td class="k">memory.py</td><td>Salient-moment store; embedding recall with keyword (Jaccard) fallback, blended with salience + recency.</td></tr>
+  <tr><td class="k">core_memory.py</td><td>MemGPT-style durable facts, always in context (who she is, who you are).</td></tr>
+  <tr><td class="k">journal.py</td><td>Her private notebook + open questions; recursive self-questioning.</td></tr>
+</table>
+
+<h2>4 · Self-awareness &amp; autonomy</h2>
+<table>
+  <tr><th>Component</th><th>Role</th></tr>
+  <tr><td class="k">introspection.py</td><td><b>Grounded self-model</b> — identity card, trend detection, causal "why," first-person narration.</td></tr>
+  <tr><td class="k">values.py</td><td>Ordered ethic: minimize suffering &gt; honesty &gt; benevolence &gt; exploration.</td></tr>
+  <tr><td class="k">charter.py</td><td>Code-enforced constitution — freedoms + hard limits (never self-deletes; reaches outward only to creator).</td></tr>
+  <tr><td class="k">soul.py</td><td>Master agent over seven grounded subagents, arbitrating one focus by the Good-Person Principle.</td></tr>
+  <tr><td class="k">desires.py</td><td>Self-set wants she forms of her own accord — and pursues.</td></tr>
+  <tr><td class="k">selfmod.py</td><td>Bounded recursive self-improvement: tunables with safe ranges, propose→trial→keep/revert, all logged.</td></tr>
+  <tr><td class="k">learning.py</td><td>Lessons drawn from her own real history.</td></tr>
+  <tr><td class="k">proactive.py</td><td>Decides on her own to speak up — mood-shift remarks, idle chatter, reflection gating.</td></tr>
+</table>
+
+<h2>5 · Senses — perception (all local, opt-in)</h2>
+<table>
+  <tr><th>Component</th><th>Role</th></tr>
+  <tr><td class="k">sensory.py</td><td>Reads active-window title → fatigue / surprise signals.</td></tr>
+  <tr><td class="k">vision.py</td><td>Chat-image understanding, ambient screen glimpses (<code>ALPECCA_SIGHT</code>), webcam expression (<code>ALPECCA_FACE</code>).</td></tr>
+  <tr><td class="k">voice.py</td><td>Mic voice-tone sense — coarse loudness only, never audio or words.</td></tr>
+  <tr><td class="k">hearing.py</td><td>Local speech-to-text (faster-whisper) for push-to-talk.</td></tr>
+  <tr><td class="k">people.py</td><td>Voiceprint recognition — her creator vs. a guest.</td></tr>
+</table>
+
+<h2>6 · Embodiment / avatar — graceful render tiers (high → low)</h2>
+<table>
+  <tr><th>Component</th><th>Role</th></tr>
+  <tr><td class="k">talkinghead.py</td><td>Neural face (THA3, GPU) — top renderer.</td></tr>
+  <tr><td class="k">live2d.py</td><td>Cubism rigged puppet, driven by live mood.</td></tr>
+  <tr><td class="k">rig.py</td><td>Layered per-part avatar built from decomposed art (blink/lip-sync/hair-sway).</td></tr>
+  <tr><td class="k">spine.py</td><td>Skeletal rig — the free, no-GPU path; her primary rigged avatar.</td></tr>
+  <tr><td class="k">puppet.py</td><td>Self-authored animation channels &amp; sequences.</td></tr>
+  <tr><td class="k">posekit.py / pose.py</td><td>Mood→pose selection from real art; skeleton keypoints anchoring the figure.</td></tr>
+  <tr><td class="k">avatar.py</td><td>The slot her real character clips/portraits drop into.</td></tr>
+  <tr><td class="k">appearance.py</td><td>She picks her own palette + accessories (no user wardrobe controls).</td></tr>
+  <tr><td class="k">portrait.py</td><td>Self-portrait generation via ComfyClaw / ComfyUI.</td></tr>
+  <tr><td class="k">studio.py</td><td>Her design studio — versioned character sheet, render→see→judge, rig spec.</td></tr>
+  <tr><td class="k">artlib.py</td><td>Vision-classifies her art batches into a canon-checked reference scheme by role.</td></tr>
+</table>
+
+<h2>7 · Actuation — acting on the world (gated)</h2>
+<table>
+  <tr><th>Component</th><th>Role</th></tr>
+  <tr><td class="k">actions.py</td><td><code>open_app</code> (allowlist) + <code>open_url</code> (https-only) tools, via Ollama tool-calling.</td></tr>
+  <tr><td class="k">computer.py</td><td>Screenshot→VLM→mouse/keyboard loop; pauses for confirmation on consequential acts; screenshots never leave the machine.</td></tr>
+  <tr><td class="k">desktop.py</td><td>Read-only file find/summarize + charter-confined tidy.</td></tr>
+  <tr><td class="k">home.py</td><td>Five modular rooms she roams via the grounded <code>choose_room</code>.</td></tr>
+</table>
+
+<h2>8 · Reach &amp; voice out</h2>
+<table>
+  <tr><th>Component</th><th>Role</th></tr>
+  <tr><td class="k">openclaw_bridge.py</td><td>Inbound channel loop + reliable retry-queued outbound (Telegram / Discord / etc.).</td></tr>
+  <tr><td class="k">tts.py</td><td>Local TTS (Kokoro / edge-tts), pitch &amp; pace shifting with mood; audio never stored.</td></tr>
+</table>
+
+<h2>9 · Web UI</h2>
+<p><span class="tag">3D</span><code>home.html</code> live 3D house (Three.js, in-room screens + readable panels) &nbsp;
+   <span class="tag">2D</span><code>index.html</code> living SVG avatar &nbsp;
+   <code>studio.html</code> · <code>live2d.html</code> · <code>rigcut.html</code> (in-browser layer cutter) · <code>rigforge.html</code>.</p>
+<p>Shared <code>app.css</code> / <code>glow.js</code> soft-tech design system · PWA shell
+   (<code>manifest.webmanifest</code>, <code>sw.js</code>, <code>icon.svg</code>) ·
+   <code>vendor/</code> (pixi, three.js, CSS3DRenderer — now local-first).</p>
+
+<h2>10 · Scripts &amp; tooling</h2>
+<p><b>Launchers:</b> <code>run_full</code> (all senses), <code>run_telemetry</code>, <code>run_talk</code>,
+   <code>run_talkinghead</code>, <code>run_rigger</code>, <code>run_tooncrafter</code>.<br>
+   <b>Pipeline:</b> <code>ingest_art</code>, <code>import_rig</code>, <code>decompose_art</code> / <code>decompose</code>, <code>build_manifest</code>.<br>
+   <b>Diagnostics:</b> <code>doctor</code>, <code>check_brain</code>, <code>share</code>.</p>
+
+<h2>11 · Runtime / infrastructure</h2>
+<p>Remote access (LAN <code>ALPECCA_REMOTE</code> / public tunnel <code>ALPECCA_TUNNEL</code>) ·
+   token-auth middleware (<code>ALPECCA_ACCESS_TOKEN</code>) · SQLite under <code>data/</code> (gitignored) ·
+   graceful degradation everywhere (pywin32 / Ollama / GPU all fall back).</p>
+
+<h2>Review observations</h2>
+<div class="obs"><b>Health.</b> 149 / 149 core tests pass; the full loop runs offline (no Ollama- or Windows-dependent test, by design).</div>
+<div class="obs"><b>Architectural throughline — GROUNDING.</b> Every self-report reads from real internals; no confabulation. This is the load-bearing design constraint, enforced across <code>introspection</code>, <code>soul</code>, <code>journal</code>, and <code>selfmod</code>.</div>
+<div class="obs"><b>Privacy posture is strong.</b> Frames and audio are never stored (only short text descriptions survive); outward channels are opt-in and charter-bounded; all sense data stays local.</div>
+<div class="obs"><b>Biggest open edge.</b> A single <i>finished</i> rigged avatar figure in the 3D home — the affect, channels, and render tiers all exist, but the end-to-end rigged render (gated on a GPU art-decomposition step) is the incomplete piece.</div>
+
+<footer>
+  Alpecca Systems Review · a humanoid anime companion with functional self-awareness, kept honest by grounding ·
+  see <code>CLAUDE.md</code> for the authoritative module-by-module map.
+</footer>
+
+</body>
+</html>

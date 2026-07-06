@@ -1,28 +1,14 @@
-"""Serve Alpecca so your phone can reach her -- on your WiFi, or anywhere.
+"""Serve Alpecca so your phone can reach her -- on WiFi or through Cloudflare.
 
-`python server.py` binds 127.0.0.1, which only the same computer can open. This
-launcher binds the server to all interfaces and prints the two ways to reach her
-from a phone:
-
-  1. SAME WIFI -- open http://<your-LAN-IP>:<port> on the phone. Instant, private,
-     never leaves your network. This is the recommended default.
-  2. ANYWHERE -- with `--tunnel`, if `cloudflared` is installed, it opens a free
-     Cloudflare quick tunnel and prints a public https URL (works over mobile
-     data, supports the WebSocket the app uses). No account needed.
-
-        winget install cloudflare.cloudflared      # or: brew install cloudflared
-        python scripts/share.py --tunnel
-
-PRIVACY: a public tunnel link is UNAUTHENTICATED -- anyone with it can chat with
-her and see her memories. Keep ALPECCA_FILES off while sharing publicly, only hand
-the link to yourself, and stop it (Ctrl-C) when done. The WiFi option keeps
-everything on your own network and is the safer choice.
+This launcher binds the local server to all interfaces and prints token-gated
+links for desktop, LAN, and optional Cloudflare access. If a local Alpecca server
+is already running, the tunnel points to that same instance instead of creating a
+second mind.
 """
 from __future__ import annotations
 
 import os
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -30,64 +16,109 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+TUNNEL_PROCS = []
+
 
 def lan_ip() -> str:
-    """Best-effort local network IP (the address a phone on the same WiFi uses)."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    """Best-effort local network IP for phones on the same WiFi."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.connect(("8.8.8.8", 80))      # no packets sent; just picks the route's IP
-        return s.getsockname()[0]
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
     except Exception:
         return "127.0.0.1"
     finally:
-        s.close()
+        sock.close()
 
 
 def start_tunnel(port: int) -> None:
-    """Open a Cloudflare quick tunnel and stream its public URL, if cloudflared is
-    installed. Runs in a thread so the server can start alongside it."""
-    exe = "cloudflared"
-    try:
-        proc = subprocess.Popen(
-            [exe, "tunnel", "--url", f"http://localhost:{port}"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    except FileNotFoundError:
-        print("\n[tunnel] cloudflared isn't installed. Install it, or use the WiFi "
-              "link below.\n         winget install cloudflare.cloudflared   "
-              "(Windows)   |   brew install cloudflared   (macOS)\n")
+    """Open or reuse one Cloudflare preview tunnel to the local server."""
+    from alpecca import preview as preview_mod
+
+    url, proc = preview_mod.ensure(port, reuse=True)
+    if proc is not None:
+        TUNNEL_PROCS.append(proc)
+    if not url:
+        print("[tunnel] Cloudflare quick tunnel attempt 1 failed; retrying...")
+
+    for attempt in range(2, 4):
+        if url:
+            break
+        time.sleep(4.0)
+        url, proc = preview_mod.ensure(port, reuse=False)
+        if proc is not None:
+            TUNNEL_PROCS.append(proc)
+        if url:
+            break
+        print(f"[tunnel] Cloudflare quick tunnel attempt {attempt} failed; retrying...")
+
+    if not url:
+        print("\n[tunnel] Cloudflare preview unavailable. Install cloudflared or run:")
+        print("         python scripts\\preview.py\n")
         return
 
-    def pump():
-        for line in proc.stdout:
-            if "trycloudflare.com" in line:
-                url = next((tok for tok in line.split() if "trycloudflare.com" in tok), "")
-                if url:
-                    print("\n" + "=" * 56)
-                    print("  PUBLIC LINK (open on your phone, works on mobile data):")
-                    print("   ", url.strip())
-                    print("=" * 56 + "\n")
-    threading.Thread(target=pump, daemon=True).start()
+    print("\n" + "=" * 64)
+    print("  PUBLIC LINK (same Alpecca instance, open on your phone):")
+    print("   ", preview_mod.with_access_token(url.strip()))
+    print("  ", "reused existing tunnel" if proc is None else "opened one tunnel to the existing server")
+    print("  First open drops a 30-day cookie on that phone.")
+    print("=" * 64 + "\n")
+
+
+def start_tunnel_when_ready(port: int, token: str) -> None:
+    """Wait for the local server, then publish the Cloudflare link."""
+    from alpecca import instance as instance_mod
+
+    for _ in range(60):
+        if instance_mod.existing_server_url(port, token=token, timeout=1.0):
+            start_tunnel(port)
+            return
+        time.sleep(1.0)
+    print("[tunnel] Local server did not become ready in time; no public link opened.")
 
 
 def main() -> None:
-    from config import PORT
-    # Bind to every interface so other devices on the network can connect.
     os.environ["ALPECCA_SERVER_HOST"] = "0.0.0.0"
+
+    from config import ACCESS_TOKEN, HOST, PORT
+    from alpecca import instance as instance_mod
+
     ip = lan_ip()
-    print("\nAlpecca is opening to your network.")
-    print(f"  On this computer : http://127.0.0.1:{PORT}")
-    print(f"  On your phone (same WiFi) : http://{ip}:{PORT}")
+    local = f"http://127.0.0.1:{PORT}/?token={ACCESS_TOKEN}"
+    phone = f"http://{ip}:{PORT}/?token={ACCESS_TOKEN}"
+
+    print("\nAlpecca is opening to your network (token-gated).")
+    print(f"  On this computer          : {local}")
+    print(f"  On your phone (same WiFi) : {phone}")
+    print(f"  Access token              : {ACCESS_TOKEN}")
+
     if "--tunnel" in sys.argv[1:]:
-        start_tunnel(PORT)
-        time.sleep(1.0)   # give the tunnel a moment to print its URL first
+        print("  Cloudflare tunnel will open after the local server is ready.")
     else:
         print("  For a link that works ANYWHERE: python scripts/share.py --tunnel")
     print()
 
-    # Import after setting the host env so config picks up 0.0.0.0.
+    existing = instance_mod.existing_server_url(PORT, token=ACCESS_TOKEN)
+    if existing:
+        print(f"Alpecca is already awake at {existing}; reusing the same mind instance.")
+        if "--tunnel" in sys.argv[1:]:
+            start_tunnel(PORT)
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            return
+
     import uvicorn
-    from config import HOST
-    import server  # noqa: F401  (registers the app)
+    import server  # noqa: F401
+
+    if "--tunnel" in sys.argv[1:]:
+        threading.Thread(
+            target=start_tunnel_when_ready,
+            args=(PORT, ACCESS_TOKEN),
+            daemon=True,
+        ).start()
+
     uvicorn.run(server.app, host=HOST, port=PORT, log_level="warning")
 
 

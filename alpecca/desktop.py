@@ -6,7 +6,12 @@ constitution (`charter.py`), and the bounds are enforced *in code*, not merely
 described in a prompt she could talk past:
 
   - She can only ever touch five roots: Desktop, Pictures, Music, Video, and a
-    general files folder. Anything outside is invisible and unreachable.
+    general files folder. Anything outside is invisible and unreachable. By
+    default these are SANDBOXED -- they live inside a virtual workstation
+    directory (`config.Files.SANDBOX_ROOT`, default `HOME/sandbox`), not the real
+    machine -- so even a server reachable over the internet can never see or
+    enumerate your actual files. Opt out with `ALPECCA_SANDBOX=0` for private
+    local tidying of the real folders.
   - She can list, move, and rename. She **cannot delete** -- there is no delete
     function in this module at all, by design. Deletion stays with the person.
   - Every path is resolved and checked to be *inside* an allowed root before any
@@ -28,27 +33,91 @@ from alpecca import charter
 from config import Files as FilesCfg
 
 
+# The five rooms, mapped to a folder name under whichever base is active.
+_ROOM_FOLDERS = {
+    "desktop":  "Desktop",
+    "pictures": "Pictures",
+    "music":    "Music",
+    "video":    "Videos",
+    "general":  "Documents",
+}
+
+
 def _default_roots() -> dict:
-    """Map the five allowed root names to real folders. Defaults to the standard
-    user folders; each is overridable by env (e.g. ALPECCA_ROOT_PICTURES) so this
-    works the same on any machine and is trivially pointed at a sandbox in tests.
-    'general' defaults to the Documents folder."""
+    """Map the five allowed room names to real folders.
+
+    By default she is sandboxed (``config.Files.SANDBOXED``): every room lives
+    inside a single virtual workstation directory (``SANDBOX_ROOT``), so file
+    access can never see or enumerate the real machine -- the safe posture when
+    the server might be reached remotely. Per-room ``ALPECCA_ROOT_*`` overrides
+    are deliberately IGNORED while sandboxed so they cannot poke a hole in it.
+
+    When sandboxing is opted out of (``ALPECCA_SANDBOX=0``), the rooms point at
+    the real user folders (Desktop/Pictures/Music/Videos/Documents), each
+    overridable by env so this works the same on any machine and is trivially
+    pointed elsewhere in tests.
+    """
+    if FilesCfg.SANDBOXED:
+        base = Path(FilesCfg.SANDBOX_ROOT)
+        return {name: base / folder for name, folder in _ROOM_FOLDERS.items()}
     home = Path(os.environ.get("ALPECCA_USER_HOME", str(Path.home())))
-    mapping = {
-        "desktop":  home / "Desktop",
-        "pictures": home / "Pictures",
-        "music":    home / "Music",
-        "video":    home / "Videos",
-        "general":  home / "Documents",
-    }
     out = {}
-    for name, default in mapping.items():
+    for name, folder in _ROOM_FOLDERS.items():
+        default = home / folder
         out[name] = Path(os.environ.get(f"ALPECCA_ROOT_{name.upper()}", str(default)))
     return out
 
 
 # Resolved once; tests pass their own roots in explicitly.
 ROOTS = _default_roots()
+
+_SANDBOX_README = (
+    "This is Alpecca's virtual workstation.\n\n"
+    "When sandboxed (the default, ALPECCA_SANDBOX=1), her file rooms live HERE,\n"
+    "inside this folder -- not on your real Desktop/Documents/etc. So even if her\n"
+    "server is reachable over the internet, her file features can only ever see\n"
+    "what you place in here, never your actual machine.\n\n"
+    "Drop files into the Desktop/Pictures/Music/Videos/Documents subfolders to let\n"
+    "her work with them. To let her touch your REAL folders instead (private local\n"
+    "use only), set ALPECCA_SANDBOX=0 and restart her.\n"
+)
+
+
+def ensure_sandbox() -> None:
+    """Create the virtual workstation folders (idempotent) so the rooms exist and
+    are usable. A no-op when sandboxing is opted out of. Called lazily by the
+    file functions so importing this module has no filesystem side effects."""
+    if not FilesCfg.SANDBOXED:
+        return
+    base = Path(FilesCfg.SANDBOX_ROOT)
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        for folder in _ROOM_FOLDERS.values():
+            (base / folder).mkdir(parents=True, exist_ok=True)
+        readme = base / "README.txt"
+        if not readme.exists():
+            readme.write_text(_SANDBOX_README, encoding="utf-8")
+    except Exception:
+        # Never let sandbox setup crash a file call; the room just stays empty.
+        pass
+
+
+def _active_roots(roots: dict | None) -> dict:
+    """The roots a public function should use: an explicit set (tests) as-is, or
+    the module's ``ROOTS`` -- ensuring the sandbox exists first when sandboxed."""
+    if roots is not None:
+        return roots
+    ensure_sandbox()
+    return ROOTS
+
+
+def sandbox_status() -> dict:
+    """Where her file access is confined, for the UI and security-conscious
+    callers. ``sandboxed`` True means the rooms are virtual, not the real disk."""
+    return {
+        "sandboxed": bool(FilesCfg.SANDBOXED),
+        "root": str(FilesCfg.SANDBOX_ROOT) if FilesCfg.SANDBOXED else "",
+    }
 
 
 @dataclass
@@ -79,7 +148,7 @@ def list_room(root: str, rel: str = "", roots: dict | None = None) -> dict:
     """List one allowed root (optionally a subfolder). Refuses unknown roots and
     any path that escapes the root. Read access is itself gated through the
     charter ('view'), so the allow-list is the single source of truth."""
-    roots = roots or ROOTS
+    roots = _active_roots(roots)
     ok, why = charter.file_action_allowed("view", root)
     if not ok:
         return {"ok": False, "error": why}
@@ -106,7 +175,7 @@ def move(src_root: str, src_rel: str, dst_root: str, dst_rel: str = "",
     """Move a file/folder from one allowed location to another. Gated on both
     ends; never overwrites; both sides must stay inside their roots. Returns a
     result dict; on any guard failure nothing on disk is touched."""
-    roots = roots or ROOTS
+    roots = _active_roots(roots)
     for r in (src_root, dst_root):
         ok, why = charter.file_action_allowed("move", r)
         if not ok:
@@ -134,7 +203,7 @@ def move(src_root: str, src_rel: str, dst_root: str, dst_rel: str = "",
 def rename(root: str, rel: str, new_name: str, roots: dict | None = None) -> dict:
     """Rename within an allowed root. Gated; the new name is a single path
     component (no slashes -> can't relocate via rename); never overwrites."""
-    roots = roots or ROOTS
+    roots = _active_roots(roots)
     ok, why = charter.file_action_allowed("rename", root)
     if not ok:
         return {"ok": False, "error": why}
@@ -163,7 +232,7 @@ def search(query: str, roots: dict | None = None, limit: int = 40) -> dict:
     follows a symlink out of a room and skips anything that resolves outside its
     root, so the same hard sandbox as the rest of this module holds. Returns
     {ok, query, matches:[{root, rel, name, is_dir, size}], truncated}."""
-    roots = roots or ROOTS
+    roots = _active_roots(roots)
     q = (query or "").strip().lower()
     if not q:
         return {"ok": False, "error": "give me something to look for."}
@@ -209,14 +278,15 @@ def search(query: str, roots: dict | None = None, limit: int = 40) -> dict:
                 break
         if truncated:
             break
-    return {"ok": True, "query": query, "matches": matches, "truncated": truncated}
+    return {"ok": True, "query": query, "matches": matches, "truncated": truncated,
+            **sandbox_status()}
 
 
 def summarize(root: str, roots: dict | None = None) -> dict:
     """A grounded readout of one room: how many files and folders it holds, the
     total size, and a count by file kind (extension) -- the honest 'what's in
     Documents' answer. Read-only and charter-gated."""
-    roots = roots or ROOTS
+    roots = _active_roots(roots)
     ok, why = charter.file_action_allowed("view", root)
     if not ok:
         return {"ok": False, "error": why}
@@ -242,13 +312,13 @@ def summarize(root: str, roots: dict | None = None) -> dict:
                     pass
     top = dict(sorted(by_kind.items(), key=lambda kv: kv[1], reverse=True)[:8])
     return {"ok": True, "root": root, "files": files, "folders": folders,
-            "total_bytes": total, "by_kind": top}
+            "total_bytes": total, "by_kind": top, **sandbox_status()}
 
 
 def overview(roots: dict | None = None) -> dict:
     """A desktop-like snapshot: each allowed room and how many items it holds.
     What the workstation view renders. Honest about what she can and can't do."""
-    roots = roots or ROOTS
+    roots = _active_roots(roots)
     rooms = []
     for name in charter.ALLOWED_FILE_ROOTS:
         listing = list_room(name, roots=roots)
@@ -261,4 +331,5 @@ def overview(roots: dict | None = None) -> dict:
         "can": list(charter.ALLOWED_FILE_ACTIONS),
         "cannot": list(charter.FORBIDDEN_FILE_ACTIONS),
         "note": "I can tidy these folders, but I can't delete anything -- that's yours.",
+        **sandbox_status(),
     }

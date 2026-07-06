@@ -1,0 +1,11 @@
+name = "alpecca-mindscape"
+main = "worker.js"
+compatibility_date = "2026-06-01"
+
+[[kv_namespaces]]
+binding = "MINDSCAPE_KV"
+id = "60ee3538edb74fbe920fc381acae3613"
+remote = true
+
+# Set this as a secret, not plaintext:
+#   npx wrangler secret put MINDSCAPE_TOKEN

@@ -105,6 +105,7 @@
     <img id="avatarPortrait" alt="Alpecca" />
     <a href="/studio" style="font-size:12px;color:var(--accent);text-decoration:none;">✦ her studio</a>
     <a href="/live2d" style="font-size:12px;color:var(--accent);text-decoration:none;margin-left:12px;">✦ live avatar</a>
+    <a href="/vrm" style="font-size:12px;color:var(--accent);text-decoration:none;margin-left:12px;">✦ 3D body</a>
     <!-- A character avatar (Replika-style customizable companion). Idle
          breathing + blinking run on a clock; mood drives the expression. -->
     <svg id="avatar" width="220" height="240" viewBox="0 0 220 240" xmlns="http://www.w3.org/2000/svg">
@@ -626,8 +627,8 @@ function moodSequence(mood){
   else if(mood === 'anxious') playSequence('fidget', 1400);
 }
 
-// --- her voice: spoken replies via the OS speech engine (fully local) ---------
-let speakOn = localStorage.getItem('alpeccaSpeak') === '1';
+// --- her voice: server Kokoro/edge first, browser speech fallback -------------
+let speakOn = localStorage.getItem('alpeccaSpeak') !== '0';
 const speakBtn = document.getElementById('speakBtn');
 function renderSpeakBtn(){ speakBtn.textContent = speakOn ? '🔊' : '🔇'; }
 renderSpeakBtn();
@@ -636,8 +637,10 @@ speakBtn.addEventListener('click', ()=>{
   localStorage.setItem('alpeccaSpeak', speakOn ? '1' : '0');
   if(!speakOn) speechSynthesis.cancel();
   renderSpeakBtn();
+  if(speakOn) speak('Alpecca voice is on.');
 });
 let herVoice = null;
+let herAudio = null, herAudioUrl = '';
 function pickVoice(){
   const vs = speechSynthesis.getVoices();
   // Prefer a natural female English voice; fall back to anything English.
@@ -646,7 +649,16 @@ function pickVoice(){
 }
 pickVoice();
 speechSynthesis.onvoiceschanged = pickVoice;
-function speak(text){
+function speakBrowser(text){
+  if(!window.speechSynthesis || !text) return;
+  const u = new SpeechSynthesisUtterance(text);
+  if(herVoice) u.voice = herVoice;
+  u.rate = 1.0; u.pitch = 1.05;
+  u.onstart = ()=> setAvatarState('speaking');
+  u.onend = ()=>{ if(!speechSynthesis.pending) setAvatarState('idle'); };
+  speechSynthesis.cancel(); speechSynthesis.speak(u);
+}
+async function speak(text){
   if(!speakOn || !text){
     // Not speaking aloud: flash the speaking state briefly so the avatar
     // still visibly "says" her reply, then settle.
@@ -654,12 +666,29 @@ function speak(text){
     setTimeout(()=>{ if(avatarState === 'speaking') setAvatarState('idle'); }, 1600);
     return;
   }
-  const u = new SpeechSynthesisUtterance(text);
-  if(herVoice) u.voice = herVoice;
-  u.rate = 1.0; u.pitch = 1.05;
-  u.onstart = ()=> setAvatarState('speaking');
-  u.onend = ()=>{ if(!speechSynthesis.pending) setAvatarState('idle'); };
-  speechSynthesis.speak(u);
+  try{
+    const r = await fetch('/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+    if(r.ok && r.status !== 204){
+      const blob = await r.blob();
+      if(herAudio){ try{herAudio.pause();}catch(e){} }
+      if(herAudioUrl){ try{URL.revokeObjectURL(herAudioUrl);}catch(e){} }
+      herAudioUrl = URL.createObjectURL(blob);
+      herAudio = new Audio(herAudioUrl);
+      herAudio.onplay = ()=>{
+        const engine = r.headers.get('X-Alpecca-TTS-Engine') || 'server';
+        const voice = r.headers.get('X-Alpecca-Voice') || 'af_heart';
+        const style = r.headers.get('X-Alpecca-Voice-Style') || r.headers.get('X-Alpecca-Voice-Primary') || 'present';
+        statusEl.textContent = `speaking with ${engine} / ${voice} / ${style}`;
+        setAvatarState('speaking');
+      };
+      herAudio.onended = ()=>{ if(avatarState === 'speaking') setAvatarState('idle'); };
+      await herAudio.play();
+      return;
+    }
+    const why = r.headers.get('X-Alpecca-TTS-Error') || 'server voice unavailable';
+    statusEl.textContent = `voice fallback: ${why}`;
+  }catch(e){}
+  speakBrowser(text);
 }
 
 // --- your voice: push-to-talk, transcribed locally on the server --------------

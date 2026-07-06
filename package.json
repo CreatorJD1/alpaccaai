@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "scripts": {
+    "house:install": "npm --prefix apps/house-hq install",
+    "house:dev": "npm --prefix apps/house-hq run dev",
+    "house:build": "npm --prefix apps/house-hq run build",
+    "house:preview": "npm --prefix apps/house-hq run preview"
+  }
+}

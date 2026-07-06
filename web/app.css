@@ -139,3 +139,104 @@ input:focus, textarea:focus { border-color: var(--mood) !important; }
 .room-screen .rs-body::-webkit-scrollbar { width: 7px; }
 .room-screen .rs-body::-webkit-scrollbar-thumb { background: var(--line); border-radius: 7px; }
 .room-screen.dim { opacity: .42; filter: saturate(.7); transition: opacity var(--t-slow); }
+
+/* ---- Unified app-shell overhaul primitives. These are intentionally generic
+   so home/classic/mindscape/studio can converge without each page carrying a
+   separate design language. ---- */
+.app-shell,
+.alpecca-shell {
+  min-height: 100svh;
+  background:
+    radial-gradient(circle at 50% -18%, hsl(var(--mood-h) var(--mood-s) 32% / .22), transparent 42%),
+    linear-gradient(180deg, #070b14, #05070b 72%);
+  color: var(--ink);
+  font-family: var(--font);
+}
+
+.app-topbar,
+.alpecca-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 58px;
+  padding: 10px clamp(14px, 3vw, 28px);
+  border-bottom: 1px solid var(--line);
+  background: rgba(7, 11, 20, .82);
+  backdrop-filter: blur(10px);
+}
+
+.app-panel,
+.alpecca-panel {
+  background: var(--panel-solid);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-panel);
+}
+
+.app-tabs,
+.alpecca-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px;
+  scrollbar-width: thin;
+}
+
+.app-tabs button,
+.alpecca-tabs button,
+.app-action,
+.alpecca-action {
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: rgba(127, 217, 255, .07);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.app-tabs button[aria-selected="true"],
+.alpecca-tabs button[aria-selected="true"],
+.app-action.primary,
+.alpecca-action.primary {
+  border-color: var(--mood);
+  background: hsl(var(--mood-h) var(--mood-s) var(--mood-l) / .16);
+  color: var(--mood);
+  box-shadow: var(--glow-ring);
+}
+
+.app-status-strip,
+.alpecca-status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.app-status-strip b,
+.alpecca-status-strip b {
+  color: var(--ink);
+}
+
+@media (max-width: 640px) {
+  .app-topbar,
+  .alpecca-topbar {
+    min-height: 52px;
+    padding-inline: max(12px, env(safe-area-inset-left));
+  }
+
+  .app-panel,
+  .alpecca-panel {
+    border-radius: 10px;
+  }
+
+  .app-tabs button,
+  .alpecca-tabs button,
+  .app-action,
+  .alpecca-action {
+    min-height: 44px;
+  }
+}

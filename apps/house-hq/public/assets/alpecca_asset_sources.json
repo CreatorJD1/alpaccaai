@@ -1,0 +1,38 @@
+{
+  "version": "stage-superplan-1",
+  "updated": "2026-07-01",
+  "policy": {
+    "github": "Code, app shell, small JSON manifests, QA reports, and scripts only.",
+    "huggingFace": "Primary storage for Alpecca source art, generated art batches, and browser-safe runtime art payloads.",
+    "cloudflare": "Preview/app hosting only. Do not upload source art or heavyweight generated art here."
+  },
+  "repositories": {
+    "sourceArt": {
+      "type": "huggingface-dataset",
+      "repo": "CREATORJD/alpecca-art-library",
+      "url": "https://huggingface.co/datasets/CREATORJD/alpecca-art-library",
+      "visibility": "private",
+      "localRoot": "data/alpecca_art_source"
+    },
+    "runtimeAssets": {
+      "type": "huggingface-dataset",
+      "repo": "CREATORJD/alpecca-runtime-assets",
+      "url": "https://huggingface.co/datasets/CREATORJD/alpecca-runtime-assets",
+      "resolveBase": "https://huggingface.co/datasets/CREATORJD/alpecca-runtime-assets/resolve/main/runtime-assets",
+      "localRoot": "apps/house-hq/public/assets"
+    }
+  },
+  "runtime": {
+    "defaultLocalBase": "/assets/alpecca-optimized",
+    "defaultRemoteBase": "https://huggingface.co/datasets/CREATORJD/alpecca-runtime-assets/resolve/main/runtime-assets/assets/alpecca-optimized",
+    "overrideQueryParams": ["art", "artBase", "assetBase", "alpeccaArt"],
+    "localStorageKey": "alpeccaArtBaseUrl",
+    "fallbackPolicy": "Use local assets on localhost. Use Hugging Face runtime assets on static/Cloudflare preview when no override is supplied."
+  },
+  "animationLibraryGoal": {
+    "minimumSourceArtTargetGb": 40,
+    "runtimeLooseImageRequests": false,
+    "targetViewSystem": "16 horizontal view sectors with low/eye/high vertical tiers, compiled into approved runtime atlases",
+    "firstProductionGate": "No runtime promotion until design lock, white thigh-high leggings, no baked halo/shadow, transparent cutout, stable 5ft7 body class, and preview QA pass."
+  }
+}
