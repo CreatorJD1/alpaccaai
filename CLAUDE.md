@@ -49,6 +49,7 @@ sense → update mood → recall memory → generate reply → persist
 | `alpecca/talkinghead.py`  | **Her Talking Head Anime tier — neural face (top renderer).** THA3 (pkhungurn) animates a single 512 portrait of her with blink/gaze/brows/lip-sync/head-turn/breathing, no rigging. `pose_for_state(state)` maps her mood → THA3 expressive pose (tested); an in-memory frame buffer holds the latest frame the GPU process pushes; `is_active()` (frame freshness) gates the tier. `scripts/run_talkinghead.py` is the GPU runner (pull pose → generate → POST frame), `--prep` crops her 512 head image. UI streams `/talkinghead/frame` and switches to it by polling `/talkinghead/manifest`, falling back when it stops. CC-BY models. |
 | `alpecca/rig.py`          | **Her layered rig — real per-part avatar.** When her art is decomposed into named layers (See-Through → `scripts/import_rig.py` → `data/avatar/rig/` + `rig.json`), the `/live2d` page renders her as stacked PIXI sprites and moves each part on its own: blink, lip-sync, head-turn, hair sway, all from her live mood. `role_for()` maps any layer name onto a small role set (back_hair/body/head/brows/eyes/mouth/front_hair/accessory). Render tier order: Cubism model > **layered rig** > single-image mesh > note. The no-Cubism path to a properly rigged her. |
 | `alpecca/live2d.py`       | **Her Live2D tier — the rigged puppet.** The top avatar renderer (above poses > video > SVG). `params_for_state(state)` maps her live mood onto standard Cubism parameters (`ParamCheek`/`ParamMouthForm`/`ParamBrowLAngle`/`ParamAngleZ`/`Param_CoreGlow`…) — the grounded wrapping, tested. Drop a compiled model (`.model3.json` + assets) into `data/avatar/live2d/` and `/live2d` renders it via pixi-live2d-display, driven live; until then `/live2d` shows the param panel proving the wiring. Rig blueprint sheets in `data/character/reference/live2d/`; `studio.write_rig_spec` emits these Cubism names so the rig is drivable with no glue. Fast params (blink/breath/lip-sync) are JS-local; slow expressive ones come from here. |
+| `alpecca/vrm.py`          | **Her VRM tier — the full 3D body.** The body is authored in Jason's companion app, **VRoid Companion Studio** (github.com/CreatorJD1/app — anime-only VRM creator: runtime viewer, procedural animation library, AI textures/turnarounds); this module makes it live. Drop the exported `.vrm` into `data/avatar/vrm/` and `/vrm` renders her in 3D (three.js + @pixiv/three-vrm via CDN import map, vendorable for offline). `clip_for_state()` maps her mood label onto the studio's clip ids verbatim (sleepy→sleep, joyful→cheer, anxious→cry, …; the talking clip + a mood-matched emotion overlay wins while speaking) and `expressions_for_state()` weights the standard VRM presets from her real dims — `angry` is always 0.0 because she has no anger dimension (grounding). Blink/lip-sync stay JS-local (time-driven); model serving traversal-safe. Both mappings tested. |
 | `alpecca/puppet.py`       | **Her puppet — she animates herself.** The wrapping layer over her riggable character: motion channels (bob/sway/tilt/lean/scale/glow) + state channels (warmth/care/unease/core_glow/eye_glow). `live_pose(state)` is the always-on grounded readout (her real mood → channel values). She **authors her own animation sequences** (`mind.author_animation` → validated keyframes stored in `data/character/animations.json`), e.g. she wrote her own "greet". The UI is a *player*: it fetches `/puppet` and plays HER sequences (falling back to built-in procedural only until she's authored that motion). `POST /puppet/author` has her choreograph one on demand. Same channels will drive the rigged Inochi2D puppet later — don't hardcode her choreography. |
 | `alpecca/appearance.py`   | **Self-directed appearance.** She picks her own palette + accessories from her mood (+ a stable `seed` taste). The user does NOT control this; there are no UI wardrobe controls. Keep it that way. |
 | `alpecca/sentiment.py`    | Lexicon sentiment scorer (negation/intensifiers/emphasis) that feeds the Love reward. Optional Ollama path `score_llm`. |
@@ -212,7 +213,7 @@ Ollama or Windows.**
   for real: in deep-quiet stretches she muses over her actual memories and
   stores the thought (`kind="musing"`, `ALPECCA_REFLECT=0` to disable), so
   musings feed back into recall and chatter.
-- All 58 core tests pass; full loop, introspection, appearance, portrait
+- All 152 core tests pass; full loop, introspection, appearance, portrait
   prompts, channel bridge, voice-tone, expression mapping, proactive triggers,
   reflection gating, values ordering, and the action allowlist verified
   end-to-end.
@@ -376,6 +377,24 @@ All of this obeys GROUNDING. New modules and what they do:
   part-cuts have crisp edges; it degrades to plain painting if absent. Linked from
   the home Studio panel. Uses ONLY her art. Then `/live2d` + the home rig tier
   animate her real parts.
+- ✅ **VRM tier (`alpecca/vrm.py`, `/vrm`) — her body from the companion studio
+  app.** Jason built **VRoid Companion Studio** (github.com/CreatorJD1/app) as
+  the place her 3D anime body is *made*: VRM viewer, ~20-clip procedural
+  animation library, anatomy-safe posing, VRM expression editor, Gemini
+  texture/wardrobe/turnaround generation. Alpecca now speaks that app's exact
+  vocabulary so an exported `.vrm` needs zero translation: `clip_for_state()`
+  picks which studio clip she plays from her mood label (every label mapped;
+  talking + emotion overlay while speaking), `expressions_for_state()` weights
+  the standard VRM presets from her live dims (never `angry` — no such
+  dimension exists), and `web/vrm.html` performs it — a ported subset of the
+  studio's clip engine on @pixiv/three-vrm, mood weights lerped under the clip,
+  blink/mouth cycling JS-local, `applyMood` glow, orbit controls, fit-to-frame
+  off her real bounding box. Routes: `/vrm`, `/vrm/manifest`,
+  `/vrm/model/{name}` (traversal-safe), `/vrm/pose?speaking=`. Linked from the
+  chat header and the home Studio panel. The page fetches three/three-vrm from
+  jsdelivr (import map; vendor into `web/vendor/` to go offline). Drop a
+  `.vrm` into `data/avatar/vrm/` to turn the tier on. (tests: clip-follows-
+  mood/talking-wins, expressions-grounded-never-fake-anger, manifest+serving.)
 - **Still open (next):** deep-tier *cowork planning* (entangled with the
   vision-driven `computer.py` loop — deferred); the deep layered-sprite avatar
   inside the 3D home; voice-markup → local TTS. **Her rendered avatar remains

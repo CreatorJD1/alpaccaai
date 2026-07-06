@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Alpecca — 3D body (VRM)</title>
+<!-- Shared soft-tech/glow design system + live mood-glow (tokens come from app.css). -->
+<link rel="stylesheet" href="/web/app.css" />
+<script src="/web/glow.js"></script>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:var(--font);
+         background:radial-gradient(1200px 800px at 50% -10%, #0c1426, var(--bg));
+         color:var(--ink); min-height:100vh; overflow:hidden; }
+  #stage { position:fixed; inset:0; z-index:0; }
+  header { position:fixed; top:0; left:0; right:0; text-align:center; padding:14px;
+           pointer-events:none; z-index:40; }
+  header h1 { margin:0; font-weight:600; letter-spacing:.5px; }
+  header .mood { color:var(--muted); font-size:13px; }
+  a.back { position:fixed; top:12px; left:14px; z-index:60; pointer-events:auto;
+           color:var(--ink); font-size:13px; text-decoration:none;
+           background:var(--bg-2); border:1px solid var(--line);
+           padding:7px 14px; border-radius:9px; }
+  a.back:hover { border-color:var(--line-2); }
+  /* The clip chip: which studio animation her mood picked, so the grounding is
+     visible ("cheer — joyful"), same spirit as the live2d params panel. */
+  #chip { position:fixed; right:16px; top:16px; z-index:60; font-size:12px;
+          background:var(--bg-2); border:1px solid var(--line); border-radius:9px;
+          padding:6px 12px; color:var(--muted); }
+  #chip b { color:var(--ink); font-weight:600; }
+  /* The note shown until a .vrm is dropped in. Only its card eats clicks. */
+  #note { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+          z-index:20; pointer-events:none; }
+  #note .card { pointer-events:auto; background:var(--panel-solid);
+                border:1px solid var(--line); border-radius:16px;
+                padding:22px 26px; max-width:580px; box-shadow:var(--shadow-panel); }
+  #note h2 { margin:0 0 8px; font-size:16px; }
+  #note p { color:var(--muted); font-size:13px; line-height:1.5; }
+  #note code { background:var(--bg-2); padding:1px 6px; border-radius:5px; color:var(--ink); }
+  #note a.cta { display:inline-block; margin-top:6px; background:var(--mood); color:#06121c;
+                text-decoration:none; padding:9px 18px; border-radius:9px; font-weight:600;
+                box-shadow:var(--mood-glow); }
+</style>
+</head>
+<body>
+  <a class="back" href="/">← chat</a>
+  <header><h1>Alpecca</h1><div class="mood" id="mood">3D body</div></header>
+  <div id="chip" style="display:none"><b id="chipClip">idle</b> <span id="chipMood"></span></div>
+  <div id="stage"></div>
+
+  <div id="note" style="display:none"><div class="card">
+    <h2 id="noteTitle">Her VRM body isn't installed yet</h2>
+    <p id="noteBody">Build her in <b>VRoid Companion Studio</b> (the companion app —
+       <code>github.com/CreatorJD1/app</code>), export the <code>.vrm</code>, drop it
+       into <code>data/avatar/vrm/</code>, and reload. She renders here in full 3D,
+       playing the studio's animations chosen by her live mood — sleep when sleepy,
+       cheer when joyful, a hunch when anxious — with her face weighted from the
+       same real internals.</p>
+    <a class="cta" href="/">← Back to chat</a>
+  </div></div>
+
+<!-- three + @pixiv/three-vrm as ES modules, vendored local (the local-first
+     line: nothing she needs depends on a CDN). Pinned versions live in
+     web/vendor/vrm/: three@0.164.1 (three.module.js + loaders/GLTFLoader.js +
+     controls/OrbitControls.js + utils/BufferGeometryUtils.js, all MIT) and
+     @pixiv/three-vrm@3.4.1 (MIT). To upgrade, refresh those files together. -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "/web/vendor/vrm/three.module.js",
+    "three/addons/": "/web/vendor/vrm/",
+    "@pixiv/three-vrm": "/web/vendor/vrm/three-vrm.module.min.js"
+  }
+}
+</script>
+<script>
+  /* Watchdog: a module that fails at import time never runs its own error
+     handling, which would leave a silently blank page. If the driver hasn't
+     booted shortly, say what's wrong instead. */
+  setTimeout(function () {
+    if (window.__vrmBooted) return;
+    document.getElementById("noteTitle").textContent = "Couldn't start the 3D renderer";
+    document.getElementById("noteBody").innerHTML =
+      "The vendored modules under <code>web/vendor/vrm/</code> didn't load — " +
+      "check they exist (three.module.js, loaders/, controls/, utils/, " +
+      "three-vrm.module.min.js) and that the browser supports ES modules. " +
+      "Her other renderers at <code>/live2d</code> and the home are unaffected.";
+    document.getElementById("note").style.display = "flex";
+  }, 8000);
+</script>
+<script type="module">
+/* Alpecca's VRM driver.
+ *
+ * The clip math below is a direct port of the procedural animation library in
+ * VRoid Companion Studio (frontend/src/lib/vrmAnimations.js, MIT) — the same
+ * project that authors her .vrm — trimmed to the clips her mood mapping can ask
+ * for. The SERVER decides what plays: /vrm/pose returns {clip, talk_emotion,
+ * expressions} from her real state (alpecca/vrm.py, tested); this page only
+ * performs it and adds the time-driven layers (blink, mouth cycling, lerp).
+ */
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+
+window.__vrmBooted = true;   // imports resolved; the watchdog stands down
+
+const stage = document.getElementById("stage");
+const note = document.getElementById("note");
+const chip = document.getElementById("chip");
+const moodEl = document.getElementById("mood");
+
+function showNote(title, body) {
+  document.getElementById("noteTitle").textContent = title;
+  if (body) document.getElementById("noteBody").innerHTML = body;
+  note.style.display = "flex";
+}
+
+/* ---- scene ---- */
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
+renderer.setSize(innerWidth, innerHeight);
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 40);
+camera.position.set(0, 1.3, 3.2);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.0, 0);
+controls.enableDamping = true;
+controls.minDistance = 0.8; controls.maxDistance = 8;
+
+scene.add(new THREE.AmbientLight(0xbfd8ff, 0.9));
+const key = new THREE.DirectionalLight(0xffffff, 1.6);
+key.position.set(1.2, 2.2, 2.0); scene.add(key);
+const rim = new THREE.DirectionalLight(0x66d9ff, 0.7);
+rim.position.set(-1.5, 1.2, -1.5); scene.add(rim);
+
+addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+/* ---- load her VRM (manifest -> model), frame the camera on her ---- */
+let vrm = null;
+let axisFlip = 1;    // +1 for VRM 0.x models, -1 for 1.0 (see note at load)
+try {
+  const man = await (await fetch("/vrm/manifest")).json();
+  if (!man.vrm_mode) {
+    showNote("Her VRM body isn't installed yet");
+  } else {
+    const loader = new GLTFLoader();
+    loader.register((p) => new VRMLoaderPlugin(p));
+    const gltf = await loader.loadAsync("/vrm/model/" + encodeURIComponent(man.model_file));
+    vrm = gltf.userData.vrm;
+    if (!vrm) throw new Error("not a VRM file");
+    // VRM 0.x models face -Z; flip them toward the camera like the studio does.
+    const meta = vrm.meta || {};
+    const isV0 = meta.metaVersion === "0" || !!meta.title;
+    if (isV0 && VRMUtils.rotateVRM0) {
+      VRMUtils.rotateVRM0(vrm);
+    }
+    vrm.scene.traverse((o) => { if (o.isMesh) o.frustumCulled = false; });
+    scene.add(vrm.scene);
+    // Measured, not assumed: three-vrm's normalized bones do NOT neutralize the
+    // rotateVRM0 180° turn — local x/z rotation senses invert between VRM 0.x
+    // and 1.0 models. The clip math below is authored in the 1.0 frame (where
+    // the studio's expressive clips read correctly); for 0.x models the render
+    // loop negates x/z after each clip.
+    axisFlip = isV0 ? -1 : 1;
+    window.__vrm = vrm;   // debug handle (console poking, tests)
+    // Fit-to-frame off her real skeleton (the studio's centering lesson, taken
+    // further: scene bounding boxes can include helper nodes far outside her
+    // body, so measure her height from the humanoid head bone instead — VRM
+    // guarantees the model stands at the origin, feet at y=0).
+    vrm.scene.updateMatrixWorld(true);
+    const headBone = vrm.humanoid?.getRawBoneNode("head");
+    let height = 1.5;
+    if (headBone) {
+      const hp = new THREE.Vector3();
+      headBone.getWorldPosition(hp);
+      height = hp.y + 0.13;   // crown sits a little above the head bone
+    } else {
+      const box = new THREE.Box3().setFromObject(vrm.scene);
+      height = box.max.y - Math.min(0, box.min.y);
+    }
+    const dist = (height / 2) / Math.tan((camera.fov * Math.PI / 180) / 2) * 1.18;
+    controls.target.set(0, height * 0.52, 0);
+    camera.position.set(0, height * 0.55, dist);
+    chip.style.display = "block";
+  }
+} catch (err) {
+  console.error(err);
+  showNote("Couldn't load her VRM",
+    "The model at <code>data/avatar/vrm/</code> failed to parse — it should be a " +
+    "<code>.vrm</code> exported from VRoid Studio or the companion app " +
+    "(<code>github.com/CreatorJD1/app</code>). Details in the browser console. " +
+    "Her other renderers at <code>/live2d</code> and the home are unaffected.");
+}
+
+/* ---- the studio's clip engine (ported subset) ---- */
+const bone = (n) => vrm?.humanoid?.getNormalizedBoneNode(n);
+const BONES = ["leftUpperArm","rightUpperArm","leftLowerArm","rightLowerArm",
+  "leftHand","rightHand","chest","upperChest","head","neck","spine","hips",
+  "leftUpperLeg","rightUpperLeg","leftLowerLeg","rightLowerLeg"];
+
+function relaxArms() {
+  // Signs flipped from the studio source: measured in the 1.0 frame, +z RAISES
+  // her left arm, so resting arms need the negatives (the source had these in
+  // the 0.x sense while its expressive clips were in the 1.0 sense).
+  const l = bone("leftUpperArm"); if (l) l.rotation.z = -1.2;
+  const r = bone("rightUpperArm"); if (r) r.rotation.z = 1.2;
+}
+function idle(t) {
+  const chest = bone("chest") || bone("upperChest"), head = bone("head"), spine = bone("spine");
+  const breath = Math.sin(t * 1.4) * 0.03, sway = Math.sin(t * 0.6) * 0.03;
+  if (chest) { chest.rotation.x += breath; chest.rotation.z += sway * 0.3; }
+  if (spine) spine.rotation.z += sway * 0.15;
+  if (head) { head.rotation.y += Math.sin(t * 0.5) * 0.08; head.rotation.x += Math.sin(t * 0.7) * 0.03; }
+  const lh = bone("leftHand"), rh = bone("rightHand");
+  if (lh) lh.rotation.z = Math.sin(t * 0.8) * 0.05;
+  if (rh) rh.rotation.z = -Math.sin(t * 0.8) * 0.05;
+}
+function idleSoft(t) {
+  idle(t * 0.6);
+  const hips = bone("hips"); if (hips) hips.rotation.y = Math.sin(t * 0.35) * 0.04;
+}
+function wave(t) {
+  idle(t * 0.7);
+  const u = bone("rightUpperArm"), l = bone("rightLowerArm"), h = bone("rightHand");
+  if (u) { u.rotation.z = -1.5; u.rotation.x = -0.6; }
+  if (l) l.rotation.z = -0.4 + Math.sin(t * 6) * 0.4;
+  if (h) h.rotation.z = Math.sin(t * 6) * 0.3;
+}
+function cheer(t) {
+  // Retuned from the studio's ±3.0 (which overshoots half a turn and lands the
+  // arms horizontal): ±2.2 puts both hands up-overhead, the beat bounces them.
+  const lu = bone("leftUpperArm"), ru = bone("rightUpperArm");
+  const ll = bone("leftLowerArm"), rl = bone("rightLowerArm");
+  const chest = bone("chest") || bone("upperChest"), head = bone("head");
+  const beat = Math.sin(t * 5);
+  if (lu) lu.rotation.z = 2.2 + Math.abs(beat) * 0.15;
+  if (ru) ru.rotation.z = -2.2 - Math.abs(beat) * 0.15;
+  if (ll) ll.rotation.z = 0.3 + beat * 0.15;    // elbows folded a touch, pulsing
+  if (rl) rl.rotation.z = -0.3 - beat * 0.15;
+  if (chest) chest.rotation.x = beat * 0.05;
+  if (head) head.rotation.x = -beat * 0.08;
+}
+function thinking(t) {
+  // Re-choreographed: the source folded the elbow around x, which on a
+  // sideways arm is a twist (the arm just sticks out). Fold in the frontal
+  // plane instead — upper arm down, forearm swung up so the hand rests near
+  // her chin — with the pondering head tilt kept from the source.
+  idle(t * 0.4);
+  const ru = bone("rightUpperArm"), rl = bone("rightLowerArm"), rh = bone("rightHand");
+  const head = bone("head"), chest = bone("chest") || bone("upperChest");
+  if (ru) { ru.rotation.z = 0.9; ru.rotation.y = 0.25; }
+  if (rl) { rl.rotation.z = -2.5; rl.rotation.y = 0.5; }
+  if (rh) rh.rotation.z = -0.5;
+  if (head) { head.rotation.z = -0.15; head.rotation.x = 0.08; head.rotation.y = Math.sin(t * 0.5) * 0.1; }
+  if (chest) chest.rotation.z = 0.05;
+}
+function dance(t) {
+  const chest = bone("chest") || bone("upperChest"), spine = bone("spine");
+  const hips = bone("hips"), head = bone("head");
+  const lu = bone("leftUpperArm"), ru = bone("rightUpperArm");
+  const ll = bone("leftLowerArm"), rl = bone("rightLowerArm");
+  const beat = t * 3, sway = Math.sin(beat) * 0.35, bounce = Math.sin(beat * 2) * 0.15;
+  if (hips) { hips.rotation.z = sway * 0.4; hips.rotation.y = Math.sin(beat * 0.5) * 0.2;
+              hips.position.y = -Math.abs(Math.sin(beat)) * 0.06; }
+  if (spine) spine.rotation.z = -sway * 0.3;
+  if (chest) chest.rotation.z = -sway * 0.2;
+  if (head) head.rotation.y = Math.sin(beat * 0.5) * 0.3;
+  if (lu) lu.rotation.z = 1.0 + sway * 0.6;
+  if (ru) ru.rotation.z = -1.0 - sway * 0.6;
+  if (ll) ll.rotation.x = -1.0 - bounce;
+  if (rl) rl.rotation.x = -1.0 + bounce;
+}
+function sit(t) {
+  const spine = bone("spine"), hips = bone("hips");
+  for (const n of ["leftUpperLeg","rightUpperLeg","leftLowerLeg","rightLowerLeg"]) {
+    const b = bone(n); if (b) b.rotation.x = -1.5;
+  }
+  if (spine) spine.rotation.x = 0.05 + Math.sin(t * 1.2) * 0.02;
+  if (hips) hips.position.y = -0.35;
+}
+function sleep(t) {
+  sit(t);
+  // Softened from the source (0.3/0.7 folded her face out of frame at the sit
+  // height): a gentle doze — slight slump, head lolling, eyes closed.
+  const spine = bone("spine"), chest = bone("chest") || bone("upperChest"), head = bone("head");
+  const lu = bone("leftUpperArm"), ru = bone("rightUpperArm");
+  const breath = Math.sin(t * 1.0) * 0.04;
+  if (spine) spine.rotation.x = 0.15;
+  if (chest) chest.rotation.x = 0.1 + breath;
+  if (head) { head.rotation.x = 0.2; head.rotation.z = 0.4; }   // lolls to the side
+  if (lu) { lu.rotation.z = -1.4; lu.rotation.x = -0.15; }   // arms resting (1.0 frame)
+  if (ru) { ru.rotation.z = 1.4; ru.rotation.x = -0.15; }
+  setExpr("blink", 1.0); setExpr("relaxed", 0.6, true);
+}
+function cry(t) {
+  // Head down, shoulders hunched, hands up to her face, small shakes. Elbow
+  // folds re-choreographed into the frontal plane (see thinking's note).
+  const head = bone("head"), spine = bone("spine"), chest = bone("chest") || bone("upperChest");
+  const lu = bone("leftUpperArm"), ru = bone("rightUpperArm");
+  const ll = bone("leftLowerArm"), rl = bone("rightLowerArm");
+  const shake = Math.sin(t * 8) * 0.03;
+  if (spine) spine.rotation.x = 0.25;
+  if (chest) chest.rotation.x = 0.2 + shake;
+  if (head) { head.rotation.x = 0.4; head.rotation.z = shake * 3; }
+  if (lu) { lu.rotation.z = -0.9; lu.rotation.y = -0.35; }
+  if (ru) { ru.rotation.z = 0.9; ru.rotation.y = 0.35; }
+  if (ll) { ll.rotation.z = 2.5; ll.rotation.y = -0.5; }
+  if (rl) { rl.rotation.z = -2.5; rl.rotation.y = 0.5; }
+}
+const MOUTH = ["aa","ih","ou","ee","oh"];
+function talking(t, emotion) {
+  idle(t * 0.5);
+  // Cycle mouth shapes at speech cadence; overlay the mood's emotion.
+  const cyc = 0.28, idx = Math.floor(t / cyc), local = (t % cyc) / cyc;
+  const env = Math.max(0, Math.sin(local * Math.PI) * (0.55 + 0.35 * Math.sin(t * 3.0)));
+  MOUTH.forEach((s, i) => setExpr(s, i === idx % MOUTH.length ? env : 0));
+  if (emotion) setExpr(emotion, 0.55, true);
+  const head = bone("head"); if (head) head.rotation.x += Math.sin(t * 4) * 0.02;
+}
+const CLIPS = { idle, idle_soft: idleSoft, wave, cheer, thinking, dance, sit, sleep, cry };
+
+/* ---- expressions: server weights lerped in, blink + mouth layered locally ---- */
+function setExpr(name, v, atLeast = false) {
+  const em = vrm?.expressionManager; if (!em) return;
+  const cur = em.getValue(name);
+  if (cur == null) return;
+  em.setValue(name, atLeast ? Math.max(cur, v) : v);
+}
+const exprTarget = {};   // slow weights from /vrm/pose
+const exprNow = {};      // lerped toward target each frame
+function applyExpressions(dt) {
+  for (const k of Object.keys(exprTarget)) {
+    exprNow[k] = (exprNow[k] || 0) + ((exprTarget[k] || 0) - (exprNow[k] || 0)) * Math.min(1, dt * 3);
+    setExpr(k, exprNow[k]);
+  }
+}
+function autoBlink(t) {
+  const cyc = 4.5, local = t % cyc;
+  let v = 0;
+  if (local < 0.15) v = local / 0.15;
+  else if (local < 0.3) v = 1 - (local - 0.15) / 0.15;
+  if (v > 0) setExpr("blink", v, true);
+}
+
+/* ---- her drive: poll /vrm/pose, glow the chrome, switch clips ---- */
+let pose = { clip: "idle", talk_emotion: null, mood: "content" };
+let clipStart = performance.now() / 1000;
+// ?clip=cheer previews a clip regardless of her mood (rig checks, curiosity).
+const forcedClip = new URLSearchParams(location.search).get("clip");
+async function poll() {
+  try {
+    const p = await (await fetch("/vrm/pose")).json();
+    if (forcedClip) { p.clip = forcedClip; p.talk_emotion = p.talk_emotion || "happy"; }
+    if (p.clip !== pose.clip) clipStart = performance.now() / 1000;  // fresh cycle
+    pose = p;
+    Object.assign(exprTarget, p.expressions || {});
+    if (p.glow) applyMood(p.glow);
+    moodEl.textContent = "she feels " + p.mood;
+    document.getElementById("chipClip").textContent = p.clip;
+    document.getElementById("chipMood").textContent = "— " + p.mood;
+  } catch (_) { /* server away; keep performing the last known state */ }
+}
+poll(); setInterval(poll, 2000);
+
+/* ---- render loop ---- */
+const clock = new THREE.Clock();
+function frame() {
+  requestAnimationFrame(frame);
+  const dt = clock.getDelta();
+  if (vrm) {
+    const t = performance.now() / 1000 - clipStart;
+    BONES.forEach((n) => { const b = bone(n); if (b) b.rotation.set(0, 0, 0); });
+    const hips = bone("hips"); if (hips) hips.position.set(0, 0, 0);
+    relaxArms();
+    MOUTH.forEach((s) => setExpr(s, 0));
+    setExpr("blink", 0);
+    // Mood weights first, then the clip — clips raise on top (atLeast), so a
+    // sleeping blink or a talking emotion overlay is never overwritten.
+    applyExpressions(dt);
+    if (pose.clip === "talking") talking(t, pose.talk_emotion);
+    else (CLIPS[pose.clip] || idle)(t);
+    // Version calibration: the clip constants are in the VRM 0.x frame; a 1.0
+    // model's normalized bones spin x/z the other way (measured), so negate.
+    if (axisFlip < 0) BONES.forEach((n) => {
+      const b = bone(n); if (b) { b.rotation.x *= -1; b.rotation.z *= -1; }
+    });
+    if (pose.clip !== "sleep") autoBlink(performance.now() / 1000);
+    vrm.update(dt);
+  }
+  controls.update();
+  renderer.render(scene, camera);
+}
+frame();
+</script>
+</body>
+</html>

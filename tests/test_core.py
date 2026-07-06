@@ -843,6 +843,55 @@ def test_spine_absent_is_off():
         assert spine.manifest(Path(d))["spine_mode"] is False
 
 
+# --- VRM tier: her mood -> studio clip + expression weights --------------------
+
+def test_vrm_clip_follows_her_mood_and_talking_wins_while_speaking():
+    from alpecca import vrm
+    # Every mood label the model can produce has a clip -- her whole range is embodied.
+    from alpecca import homeostasis as h
+    labels = {"sleepy", "anxious", "worried", "tender", "joyful", "affectionate",
+              "playful", "content", "withdrawn", "lonely"}
+    assert set(vrm.MOOD_CLIPS) == labels
+    # sleepy -> the studio's sleep clip; joyful -> cheer
+    sleepy = EmotionalState(love=0.5, fear=0.1, energy=0.1)
+    assert vrm.clip_for_state(sleepy)["clip"] == "sleep"
+    joyful = EmotionalState(love=0.9, energy=0.8)
+    assert vrm.clip_for_state(joyful)["clip"] == "cheer"
+    # speaking overrides with the talking clip + a mood-matched emotion overlay
+    d = vrm.clip_for_state(joyful, speaking=True)
+    assert d["clip"] == "talking" and d["talk_emotion"] == "happy"
+    lonely = EmotionalState(love=0.1, energy=0.3)
+    assert vrm.clip_for_state(lonely, speaking=True)["talk_emotion"] == "sad"
+
+def test_vrm_expressions_are_grounded_and_never_fake_anger():
+    from alpecca import vrm
+    warm = vrm.expressions_for_state(EmotionalState(love=0.9, compassion=0.3, fear=0.0))
+    uneasy = vrm.expressions_for_state(EmotionalState(love=0.3, fear=0.9))
+    lonely = vrm.expressions_for_state(EmotionalState(love=0.1, energy=0.2))
+    assert warm["happy"] > 0.7 and warm["sad"] == 0
+    assert uneasy["surprised"] > 0.7 and uneasy["happy"] < warm["happy"]
+    assert lonely["sad"] > 0.4
+    # She has no anger dimension, so the angry preset is never driven (grounding).
+    for e in (warm, uneasy, lonely,
+              vrm.expressions_for_state(EmotionalState(love=1, compassion=1, fear=1))):
+        assert e["angry"] == 0.0
+        for v in e.values():
+            assert 0.0 <= v <= 1.0
+
+def test_vrm_manifest_and_model_serving():
+    from alpecca import vrm
+    with tempfile.TemporaryDirectory() as d:
+        vdir = Path(d)
+        assert vrm.manifest(vdir)["vrm_mode"] is False        # empty -> tier off
+        (vdir / "alpecca.vrm").write_bytes(b"glTF")
+        m = vrm.manifest(vdir)
+        assert m["vrm_mode"] is True and m["model_file"] == "alpecca.vrm"
+        assert "talking" in m["clips"] and "sleep" in m["clips"]
+        assert vrm.asset_path("alpecca.vrm", vdir) is not None
+        assert vrm.asset_path("../../alpecca.db", vdir) is None   # traversal blocked
+        assert vrm.asset_path("/etc/passwd", vdir) is None
+
+
 # --- Talking Head Anime tier: pose mapping + frame buffer ----------------------
 
 def test_talkinghead_pose_is_grounded_in_mood():
