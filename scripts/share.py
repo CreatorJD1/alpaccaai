@@ -4,8 +4,8 @@
 launcher binds the server to all interfaces and prints the two ways to reach her
 from a phone:
 
-  1. SAME WIFI -- open http://<your-LAN-IP>:<port> on the phone. Instant, private,
-     never leaves your network. This is the recommended default.
+  1. SAME WIFI -- open the printed http://<your-LAN-IP>:<port> link on the phone.
+     Instant, private, never leaves your network.
   2. ANYWHERE -- with `--tunnel`, if `cloudflared` is installed, it opens a free
      Cloudflare quick tunnel and prints a public https URL (works over mobile
      data, supports the WebSocket the app uses). No account needed.
@@ -13,14 +13,17 @@ from a phone:
         winget install cloudflare.cloudflared      # or: brew install cloudflared
         python scripts/share.py --tunnel
 
-PRIVACY: a public tunnel link is UNAUTHENTICATED -- anyone with it can chat with
-her and see her memories. Keep ALPECCA_FILES off while sharing publicly, only hand
-the link to yourself, and stop it (Ctrl-C) when done. The WiFi option keeps
-everything on your own network and is the safer choice.
+Both links are ALWAYS gated by her access token (the same system app.py and the
+server's _auth_gate use): if ALPECCA_ACCESS_TOKEN isn't set, one is minted for
+the run and baked into the printed ?token= links -- opening a link once drops a
+30-day cookie, so it's one tap on the phone and locked to everyone else. Still:
+only hand the link to yourself, keep ALPECCA_FILES off while a tunnel is up, and
+stop it (Ctrl-C) when done.
 """
 from __future__ import annotations
 
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -29,6 +32,17 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+
+def ensure_token() -> str:
+    """The shared secret every remote client must present -- the same rule
+    app.py applies: use ALPECCA_ACCESS_TOKEN if set, mint one otherwise. Must
+    run BEFORE importing server, which reads the token at import time."""
+    tok = os.environ.get("ALPECCA_ACCESS_TOKEN", "")
+    if not tok:
+        tok = secrets.token_urlsafe(18)
+        os.environ["ALPECCA_ACCESS_TOKEN"] = tok
+    return tok
 
 
 def lan_ip() -> str:
@@ -43,9 +57,10 @@ def lan_ip() -> str:
         s.close()
 
 
-def start_tunnel(port: int) -> None:
-    """Open a Cloudflare quick tunnel and stream its public URL, if cloudflared is
-    installed. Runs in a thread so the server can start alongside it."""
+def start_tunnel(port: int, token: str) -> None:
+    """Open a Cloudflare quick tunnel and stream its public URL -- with the
+    access token baked in, so the printed link is tap-and-done while the raw
+    URL stays a locked door. Runs in a thread so the server starts alongside."""
     exe = "cloudflared"
     try:
         proc = subprocess.Popen(
@@ -62,29 +77,36 @@ def start_tunnel(port: int) -> None:
             if "trycloudflare.com" in line:
                 url = next((tok for tok in line.split() if "trycloudflare.com" in tok), "")
                 if url:
-                    print("\n" + "=" * 56)
+                    print("\n" + "=" * 64)
                     print("  PUBLIC LINK (open on your phone, works on mobile data):")
-                    print("   ", url.strip())
-                    print("=" * 56 + "\n")
+                    print(f"    {url.strip()}/?token={token}")
+                    print("  First open drops a 30-day cookie; after that the bare")
+                    print("  URL works on that phone. Without the token: a login page.")
+                    print("=" * 64 + "\n")
     threading.Thread(target=pump, daemon=True).start()
 
 
 def main() -> None:
-    from config import PORT
-    # Bind to every interface so other devices on the network can connect.
+    # Env FIRST, then any config import: config reads the environment once, at
+    # import time, and Python caches the module -- an import before these lines
+    # would freeze the gate open and the bind on localhost. (The original
+    # version of this script had exactly that bug.)
     os.environ["ALPECCA_SERVER_HOST"] = "0.0.0.0"
+    token = ensure_token()
+    from config import PORT
     ip = lan_ip()
-    print("\nAlpecca is opening to your network.")
-    print(f"  On this computer : http://127.0.0.1:{PORT}")
-    print(f"  On your phone (same WiFi) : http://{ip}:{PORT}")
+    print("\nAlpecca is opening to your network (token-gated).")
+    print(f"  On this computer          : http://127.0.0.1:{PORT}/?token={token}")
+    print(f"  On your phone (same WiFi) : http://{ip}:{PORT}/?token={token}")
+    print(f"  Access token              : {token}")
     if "--tunnel" in sys.argv[1:]:
-        start_tunnel(PORT)
+        start_tunnel(PORT, token)
         time.sleep(1.0)   # give the tunnel a moment to print its URL first
     else:
         print("  For a link that works ANYWHERE: python scripts/share.py --tunnel")
     print()
 
-    # Import after setting the host env so config picks up 0.0.0.0.
+    # Import after setting the host + token env so config picks both up.
     import uvicorn
     from config import HOST
     import server  # noqa: F401  (registers the app)
