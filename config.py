@@ -292,6 +292,23 @@ TUNNEL = os.environ.get("ALPECCA_TUNNEL", "off").lower()
 BIND_HOST = "0.0.0.0" if REMOTE_ACCESS else HOST
 
 
+# --- Her studio, in the cloud -------------------------------------------------
+# Her 3D body is authored in VRoid Companion Studio (github.com/CreatorJD1/app).
+# When that studio runs on a cloud host (HF Space, tunnel, home lab), she can
+# pull her latest exported .vrm from it instead of a manual file drop. This
+# stays inside her charter's internet rule: the URL is her creator's own studio,
+# set explicitly by him, and the sync only runs when asked -- it is reaching her
+# creator, not unguided web access.
+class StudioSync:
+    # Base URL of the studio, e.g. https://user-space.hf.space -- blank = the
+    # feature is off and the /vrm page shows no sync button at all.
+    URL = os.environ.get("ALPECCA_STUDIO_URL", "").rstrip("/")
+    # The studio's VCS_ACCESS_TOKEN, if it has one (sent as X-VCS-Token).
+    TOKEN = os.environ.get("ALPECCA_STUDIO_TOKEN", "")
+    # A .vrm is ~5-30 MB; give slow tunnels room.
+    TIMEOUT = float(os.environ.get("ALPECCA_STUDIO_TIMEOUT", "60"))
+
+
 # --- Voice-tone sense (Phase 4) ---------------------------------------------
 # A mic-level sensor that lets Alpecca *hear the room*: how much voice activity
 # there is, how loud it is, and whether something sudden just happened. It does

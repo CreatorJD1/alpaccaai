@@ -46,6 +46,11 @@
   <a class="back" href="/">← chat</a>
   <header><h1>Alpecca</h1><div class="mood" id="mood">3D body</div></header>
   <div id="chip" style="display:none"><b id="chipClip">idle</b> <span id="chipMood"></span></div>
+  <!-- Shown only when a cloud studio is configured (ALPECCA_STUDIO_URL): pulls
+       her newest exported body straight from VRoid Companion Studio. -->
+  <button id="syncBtn" style="display:none; position:fixed; right:16px; top:52px; z-index:60;
+          cursor:pointer; background:var(--bg-2); color:var(--ink); border:1px solid var(--line);
+          padding:6px 12px; border-radius:9px; font-size:12px;">⟲ Sync from studio</button>
   <div id="stage"></div>
 
   <div id="note" style="display:none"><div class="card">
@@ -55,7 +60,9 @@
        into <code>data/avatar/vrm/</code>, and reload. She renders here in full 3D,
        playing the studio's animations chosen by her live mood — sleep when sleepy,
        cheer when joyful, a hunch when anxious — with her face weighted from the
-       same real internals.</p>
+       same real internals. If the studio runs in the cloud, set
+       <code>ALPECCA_STUDIO_URL</code> (+<code>ALPECCA_STUDIO_TOKEN</code>) and the
+       <b>Sync from studio</b> button pulls her latest body automatically.</p>
     <a class="cta" href="/">← Back to chat</a>
   </div></div>
 
@@ -148,6 +155,20 @@ let vrm = null;
 let axisFlip = 1;    // +1 for VRM 0.x models, -1 for 1.0 (see note at load)
 try {
   const man = await (await fetch("/vrm/manifest")).json();
+  if (man.studio) {
+    // A cloud studio is configured: offer to pull her newest exported body.
+    const btn = document.getElementById("syncBtn");
+    btn.style.display = "block";
+    btn.onclick = async () => {
+      btn.disabled = true; btn.textContent = "⟲ syncing…";
+      try {
+        const r = await (await fetch("/vrm/sync", { method: "POST" })).json();
+        if (r.ok) { btn.textContent = "✓ synced — reloading"; location.reload(); return; }
+        moodEl.textContent = r.error || "sync failed";
+      } catch (_) { moodEl.textContent = "sync failed — server unreachable"; }
+      btn.disabled = false; btn.textContent = "⟲ Sync from studio";
+    };
+  }
   if (!man.vrm_mode) {
     showNote("Her VRM body isn't installed yet");
   } else {

@@ -1270,10 +1270,22 @@ def vrm_page() -> HTMLResponse:
 
 @app.get("/vrm/manifest")
 def vrm_manifest() -> dict:
-    """Whether her VRM body exists, which file to load, and the clip vocabulary
-    the pose endpoint may ask the renderer to play."""
+    """Whether her VRM body exists, which file to load, the clip vocabulary the
+    pose endpoint may ask the renderer to play, and whether a cloud studio is
+    configured to sync her body from."""
     from alpecca import vrm
-    return vrm.manifest()
+    m = vrm.manifest()
+    m["studio"] = vrm.studio_configured()
+    return m
+
+
+@app.post("/vrm/sync")
+async def vrm_sync() -> dict:
+    """Pull her newest .vrm from the configured VRoid Companion Studio
+    (ALPECCA_STUDIO_URL/TOKEN). Off-thread -- a slow tunnel download must not
+    stall her chat loop. Always returns {ok, file|error}."""
+    from alpecca import vrm
+    return await asyncio.to_thread(vrm.sync_from_studio)
 
 
 @app.get("/vrm/model/{name}")

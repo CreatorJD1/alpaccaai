@@ -134,3 +134,108 @@ def asset_path(name: str, vrm_dir: Path = VRM_DIR) -> Optional[Path]:
     except ValueError:
         return None
     return p if p.exists() and p.is_file() else None
+
+
+# --- syncing her body from the cloud studio ----------------------------------
+# When the studio runs on a cloud host behind its VCS_ACCESS_TOKEN, she can pull
+# her newest exported .vrm from it (config.StudioSync). The download lands as
+# alpecca_studio.vrm -- which sorts AFTER a hand-dropped alpecca.vrm in
+# model_file()'s alphabetical pick, so a manual drop always wins over the sync;
+# that's the intended override, not an accident.
+
+STUDIO_FILE = "alpecca_studio.vrm"
+
+
+def studio_configured() -> bool:
+    """Whether a studio URL is set -- what turns the /vrm sync button on."""
+    from config import StudioSync
+    return bool(StudioSync.URL)
+
+
+def pick_project(projects: list) -> Optional[dict]:
+    """The studio project whose VRM she should wear: the most recently updated
+    one that actually has a VRM uploaded. The studio's /api/projects already
+    sorts newest-first, but we re-sort defensively (ISO timestamps compare
+    lexicographically) so a reordering server can't hand her a stale body."""
+    with_vrm = [p for p in (projects or [])
+                if p.get("vrm_path") or p.get("vrm_filename")]
+    if not with_vrm:
+        return None
+    return max(with_vrm, key=lambda p: p.get("updated_at") or "")
+
+
+def build_request(base_url: str, path: str, token: str = "") -> tuple:
+    """(url, headers) for a studio API call -- the X-VCS-Token header only when
+    a token is configured, matching the studio's auth gate."""
+    url = base_url.rstrip("/") + path
+    headers = {"X-VCS-Token": token} if token else {}
+    return url, headers
+
+
+def _http_get(url: str, headers: dict, timeout: float) -> bytes:
+    """Tiny stdlib transport (no new deps, same pattern as the rest of the
+    codebase). Split out so tests inject a fake instead."""
+    import urllib.request
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def sync_from_studio(base_url: str = None, token: str = None,
+                     vrm_dir: Path = VRM_DIR, fetch=None) -> dict:
+    """Pull her newest body from the studio: list projects, pick the freshest
+    one with a VRM, download it, and swap it in atomically. Never raises -- the
+    UI gets {"ok": True, "file": ...} or {"ok": False, "error": <a friendly
+    sentence>}, and a failed sync can never corrupt the model she's wearing
+    (the write goes to a temp file first, os.replace is atomic)."""
+    import json as _json
+    import os
+    import tempfile
+    from config import StudioSync
+    from alpecca import charter
+
+    base = (base_url if base_url is not None else StudioSync.URL).rstrip("/")
+    tok = token if token is not None else StudioSync.TOKEN
+    get = fetch or (lambda u, h: _http_get(u, h, StudioSync.TIMEOUT))
+
+    if not base:
+        return {"ok": False, "error": "No studio configured -- set ALPECCA_STUDIO_URL."}
+    allowed, why = charter.internet_allowed("reach my creator's studio to fetch my body")
+    if not allowed:  # can't happen for this purpose, but the guard stays real
+        return {"ok": False, "error": why}
+
+    try:
+        url, headers = build_request(base, "/api/projects", tok)
+        projects = _json.loads(get(url, headers)).get("projects", [])
+    except Exception:
+        return {"ok": False, "error": "Couldn't reach the studio -- is it running, "
+                                      "and are the URL and token right?"}
+
+    proj = pick_project(projects)
+    if proj is None:
+        return {"ok": False, "error": "The studio has no project with a VRM yet -- "
+                                      "upload one there first."}
+
+    try:
+        url, headers = build_request(base, f"/api/projects/{proj.get('id')}/vrm", tok)
+        data = get(url, headers)
+    except Exception:
+        return {"ok": False, "error": "The studio answered, but the VRM download failed."}
+    if not data or not data[:4] == b"glTF":
+        # The same magic-bytes check the studio itself applies on import.
+        return {"ok": False, "error": "The studio sent something that isn't a VRM."}
+
+    vrm_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(suffix=".part", dir=vrm_dir)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, vrm_dir / STUDIO_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return {"ok": False, "error": "Downloaded fine but couldn't write the file."}
+    return {"ok": True, "file": STUDIO_FILE, "project": proj.get("name") or proj.get("id"),
+            "bytes": len(data)}

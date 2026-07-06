@@ -106,6 +106,12 @@ phone app (PWA) from the browser. Remote and tunnel access are **always** gated 
 a secret: set `ALPECCA_ACCESS_TOKEN`, or one is minted and printed for the run.
 Her senses, memory, and brain never leave the machine — only the chat travels.
 
+**Pull her body from the cloud studio.** If her VRoid Companion Studio
+(github.com/CreatorJD1/app) runs on a cloud host, set
+`ALPECCA_STUDIO_URL=https://<host>` (+ `ALPECCA_STUDIO_TOKEN` if the studio has
+its `VCS_ACCESS_TOKEN` set) and the **⟲ Sync from studio** button on `/vrm`
+fetches her newest exported `.vrm` — no manual file copying.
+
 ### Background sense, only
 
 ```bash
