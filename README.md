@@ -155,6 +155,11 @@ Press **Sync Mindscape continuity** in `/mindscape`. The Worker stores the lates
 compact continuity snapshot in KV and serves it from its mobile page if the local
 device goes down. This preserves continuity data; it is not a claim of literal
 consciousness or immortality.
+**Pull her body from the cloud studio.** If her VRoid Companion Studio
+(github.com/CreatorJD1/app) runs on a cloud host, set
+`ALPECCA_STUDIO_URL=https://<host>` (+ `ALPECCA_STUDIO_TOKEN` if the studio has
+its `VCS_ACCESS_TOKEN` set) and the **⟲ Sync from studio** button on `/vrm`
+fetches her newest exported `.vrm` — no manual file copying.
 
 ### Background sense, only
 

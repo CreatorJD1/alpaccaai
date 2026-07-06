@@ -2764,6 +2764,60 @@ def live2d_model(path: str) -> FileResponse:
     return FileResponse(f)
 
 
+@app.get("/vrm")
+def vrm_page() -> HTMLResponse:
+    """Her full 3D body: a VRM authored in the VRoid Companion Studio app,
+    rendered live and driven by her real mood. Shows a 'drop a .vrm in' note
+    until a model exists in data/avatar/vrm/."""
+    return HTMLResponse((WEB_DIR / "vrm.html").read_text(encoding="utf-8"))
+
+
+@app.get("/vrm/manifest")
+def vrm_manifest() -> dict:
+    """Whether her VRM body exists, which file to load, the clip vocabulary the
+    pose endpoint may ask the renderer to play, and whether a cloud studio is
+    configured to sync her body from."""
+    from alpecca import vrm
+    m = vrm.manifest()
+    m["studio"] = vrm.studio_configured()
+    return m
+
+
+@app.post("/vrm/sync")
+async def vrm_sync() -> dict:
+    """Pull her newest .vrm from the configured VRoid Companion Studio
+    (ALPECCA_STUDIO_URL/TOKEN). Off-thread -- a slow tunnel download must not
+    stall her chat loop. Always returns {ok, file|error}."""
+    from alpecca import vrm
+    return await asyncio.to_thread(vrm.sync_from_studio)
+
+
+@app.get("/vrm/model/{name}")
+def vrm_model(name: str) -> FileResponse:
+    """Serve her `.vrm` from data/avatar/vrm/, traversal-blocked. A VRM is one
+    binary glTF with textures embedded, so this is the only asset fetch."""
+    from alpecca import vrm
+    p = vrm.asset_path(name)
+    if p is None:
+        raise HTTPException(status_code=404, detail="no such asset")
+    return FileResponse(p, media_type="model/gltf-binary")
+
+
+@app.get("/vrm/pose")
+def vrm_pose(speaking: bool = False) -> dict:
+    """Her current VRM drive: which studio clip to play (talking overlay while
+    speaking), the mood-driven expression weights, and the glow channels for
+    the page chrome -- all read from her live state."""
+    from alpecca import vrm
+    st = mind.state
+    out = vrm.clip_for_state(st, speaking)
+    out["expressions"] = vrm.expressions_for_state(st)
+    out["mood"] = st.mood_label()
+    out["glow"] = {"warmth": st.love, "unease": st.fear,
+                   "curiosity": st.curiosity, "glow": st.energy}
+    return out
+
+
 @app.get("/avatar/manifest")
 def avatar_manifest() -> dict:
     """Which custom avatar clips exist (data/avatar/*.mp4). The UI switches to

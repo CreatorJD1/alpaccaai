@@ -3208,6 +3208,105 @@ def test_spine_absent_is_off():
         assert spine.manifest(Path(d))["spine_mode"] is False
 
 
+# --- VRM tier: her mood -> studio clip + expression weights --------------------
+
+def test_vrm_clip_follows_her_mood_and_talking_wins_while_speaking():
+    from alpecca import vrm
+    # Every mood label the model can produce has a clip -- her whole range is embodied.
+    from alpecca import homeostasis as h
+    labels = {"sleepy", "anxious", "worried", "tender", "joyful", "affectionate",
+              "playful", "content", "withdrawn", "lonely"}
+    assert set(vrm.MOOD_CLIPS) == labels
+    # sleepy -> the studio's sleep clip; joyful -> cheer
+    sleepy = EmotionalState(love=0.5, fear=0.1, energy=0.1)
+    assert vrm.clip_for_state(sleepy)["clip"] == "sleep"
+    joyful = EmotionalState(love=0.9, energy=0.8)
+    assert vrm.clip_for_state(joyful)["clip"] == "cheer"
+    # speaking overrides with the talking clip + a mood-matched emotion overlay
+    d = vrm.clip_for_state(joyful, speaking=True)
+    assert d["clip"] == "talking" and d["talk_emotion"] == "happy"
+    lonely = EmotionalState(love=0.1, energy=0.3)
+    assert vrm.clip_for_state(lonely, speaking=True)["talk_emotion"] == "sad"
+
+def test_vrm_expressions_are_grounded_and_never_fake_anger():
+    from alpecca import vrm
+    warm = vrm.expressions_for_state(EmotionalState(love=0.9, compassion=0.3, fear=0.0))
+    uneasy = vrm.expressions_for_state(EmotionalState(love=0.3, fear=0.9))
+    lonely = vrm.expressions_for_state(EmotionalState(love=0.1, energy=0.2))
+    assert warm["happy"] > 0.7 and warm["sad"] == 0
+    assert uneasy["surprised"] > 0.7 and uneasy["happy"] < warm["happy"]
+    assert lonely["sad"] > 0.4
+    # She has no anger dimension, so the angry preset is never driven (grounding).
+    for e in (warm, uneasy, lonely,
+              vrm.expressions_for_state(EmotionalState(love=1, compassion=1, fear=1))):
+        assert e["angry"] == 0.0
+        for v in e.values():
+            assert 0.0 <= v <= 1.0
+
+def test_vrm_manifest_and_model_serving():
+    from alpecca import vrm
+    with tempfile.TemporaryDirectory() as d:
+        vdir = Path(d)
+        assert vrm.manifest(vdir)["vrm_mode"] is False        # empty -> tier off
+        (vdir / "alpecca.vrm").write_bytes(b"glTF")
+        m = vrm.manifest(vdir)
+        assert m["vrm_mode"] is True and m["model_file"] == "alpecca.vrm"
+        assert "talking" in m["clips"] and "sleep" in m["clips"]
+        assert vrm.asset_path("alpecca.vrm", vdir) is not None
+        assert vrm.asset_path("../../alpecca.db", vdir) is None   # traversal blocked
+        assert vrm.asset_path("/etc/passwd", vdir) is None
+
+def test_vrm_pick_project_wants_her_freshest_body():
+    from alpecca import vrm
+    projects = [
+        {"id": "a", "updated_at": "2026-07-01T10:00:00", "vrm_filename": "old.vrm"},
+        {"id": "b", "updated_at": "2026-07-06T10:00:00"},                 # no VRM
+        {"id": "c", "updated_at": "2026-07-05T10:00:00", "vrm_path": "/x/new.vrm"},
+    ]
+    # Newest project WITH a VRM wins -- b is fresher but has no body to wear.
+    assert vrm.pick_project(projects)["id"] == "c"
+    assert vrm.pick_project([{"id": "b", "updated_at": "2026-07-06"}]) is None
+    assert vrm.pick_project([]) is None and vrm.pick_project(None) is None
+
+def test_vrm_build_request_carries_studio_token_only_when_set():
+    from alpecca import vrm
+    url, headers = vrm.build_request("https://studio.example/", "/api/projects", "tok")
+    assert url == "https://studio.example/api/projects"
+    assert headers == {"X-VCS-Token": "tok"}
+    _, headers = vrm.build_request("https://studio.example", "/api/projects", "")
+    assert headers == {}                              # open studio -> no header
+
+def test_vrm_sync_from_studio_writes_atomically_and_fails_friendly():
+    from alpecca import vrm
+    projects = ('{"projects": [{"id": "p1", "name": "her", '
+                '"updated_at": "2026-07-06", "vrm_filename": "her.vrm"}]}')
+    with tempfile.TemporaryDirectory() as d:
+        vdir = Path(d)
+        # Happy path: fake transport serves the listing then a valid glTF body.
+        def fetch(url, headers):
+            return projects.encode() if url.endswith("/api/projects") else b"glTF...body"
+        r = vrm.sync_from_studio("https://studio.example", "tok", vdir, fetch=fetch)
+        assert r["ok"] is True and r["file"] == vrm.STUDIO_FILE
+        assert vrm.model_file(vdir).name == vrm.STUDIO_FILE
+        assert not list(vdir.glob("*.part"))          # no temp litter
+        # A hand-dropped alpecca.vrm outranks the synced body (manual override).
+        (vdir / "alpecca.vrm").write_bytes(b"glTF")
+        assert vrm.model_file(vdir).name == "alpecca.vrm"
+        # Non-glTF payload is refused, and the previous body survives untouched.
+        r = vrm.sync_from_studio("https://studio.example", "", vdir,
+                                 fetch=lambda u, h: projects.encode()
+                                 if u.endswith("/api/projects") else b"<html>oops")
+        assert r["ok"] is False and "isn't a VRM" in r["error"]
+        assert (vdir / vrm.STUDIO_FILE).read_bytes() == b"glTF...body"
+    # Unreachable studio and unconfigured URL both come back as friendly words.
+    def boom(url, headers):
+        raise OSError("refused")
+    r = vrm.sync_from_studio("https://studio.example", "", Path("/tmp"), fetch=boom)
+    assert r["ok"] is False and "reach the studio" in r["error"]
+    r = vrm.sync_from_studio("", "", Path("/tmp"), fetch=boom)
+    assert r["ok"] is False and "ALPECCA_STUDIO_URL" in r["error"]
+
+
 # --- Talking Head Anime tier: pose mapping + frame buffer ----------------------
 
 def test_talkinghead_pose_is_grounded_in_mood():

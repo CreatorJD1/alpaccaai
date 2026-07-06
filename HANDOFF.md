@@ -397,6 +397,12 @@ She now runs as a **real desktop app**, not just a browser page:
   stay local — only chat travels.
 - **Package to one `.exe`:** `pip install pyinstaller && pyinstaller --noconsole
   --add-data "web;web" --name Alpecca app.py` (add `data/`/config as needed).
+- **Full runbook** for reaching her remotely AND working the PC through her
+  (computer-use over the tunnel, confirm flow, guards, checklist):
+  `docs/PASSDOWN_remote_computer_access.md`. Quick start: double-click
+  `SHARE_PHONE.bat` — it prints the token-gated trycloudflare link.
+  (2026-07-06: `scripts/share.py` was fixed — it previously shared
+  UNAUTHENTICATED and never really bound 0.0.0.0; pull before sharing.)
 
 ### Screen-share in her home (new)
 The **Share** nav button now has her walk to the **Observatory** and *hold the live
