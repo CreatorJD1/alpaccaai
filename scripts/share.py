@@ -38,6 +38,19 @@ def start_tunnel(port: int) -> None:
     url, proc = preview_mod.ensure(port, reuse=True)
     if proc is not None:
         TUNNEL_PROCS.append(proc)
+    if not url:
+        print("[tunnel] Cloudflare quick tunnel attempt 1 failed; retrying...")
+
+    for attempt in range(2, 4):
+        if url:
+            break
+        time.sleep(4.0)
+        url, proc = preview_mod.ensure(port, reuse=False)
+        if proc is not None:
+            TUNNEL_PROCS.append(proc)
+        if url:
+            break
+        print(f"[tunnel] Cloudflare quick tunnel attempt {attempt} failed; retrying...")
 
     if not url:
         print("\n[tunnel] Cloudflare preview unavailable. Install cloudflared or run:")
