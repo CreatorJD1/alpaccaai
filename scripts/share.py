@@ -8,22 +8,12 @@ second mind.
 from __future__ import annotations
 
 import os
-import secrets
 import socket
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-
-def ensure_token() -> str:
-    """Set the access token before importing modules that read config."""
-    token = os.environ.get("ALPECCA_ACCESS_TOKEN", "")
-    if not token:
-        token = secrets.token_urlsafe(18)
-        os.environ["ALPECCA_ACCESS_TOKEN"] = token
-    return token
 
 
 def lan_ip() -> str:
@@ -58,19 +48,18 @@ def start_tunnel(port: int) -> None:
 
 def main() -> None:
     os.environ["ALPECCA_SERVER_HOST"] = "0.0.0.0"
-    token = ensure_token()
 
-    from config import HOST, PORT
+    from config import ACCESS_TOKEN, HOST, PORT
     from alpecca import instance as instance_mod
 
     ip = lan_ip()
-    local = f"http://127.0.0.1:{PORT}/?token={token}"
-    phone = f"http://{ip}:{PORT}/?token={token}"
+    local = f"http://127.0.0.1:{PORT}/?token={ACCESS_TOKEN}"
+    phone = f"http://{ip}:{PORT}/?token={ACCESS_TOKEN}"
 
     print("\nAlpecca is opening to your network (token-gated).")
     print(f"  On this computer          : {local}")
     print(f"  On your phone (same WiFi) : {phone}")
-    print(f"  Access token              : {token}")
+    print(f"  Access token              : {ACCESS_TOKEN}")
 
     if "--tunnel" in sys.argv[1:]:
         start_tunnel(PORT)
@@ -79,7 +68,7 @@ def main() -> None:
         print("  For a link that works ANYWHERE: python scripts/share.py --tunnel")
     print()
 
-    existing = instance_mod.existing_server_url(PORT, token=token)
+    existing = instance_mod.existing_server_url(PORT, token=ACCESS_TOKEN)
     if existing:
         print(f"Alpecca is already awake at {existing}; reusing the same mind instance.")
         try:
