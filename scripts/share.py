@@ -16,6 +16,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+TUNNEL_PROCS = []
+
 
 def lan_ip() -> str:
     """Best-effort local network IP for phones on the same WiFi."""
@@ -34,6 +36,9 @@ def start_tunnel(port: int) -> None:
     from alpecca import preview as preview_mod
 
     url, proc = preview_mod.ensure(port, reuse=True)
+    if proc is not None:
+        TUNNEL_PROCS.append(proc)
+
     if not url:
         print("\n[tunnel] Cloudflare preview unavailable. Install cloudflared or run:")
         print("         python scripts\\preview.py\n")
