@@ -15,6 +15,7 @@ from alpecca import desires as desires_mod
 from alpecca import home as home_mod
 from alpecca import journal as journal_mod
 from alpecca import memory as memory_store
+from alpecca import mindpage as mindpage_mod
 
 
 def _coerce_room(text: str) -> str:
@@ -64,6 +65,7 @@ class InnateToolkit:
             "make a grounded note-to-self intention",
             "report live self status",
             "move to a Home room",
+            "recall a paged-out conversation episode",
         ]
 
     def describe(self) -> str:
@@ -204,6 +206,23 @@ class InnateToolkit:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "recall_page",
+                    "description": "Recall a paged-out Mindpage episode by topic.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "topic": {
+                                "type": "string",
+                                "description": "Topic or phrase to fault back in.",
+                            },
+                        },
+                        "required": ["topic"],
+                    },
+                },
+            },
         ]
 
     def execute(self, tool_name: str, args: dict) -> str:
@@ -217,6 +236,7 @@ class InnateToolkit:
             "note_to_self": self._note_to_self,
             "self_status": self._self_status,
             "go_to_room": self._go_to_room,
+            "recall_page": self._recall_page,
         }
         fn = handlers.get(tool_name)
         if not fn:
@@ -357,3 +377,24 @@ class InnateToolkit:
         state_store.save_location(room_id)
         self.mind._last_roam_ts = time.time()
         return f"moved to {room_id}"
+
+    def _recall_page(self, args: dict) -> str:
+        topic = str(args.get("topic") or args.get("query") or "").strip()
+        if not topic:
+            return "error: recall_page requires topic"
+        hits = mindpage_mod.recall_page(topic, limit=3)
+        if not hits:
+            return f"no paged episode hit for: {topic}"
+        return json.dumps({
+            "topic": topic,
+            "pages": [
+                {
+                    "id": int(hit.get("id")),
+                    "kind": hit.get("kind"),
+                    "topic": hit.get("topic"),
+                    "summary": hit.get("summary"),
+                    "content": (hit.get("content") or "")[:1000],
+                    "score": hit.get("score"),
+                } for hit in hits
+            ],
+        }, ensure_ascii=False)

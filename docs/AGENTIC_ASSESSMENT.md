@@ -1,76 +1,122 @@
-﻿# Alpecca Agentic Assessment (2026-07-08)
+# Alpecca Agentic Assessment and Staged Upgrade Plan
 
-## Scope of this review
+Last updated: 2026-07-08
 
-This document records what the current code can actually do, what remains deterministic,
-and what is already implemented toward safer, bounded agency.
+## Audit Result
 
-## What is actually agentic in-repo today
+A three-pass audit found that Alpecca is partly agentic, but still heavily
+workflow-driven. The current system has real state, memory, sensing, Soul
+arbitration, bounded self-review, and tool-calling, but many choice points are
+still deterministic or random: Soul rank sorting, random drift gates, hard-coded
+living-loop question banks, and arithmetic self-tuning.
 
-- `alpecca/mind.py` runs a deterministic perception -> recall -> respond loop.
-- App/tool actuation is bounded and allowlisted through `Actuator` in `alpecca/actions.py`.
-- Background autonomy already exists in production:
-  - mood drift and sensing ticks (`server.py` lifespan loop),
-  - reflection/self-question cycles,
-  - living-world idle ticks (`mind.living_world_tick()`),
-  - room roam suggestions and proactive speech.
-- In chat, tools are offered on the same local chat path when allowed; there is no
-  separate autonomous executor outside the existing loops.
+The honesty finding is good: Alpecca generally does not lie to the user about
+her runtime state. The main false claims were documentation claims, now corrected:
 
-## What is still deterministic today (and why it matters)
+- Chat memory is keyword-first by default; semantic recall only runs when
+  embeddings exist and chat semantic recall is explicitly enabled.
+- App/files/computer-use reach is opt-in; defaults do not grant broad tools.
 
-- Most chat-time behavior is bounded and deterministic where safety matters:
-  - random-driven actions use hard caps and thresholds,
-  - most defaults are deterministic after tool calls,
-  - live chat recall uses keyword recall (`embed_fn=None`) to avoid embedding overhead.
-- Deterministic/random/heuristic behavior is intentional for safety and is persisted in
-  logs where it is observable.
-- Deep reflection and self-improvement still require explicit logged approval flows.
+Guiding invariant for every stage: bounded code-side caps, deterministic fallback
+on parse/model failure, `CognitionObservation` logging for autonomous acts, and
+`APPROVAL_ASK_FIRST` proposals for anything beyond Alpecca's own DB/local state.
 
-## Stage 0 posture and defaults (documented as ground truth)
+## Completed In This Branch
 
-- Default autonomy knobs are opt-in:
-  - `ALPECCA_APPS=""` (no app actuation),
-  - `ALPECCA_FILES=0` (no file/tidy actions),
-  - `ALPECCA_COMPUTER_USE=0` (no computer-use loop),
-  - `ALPECCA_TOOL_MODE="keyword|smart|always"` (currently `smart`),
-  - `ALPECCA_INNATE_TOOLS=1` (local innate tools enabled by default),
-  - `ALPECCA_EMBED_BACKFILL=1` (background embedding backfill enabled),
-  - `ALPECCA_CHAT_SEMANTIC_RECALL=0` (chat stays keyword-first by design).
-- Model path remains local-first by default:
-  - `OLLAMA_MODEL=qwen3:8b`.
-  - deep and accelerator paths are opt-in.
+- Stage 0: audit docs, archive cleanup, capability framing, and memory docstring
+  correction.
+- Stage 1: innate local tool registry, `ALPECCA_TOOL_MODE`, tool schema gating,
+  and observable tool execution.
+- Stage 2: chat-memory embedding backfill, idle server scheduling, and
+  `ALPECCA_CHAT_SEMANTIC_RECALL` opt-in.
+- Mindpage Layer A initial core: token pressure stats, compressed page table,
+  episode writeback on history eviction, `recall_page`, memory indexes, and
+  `/mindpage/stats`.
 
-## Corrections applied in this session
+## Stage 3 - LLM-In-The-Loop Choice Points
 
-1. Document audit and archival:
-   - Moved stale docs to `docs/archive/2026-07-08/`, including:
-     `ALPECCA_COLAB_T4.md`, `BRINGING_HER_TO_LIFE.md`,
-     `DESIGN_expressiveness_autonomy_home.md`, `INTEGRATE_RIGFORGE.md`,
-     `LAYER_SPLITTING.md`, `UPGRADE_GUIDE.md`,
-     `ALPECCA_STAGE4_WALK_PROOF_NOTES.md`, `ALPECCA_STAGE4_WALK_CYCLE_POSE_LOCK.md`,
-     `ALPECCA_STAGE4_NATIVE_4K_FIRST_SLICE.md`,
-     `ALPECCA_STAGE4_360_REFERENCE_LOCK.md`,
-     `ALPECCA_RECURSIVE_ENGAGEMENT_RESEARCH.md`,
-     `ALPECCA_MASTER_GOAL_STATUS.md`, `ALPECCA_DISCORD_PRESENCE.md`,
-     `Alpecca_Systems_Review.html`, `Alpecca_Systems_Review.pdf`.
-2. `PROJECT_CONTEXT.md` and `docs/ALPECCA_CURRENT_PROGRESS.md` now carry current
-   capability framing.
-3. `alpecca/memory.py` recall and backfill docstrings were updated to match code.
-4. Stage 1 and Stage 2 work was implemented and validated in tests:
-   - Stage 1: chat/tooling mode + innate tool routing in `alpecca/mind.py` and
-     `alpecca/toolkit.py`.
-   - Stage 2: bounded background embedding backfill in `memory.py` + `server.py`.
+Add a strict constrained-choice helper:
 
-## Current branch scope (safe order)
+- `constrained_pick(llm, question, options, context) -> int | None`
+- local Ollama fast tier only
+- tiny JSON only, for example `{"pick": 2}`
+- strip `<think>` wrappers, reject malformed/out-of-range output
+- `None` means caller keeps current deterministic fallback
 
-- Stage 1: complete all tool-mode and streaming/test hardening for three modes.
-- Stage 2+: add constrained choice points and constrained ties before broader automation.
-- Keep the same principle: every autonomy-capable path emits
-  `CognitionObservation` and retains user approval requirements.
+Targets:
 
-## Non-changes in this pass
+- Living-loop questions: one grounded question from room, purpose, recent
+  observations, and open-question dedupe; fallback remains the static bank.
+- Soul tie-breaks: keep `soul.deliberate()` pure; use the model only when two or
+  more intentions tie at the top rank, and only within that rank.
+- Proactive chatter: keep cooldowns/eligibility in code; let the model decide
+  `{"speak": bool, "pick": N}` among existing seeds. Failure is quiet.
 
-- No art/asset pipeline behavior was modified.
-- No default model/backend replacement was introduced.
-- House HQ and core architecture contracts were not replaced.
+Flags:
+
+- `ALPECCA_LIVING_LLM=1`
+- `ALPECCA_SOUL_LLM=1`
+- `ALPECCA_PROACTIVE_LLM=1`
+
+## Stage 4 - Simple Planner
+
+Add a local-only planner that drafts Workshop proposals, not autonomous actions.
+
+- Add `payload TEXT` to action proposals with guarded migration.
+- Add `alpecca/planner.py` with a 5-step cap, strict JSON parse, one retry, and
+  honest failure.
+- Add `make_plan(goal)` as an innate tool.
+- Store each step as an `APPROVAL_ASK_FIRST` proposal.
+- Execute a step only after `proposal_decision_allowed(..., approved_by_user=True)`.
+- No autonomous chaining.
+
+Flag: `ALPECCA_PLANNER=1`.
+
+## Stage 5 - Automation
+
+Automation remains empty/off until configured.
+
+- Routines: SQLite schedule table, pure `due(now)`, 60s server poll, kinds mapped
+  only to existing safe functions such as recap, greeting, consolidation, and
+  embedding backfill.
+- Watchers: polling stat scan of `ALPECCA_WATCH_DIRS`; records names/counts only,
+  never file contents.
+- MCP: parked/stretch. If added, servers default off and exposed actions route
+  through ask-first proposals.
+
+## Stage 6 - Mindpage
+
+Mindpage treats context as RAM and disk as swap. Layer A is software paging and is
+safe by default; Layer B/C are experimental.
+
+Layer A:
+
+- Token budget ledger from `OLLAMA_NUM_CTX`
+- Compressed SQLite pages for evicted episodes
+- Summarize-on-evict with deterministic fallback
+- `recall_page(topic)` tool for model-initiated page faults
+- Memory indexes and bounded recall candidate pool
+- Memory-pressure stats routed through Soul snapshots and `/mindpage/stats`
+
+Layer B:
+
+- Optional llama.cpp backend with slot save/restore.
+- Off by default because Ollama does not expose slot persistence.
+
+Layer C:
+
+- Pagefile-powered local deep tier using mmap-capable local models.
+- Background-only, timeout-capped, never in the normal chat path.
+
+Open-source constraint: new agentic paths use local Ollama/llama.cpp/stdlib or
+clearly optional open components. No Claude Agent SDK, Anthropic API, or
+proprietary agent framework is required for any new path.
+
+## Verification Contract
+
+For every completed checkpoint:
+
+- `python -m pytest -q tests/test_core.py -q`
+- `npm.cmd run house:build`
+- Grep edited user-facing text for the locked spelling `Alpecca`
+- Keep House HQ 2D art pipeline untouched unless the task explicitly targets it

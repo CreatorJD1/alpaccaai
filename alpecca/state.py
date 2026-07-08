@@ -132,6 +132,12 @@ def init_db(db_path: Path = DB_PATH) -> None:
         if STATE_LOG_KEEP_DAYS > 0:
             cutoff = time.time() - STATE_LOG_KEEP_DAYS * 86400.0
             conn.execute("DELETE FROM state_log WHERE ts < ?", (cutoff,))
+    try:
+        from alpecca import mindpage as mindpage_mod
+        mindpage_mod.install_memory_indexes(db_path)
+        mindpage_mod.ensure_schema(db_path)
+    except Exception:
+        pass
 
 
 def load_state(db_path: Path = DB_PATH) -> EmotionalState:

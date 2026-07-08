@@ -450,11 +450,15 @@ MEMORY_SALIENCE_THRESHOLD = 0.3   # below this we don't bother storing a memory
 # rawer overlap, so a lower bar already means "basically the same words".
 MEMORY_DEDUP_COSINE = 0.93        # mapped-cosine above this == a near-duplicate
 MEMORY_DEDUP_TOKEN = 0.6          # token-overlap above this == a near-duplicate
+MEMORY_RECALL_CANDIDATE_LIMIT = int(os.environ.get("ALPECCA_MEMORY_RECALL_CANDIDATES", "500"))
 EMBED_BACKFILL = os.environ.get("ALPECCA_EMBED_BACKFILL", "1") \
     not in ("", "0", "false", "False")
 # Keep chat recall deterministic while backfill runs in the background.
 CHAT_SEMANTIC_RECALL = os.environ.get("ALPECCA_CHAT_SEMANTIC_RECALL", "0") \
     not in ("", "0", "false", "False")
+MINDPAGE = os.environ.get("ALPECCA_MINDPAGE", "1") \
+    not in ("", "0", "false", "False")
+MINDPAGE_DISK_GB = float(os.environ.get("ALPECCA_MINDPAGE_DISK_GB", "2"))
 # Cross-session continuity: when a session ends (she's put to sleep / the server
 # shuts down) she leaves ONE grounded "where we left off" memory so the next
 # session can pick up the thread instead of starting cold. Stored well above the

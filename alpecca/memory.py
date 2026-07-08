@@ -26,7 +26,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from config import (DB_PATH, MEMORY_TOP_K, MEMORY_SALIENCE_THRESHOLD,
-                    MEMORY_DEDUP_COSINE, MEMORY_DEDUP_TOKEN)
+                    MEMORY_DEDUP_COSINE, MEMORY_DEDUP_TOKEN,
+                    MEMORY_RECALL_CANDIDATE_LIMIT)
 
 Embedder = Callable[[str], Optional[list]]
 MEMORY_KINDS = {"episodic", "semantic", "relationship", "procedural", "self_model", "musing"}
@@ -252,7 +253,9 @@ def recall(query: str, top_k: int = MEMORY_TOP_K, db_path: Path = DB_PATH,
     scored = []
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT id, ts, kind, content, salience, tokens, embedding FROM memories"
+            "SELECT id, ts, kind, content, salience, tokens, embedding FROM memories "
+            "ORDER BY salience DESC, ts DESC LIMIT ?",
+            (max(int(top_k or 1), int(MEMORY_RECALL_CANDIDATE_LIMIT)),),
         ).fetchall()
     for r in rows:
         m_vec = json.loads(r["embedding"]) if r["embedding"] else None

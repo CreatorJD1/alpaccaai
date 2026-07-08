@@ -48,6 +48,7 @@ class Snapshot:
     senses_active: bool = False
     person_fatigue: float = 0.0   # how worn the person reads (compassion signals)
     trial_running: bool = False   # is a self-improvement experiment open
+    memory_pressure: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -133,6 +134,11 @@ def _wanderer(s: Snapshot) -> Intention | None:
 def _reflector(s: Snapshot) -> Intention | None:
     """SELF-CARE. Uses real quiet to rest and muse -- her fourth directive,
     running. Serves self-actualization (rank 4)."""
+    pressure = s.memory_pressure or {}
+    if float(pressure.get("context_fill") or 0.0) >= 0.9:
+        return Intention("Reflector", "self_care", "consolidate working memory",
+                         "my working memory is nearly full and should be paged down", 4,
+                         min(1.0, float(pressure.get("context_fill") or 0.0)))
     if s.solitude_s > 300 and s.state.fear < 0.4:
         return Intention("Reflector", "self_care", "reflect on a memory",
                          "it's been quiet a while; this moment is mine", 4,

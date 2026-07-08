@@ -49,6 +49,7 @@ from alpecca import computer as computer_mod
 from alpecca import runtime_status as runtime_status_mod
 from alpecca import mindscape as mindscape_mod
 from alpecca import memory as memory_store
+from alpecca import mindpage as mindpage_mod
 from alpecca import journal as journal_mod
 from alpecca import cognition as cognition_mod
 from alpecca import instance as instance_mod
@@ -1337,6 +1338,12 @@ def mindscape_state() -> dict:
     d = mindscape_mod.summary(snap)
     d["sync"] = _mindscape_sync_status_view()
     return d
+
+
+@app.get("/mindpage/stats")
+def mindpage_stats() -> dict:
+    """Observable working-memory/page pressure for Alpecca."""
+    return mindpage_mod.stats(history=getattr(mind, "_history", []))
 
 
 @app.get("/mindscape/snapshot")

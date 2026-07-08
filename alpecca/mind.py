@@ -61,6 +61,7 @@ from config import (DEEP_BACKEND, ANTHROPIC_API_KEY, ANTHROPIC_MODEL,
 from alpecca.homeostasis import EmotionalState
 from alpecca import state as state_store
 from alpecca import memory as memory_store
+from alpecca import mindpage as mindpage_mod
 from alpecca.sensory import Observation, prediction_error
 from alpecca import prompts
 from alpecca import introspection
@@ -1356,6 +1357,13 @@ class CoreMind:
                                   + str(musings[0].get("content", "")).strip()[:160])
         except Exception:
             pass
+        try:
+            pressure = mindpage_mod.pressure_snapshot(self._history)
+            if pressure.get("context_fill", 0.0) >= 0.9:
+                pct = int(float(pressure.get("context_fill") or 0.0) * 100)
+                inner_bits.append(f"working memory pressure is {pct}% full")
+        except Exception:
+            pass
         inner = "; ".join(b for b in inner_bits if b)
 
         abilities = self.actuator.describe()
@@ -1475,7 +1483,22 @@ class CoreMind:
         # Keep the raw log bounded; only the last HISTORY_MESSAGES ride along
         # anyway, and long sessions shouldn't grow memory without limit.
         if len(self._history) > HISTORY_MESSAGES * 4:
-            del self._history[: len(self._history) - HISTORY_MESSAGES * 2]
+            evict_count = len(self._history) - HISTORY_MESSAGES * 2
+            evicted = self._history[:evict_count]
+            try:
+                page_id = mindpage_mod.write_episode_page(evicted)
+                if page_id:
+                    cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                        source="mindpage",
+                        room=self._location,
+                        content=f"Paged out {len(evicted)} chat turns into Mindpage page {page_id}.",
+                        confidence=1.0,
+                        privacy_class="personal",
+                        metadata={"page_id": page_id, "evicted_turns": len(evicted)},
+                    ))
+            except Exception:
+                pass
+            del self._history[:evict_count]
         chat_turn_id = cognition_mod.record_chat_turn(cognition_mod.ChatTurn(
             user_text=user_msg,
             reply=reply,
@@ -2830,6 +2853,7 @@ class CoreMind:
             senses_active=self._prev_obs is not None and bool(self._prev_obs.window_title),
             person_fatigue=person_fatigue,
             trial_running=any(r["status"] == "trial" for r in selfmod.history(limit=3)),
+            memory_pressure=mindpage_mod.pressure_snapshot(self._history),
         )
 
     # --- Her journal + recursive self-questioning --------------------------
@@ -3005,6 +3029,9 @@ class CoreMind:
         if sub == "Improver":
             return self.self_improve_tick()
         if sub == "Reflector":
+            if "consolidate" in str((focus or {}).get("action", "")).lower():
+                return {"phase": "consolidated",
+                        "result": self.consolidate_observations(limit=16)}
             return {"phase": "reflected", "text": self.reflect()}
         # ACTIONS: act on her strongest real want -- Doer reaches out, Wanderer
         # pursues curiosity/creation. Both become one concrete step on a desire.

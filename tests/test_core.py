@@ -211,6 +211,40 @@ def test_backfill_enables_semantic_recall():
         assert hits[0]["recall_method"] == "semantic"
 
 
+def test_mindpage_write_and_recall_page():
+    from alpecca import mindpage
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "mindpage.db"
+        state_store.init_db(db)
+        page_id = mindpage.write_page(
+            kind="episode",
+            topic="hardware talk",
+            summary="We discussed the hardware plan.",
+            content="user: let's talk about the GPU\nassistant: the pagefile path matters",
+            db_path=db,
+        )
+
+        hits = mindpage.recall_page("hardware GPU", db_path=db)
+
+        assert page_id
+        assert hits and hits[0]["id"] == page_id
+        assert "pagefile path" in hits[0]["content"]
+
+
+def test_mindpage_stats_reports_context_pressure():
+    from alpecca import mindpage
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "mindpage_stats.db"
+        state_store.init_db(db)
+        history = [{"role": "user", "content": "x" * 80}]
+
+        stats = mindpage.stats(history=history, db_path=db, num_ctx=10)
+
+        assert stats["history_tokens"] >= 20
+        assert stats["context_fill"] == 1.0
+        assert stats["pressure"] == "high"
+
+
 # --- Sensory ---------------------------------------------------------------
 
 def test_error_context_detection():
@@ -4749,6 +4783,55 @@ def test_live_chat_recall_respects_semantic_recall_toggle(monkeypatch):
         assert captured["embed_fn"] is not None
     finally:
         mind_mod.CHAT_SEMANTIC_RECALL = old_toggle
+
+
+def test_chat_history_eviction_writes_mindpage_episode(monkeypatch):
+    from alpecca import mind as mind_mod
+    from alpecca import mindpage as mindpage_mod
+
+    mind = mind_mod.CoreMind()
+    mind._history = [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"old turn {i}"}
+        for i in range(mind_mod.HISTORY_MESSAGES * 4 + 2)
+    ]
+    captured = {}
+
+    def fake_generate(system_prompt, user_msg, history=None, tools=None, on_tool=None, tier="reason"):
+        return "I'm here with you."
+
+    def fake_write_episode_page(turns, db_path=None):
+        captured["turns"] = list(turns)
+        return 123
+
+    mind.llm.generate = fake_generate
+    mind.llm._last_call = {
+        "requested_tier": "reason",
+        "used_tier": "reason",
+        "backend": "test",
+        "model": "fake",
+        "ok": True,
+        "fallback": False,
+        "error": "",
+    }
+    monkeypatch.setattr(mindpage_mod, "write_episode_page", fake_write_episode_page)
+
+    mind.chat("Hi Alpecca.", situation="")
+
+    assert captured["turns"]
+    assert len(mind._history) == mind_mod.HISTORY_MESSAGES * 2
+
+
+def test_soul_snapshot_carries_mindpage_pressure(monkeypatch):
+    from alpecca import mind as mind_mod
+    from alpecca import mindpage as mindpage_mod
+
+    mind = mind_mod.CoreMind()
+    pressure = {"context_fill": 0.93, "pressure": "high", "page_count": 4}
+    monkeypatch.setattr(mindpage_mod, "pressure_snapshot", lambda history: pressure)
+
+    snap = mind._soul_snapshot()
+
+    assert snap.memory_pressure == pressure
 
 
 def test_chat_prompt_injects_room_context_when_room_is_requested():

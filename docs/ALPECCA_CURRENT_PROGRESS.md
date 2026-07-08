@@ -9,6 +9,9 @@ Use this as the short active status pointer.
 - `ALPECCA_TOOL_MODE` is `smart` and `ALPECCA_INNATE_TOOLS=1` in this branch.
 - Chat tool-calling is now gated and observable through tool schemas + `CognitionObservation`.
 - Embedding backfill now runs in background on idle drift ticks.
+- Mindpage Layer A now writes evicted chat history into compressed local pages,
+  exposes `/mindpage/stats`, and lets Alpecca fault pages back in through
+  `recall_page`.
 - The memory path for live chat remains keyword-first (`embed_fn=None`), with
   background semantic recall support through backfill.
 - No default behavior changes were made to art pipelines, House HQ animation
