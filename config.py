@@ -710,6 +710,18 @@ class Actions:
     MAX_TOOL_ROUNDS = int(os.environ.get("ALPECCA_ACTION_MAX_ROUNDS", "5"))
 
 
+# --- Automation: routines and passive watchers ------------------------------
+# Routines are enabled but ship with an empty table, so nothing fires until the
+# owner creates a row. Watchers default off and record names/counts only.
+class Automation:
+    ROUTINES = os.environ.get("ALPECCA_ROUTINES", "1") \
+        not in ("", "0", "false", "False")
+    ROUTINE_POLL_SECONDS = float(os.environ.get("ALPECCA_ROUTINE_POLL_SECONDS", "60"))
+    WATCH_DIRS = os.environ.get("ALPECCA_WATCH_DIRS", "")
+    WATCH_POLL_SECONDS = float(os.environ.get("ALPECCA_WATCH_POLL_SECONDS", "60"))
+    WATCH_MAX_FILES = int(os.environ.get("ALPECCA_WATCH_MAX_FILES", "500"))
+
+
 # --- Computer use: she sees the screen and drives mouse/keyboard -------------
 # Her own eyes (the local vision model) plus pyautogui, in a screenshot ->
 # reason -> act loop. Fully local: screenshots are analyzed on-machine and

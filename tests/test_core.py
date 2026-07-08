@@ -1687,6 +1687,81 @@ def test_cognition_route_executes_only_user_approved_planner_step():
             conn.execute("DELETE FROM action_proposals WHERE id=?", (int(proposal_id),))
 
 
+def test_routines_due_and_mark_ran_are_idempotent():
+    import tempfile
+    from alpecca import routines
+
+    now = time.time()
+    tm = time.localtime(now)
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "routines.db"
+        row = routines.add(
+            "Consolidate observations",
+            hour=tm.tm_hour,
+            weekday=tm.tm_wday,
+            kind="consolidate_observations",
+            db_path=db,
+        )
+        due = routines.due(now=now, db_path=db)
+        assert [r["id"] for r in due] == [row["id"]]
+
+        routines.mark_ran(row["id"], now=now, db_path=db)
+        assert routines.due(now=now, db_path=db) == []
+
+
+def test_watchers_report_names_and_counts_without_contents():
+    import tempfile
+    from alpecca import watchers
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        watched = watchers.DirectoryWatcher([root], max_files=20)
+        first = watched.poll()
+        assert first["initial"] is True
+        assert first["changed"] is False
+
+        (root / "status.txt").write_text("PRIVATE-CONTENT-SHOULD-NOT-LEAK", encoding="utf-8")
+        changed = watched.poll()
+
+    assert changed["changed"] is True
+    assert changed["added"] == 1
+    assert changed["added_names"] == ["status.txt"]
+    assert "PRIVATE-CONTENT" not in json.dumps(changed)
+
+
+def test_routines_routes_create_and_toggle():
+    from fastapi.testclient import TestClient
+    import server
+    import sqlite3
+
+    client = TestClient(server.app)
+    routine_id = None
+    try:
+        r = client.post("/routines", json={
+            "name": "Route routine smoke",
+            "hour": 9,
+            "weekday": -1,
+            "kind": "embed_backfill",
+            "enabled": True,
+        })
+        assert r.status_code == 200
+        routine = r.json()["routine"]
+        routine_id = int(routine["id"])
+        assert routine["kind"] == "embed_backfill"
+
+        off = client.post(f"/routines/{routine_id}", json={"enabled": False})
+        assert off.status_code == 200
+        assert off.json()["routine"]["enabled"] == 0
+
+        listed = client.get("/routines")
+        assert listed.status_code == 200
+        assert "embed_backfill" in listed.json()["kinds"]
+    finally:
+        if routine_id is not None:
+            with sqlite3.connect(state_store.DB_PATH) as conn:
+                conn.execute("DELETE FROM routines WHERE id=?", (routine_id,))
+
+
 def test_cognition_proposal_handoff_route_reports_markdown_packet():
     from fastapi.testclient import TestClient
     import config

@@ -37,6 +37,8 @@ on parse/model failure, `CognitionObservation` logging for autonomous acts, and
   judge/seed choice with deterministic fallback.
 - Stage 4: local-only planner, `payload` proposal storage, `make_plan(goal)`,
   and explicit user-approved one-step execution through Workshop proposals.
+- Stage 5 initial automation: empty-by-default routines, off-by-default passive
+  directory watchers, `/routines` routes, and observation logging.
 
 Current model note: do not revive retired legacy model paths. Runtime planning
 uses the configured local Ollama model from `ALPECCA_MODEL`.
@@ -98,6 +100,9 @@ Automation remains empty/off until configured.
   never file contents.
 - MCP: parked/stretch. If added, servers default off and exposed actions route
   through ask-first proposals.
+
+Status: routines and watchers are implemented. The routines table ships empty,
+and watchers only run when `ALPECCA_WATCH_DIRS` is set. MCP remains parked.
 
 ## Stage 6 - Mindpage
 

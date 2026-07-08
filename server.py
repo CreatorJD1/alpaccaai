@@ -36,6 +36,7 @@ from config import (HOST, PORT, DEEP_BACKEND, OLLAMA_HOST,
                     MINDSCAPE_EVENT_SYNC_MIN_INTERVAL, PUBLIC_URL, EMBED_BACKFILL,
                     CORE_MEMORY_LEARN_ONLY, DISCORD_CLIENT_ID,
                     CLOUDFLARE_HOSTNAME, OLLAMA_TIMEOUT_SECONDS, STREAM_CHAT)
+from config import Automation as AutomationCfg
 from alpecca.mind import CoreMind
 from alpecca.sensory import WindowSensor
 from alpecca.voice import VoiceSensor
@@ -53,6 +54,8 @@ from alpecca import mindpage as mindpage_mod
 from alpecca import journal as journal_mod
 from alpecca import cognition as cognition_mod
 from alpecca import instance as instance_mod
+from alpecca import routines as routines_mod
+from alpecca import watchers as watchers_mod
 
 ROOT_DIR = Path(__file__).parent
 WEB_DIR = ROOT_DIR / "web"
@@ -783,6 +786,40 @@ def _mindscape_import_snapshot(snapshot: dict) -> dict:
     return {"ok": True, "status": "imported", "imported": imported, "preview": preview}
 
 
+async def _run_routine(row: dict) -> dict:
+    kind = str(row.get("kind") or "")
+    name = str(row.get("name") or kind)
+    if kind == "daily_recap":
+        result = await _bounded_thread("routine_daily_recap", mind.write_session_recap, timeout=20.0)
+    elif kind == "consolidate_observations":
+        result = await _bounded_thread("routine_consolidate", mind.consolidate_observations, 16, timeout=12.0)
+    elif kind == "embed_backfill":
+        result = await _bounded_thread("routine_embed_backfill", memory_store.backfill_embeddings, timeout=10.0)
+    elif kind == "morning_greeting":
+        result = await _bounded_thread(
+            "routine_morning_greeting",
+            mind.compose_volunteer,
+            "scheduled morning greeting",
+            timeout=BACKGROUND_VOLUNTEER_TIMEOUT,
+        )
+    else:
+        result = {"error": f"unknown routine kind: {kind}"}
+    cognition_mod.record_observation(cognition_mod.CognitionObservation(
+        source="routine",
+        room=getattr(mind, "_location", ""),
+        content=f"Routine ran: {name} ({kind}).",
+        confidence=0.85,
+        privacy_class="local",
+        metadata={"routine_id": row.get("id"), "kind": kind, "result": str(result)[:700]},
+    ))
+    return {
+        "ok": not (isinstance(result, dict) and result.get("error")),
+        "status": "ok",
+        "kind": kind,
+        "result": result,
+    }
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Launch the ambient mood-drift loop on startup and cancel it on shutdown.
@@ -969,8 +1006,53 @@ async def lifespan(app: FastAPI):
                 _mindscape_sync_status["last_status"] = "auto_sync_error"
                 _mindscape_sync_status["last_error"] = f"{type(exc).__name__}: {exc}"
 
+    async def automation_loop() -> None:
+        routines_mod.init_db()
+        watcher = watchers_mod.DirectoryWatcher(
+            watchers_mod.parse_watch_dirs(AutomationCfg.WATCH_DIRS),
+            max_files=AutomationCfg.WATCH_MAX_FILES,
+        )
+        last_watch = 0.0
+        while True:
+            await asyncio.sleep(max(10.0, float(AutomationCfg.ROUTINE_POLL_SECONDS or 60.0)))
+            try:
+                if AutomationCfg.ROUTINES:
+                    for row in routines_mod.due():
+                        result = await _run_routine(row)
+                        routines_mod.mark_ran(int(row["id"]))
+                        await _broadcast({
+                            "type": "activity",
+                            "text": f"routine '{row.get('name')}' ran: {result.get('status', 'ok')}",
+                        })
+                now = _time.time()
+                if (AutomationCfg.WATCH_DIRS
+                        and now - last_watch >= max(10.0, float(AutomationCfg.WATCH_POLL_SECONDS or 60.0))):
+                    last_watch = now
+                    changes = watcher.poll()
+                    if changes.get("changed"):
+                        names = []
+                        for key in ("added_names", "modified_names", "removed_names"):
+                            names.extend(changes.get(key) or [])
+                        content = (
+                            "Watched folder changed: "
+                            f"added={changes.get('added', 0)} modified={changes.get('modified', 0)} "
+                            f"removed={changes.get('removed', 0)}; names={', '.join(names[:12])}"
+                        )
+                        cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                            source="watcher",
+                            room=getattr(mind, "_location", ""),
+                            content=content[:1000],
+                            confidence=0.8,
+                            privacy_class="local",
+                            metadata={k: v for k, v in changes.items() if k != "changed"},
+                        ))
+                        await _broadcast({"type": "activity", "text": content[:240]})
+            except Exception as exc:
+                _background_autonomy_status["last_automation_error"] = f"{type(exc).__name__}: {exc}"
+
     task = asyncio.create_task(loop())
     mindscape_task = asyncio.create_task(mindscape_loop())
+    automation_task = asyncio.create_task(automation_loop())
     from config import VOICE_WARMUP
     voice_warmup_task = (asyncio.create_task(_warm_alpecca_voice())
                          if VOICE_WARMUP else asyncio.create_task(asyncio.sleep(0)))
@@ -979,6 +1061,7 @@ async def lifespan(app: FastAPI):
     finally:
         task.cancel()
         mindscape_task.cancel()
+        automation_task.cancel()
         # Leave one grounded "where we left off" memory before she sleeps, so the
         # next session can pick up the thread instead of starting cold. Best-effort
         # and off the hot path -- a failure here must never block a clean shutdown.
@@ -996,6 +1079,10 @@ async def lifespan(app: FastAPI):
             pass
         try:
             await mindscape_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        try:
+            await automation_task
         except (asyncio.CancelledError, Exception):
             pass
         if not voice_warmup_task.done():
@@ -1956,6 +2043,52 @@ async def cognition_consolidate() -> dict:
     """Ask Alpecca to carry important observations into memory now."""
     async with mind_lock:
         return mind.consolidate_observations(limit=24)
+
+
+@app.get("/routines")
+def routines_list() -> dict:
+    """List empty-by-default scheduled maintenance routines."""
+    return {
+        "enabled": bool(AutomationCfg.ROUTINES),
+        "kinds": sorted(routines_mod.KINDS),
+        "routines": routines_mod.list_all(),
+    }
+
+
+@app.post("/routines")
+async def routines_create(req: Request) -> dict:
+    """Create a safe local routine. Nothing exists until the owner adds it."""
+    try:
+        body = await req.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be JSON")
+    try:
+        row = routines_mod.add(
+            name=str(body.get("name") or ""),
+            hour=int(body.get("hour")),
+            weekday=int(body.get("weekday", -1)),
+            kind=str(body.get("kind") or ""),
+            enabled=bool(body.get("enabled", True)),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"routine": row, "routines": routines_mod.list_all()}
+
+
+@app.post("/routines/{routine_id}")
+async def routines_update(routine_id: int, req: Request) -> dict:
+    """Enable or disable a routine without deleting its history."""
+    try:
+        body = await req.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be JSON")
+    if "enabled" not in body:
+        raise HTTPException(status_code=400, detail="enabled is required")
+    try:
+        row = routines_mod.set_enabled(routine_id, bool(body.get("enabled")))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="routine not found")
+    return {"routine": row, "routines": routines_mod.list_all()}
 
 
 @app.post("/cognition/chat/review")
