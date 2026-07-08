@@ -10,6 +10,7 @@ Read this before `AGENTS.md`, `CLAUDE.md`, `HANDOFF.md`, or implementation files
 - Alpecca is a local-first AI companion with an embodied interface, memory, mood, voice, perception, and bounded self-improvement.
 - Be honest about capability: the goal is functional/cognitive/self-learning behavior as an engineered system, not claims of literal consciousness.
 - Self-reports must be grounded in real state, memories, observations, or model uncertainty. Do not fabricate inner events.
+- Default-off capabilities: the tool/action loop (`ALPECCA_APPS`, `ALPECCA_FILES`), ambient screen/webcam senses (`ALPECCA_SIGHT`, `ALPECCA_FACE`), and computer use (`ALPECCA_COMPUTER_USE`) are opt-in and OFF on a stock install — a default launch offers the LLM zero tools. Autonomy choice points (roam/reflect/proactive speech, living-tick questions, Soul arbitration, self-tuning) are currently deterministic code, not model decisions. See `docs/AGENTIC_ASSESSMENT.md` for the verified current-state audit and upgrade roadmap.
 
 ## Application Surfaces
 

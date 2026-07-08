@@ -5,12 +5,17 @@ remembers feels alive. So after each exchange we decide whether the moment was
 *salient* enough to keep, and at the start of each turn we pull back the handful
 of memories most relevant to what's happening now.
 
-Retrieval is **semantic by default**: each memory is embedded with a local model
-(Ollama `nomic-embed-text`) and recalled by cosine similarity, so "how's the pup"
-can surface a memory about "my dog Biscuit" even with no shared words. If no
-embedder is available (Ollama not running, model not pulled), we fall back to the
-old keyword-overlap score so Alpecca still works offline -- it just recalls a bit
-more literally. The `tokens` column is kept for exactly that fallback.
+Retrieval is **semantic when an embedding exists**: memories written with an
+embed_fn are embedded with a local model (Ollama `nomic-embed-text`) and recalled
+by cosine similarity, so "how's the pup" can surface a memory about "my dog
+Biscuit" even with no shared words. Live chat, however, deliberately stores and
+recalls with `embed_fn=None` (see mind.py -- keeps the embedding model from
+evicting the chat model on small GPUs), so conversational memories are keyword-
+only today; only background memories (musings, reflections, recaps) get vectors.
+If no embedder is available (Ollama not running, model not pulled), recall falls
+back to the keyword-overlap score so Alpecca still works offline -- it just
+recalls a bit more literally. The `tokens` column is kept for exactly that
+fallback.
 
 Embeddings are pluggable via an `embed_fn(text) -> list[float] | None` argument,
 which also makes the retrieval logic testable without a running model.
