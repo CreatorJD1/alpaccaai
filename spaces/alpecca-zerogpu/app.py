@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
 import re
@@ -566,6 +568,185 @@ def describe(image, prompt: str = "Describe this image.") -> str:
     return strip_think((decoded[0] if decoded else "").strip())
 
 
+# --- Texture Lab GPU: Pony Diffusion V6 XL + structured VL vision -------------
+# Added for the VCS Texture Lab so garment/material generation and outfit
+# reading run here on ZeroGPU, not Jason's 4 GB local card (which times out) and
+# not paid HF Inference (402). Lazy-loaded: the chat / Stage-4 / describe paths
+# above are untouched until these two endpoints are actually called.
+PONY_MODEL = os.environ.get("ALPECCA_TEXTURE_MODEL", "Bakanayatsu/Pony-Diffusion-V6-XL-for-Anime")
+PONY_QUALITY = os.environ.get(
+    "ALPECCA_PONY_QUALITY",
+    "score_9, score_8_up, score_7_up, source_anime, masterpiece, best quality, ",
+)
+PONY_NEG = (
+    "score_6, score_5, score_4, source_pony, source_furry, worst quality, low quality, "
+    "blurry, jpeg artifacts, watermark, signature, text, logo, realistic, 3d render, photo, "
+    "extra limbs, deformed, bad anatomy"
+)
+VJSON_MODEL = os.environ.get("ALPECCA_VJSON_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
+
+_pony_t2i = None
+_pony_i2i = None
+_vj_proc = None
+_vj_model = None
+
+
+def _b64_to_rgb(b64: str) -> Image.Image | None:
+    if not b64:
+        return None
+    b64 = b64.strip()
+    if b64.startswith("data:") and "," in b64:
+        b64 = b64.split(",", 1)[1]
+    try:
+        return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+    except Exception:
+        return None
+
+
+def _rgb_to_b64(img: Image.Image) -> str:
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _split_b64(joined: str) -> list[Image.Image]:
+    out: list[Image.Image] = []
+    for part in (joined or "").split("|||"):
+        img = _b64_to_rgb(part)
+        if img is not None:
+            out.append(img)
+    return out
+
+
+def load_pony_t2i():
+    global _pony_t2i
+    if _pony_t2i is None:
+        from diffusers import StableDiffusionXLPipeline
+
+        pipe = StableDiffusionXLPipeline.from_pretrained(
+            PONY_MODEL, torch_dtype=torch.float16, use_safetensors=True
+        )
+        pipe.set_progress_bar_config(disable=True)
+        _pony_t2i = pipe.to("cuda")
+    return _pony_t2i
+
+
+def load_pony_i2i():
+    global _pony_i2i
+    if _pony_i2i is None:
+        from diffusers import StableDiffusionXLImg2ImgPipeline
+
+        base = load_pony_t2i()
+        _pony_i2i = StableDiffusionXLImg2ImgPipeline(**base.components)
+        _pony_i2i.set_progress_bar_config(disable=True)
+    return _pony_i2i
+
+
+@spaces.GPU(duration=120)
+def texture(
+    prompt: str,
+    negative_prompt: str = "",
+    init_image_b64: str = "",
+    strength: float = 0.72,
+    steps: float = 28,
+    guidance: float = 7.0,
+    width: float = 1024,
+    height: float = 1024,
+    seed: float = 0,
+) -> str:
+    """Generate one anime texture/garment image with Pony V6 XL. With
+    init_image_b64 -> img2img off it, else txt2img. Returns a base64 PNG."""
+    full_prompt = PONY_QUALITY + (prompt or "").strip()
+    neg = (negative_prompt or "").strip() or PONY_NEG
+    seed_i = int(seed) if int(seed) else 12345
+    generator = torch.Generator("cuda").manual_seed(seed_i)
+    w, h = int(width), int(height)
+    init = _b64_to_rgb(init_image_b64)
+    if init is not None:
+        pipe = load_pony_i2i()
+        init = init.resize((w, h), Image.Resampling.LANCZOS)
+        result = pipe(
+            prompt=full_prompt,
+            negative_prompt=neg,
+            image=init,
+            strength=float(strength),
+            num_inference_steps=int(steps),
+            guidance_scale=float(guidance),
+            generator=generator,
+        )
+    else:
+        pipe = load_pony_t2i()
+        result = pipe(
+            prompt=full_prompt,
+            negative_prompt=neg,
+            width=w,
+            height=h,
+            num_inference_steps=int(steps),
+            guidance_scale=float(guidance),
+            generator=generator,
+        )
+    return _rgb_to_b64(result.images[0])
+
+
+def load_vjson():
+    global _vj_proc, _vj_model
+    if _vj_proc is None:
+        from transformers import AutoProcessor
+
+        _vj_proc = AutoProcessor.from_pretrained(VJSON_MODEL, trust_remote_code=True)
+    if _vj_model is None:
+        from transformers import Qwen2_5_VLForConditionalGeneration
+
+        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        _vj_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            VJSON_MODEL,
+            torch_dtype=dtype,
+            device_map="auto",
+            trust_remote_code=True,
+            low_cpu_mem_usage=True,
+        ).eval()
+    return _vj_proc, _vj_model
+
+
+def _parse_json_object(text: str) -> dict[str, Any]:
+    text = strip_think(text)
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fence:
+        text = fence.group(1)
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except Exception:
+            pass
+    return {"raw": text}
+
+
+@spaces.GPU(duration=60)
+def vision_json(image_b64: str, system: str = "", prompt: str = "Describe this image.") -> str:
+    """Read one or more images (base64, joined by '|||') and return a strict
+    JSON string. Used for VCS outfit extraction and the anime-deviation guard."""
+    imgs = _split_b64(image_b64)
+    content: list[dict[str, Any]] = [{"type": "image", "image": im} for im in imgs]
+    instruction = ((system or "").strip() + "\n\n" + (prompt or "").strip()).strip()
+    instruction += "\n\nRespond with a single valid JSON object and nothing else."
+    content.append({"type": "text", "text": instruction})
+    messages = [{"role": "user", "content": content}]
+    proc, mdl = load_vjson()
+    text = proc.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    from qwen_vl_utils import process_vision_info
+
+    image_inputs, video_inputs = process_vision_info(messages)
+    inputs = proc(
+        text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt"
+    ).to(mdl.device)
+    with torch.inference_mode():
+        gen = mdl.generate(**inputs, max_new_tokens=768, do_sample=False)
+    trimmed = [out[len(inp):] for inp, out in zip(inputs.input_ids, gen)]
+    decoded = proc.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+    return json.dumps(_parse_json_object(decoded[0] if decoded else ""))
+
+
 with gr.Blocks(title="Alpecca ZeroGPU") as demo:
     gr.Markdown("# Alpecca ZeroGPU")
     with gr.Tab("Deep thought"):
@@ -610,6 +791,36 @@ with gr.Blocks(title="Alpecca ZeroGPU") as demo:
             inputs=[v_image, v_prompt],
             outputs=v_out,
             api_name="vision",
+        )
+    with gr.Tab("Texture Lab"):
+        gr.Markdown("Pony Diffusion V6 XL anime texture / garment generation (base64 in/out).")
+        t_prompt = gr.Textbox(label="prompt", lines=3)
+        t_neg = gr.Textbox(label="negative_prompt", lines=2)
+        t_init = gr.Textbox(label="init_image_b64 (blank = txt2img)", lines=2)
+        t_strength = gr.Slider(0.2, 0.95, value=0.72, step=0.01, label="strength")
+        t_steps = gr.Slider(10, 45, value=28, step=1, label="steps")
+        t_guidance = gr.Slider(1.0, 12.0, value=7.0, step=0.25, label="guidance")
+        t_w = gr.Number(label="width", value=1024, precision=0)
+        t_h = gr.Number(label="height", value=1024, precision=0)
+        t_seed = gr.Number(label="seed (0 = fixed)", value=0, precision=0)
+        t_out = gr.Textbox(label="image_b64", lines=4)
+        gr.Button("Generate texture", variant="primary").click(
+            fn=texture,
+            inputs=[t_prompt, t_neg, t_init, t_strength, t_steps, t_guidance, t_w, t_h, t_seed],
+            outputs=t_out,
+            api_name="texture",
+        )
+    with gr.Tab("Vision JSON"):
+        gr.Markdown("Qwen2.5-VL structured read (outfit extract / anime-deviation guard).")
+        vj_img = gr.Textbox(label="image_b64 (join multiple with |||)", lines=3)
+        vj_sys = gr.Textbox(label="system", lines=4)
+        vj_prompt = gr.Textbox(label="prompt", lines=3)
+        vj_out = gr.Textbox(label="json", lines=8)
+        gr.Button("Read", variant="primary").click(
+            fn=vision_json,
+            inputs=[vj_img, vj_sys, vj_prompt],
+            outputs=vj_out,
+            api_name="vision_json",
         )
 
 

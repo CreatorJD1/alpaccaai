@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-06T10:30:48+00:00",
+  "generatedAt": "2026-07-08T10:36:27+00:00",
   "assetRoot": "/assets/alpecca-optimized",
   "runtimePolicy": "Browser loads compiled atlas folders only; source library stays outside public assets.",
   "records": [
