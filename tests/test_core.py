@@ -159,6 +159,58 @@ def test_memory_classifies_relationship_procedural_and_self_model():
     assert memory_store.classify_kind("I learned something about myself: I get quiet") == "self_model"
 
 
+def test_backfill_embeddings_updates_only_null_rows_and_is_idempotent():
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "backfill.db"
+        state_store.init_db(db)
+        memory_store.remember("one", salience=0.8, db_path=db, embed_fn=None)
+        memory_store.remember("two", salience=0.8, db_path=db, embed_fn=None)
+        memory_store.remember("three", salience=0.8, db_path=db, embed_fn=None)
+
+        calls = []
+
+        def embed(text: str):
+            calls.append(text)
+            return [len(text) % 10 / 10.0, 0.5]
+
+        first = memory_store.backfill_embeddings(batch=2, db_path=db, embed_fn=embed)
+        second = memory_store.backfill_embeddings(batch=2, db_path=db, embed_fn=embed)
+        third = memory_store.backfill_embeddings(batch=2, db_path=db, embed_fn=embed)
+
+        assert first == {"scanned": 2, "updated": 2, "skipped": 0, "errors": 0}
+        assert second["scanned"] == 1 and second["updated"] == 1 and len(calls) == 3
+        assert third["scanned"] == 0 and third["updated"] == 0 and third["errors"] == 0
+
+
+def test_backfill_embeddings_aborts_when_embedder_disabled():
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "backfill_off.db"
+        state_store.init_db(db)
+        memory_store.remember("one", salience=0.8, db_path=db, embed_fn=None)
+
+        stats = memory_store.backfill_embeddings(batch=4, db_path=db, embed_fn=None)
+
+        assert stats == {"scanned": 0, "updated": 0, "skipped": 0, "errors": 0}
+
+
+def test_backfill_enables_semantic_recall():
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "semantic.db"
+        state_store.init_db(db)
+        memory_store.remember("the sky was unusually calm tonight", salience=0.8,
+                              db_path=db, embed_fn=None)
+
+        def base_vec(text: str):
+            return [0.9 if "sky" in text else 0.1, 0.2]
+
+        fill = memory_store.backfill_embeddings(batch=4, db_path=db, embed_fn=base_vec)
+        assert fill["updated"] == 1
+
+        hits = memory_store.recall("calm sky", db_path=db, embed_fn=base_vec)
+        assert hits
+        assert hits[0]["recall_method"] == "semantic"
+
+
 # --- Sensory ---------------------------------------------------------------
 
 def test_error_context_detection():
@@ -4535,6 +4587,104 @@ def test_casual_chat_does_not_offer_actuator_tools():
     assert captured["on_tool"] is None
 
 
+def test_keyword_tool_mode_keeps_off_topic_turns_tool_free():
+    from alpecca.mind import CoreMind
+    from config import Actions as ActionsCfg
+    old_mode = ActionsCfg.TOOL_MODE
+    try:
+        ActionsCfg.TOOL_MODE = "keyword"
+        mind = CoreMind()
+        captured = {}
+
+        def fake_generate(system_prompt, user_msg, history=None, tools=None, on_tool=None, tier="reason"):
+            captured["tools"] = tools
+            captured["on_tool"] = on_tool
+            return "I'm here with you."
+
+        mind.llm.generate = fake_generate
+        mind.llm._last_call = {
+            "requested_tier": "reason",
+            "used_tier": "reason",
+            "backend": "test",
+            "model": "fake",
+            "ok": True,
+            "fallback": False,
+            "error": "",
+        }
+        mind.chat("Hi, how are you today?", situation="")
+        assert captured["tools"] is None
+        assert captured["on_tool"] is None
+    finally:
+        ActionsCfg.TOOL_MODE = old_mode
+
+
+def test_smart_tool_mode_offers_tools_for_memorized_requests_and_streams_are_paused():
+    from alpecca.mind import CoreMind
+    from config import Actions as ActionsCfg
+    old_mode = ActionsCfg.TOOL_MODE
+    try:
+        ActionsCfg.TOOL_MODE = "smart"
+        mind = CoreMind()
+        captured = {}
+
+        def fake_generate(system_prompt, user_msg, history=None, tools=None,
+                          on_token=None, on_tool=None, tier="reason"):
+            captured["tools"] = tools
+            captured["on_tool"] = on_tool
+            captured["on_token"] = on_token
+            return "I'm checking that for you."
+
+        mind.llm.generate = fake_generate
+        mind.llm._last_call = {
+            "requested_tier": "reason",
+            "used_tier": "reason",
+            "backend": "test",
+            "model": "fake",
+            "ok": True,
+            "fallback": False,
+            "error": "",
+        }
+        mind.chat("Can you share your self status and current memory search results?", situation="", on_token=lambda t: None)
+        assert captured["tools"] is not None
+        assert captured["on_tool"] is not None
+        assert captured["on_token"] is None
+        names = [t["function"]["name"] for t in captured["tools"]]
+        assert "memory_search" in names or "self_status" in names
+    finally:
+        ActionsCfg.TOOL_MODE = old_mode
+
+
+def test_always_tool_mode_offers_tools_even_for_small_talk():
+    from alpecca.mind import CoreMind
+    from config import Actions as ActionsCfg
+    old_mode = ActionsCfg.TOOL_MODE
+    try:
+        ActionsCfg.TOOL_MODE = "always"
+        mind = CoreMind()
+        captured = {}
+
+        def fake_generate(system_prompt, user_msg, history=None, tools=None, on_tool=None, tier="reason"):
+            captured["tools"] = tools
+            captured["on_tool"] = on_tool
+            return "I'll do that."
+
+        mind.llm.generate = fake_generate
+        mind.llm._last_call = {
+            "requested_tier": "reason",
+            "used_tier": "reason",
+            "backend": "test",
+            "model": "fake",
+            "ok": True,
+            "fallback": False,
+            "error": "",
+        }
+        mind.chat("Hey, how are you?", situation="")
+        assert captured["tools"] is not None
+        assert captured["on_tool"] is not None
+    finally:
+        ActionsCfg.TOOL_MODE = old_mode
+
+
 def test_live_chat_recall_avoids_embedding_model(monkeypatch):
     from alpecca.mind import CoreMind
     from alpecca import memory as memory_store
@@ -4563,6 +4713,42 @@ def test_live_chat_recall_avoids_embedding_model(monkeypatch):
 
     mind.chat("Hi Alpecca.", situation="")
     assert captured["embed_fn"] is None
+
+
+def test_live_chat_recall_respects_semantic_recall_toggle(monkeypatch):
+    from alpecca import mind as mind_mod
+    from alpecca import memory as memory_store
+
+    mind = mind_mod.CoreMind()
+    captured = {}
+    old_toggle = getattr(mind_mod, "CHAT_SEMANTIC_RECALL", False)
+
+    try:
+        mind_mod.CHAT_SEMANTIC_RECALL = True
+
+        def fake_recall(query, top_k=5, db_path=None, embed_fn=None):
+            captured["embed_fn"] = embed_fn
+            return []
+
+        def fake_generate(system_prompt, user_msg, history=None, tools=None, on_tool=None, tier="reason"):
+            return "I'm here with you."
+
+        monkeypatch.setattr(memory_store, "recall", fake_recall)
+        mind.llm.generate = fake_generate
+        mind.llm._last_call = {
+            "requested_tier": "reason",
+            "used_tier": "reason",
+            "backend": "test",
+            "model": "fake",
+            "ok": True,
+            "fallback": False,
+            "error": "",
+        }
+
+        mind.chat("Hi Alpecca.", situation="")
+        assert captured["embed_fn"] is not None
+    finally:
+        mind_mod.CHAT_SEMANTIC_RECALL = old_toggle
 
 
 def test_chat_prompt_injects_room_context_when_room_is_requested():

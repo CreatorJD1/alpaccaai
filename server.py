@@ -33,7 +33,7 @@ from config import (HOST, PORT, DEEP_BACKEND, OLLAMA_HOST,
                     COLAB_URL, COLAB_MODEL, COLAB_API_KEY,
                     MINDSCAPE_ENABLED, MINDSCAPE_CLOUD_URL, MINDSCAPE_TOKEN,
                     MINDSCAPE_SYNC_TIMEOUT, MINDSCAPE_AUTO_SYNC_INTERVAL,
-                    MINDSCAPE_EVENT_SYNC_MIN_INTERVAL, PUBLIC_URL,
+                    MINDSCAPE_EVENT_SYNC_MIN_INTERVAL, PUBLIC_URL, EMBED_BACKFILL,
                     CORE_MEMORY_LEARN_ONLY, DISCORD_CLIENT_ID,
                     CLOUDFLARE_HOSTNAME, OLLAMA_TIMEOUT_SECONDS, STREAM_CHAT)
 from alpecca.mind import CoreMind
@@ -265,6 +265,7 @@ BACKGROUND_VOLUNTEER_TIMEOUT = 8.0
 BACKGROUND_DELIVERY_TIMEOUT = 6.0
 BACKGROUND_MINDSCAPE_TIMEOUT = 12.0
 BACKGROUND_LIVING_INTERVAL = 40.0
+BACKGROUND_EMBED_BACKFILL_INTERVAL = 120.0
 _background_autonomy_status = {
     "enabled": True,
     "started_at": _time.time(),
@@ -284,6 +285,8 @@ _background_autonomy_status = {
     "last_living_self_feedback": {},
     "last_living_next_action": {},
     "last_living_engagement_proposal": {},
+    "last_backfill_at": 0.0,
+    "last_backfill_run": {},
     "last_error": "",
     "tick_count": 0,
     "living_tick_count": 0,
@@ -830,6 +833,26 @@ async def lifespan(app: FastAPI):
                     await _broadcast({"type": "activity",
                                       "text": f"she drifted into the {roamed}"})
                 chat_priority = _player_chat_priority_active()
+                now = _time.time()
+                if (not chat_priority and EMBED_BACKFILL
+                        and now - float(_background_autonomy_status.get("last_backfill_at") or 0.0)
+                        >= BACKGROUND_EMBED_BACKFILL_INTERVAL):
+                    backfill = await _bounded_thread(
+                        "memory_backfill",
+                        memory_store.backfill_embeddings,
+                        timeout=8.0,
+                    )
+                    _background_autonomy_status["last_backfill_at"] = now
+                    if isinstance(backfill, dict):
+                        _background_autonomy_status["last_backfill_run"] = backfill
+                        if int(backfill.get("updated") or 0) > 0:
+                            await _broadcast({
+                                "type": "activity",
+                                "text": (
+                                    f"memory backfill refreshed {backfill.get('updated', 0)} "
+                                    "memories with embeddings"
+                                ),
+                            })
                 if chat_priority:
                     reflect_now = False
                     living_due = False

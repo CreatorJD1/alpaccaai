@@ -5,12 +5,11 @@ remembers feels alive. So after each exchange we decide whether the moment was
 *salient* enough to keep, and at the start of each turn we pull back the handful
 of memories most relevant to what's happening now.
 
-Retrieval is **semantic by default**: each memory is embedded with a local model
-(Ollama `nomic-embed-text`) and recalled by cosine similarity, so "how's the pup"
-can surface a memory about "my dog Biscuit" even with no shared words. If no
-embedder is available (Ollama not running, model not pulled), we fall back to the
-old keyword-overlap score so Alpecca still works offline -- it just recalls a bit
-more literally. The `tokens` column is kept for exactly that fallback.
+For chat recall, Alpecca calls this as keyword/semantic fallback: if chat is
+running with `embed_fn=None` it uses keyword overlap for speed and stability.
+Outside chat (for background recall and search), embeddings are used when
+available and fallback is to keyword overlap when an embedder is unavailable.
+The `tokens` column is always available as the literal fallback path.
 
 Embeddings are pluggable via an `embed_fn(text) -> list[float] | None` argument,
 which also makes the retrieval logic testable without a running model.
@@ -280,6 +279,72 @@ def recall(query: str, top_k: int = MEMORY_TOP_K, db_path: Path = DB_PATH,
         scored.append((score, d))
     scored.sort(key=lambda x: x[0], reverse=True)
     return _select_diverse(scored, top_k)
+
+
+def backfill_embeddings(batch: int = 16, db_path: Path = DB_PATH,
+                       embed_fn: Optional[Embedder] = default_embed) -> dict[str, int]:
+    """Populate `embedding` for memories where it is NULL.
+
+    This is intentionally idempotent: rows with existing embeddings are never
+    touched, and each call updates at most ``batch`` NULL rows. If the embedder
+    is unavailable or `embed_fn` is `None`, the function exits quietly without
+    writes.
+
+    Returns summary counters to support background observability and scheduling.
+    """
+    if not embed_fn:
+        return {"scanned": 0, "updated": 0, "skipped": 0, "errors": 0}
+    try:
+        batch = int(batch)
+    except (TypeError, ValueError):
+        batch = 16
+    if batch < 1:
+        batch = 1
+    scanned = 0
+    updated = 0
+    skipped = 0
+    errors = 0
+
+    # Probe default embedder once to avoid a full walk when Ollama is offline.
+    if embed_fn is default_embed and default_embed("alpecca memory backfill probe") is None:
+        return {"scanned": 0, "updated": 0, "skipped": 0, "errors": 0}
+
+    with _connect(db_path) as conn:
+        # Only NULL embeddings are candidates; this guarantees idempotency.
+        rows = conn.execute(
+            "SELECT id, content FROM memories WHERE embedding IS NULL ORDER BY ts LIMIT ?",
+            (batch,),
+        ).fetchall()
+        scanned = len(rows)
+        for row in rows:
+            content = (row["content"] or "").strip()
+            if not content:
+                skipped += 1
+                continue
+            try:
+                vec = embed_fn(content)
+            except Exception:
+                errors += 1
+                # A hard embedder failure in one row likely affects the batch.
+                break
+            if vec is None:
+                # Offline/unsupported model or caller-injected semantic disable.
+                skipped += 1
+                continue
+            try:
+                conn.execute(
+                    "UPDATE memories SET embedding=? WHERE id=?",
+                    (json.dumps(vec), row["id"]),
+                )
+                updated += 1
+            except Exception:
+                errors += 1
+    return {
+        "scanned": scanned,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+    }
 
 
 def _is_near_duplicate(a: dict, b: dict) -> bool:

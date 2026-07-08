@@ -450,6 +450,11 @@ MEMORY_SALIENCE_THRESHOLD = 0.3   # below this we don't bother storing a memory
 # rawer overlap, so a lower bar already means "basically the same words".
 MEMORY_DEDUP_COSINE = 0.93        # mapped-cosine above this == a near-duplicate
 MEMORY_DEDUP_TOKEN = 0.6          # token-overlap above this == a near-duplicate
+EMBED_BACKFILL = os.environ.get("ALPECCA_EMBED_BACKFILL", "1") \
+    not in ("", "0", "false", "False")
+# Keep chat recall deterministic while backfill runs in the background.
+CHAT_SEMANTIC_RECALL = os.environ.get("ALPECCA_CHAT_SEMANTIC_RECALL", "0") \
+    not in ("", "0", "false", "False")
 # Cross-session continuity: when a session ends (she's put to sleep / the server
 # shuts down) she leaves ONE grounded "where we left off" memory so the next
 # session can pick up the thread instead of starting cold. Stored well above the
@@ -684,6 +689,9 @@ class Reflection:
 # haven't explicitly handed her.
 class Actions:
     APPS_SPEC = os.environ.get("ALPECCA_APPS", "")
+    TOOL_MODE = os.environ.get("ALPECCA_TOOL_MODE", "smart").lower()
+    INNATE_TOOLS = os.environ.get("ALPECCA_INNATE_TOOLS", "1") \
+        not in ("", "0", "false", "False")
     # How many tool-call rounds she may chain within a single chat turn. One
     # round is single-shot ("open Spotify"); a few rounds let her carry out a
     # small multi-step request mid-conversation (e.g. open an app, then open a

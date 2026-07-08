@@ -50,6 +50,7 @@ from config import (
     CLOUD_SEND_SENSES,
     CORE_MEMORY_LEARN_ONLY,
     RECAP_SALIENCE,
+    CHAT_SEMANTIC_RECALL,
 )
 from config import (DEEP_BACKEND, ANTHROPIC_API_KEY, ANTHROPIC_MODEL,
                     CLOUD_URL, CLOUD_MODEL, CLOUD_API_KEY,
@@ -67,6 +68,7 @@ from alpecca import appearance as appearance_mod
 from alpecca.portrait import PortraitWorker
 from alpecca import portrait as portrait_mod
 from alpecca.actions import Actuator
+from alpecca.toolkit import InnateToolkit
 from alpecca import proactive as proactive_mod
 from alpecca import studio
 from alpecca import puppet
@@ -641,8 +643,8 @@ class _LLM:
             # sleeping Space can't stall the turn -- on timeout the local 9B
             # answers THIS turn while the abandoned attempt finishes waking
             # the Space, making the NEXT turns cloud-fast.
-            if (tier == "reason" and not tools and CHAT_ZEROGPU
-                    and ZEROGPU_SPACE and self._backend != "hf"):
+            if (tier == "reason" and not tools and on_token is None
+                    and CHAT_ZEROGPU and ZEROGPU_SPACE and self._backend != "hf"):
                 import concurrent.futures
                 if getattr(self, "_space_chat_pool", None) is None:
                     self._space_chat_pool = concurrent.futures.ThreadPoolExecutor(
@@ -982,6 +984,8 @@ class CoreMind:
         self._last_roam_ts: float = time.time()
         # Her granted reach into the machine (empty allowlist = no actuator).
         self.actuator = Actuator()
+        # Safe, local-only tools she can use internally from chat when offered.
+        self.toolkit = InnateToolkit(self)
         # Self-portrait renderer (ComfyClaw subprocess wrapper). It checks the
         # config-enabled flag itself, so we can call request() unconditionally.
         self._portrait = PortraitWorker()
@@ -994,6 +998,53 @@ class CoreMind:
             "Alpecca has started and is waiting for grounded input.",
             target=self._location,
         ))
+
+    def _tool_mode(self) -> str:
+        mode = (ActionsCfg.TOOL_MODE or "").strip().lower()
+        if mode not in {"keyword", "smart", "always"}:
+            return "smart"
+        return mode
+
+    def _tool_schema(self, user_low: str) -> list[dict] | None:
+        mode = self._tool_mode()
+        if not (self.actuator.enabled or self.toolkit.enabled):
+            return None
+        if mode == "keyword":
+            action_terms = (
+                "open ", "launch ", "start ", "close ", "switch ", "click ",
+                "type ", "press ", "search ", "go to ", "navigate ", "show me ",
+                "pull up ", "bring up ", "run ", "create file", "save ",
+            )
+            if not any(term in user_low for term in action_terms):
+                return None
+            wants_action = True
+        elif mode == "smart":
+            wants_action = (
+                any(term in user_low for term in (
+                    "open ", "launch ", "start ", "close ", "switch ", "click ",
+                    "type ", "press ", "search ", "find ", "look up ", "go to ",
+                    "move to ", "switch room", "what is your status",
+                    "memory", "remember", "journal", "note", "status",
+                    "location", "self status", "go room",
+                ))
+                # Non-trivial direct request to review internal state.
+                or "what room are you" in user_low
+                or "where are you" in user_low and "house" in user_low
+            )
+        else:
+            wants_action = True
+        if not wants_action:
+            return None
+        combined = [*self.actuator.tools_schema(), *self.toolkit.schemas()]
+        if len(combined) > 7:
+            combined = combined[:7]
+        return combined
+
+    def _execute_tool(self, tool_name: str, args: dict) -> str:
+        tool_name = str(tool_name or "").strip()
+        if self.toolkit.enabled and tool_name in {t["function"]["name"] for t in self.toolkit.schemas()}:
+            return self.toolkit.execute(tool_name, args)
+        return self.actuator.execute(tool_name, args)
 
     # --- Node 1: sense + update mood from the environment ------------------
 
@@ -1213,11 +1264,15 @@ class CoreMind:
         # mild novelty she can feel as interest.
         if "?" in user_msg or len(user_msg.split()) > 12:
             self.state = self.state.update_curiosity(Emotion.CURIOSITY_NOVELTY_CAP)
-        # Recall relevant memories for this message. Live chat uses keyword/DB
-        # recall so the embedding model does not evict or stall qwen3:8b before
-        # Alpecca answers. Deeper/background memory work can still use semantic
-        # embeddings outside the immediate conversation path.
-        memories = memory_store.recall(user_msg, embed_fn=None)
+        # Recall relevant memories for this message. By default live chat uses
+        # keyword recall so an embedding model call does not evict or stall
+        # qwen3:8b before Alpecca answers. ALPECCA_CHAT_SEMANTIC_RECALL can
+        # opt in to semantic query recall for live turns when that budget is
+        # acceptable.
+        memories = memory_store.recall(
+            user_msg,
+            embed_fn=memory_store.default_embed if CHAT_SEMANTIC_RECALL else None,
+        )
         memory_evidence = [{
             "id": m.get("id"),
             "kind": m.get("kind", "episodic"),
@@ -1303,9 +1358,15 @@ class CoreMind:
             pass
         inner = "; ".join(b for b in inner_bits if b)
 
+        abilities = self.actuator.describe()
+        if self.toolkit.enabled:
+            if abilities:
+                abilities = abilities.rstrip(".") + "; " + self.toolkit.describe()
+            else:
+                abilities = self.toolkit.describe()
         system_prompt = prompts.build_system_prompt(
             self.state, memories, situation, self_narration=self_report.narrate(),
-            image_seen=image_desc or "", abilities=self.actuator.describe(),
+            image_seen=image_desc or "", abilities=abilities,
             who=people_mod.who_prompt(self._speaker), inner=inner,
             core=core_mem.prompt_block(learning_only=CORE_MEMORY_LEARN_ONLY),
             current_message=user_msg,
@@ -1316,16 +1377,7 @@ class CoreMind:
             "Alpecca is composing a reply from memory, state, and context.",
             target=self._speaker,
         ))
-        action_terms = (
-            "open ", "launch ", "start ", "close ", "switch ", "click ",
-            "type ", "press ", "search ", "go to ", "navigate ", "show me ",
-            "pull up ", "bring up ", "run ", "create file", "save ",
-        )
-        wants_action = any(term in low for term in action_terms)
-        tool_schema = (
-            self.actuator.tools_schema()
-            if self.actuator.enabled and wants_action else None
-        )
+        tool_schema = self._tool_schema(low)
         # Stream only plain conversational turns; tool turns can't. Passed as
         # an extra kwarg ONLY when live, so test fakes and older generate
         # signatures keep working untouched.
@@ -1336,7 +1388,7 @@ class CoreMind:
         reply = self.llm.generate(
             system_prompt, user_msg, self._history[-HISTORY_MESSAGES:],
             tools=tool_schema,
-            on_tool=self.actuator.execute if tool_schema else None,
+            on_tool=self._execute_tool if tool_schema else None,
             tier=reply_tier,
             **stream_kwargs,
         )
@@ -2473,7 +2525,8 @@ class CoreMind:
             confidence=0.82,
         ))
         line = (
-            f"I am in {room_name}. I activated {activation.get('label', system_id)}. "
+            f"I am in House HQ's {room_name}. Current role: {creator_name or 'creator'}. "
+            f"I activated {activation.get('label', system_id)}. "
             f"My next question is: {question} Next I will {next_action['action']}."
         )
         return {
