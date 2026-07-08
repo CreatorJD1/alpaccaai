@@ -11,6 +11,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -243,6 +244,19 @@ def test_mindpage_stats_reports_context_pressure():
         assert stats["history_tokens"] >= 20
         assert stats["context_fill"] == 1.0
         assert stats["pressure"] == "high"
+
+
+def test_constrained_choice_parse_matrix():
+    from alpecca import choice
+
+    assert choice.parse_choice('{"pick": 2}', 3) == {"pick": 1}
+    assert choice.parse_choice('<think>x</think>{"pick": 1}', 3) == {"pick": 0}
+    assert choice.parse_choice('{"speak": false, "pick": 1}', 3, allow_speak=True) == {
+        "speak": False,
+        "pick": 0,
+    }
+    assert choice.parse_choice('{"pick": 9}', 3) is None
+    assert choice.parse_choice("not json", 3) is None
 
 
 # --- Sensory ---------------------------------------------------------------
@@ -2939,6 +2953,20 @@ def test_chatter_reasons_are_grounded_and_never_empty():
     assert bare and "saying hello" in bare[-1]
 
 
+def test_proactive_llm_judge_false_stays_quiet(monkeypatch):
+    from alpecca import mind as mind_mod
+
+    mind = mind_mod.CoreMind()
+    mind._last_user_ts = time.time() - 10_000
+    mind._last_volunteer_ts = 0
+    mind.llm._backend = "ollama"
+    mind.llm._client = object()
+    mind.llm.generate = lambda *a, **k: '{"speak": false, "pick": 1}'
+
+    assert mind.volunteer_reason() is None
+    assert mind._last_volunteer_ts == 0
+
+
 # --- Values: her directive hierarchy is explicit and ordered ------------------
 
 def test_values_prompt_is_ordered_and_complete():
@@ -3866,6 +3894,31 @@ def test_soul_slate_ordered_by_directive_rank():
     ranks = [i["rank"] for i in plan["slate"]]
     assert ranks == sorted(ranks)
     assert any(i["category"] == "self_care" for i in plan["slate"])
+
+def test_soul_llm_tiebreak_stays_within_winning_rank(monkeypatch):
+    from alpecca import mind as mind_mod
+    from alpecca import soul as soul_mod
+
+    mind = mind_mod.CoreMind()
+    mind.llm._backend = "ollama"
+    mind.llm._client = object()
+    mind.llm.generate = lambda *a, **k: '{"pick": 2}'
+    plan = {
+        "focus": {"subagent": "Doer", "category": "actions", "action": "a", "reason": "a", "rank": 3},
+        "slate": [
+            {"subagent": "Doer", "category": "actions", "action": "a", "reason": "a", "rank": 3},
+            {"subagent": "Carer", "category": "compassion", "action": "b", "reason": "b", "rank": 3},
+            {"subagent": "Improver", "category": "self_care", "action": "c", "reason": "c", "rank": 4},
+        ],
+        "by_category": {},
+        "principle": "test",
+    }
+    monkeypatch.setattr(soul_mod.soul, "deliberate", lambda snap: dict(plan))
+
+    out = mind.soul_state()
+
+    assert out["focus"]["subagent"] == "Carer"
+    assert out["focus"]["rank"] == 3
 
 def test_soul_steers_to_act_on_a_standing_connection_want():
     # The Soul drives her idle loop now: with a standing connection want, real

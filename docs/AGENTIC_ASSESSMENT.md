@@ -32,6 +32,9 @@ on parse/model failure, `CognitionObservation` logging for autonomous acts, and
 - Mindpage Layer A initial core: token pressure stats, compressed page table,
   episode writeback on history eviction, `recall_page`, memory indexes, and
   `/mindpage/stats`.
+- Stage 3 initial constrained choice points: strict tiny-JSON choice helper,
+  living-loop question choice, Soul same-rank tie-breaks, and proactive chatter
+  judge/seed choice with deterministic fallback.
 
 ## Stage 3 - LLM-In-The-Loop Choice Points
 
@@ -57,6 +60,9 @@ Flags:
 - `ALPECCA_LIVING_LLM=1`
 - `ALPECCA_SOUL_LLM=1`
 - `ALPECCA_PROACTIVE_LLM=1`
+
+Status: implemented for the initial three choice points. Future expansion should
+reuse the same parser/helper and keep all safety gates in code.
 
 ## Stage 4 - Simple Planner
 

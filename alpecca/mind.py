@@ -58,6 +58,7 @@ from config import (DEEP_BACKEND, ANTHROPIC_API_KEY, ANTHROPIC_MODEL,
                     COLAB_TIMEOUT_SECONDS, COLAB_FAST_CHAT,
                     ZEROGPU_SPACE, ZEROGPU_API, ZEROGPU_TOKEN,
                     OLLAMA_CLOUD_MODEL, CLOUD_REFLECT_NUM_PREDICT)
+from config import LIVING_LLM, SOUL_LLM, PROACTIVE_LLM
 from alpecca.homeostasis import EmotionalState
 from alpecca import state as state_store
 from alpecca import memory as memory_store
@@ -84,6 +85,7 @@ from alpecca import people as people_mod
 from alpecca import core_memory as core_mem
 from alpecca import speech as speech_mod
 from alpecca import colab_t4
+from alpecca import choice as choice_mod
 from config import Proactive as ProactiveCfg, Reflection as ReflectionCfg, Actions as ActionsCfg
 
 
@@ -2065,9 +2067,13 @@ class CoreMind:
         if reason:
             self._last_volunteer_ts = now
             return reason
-        # No mood shift -- but she can still just start a conversation.
-        if proactive_mod.should_chatter(now, self._last_user_ts,
-                                        self._last_volunteer_ts, random.random()):
+        # No mood shift -- but she can still just start a conversation. The LLM
+        # may judge the final fire/seed choice once deterministic eligibility
+        # passes; random chance remains the offline/parse fallback.
+        chatter_eligible = proactive_mod.should_chatter(
+            now, self._last_user_ts, self._last_volunteer_ts, 0.0
+        )
+        if chatter_eligible:
             recent = memory_store.recent(limit=8)
             memory = random.choice(recent)["content"] if recent else ""
             seeds = proactive_mod.chatter_reasons(
@@ -2077,8 +2083,24 @@ class CoreMind:
                 hour=time.localtime(now).tm_hour,
                 mood=self.state.mood_label(),
             )
-            self._last_volunteer_ts = now
-            return random.choice(seeds)
+            if PROACTIVE_LLM:
+                decision = choice_mod.constrained_pick(
+                    self.llm,
+                    "Should Alpecca speak up during this quiet stretch?",
+                    seeds,
+                    context=f"mood={self.state.mood_label()}; silence={now - self._last_user_ts:.1f}s",
+                    allow_speak=True,
+                )
+                if decision is not None:
+                    if decision.get("speak") is False:
+                        return None
+                    pick = int(decision.get("pick", 0))
+                    self._last_volunteer_ts = now
+                    return seeds[pick]
+            if proactive_mod.should_chatter(now, self._last_user_ts,
+                                            self._last_volunteer_ts, random.random()):
+                self._last_volunteer_ts = now
+                return random.choice(seeds)
         return None
 
     def compose_volunteer(self, reason: str) -> str:
@@ -2400,10 +2422,23 @@ class CoreMind:
             for q in open_questions
             if isinstance(q, dict)
         }
-        question = next(
-            (q for q in question_bank if q.lower() not in already_open),
-            question_bank[int(time.time() // 60) % len(question_bank)],
-        )
+        choices = [q for q in question_bank if q.lower() not in already_open] or question_bank
+        question = None
+        if LIVING_LLM:
+            obs_context = "; ".join(str(o.get("content", ""))[:120] for o in recent_observations[:4])
+            decision = choice_mod.constrained_pick(
+                self.llm,
+                "Pick the most grounded living-loop question for Alpecca to carry next.",
+                choices,
+                context=f"room={room_name}; purpose={room_purpose}; observations={obs_context}",
+            )
+            if decision is not None:
+                question = choices[int(decision["pick"])].strip()[:120]
+        if not question:
+            question = next(
+                (q for q in question_bank if q.lower() not in already_open),
+                question_bank[int(time.time() // 60) % len(question_bank)],
+            )
         observation_text = (
             f"Living loop in {room_name}: purpose={room_purpose}. "
             f"{creator_evidence} Current role: use House HQ as embodied scaffold, "
@@ -2915,7 +2950,42 @@ class CoreMind:
         """What her Soul is arbitrating right now: the ranked slate of intentions
         from her seven subagents and the one in focus, decided by the Good Person
         Principle. Read-only and fully explainable."""
-        return soul_mod.soul.deliberate(self._soul_snapshot())
+        plan = soul_mod.soul.deliberate(self._soul_snapshot())
+        focus = plan.get("focus") or {}
+        slate = plan.get("slate") or []
+        if SOUL_LLM and focus and len(slate) > 1:
+            winning_rank = focus.get("rank")
+            tied = [
+                item for item in slate
+                if item.get("rank") == winning_rank
+                and (item.get("rank") == 1 or item.get("category") != "emotions")
+            ]
+            if len(tied) >= 2:
+                options = [
+                    f"{t.get('subagent')}: {t.get('action')} because {t.get('reason')}"
+                    for t in tied
+                ]
+                decision = choice_mod.constrained_pick(
+                    self.llm,
+                    "Choose only within the already-winning Soul rank.",
+                    options,
+                    context=f"winning_rank={winning_rank}; location={self._location}",
+                )
+                if decision is not None:
+                    picked = tied[int(decision["pick"])]
+                    plan["focus"] = picked
+                    cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                        source="soul_choice",
+                        room=self._location,
+                        content=(
+                            f"Constrained Soul tie-break picked {picked.get('subagent')} "
+                            f"within rank {winning_rank}."
+                        ),
+                        confidence=0.82,
+                        privacy_class="local",
+                        metadata={"winning_rank": winning_rank, "picked": picked, "options": tied},
+                    ))
+        return plan
 
     def idle_self_direct(self) -> dict | None:
         """One self-directed act on a quiet tick, **chosen by her Soul** -- this is

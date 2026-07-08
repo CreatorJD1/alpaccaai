@@ -459,6 +459,12 @@ CHAT_SEMANTIC_RECALL = os.environ.get("ALPECCA_CHAT_SEMANTIC_RECALL", "0") \
 MINDPAGE = os.environ.get("ALPECCA_MINDPAGE", "1") \
     not in ("", "0", "false", "False")
 MINDPAGE_DISK_GB = float(os.environ.get("ALPECCA_MINDPAGE_DISK_GB", "2"))
+LIVING_LLM = os.environ.get("ALPECCA_LIVING_LLM", "1") \
+    not in ("", "0", "false", "False")
+SOUL_LLM = os.environ.get("ALPECCA_SOUL_LLM", "1") \
+    not in ("", "0", "false", "False")
+PROACTIVE_LLM = os.environ.get("ALPECCA_PROACTIVE_LLM", "1") \
+    not in ("", "0", "false", "False")
 # Cross-session continuity: when a session ends (she's put to sleep / the server
 # shuts down) she leaves ONE grounded "where we left off" memory so the next
 # session can pick up the thread instead of starting cold. Stored well above the

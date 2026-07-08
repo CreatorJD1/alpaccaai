@@ -12,6 +12,8 @@ Use this as the short active status pointer.
 - Mindpage Layer A now writes evicted chat history into compressed local pages,
   exposes `/mindpage/stats`, and lets Alpecca fault pages back in through
   `recall_page`.
+- Stage 3 constrained choices now cover living-loop question choice, Soul
+  same-rank tie-breaks, and proactive chatter judge/seed choice.
 - The memory path for live chat remains keyword-first (`embed_fn=None`), with
   background semantic recall support through backfill.
 - No default behavior changes were made to art pipelines, House HQ animation
