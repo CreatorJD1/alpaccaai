@@ -2118,13 +2118,20 @@ async def cognition_proposal_update(proposal_id: int, req: Request) -> dict:
     status = (body.get("status") or "").strip()
     result = (body.get("result") or "").strip()
     approved = bool(body.get("approved_by_user"))
+    execute = bool(body.get("execute"))
     try:
         async with mind_lock:
-            return mind.update_proposal(proposal_id, status, result, approved)
+            updated = mind.update_proposal(proposal_id, status, result, approved)
+            if execute:
+                executed = mind.execute_approved_step(proposal_id, approved_by_user=approved)
+                return {**executed, "updated": updated}
+            return updated
     except KeyError:
         raise HTTPException(status_code=404, detail="proposal not found")
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/cognition/proposals/{proposal_id}/evaluations")

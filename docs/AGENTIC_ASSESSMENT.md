@@ -35,6 +35,11 @@ on parse/model failure, `CognitionObservation` logging for autonomous acts, and
 - Stage 3 initial constrained choice points: strict tiny-JSON choice helper,
   living-loop question choice, Soul same-rank tie-breaks, and proactive chatter
   judge/seed choice with deterministic fallback.
+- Stage 4: local-only planner, `payload` proposal storage, `make_plan(goal)`,
+  and explicit user-approved one-step execution through Workshop proposals.
+
+Current model note: do not revive the older Qwen 3 8B path. Runtime planning
+uses the configured local Ollama model from `ALPECCA_MODEL`.
 
 ## Stage 3 - LLM-In-The-Loop Choice Points
 
@@ -77,6 +82,10 @@ Add a local-only planner that drafts Workshop proposals, not autonomous actions.
 - No autonomous chaining.
 
 Flag: `ALPECCA_PLANNER=1`.
+
+Status: implemented. The planner creates proposals only; execution requires the
+existing proposal route to accept the step with `approved_by_user=true` and
+`execute=true`.
 
 ## Stage 5 - Automation
 

@@ -65,6 +65,7 @@ class InnateToolkit:
             "make a grounded note-to-self intention",
             "report live self status",
             "move to a Home room",
+            "draft approval-required plans",
             "recall a paged-out conversation episode",
         ]
 
@@ -79,7 +80,7 @@ class InnateToolkit:
     def schemas(self) -> list[dict]:
         if not self.enabled:
             return []
-        return [
+        tools = [
             {
                 "type": "function",
                 "function": {
@@ -206,6 +207,26 @@ class InnateToolkit:
                     },
                 },
             },
+        ]
+        if ActionsCfg.PLANNER:
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "make_plan",
+                    "description": "Draft up to five approval-required Workshop steps for a goal. This creates proposals only; it does not execute them.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "goal": {
+                                "type": "string",
+                                "description": "The bounded goal to plan for.",
+                            },
+                        },
+                        "required": ["goal"],
+                    },
+                },
+            })
+        tools.append(
             {
                 "type": "function",
                 "function": {
@@ -223,7 +244,8 @@ class InnateToolkit:
                     },
                 },
             },
-        ]
+        )
+        return tools[:7]
 
     def execute(self, tool_name: str, args: dict) -> str:
         if not self.enabled:
@@ -237,6 +259,7 @@ class InnateToolkit:
             "self_status": self._self_status,
             "go_to_room": self._go_to_room,
             "recall_page": self._recall_page,
+            "make_plan": self._make_plan,
         }
         fn = handlers.get(tool_name)
         if not fn:
@@ -397,4 +420,21 @@ class InnateToolkit:
                     "score": hit.get("score"),
                 } for hit in hits
             ],
+        }, ensure_ascii=False)
+
+    def _make_plan(self, args: dict) -> str:
+        if not ActionsCfg.PLANNER:
+            return "error: planner is disabled"
+        goal = str(args.get("goal") or args.get("query") or "").strip()
+        if not goal:
+            return "error: make_plan requires goal"
+        result = self.mind.plan_goal(goal)
+        if not result.get("ok"):
+            return f"planner failed: {result.get('error', 'unknown error')}"
+        return json.dumps({
+            "created": int(result.get("created") or 0),
+            "proposal_ids": [
+                int(p.get("id")) for p in result.get("proposals", []) if p.get("id") is not None
+            ],
+            "message": f"I drafted {int(result.get('created') or 0)} step(s) into the Workshop.",
         }, ensure_ascii=False)

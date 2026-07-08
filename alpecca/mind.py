@@ -86,6 +86,7 @@ from alpecca import core_memory as core_mem
 from alpecca import speech as speech_mod
 from alpecca import colab_t4
 from alpecca import choice as choice_mod
+from alpecca import planner as planner_mod
 from config import Proactive as ProactiveCfg, Reflection as ReflectionCfg, Actions as ActionsCfg
 
 
@@ -1028,7 +1029,8 @@ class CoreMind:
                     "type ", "press ", "search ", "find ", "look up ", "go to ",
                     "move to ", "switch room", "what is your status",
                     "memory", "remember", "journal", "note", "status",
-                    "location", "self status", "go room",
+                    "location", "self status", "go room", "make a plan",
+                    "draft a plan", "plan for", "workshop plan",
                 ))
                 # Non-trivial direct request to review internal state.
                 or "what room are you" in user_low
@@ -1269,7 +1271,7 @@ class CoreMind:
             self.state = self.state.update_curiosity(Emotion.CURIOSITY_NOVELTY_CAP)
         # Recall relevant memories for this message. By default live chat uses
         # keyword recall so an embedding model call does not evict or stall
-        # qwen3:8b before Alpecca answers. ALPECCA_CHAT_SEMANTIC_RECALL can
+        # the configured chat model before Alpecca answers. ALPECCA_CHAT_SEMANTIC_RECALL can
         # opt in to semantic query recall for live turns when that budget is
         # acceptable.
         memories = memory_store.recall(
@@ -1878,6 +1880,7 @@ class CoreMind:
             status=payload.get("status") or "noticed",
             evidence=payload.get("evidence") or "",
             result=payload.get("result") or "",
+            payload=payload.get("payload") or {},
         )
         proposal_id = cognition_mod.propose_action(proposal)
         if proposal_id is None:
@@ -1891,6 +1894,104 @@ class CoreMind:
             source="proposal",
         )
         return created
+
+    def _planner_generate_local(self, system_prompt: str, user_msg: str) -> str:
+        """One strictly local Ollama call for approval-gated planning."""
+        client = getattr(self.llm, "_client", None)
+        if client is None:
+            raise RuntimeError("local Ollama client is not configured")
+        kwargs: dict = {
+            "model": OLLAMA_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_msg},
+            ],
+            "options": {
+                "num_ctx": OLLAMA_NUM_CTX,
+                "num_predict": min(max(256, OLLAMA_NUM_PREDICT), 512),
+                "repeat_penalty": 1.08,
+                "repeat_last_n": 128,
+            },
+            "keep_alive": OLLAMA_KEEP_ALIVE,
+        }
+        if OLLAMA_NUM_GPU is not None:
+            kwargs["options"]["num_gpu"] = OLLAMA_NUM_GPU
+        try:
+            resp = client.chat(**kwargs, think=False)
+        except TypeError:
+            resp = client.chat(**kwargs)
+        return strip_think(resp["message"].get("content") or "")
+
+    def plan_goal(self, goal: str) -> dict:
+        if not ActionsCfg.PLANNER:
+            return {"ok": False, "error": "planner is disabled", "created": 0, "proposals": []}
+        result = planner_mod.plan_goal(goal, self._planner_generate_local)
+        cognition_mod.record_observation(cognition_mod.CognitionObservation(
+            source="planner",
+            room=self._location,
+            content=(
+                f"Planner drafted {int(result.get('created') or 0)} Workshop step(s)."
+                if result.get("ok")
+                else f"Planner could not draft steps: {result.get('error', 'unknown error')}"
+            ),
+            confidence=0.9 if result.get("ok") else 0.6,
+            privacy_class="local",
+            metadata={
+                "goal": (goal or "")[:500],
+                "ok": bool(result.get("ok")),
+                "created": int(result.get("created") or 0),
+            },
+        ))
+        return result
+
+    def execute_approved_step(self, proposal_id: int, approved_by_user: bool = False) -> dict:
+        row = cognition_mod.get_action_proposal(proposal_id)
+        if row is None:
+            raise KeyError(proposal_id)
+        if row.get("status") != "accepted":
+            raise PermissionError("planner step must be accepted before execution")
+        ok, reason = cognition_mod.proposal_decision_allowed(
+            row, "accepted", approved_by_user=approved_by_user,
+        )
+        if not ok:
+            raise PermissionError(reason)
+        if row.get("approval") == cognition_mod.APPROVAL_NEVER_AUTO:
+            raise PermissionError("never-auto proposals cannot be executed by the planner")
+        payload = cognition_mod.proposal_payload(row)
+        if payload.get("kind") != "planner_step":
+            raise ValueError("proposal does not contain a planner step payload")
+        tool = str(payload.get("tool") or "").strip()
+        args = payload.get("args") or {}
+        if not isinstance(args, dict):
+            args = {}
+        if tool not in planner_mod.ALLOWED_PLAN_TOOLS:
+            raise ValueError(f"planner tool is not allowed: {tool}")
+        result_text = self.toolkit.execute(tool, args)
+        evaluation = cognition_mod.record_proposal_evaluation(cognition_mod.ProposalEvaluation(
+            proposal_id=int(proposal_id),
+            phase="result",
+            metric="planner_step_execution",
+            evidence=f"Executed approved planner tool: {tool}",
+            test=f"Run {tool} with stored planner args after user approval.",
+            outcome=str(result_text)[:1000],
+            score=1.0 if not str(result_text).startswith("error") else 0.0,
+            supports_status="accepted",
+        ))
+        updated = cognition_mod.update_action_proposal(
+            proposal_id,
+            status="accepted",
+            result=f"Executed approved planner step via {tool}: {str(result_text)[:700]}",
+            approved_by_user=True,
+        )
+        return {
+            "proposal": updated,
+            "execution": {
+                "tool": tool,
+                "args": args,
+                "result": str(result_text),
+                "evaluation": evaluation,
+            },
+        }
 
     def update_proposal(self, proposal_id: int, status: str, result: str = "",
                         approved_by_user: bool = False) -> dict:

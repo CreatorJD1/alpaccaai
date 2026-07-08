@@ -81,6 +81,7 @@ class ActionProposal:
     status: str = "noticed"
     evidence: str = ""
     result: str = ""
+    payload: dict[str, Any] | str = field(default_factory=dict)
     ts: float = field(default_factory=time.time)
 
     def clean(self) -> "ActionProposal":
@@ -88,6 +89,13 @@ class ActionProposal:
         self.reason = (self.reason or "").strip()[:800]
         self.evidence = (self.evidence or "").strip()[:1000]
         self.result = (self.result or "").strip()[:1000]
+        if isinstance(self.payload, str):
+            self.payload = self.payload.strip()[:4000]
+        else:
+            try:
+                self.payload = json.dumps(self.payload if self.payload is not None else {}, ensure_ascii=True)[:4000]
+            except Exception:
+                self.payload = "{}"
         if self.approval not in {APPROVAL_AUTOMATIC, APPROVAL_ASK_FIRST, APPROVAL_NEVER_AUTO}:
             self.approval = APPROVAL_ASK_FIRST
         if self.risk not in {"low", "medium", "high"}:
@@ -195,7 +203,8 @@ def init_db(db_path: Path = DB_PATH) -> None:
                 risk      TEXT NOT NULL,
                 status    TEXT NOT NULL,
                 evidence  TEXT,
-                result    TEXT
+                result    TEXT,
+                payload   TEXT
             );
 
             CREATE TABLE IF NOT EXISTS proposal_evaluations (
@@ -233,6 +242,9 @@ def init_db(db_path: Path = DB_PATH) -> None:
             conn.execute("ALTER TABLE cognition_observations ADD COLUMN remembered INTEGER NOT NULL DEFAULT 0")
         if "memory_id" not in cols:
             conn.execute("ALTER TABLE cognition_observations ADD COLUMN memory_id INTEGER")
+        proposal_cols = {r["name"] for r in conn.execute("PRAGMA table_info(action_proposals)")}
+        if "payload" not in proposal_cols:
+            conn.execute("ALTER TABLE action_proposals ADD COLUMN payload TEXT")
 
 
 def _json_dict(value: Any) -> str:
@@ -247,6 +259,21 @@ def _json_list(value: Any) -> str:
         return json.dumps(value if isinstance(value, list) else [], ensure_ascii=True)
     except Exception:
         return "[]"
+
+
+def proposal_payload(row: dict | None) -> dict[str, Any]:
+    if not row:
+        return {}
+    raw = row.get("payload") if isinstance(row, dict) else None
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        data = json.loads(str(raw))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def record_observation(obs: CognitionObservation, db_path: Path = DB_PATH) -> int | None:
@@ -478,8 +505,8 @@ def propose_action(proposal: ActionProposal, db_path: Path = DB_PATH) -> int | N
     with _connect(db_path) as conn:
         cur = conn.execute(
             "INSERT INTO action_proposals "
-            "(ts, action, reason, approval, risk, status, evidence, result) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(ts, action, reason, approval, risk, status, evidence, result, payload) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 proposal.ts,
                 proposal.action,
@@ -489,6 +516,7 @@ def propose_action(proposal: ActionProposal, db_path: Path = DB_PATH) -> int | N
                 proposal.status,
                 proposal.evidence,
                 proposal.result,
+                proposal.payload,
             ),
         )
         return int(cur.lastrowid)

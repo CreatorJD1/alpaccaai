@@ -450,7 +450,7 @@ def test_cognition_records_observation_intent_and_proposals():
             mood="curious",
             emotion={"love": 0.5},
             location="Library",
-            models={"reason": "qwen3:8b", "deep": "local", "llm_online": True},
+            models={"reason": "qwen3.5:9b", "deep": "local", "llm_online": True},
             senses={"window": True},
             memories=[],
             journal={"recent": [], "open_questions": []},
@@ -810,7 +810,7 @@ def test_runtime_status_reports_degraded_voice_and_offline_model():
         "fix": "start Ollama",
     }
     d = runtime_status.build_runtime_status(
-        models={"reason": "qwen3:8b", "fast": "gemma4-e4b", "deep": "local"},
+        models={"reason": "qwen3.5:9b", "fast": "gemma4-e4b", "deep": "local"},
         llm_online=True,
         deep_backend="local",
         deep_online=False,
@@ -827,7 +827,7 @@ def test_runtime_status_reports_degraded_voice_and_offline_model():
 
 def test_runtime_status_requires_original_modulated_alpecca_voice():
     d = runtime_status.build_runtime_status(
-        models={"reason": "qwen3:8b", "fast": "gemma4-e4b", "deep": "local"},
+        models={"reason": "qwen3.5:9b", "fast": "gemma4-e4b", "deep": "local"},
         llm_online=True,
         deep_backend="local",
         deep_online=False,
@@ -854,7 +854,7 @@ def test_runtime_status_requires_original_modulated_alpecca_voice():
 
 def test_runtime_status_flags_generic_server_voice_as_mismatch():
     d = runtime_status.build_runtime_status(
-        models={"reason": "qwen3:8b", "fast": "gemma4-e4b", "deep": "local"},
+        models={"reason": "qwen3.5:9b", "fast": "gemma4-e4b", "deep": "local"},
         llm_online=True,
         deep_backend="local",
         deep_online=False,
@@ -883,7 +883,7 @@ def test_runtime_status_flags_generic_server_voice_as_mismatch():
 
 def test_cognition_capabilities_summarize_voice_and_model_state():
     runtime = runtime_status.build_runtime_status(
-        models={"reason": "qwen3:8b", "fast": "gemma4-e4b", "deep": "zerogpu"},
+        models={"reason": "qwen3.5:9b", "fast": "gemma4-e4b", "deep": "zerogpu"},
         llm_online=True,
         deep_backend="zerogpu",
         deep_online=True,
@@ -911,7 +911,7 @@ def test_cognition_capabilities_summarize_voice_and_model_state():
 
 def test_cognition_capabilities_explain_generic_voice_fallback():
     runtime = runtime_status.build_runtime_status(
-        models={"reason": "qwen3:8b", "fast": "gemma4-e4b", "deep": "local"},
+        models={"reason": "qwen3.5:9b", "fast": "gemma4-e4b", "deep": "local"},
         llm_online=True,
         deep_backend="local",
         deep_online=False,
@@ -937,7 +937,7 @@ def test_cognition_capabilities_explain_generic_voice_fallback():
 
 def test_doctor_report_names_three_layer_app_hierarchy():
     runtime = runtime_status.build_runtime_status(
-        models={"reason": "qwen3:8b", "fast": "gemma4-e4b", "deep": "local"},
+        models={"reason": "qwen3.5:9b", "fast": "gemma4-e4b", "deep": "local"},
         llm_online=True,
         deep_backend="local",
         deep_online=False,
@@ -967,7 +967,7 @@ def test_doctor_report_names_three_layer_app_hierarchy():
 
 def test_doctor_report_recommends_model_and_mindscape_fixes():
     runtime = runtime_status.build_runtime_status(
-        models={"reason": "qwen3:8b", "fast": "gemma4-e4b", "deep": "local"},
+        models={"reason": "qwen3.5:9b", "fast": "gemma4-e4b", "deep": "local"},
         llm_online=True,
         deep_backend="local",
         deep_online=False,
@@ -1574,6 +1574,117 @@ def test_cognition_improvement_handoff_is_bounded_markdown():
     assert "Improve House HQ movement direction checks" in packet["markdown"]
     assert "directional_walk_integrity" in packet["markdown"]
     assert "record back into Alpecca" in packet["markdown"]
+
+
+def test_action_proposals_store_machine_payload():
+    import tempfile
+    from alpecca import cognition
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "payload.db"
+        cognition.init_db(db)
+        proposal_id = cognition.propose_action(cognition.ActionProposal(
+            action="Planner step",
+            reason="Store exact tool call.",
+            approval=cognition.APPROVAL_ASK_FIRST,
+            risk="low",
+            status="planned",
+            payload={"kind": "planner_step", "tool": "self_status", "args": {}},
+        ), db_path=db)
+        row = cognition.get_action_proposal(proposal_id, db_path=db)
+
+    assert row is not None
+    assert cognition.proposal_payload(row)["tool"] == "self_status"
+
+
+def test_planner_parses_and_creates_ask_first_proposals():
+    import tempfile
+    from alpecca import planner
+    from alpecca import cognition
+
+    calls = {"n": 0}
+
+    def fake_generate(_system, _prompt):
+        calls["n"] += 1
+        return (
+            "<think>drafting</think>"
+            '{"steps":[{"tool":"note_to_self","args":{"text":"Keep the plan bounded."},'
+            '"action":"Remember planner bounds","reason":"The goal needs approval-gated steps."}]}'
+        )
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "planner.db"
+        cognition.init_db(db)
+        result = planner.plan_goal("Improve Workshop planning safely", fake_generate, db_path=db)
+
+    assert result["ok"] is True
+    assert result["created"] == 1
+    row = result["proposals"][0]
+    assert row["approval"] == cognition.APPROVAL_ASK_FIRST
+    assert row["status"] == "planned"
+    payload = cognition.proposal_payload(row)
+    assert payload["kind"] == "planner_step"
+    assert payload["tool"] == "note_to_self"
+    assert payload["args"]["text"] == "Keep the plan bounded."
+    assert calls["n"] == 1
+
+
+def test_planner_retries_once_after_malformed_json():
+    import tempfile
+    from alpecca import planner
+    from alpecca import cognition
+
+    replies = iter([
+        "not json",
+        '{"steps":[{"tool":"self_status","args":{},"action":"Check status","reason":"Start from live state."}]}',
+    ])
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "planner_retry.db"
+        cognition.init_db(db)
+        result = planner.plan_goal("Check live status before acting", lambda _s, _p: next(replies), db_path=db)
+
+    assert result["ok"] is True
+    assert result["created"] == 1
+    assert cognition.proposal_payload(result["proposals"][0])["tool"] == "self_status"
+
+
+def test_cognition_route_executes_only_user_approved_planner_step():
+    from fastapi.testclient import TestClient
+    import server
+    import sqlite3
+
+    payload = {"kind": "planner_step", "tool": "self_status", "args": {}}
+    proposal_id = cognition.propose_action(cognition.ActionProposal(
+        action="Run approved self status planner step",
+        reason="Route execution smoke test.",
+        approval=cognition.APPROVAL_ASK_FIRST,
+        risk="low",
+        status="planned",
+        payload=payload,
+    ))
+    client = TestClient(server.app)
+    try:
+        denied = client.post(f"/cognition/proposals/{proposal_id}", json={
+            "status": "accepted",
+            "approved_by_user": False,
+            "execute": True,
+        })
+        assert denied.status_code == 403
+
+        accepted = client.post(f"/cognition/proposals/{proposal_id}", json={
+            "status": "accepted",
+            "approved_by_user": True,
+            "execute": True,
+        })
+        assert accepted.status_code == 200
+        data = accepted.json()
+        assert data["execution"]["tool"] == "self_status"
+        assert data["execution"]["evaluation"]["metric"] == "planner_step_execution"
+    finally:
+        with sqlite3.connect(state_store.DB_PATH) as conn:
+            conn.execute("DELETE FROM proposal_evaluations WHERE proposal_id=?", (int(proposal_id),))
+            conn.execute("DELETE FROM action_proposals WHERE id=?", (int(proposal_id),))
 
 
 def test_cognition_proposal_handoff_route_reports_markdown_packet():

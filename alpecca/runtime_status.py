@@ -39,7 +39,8 @@ def check_ollama(host: str, reason_model: str, fast_model: str = "",
             "reason_model_present": False,
             "fast_model_present": False,
             "error": f"{type(exc).__name__}: {exc}",
-            "fix": "Start the Ollama app, then run: ollama pull " + (reason_model or "qwen3:8b"),
+            "fix": "Start the Ollama app, then pull the configured ALPECCA_MODEL"
+                   + (f" ({reason_model})" if reason_model else "."),
         }
     models = [
         str(m.get("model") or m.get("name") or "")
@@ -330,7 +331,7 @@ def build_doctor_report(*, runtime: dict, mindscape: dict,
                 f"deep tier: {models.get('deep_backend') or models.get('deep') or 'local'}."
             ),
             "/system/status",
-            "" if chat_ready else "Start Ollama, then run ollama pull qwen3:8b.",
+            "" if chat_ready else "Start Ollama, then pull the configured ALPECCA_MODEL.",
         ),
         section(
             "Voice",

@@ -32,14 +32,11 @@ if _OLD_DB.exists() and not DB_PATH.exists():
     _OLD_DB.rename(DB_PATH)
 
 # --- Local model (Ollama) --------------------------------------------------
-# The reasoning model. Pull it once with: `ollama pull qwen3:8b`
-# Qwen3 is markedly better than Qwen2.5 at the things a companion needs --
-# human-preference alignment, role-play, multi-turn dialogue -- so it's the
-# default. Qwen3 hybrid models may emit <think>...</think> blocks; mind.py
-# strips those from replies, so thinking variants also work. For lower latency
-# on a small GPU (e.g. 4 GB), ALPECCA_MODEL=qwen3:4b is the right pick.
-# qwen2.5:7b-instruct still works if that's what you have pulled.
-OLLAMA_MODEL = os.environ.get("ALPECCA_MODEL", "qwen3:8b")
+# The reasoning model. The current local baseline is Qwen3.5, not the older
+# Qwen 3 8B path. Pull/register the current tag once, or set ALPECCA_MODEL to
+# the model Jason has approved on this machine. Qwen-family hybrid models may
+# emit <think>...</think> blocks; mind.py strips those from user-facing replies.
+OLLAMA_MODEL = os.environ.get("ALPECCA_MODEL", "qwen3.5:9b")
 
 # Safety net for a specific, painful gotcha: an earlier build suggested the tag
 # 'qwen3:4b-instruct-2507', which is NOT a real Ollama model -- pulling it 404s.
@@ -47,7 +44,7 @@ OLLAMA_MODEL = os.environ.get("ALPECCA_MODEL", "qwen3:8b")
 # "You said: ..." echo. Quietly remap that one dead name to the real 4B tag so a
 # leftover setting can't keep her brain offline.
 if OLLAMA_MODEL == "qwen3:4b-instruct-2507":
-    OLLAMA_MODEL = "qwen3:8b"
+    OLLAMA_MODEL = "qwen3.5:9b"
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 
 # A second, tiny model for *cheap* work -- short, low-stakes generations like her
@@ -247,7 +244,8 @@ CLOUD_MODEL = os.environ.get("ALPECCA_CLOUD_MODEL", "")
 CLOUD_API_KEY = os.environ.get("ALPECCA_CLOUD_API_KEY", "")
 
 # Optional Google Colab T4 accelerator for fast House HQ replies. This is a
-# speed tier, not her identity tier: qwen3:8b remains the local reasoning model.
+# speed tier, not her identity tier: the configured ALPECCA_MODEL remains the
+# local reasoning model.
 # Run notebooks/alpecca_colab_t4_server.ipynb in Colab, copy the tunnel URL here,
 # and Alpecca will use it for fast chat while falling back locally if it sleeps.
 COLAB_URL = os.environ.get("ALPECCA_COLAB_URL", "").rstrip("/")
@@ -701,6 +699,8 @@ class Actions:
     APPS_SPEC = os.environ.get("ALPECCA_APPS", "")
     TOOL_MODE = os.environ.get("ALPECCA_TOOL_MODE", "smart").lower()
     INNATE_TOOLS = os.environ.get("ALPECCA_INNATE_TOOLS", "1") \
+        not in ("", "0", "false", "False")
+    PLANNER = os.environ.get("ALPECCA_PLANNER", "1") \
         not in ("", "0", "false", "False")
     # How many tool-call rounds she may chain within a single chat turn. One
     # round is single-shot ("open Spotify"); a few rounds let her carry out a
