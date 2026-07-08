@@ -71,7 +71,7 @@
   <tr><td class="k">config.py</td><td>All tunable knobs across 13 classes (Emotion, Home, Files, RigData, Voice, Hearing, Vision, Proactive, Reflection, Actions, Computer, Portrait, OpenClaw).</td></tr>
   <tr><td class="k">server.py</td><td>FastAPI + WebSocket host; 83 endpoints; token-auth middleware.</td></tr>
   <tr><td class="k">app.py</td><td>Native desktop window (pywebview) + LAN/tunnel orchestration.</td></tr>
-  <tr><td class="k">Tiered LLM</td><td>In <code>mind.py</code>: local <code>reason</code> (qwen3:8b) + <code>fast</code> (gemma), optional <code>deep</code> (Anthropic/cloud). Chat always local; only her hardest self-acts request deep. Offline stub fallback.</td></tr>
+  <tr><td class="k">Tiered LLM</td><td>In <code>mind.py</code>: local <code>reason</code> (configured ALPECCA_MODEL) + <code>fast</code> (gemma), optional <code>deep</code> (Anthropic/cloud). Chat always local; only her hardest self-acts request deep. Offline stub fallback.</td></tr>
 </table>
 
 <h2>2 · Emotional model (the "Soul" mechanics)</h2>

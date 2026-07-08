@@ -85,8 +85,8 @@ You'll need Python 3.10+ and (for real conversation) Ollama.
 # 1. install deps
 pip install -r requirements.txt
 
-# 2. pull local models (one time): a chat model + an embedding model for memory
-ollama pull qwen3:8b
+# 2. pull local models (one time): the configured chat model + an embedding model for memory
+ollama pull qwen3.5:9b
 ollama pull nomic-embed-text
 
 # 3. talk to Alpecca (private mode — senses off)

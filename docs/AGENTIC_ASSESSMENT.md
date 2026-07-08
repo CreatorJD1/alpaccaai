@@ -38,7 +38,7 @@ on parse/model failure, `CognitionObservation` logging for autonomous acts, and
 - Stage 4: local-only planner, `payload` proposal storage, `make_plan(goal)`,
   and explicit user-approved one-step execution through Workshop proposals.
 
-Current model note: do not revive the older Qwen 3 8B path. Runtime planning
+Current model note: do not revive retired legacy model paths. Runtime planning
 uses the configured local Ollama model from `ALPECCA_MODEL`.
 
 ## Stage 3 - LLM-In-The-Loop Choice Points

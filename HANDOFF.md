@@ -332,7 +332,7 @@ which unlocks Ollama's hosted cloud models through the SAME local API
   now the hybrid stack (Enter default), [2] fully-offline; the HF
   InferenceClient path is env-only (ALPECCA_LLM_BACKEND=hf) and setx
   ALPECCA_HF_MODEL corrected to Qwen/Qwen2.5-7B-Instruct. ALSO: stale setx
-  user-env (ALPECCA_MODEL=qwen3:8b etc.) synced to the current
+  stale user-env model settings synced to the current
   architecture so out-of-bat launches match the bat. ALSO: gpt-oss cloud
   chat could return EMPTY content (its internal reasoning eats num_predict
   under her big system prompt) — cloud calls now get num_predict>=512 and
@@ -429,7 +429,7 @@ which unlocks Ollama's hosted cloud models through the SAME local API
 **New local chat brain: `qwen3.5:4b`** (Qwen3.5-4B Q4_K_M, pulled from
 `hf.co/lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M`, aliased `qwen3.5:4b`).
 Set via `ALPECCA_MODEL=qwen3.5:4b` in `START_HERE.bat`. Newer arch than
-qwen3:8b, ~2.7 GB — fits the 4 GB RTX 3050 (45 tok/s when the card is free,
+a retired older local model, ~2.7 GB — fits the 4 GB RTX 3050 (45 tok/s when the card is free,
 ~11 tok/s under auto placement alongside F5/vision). `/api/chat` with
 `think=false` (mind.py's path) yields clean no-think replies; the inline
 `<think>` leakage only happens on raw `/api/generate`. **F5/Kokoro voice

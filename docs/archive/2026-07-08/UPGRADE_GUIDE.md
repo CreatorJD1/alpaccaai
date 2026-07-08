@@ -37,7 +37,7 @@ everything here is config + `ollama pull`.
 
 ### 1a. Resident reasoning brain → a MoE model
 
-Her default is `qwen3:8b`. Upgrade to a Mixture-of-Experts model so several agent
+Use the configured `ALPECCA_MODEL`. Upgrade to a Mixture-of-Experts model so several agent
 roles stay responsive (only ~3–4B parameters activate per token, so it's fast on
 a consumer GPU while being much stronger):
 

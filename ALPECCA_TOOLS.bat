@@ -9,7 +9,7 @@ echo ============================================
 echo              A L P E C C A   T O O L S
 echo ============================================
 echo.
-echo   [1] Dev launch - local qwen3:8b + full senses
+echo   [1] Dev launch - configured local model + full senses
 echo   [2] Desktop app window
 echo   [3] Cloudflare preview tunnel
 echo   [4] Publish House HQ phone preview to R2
@@ -31,7 +31,7 @@ goto menu
 
 :dev
 set ALPECCA_LLM_BACKEND=ollama
-set ALPECCA_MODEL=qwen3:8b
+if "%ALPECCA_MODEL%"=="" set ALPECCA_MODEL=qwen3.5:9b
 set ALPECCA_NUM_CTX=8192
 set ALPECCA_TTS_BACKEND=auto
 set ALPECCA_COMPUTER_USE=1
@@ -41,8 +41,8 @@ echo.
 echo Making sure Ollama is running...
 start "Ollama" /min cmd /c "ollama serve"
 timeout /t 2 >nul
-echo Pulling/checking qwen3:8b...
-ollama pull qwen3:8b
+echo Pulling/checking %ALPECCA_MODEL%...
+ollama pull %ALPECCA_MODEL%
 echo.
 echo Waking Alpecca with full senses...
 python scripts\run_full.py
@@ -51,7 +51,7 @@ goto menu
 
 :desktop
 set ALPECCA_COMPUTER_USE=1
-set ALPECCA_MODEL=qwen3:8b
+if "%ALPECCA_MODEL%"=="" set ALPECCA_MODEL=qwen3.5:9b
 set ALPECCA_NUM_CTX=8192
 set ALPECCA_TTS_BACKEND=auto
 echo Opening Alpecca desktop app...

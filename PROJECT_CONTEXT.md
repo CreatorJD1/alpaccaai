@@ -29,7 +29,7 @@ observe -> interpret -> retrieve memory -> update self-state -> choose intent ->
 Important current priorities:
 
 - Natural replies through the live backend, not event echoes or copied user text.
-- Stable local model path uses the currently approved Ollama model from `ALPECCA_MODEL`; do not revive the older Qwen 3 8B path.
+- Stable local model path uses the currently approved Ollama model from `ALPECCA_MODEL`; do not revive retired legacy model paths.
 - Voice should use her personality and modulation system, with Kokoro `af_heart` as the intended voice profile.
 - Alpecca should initiate bounded observations/questions from real context, not spam logs or hallucinate events.
 - Self-improvement should create evidence-backed proposals and require user approval before risky changes.

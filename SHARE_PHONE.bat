@@ -22,7 +22,7 @@ if errorlevel 1 (
 )
 
 REM Same brain knobs as the desktop launcher.
-set ALPECCA_MODEL=qwen3:8b
+if "%ALPECCA_MODEL%"=="" set ALPECCA_MODEL=qwen3.5:9b
 set ALPECCA_NUM_CTX=8192
 
 python scripts\share.py --tunnel

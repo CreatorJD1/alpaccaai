@@ -125,7 +125,7 @@ for mod, pip in [("fastapi", "fastapi"), ("uvicorn", "uvicorn"),
 
 # --- Ollama (her brain) ---------------------------------------------------
 print("\nOllama (her brain -- without it she only gives canned replies)")
-model = os.environ.get("ALPECCA_MODEL", "qwen3:8b")
+model = os.environ.get("ALPECCA_MODEL", "qwen3.5:9b")
 fast = os.environ.get("ALPECCA_FAST_MODEL", "gemma4-e4b")
 if have("ollama"):
     try:

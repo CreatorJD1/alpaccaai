@@ -1,7 +1,7 @@
 # Alpecca Colab T4 Fast-Brain Accelerator
 
 This is an optional speed tier for House HQ chat. It does not replace Alpecca's
-local `qwen3:8b` reasoning model. When the Colab runtime is awake, normal fast
+configured local reasoning model. When the Colab runtime is awake, normal fast
 House HQ replies can go to the T4; if Colab sleeps or disconnects, Alpecca falls
 back to local Ollama.
 

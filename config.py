@@ -32,8 +32,8 @@ if _OLD_DB.exists() and not DB_PATH.exists():
     _OLD_DB.rename(DB_PATH)
 
 # --- Local model (Ollama) --------------------------------------------------
-# The reasoning model. The current local baseline is Qwen3.5, not the older
-# Qwen 3 8B path. Pull/register the current tag once, or set ALPECCA_MODEL to
+# The reasoning model. The current local baseline is Qwen3.5. Pull/register
+# the current tag once, or set ALPECCA_MODEL to
 # the model Jason has approved on this machine. Qwen-family hybrid models may
 # emit <think>...</think> blocks; mind.py strips those from user-facing replies.
 OLLAMA_MODEL = os.environ.get("ALPECCA_MODEL", "qwen3.5:9b")
