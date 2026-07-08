@@ -6,6 +6,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["scripts/run_full.py"],
       "port": 8765
+    },
+    {
+      "name": "vcs-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "apps/vcs/frontend", "start"],
+      "port": 3200
     }
   ]
 }

@@ -137,6 +137,7 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 1.0, 0);
 controls.enableDamping = true;
 controls.minDistance = 0.8; controls.maxDistance = 8;
+window.__cam = camera; window.__controls = controls;   // debug handles (tests, framing)
 
 scene.add(new THREE.AmbientLight(0xbfd8ff, 0.9));
 const key = new THREE.DirectionalLight(0xffffff, 1.6);
@@ -153,6 +154,48 @@ addEventListener("resize", () => {
 /* ---- load her VRM (manifest -> model), frame the camera on her ---- */
 let vrm = null;
 let axisFlip = 1;    // +1 for VRM 0.x models, -1 for 1.0 (see note at load)
+let framePending = false;   // set at load; frameCamera() runs once the skeleton is live
+
+/* Frame the camera on her TRUE rendered extent. Two traps make this subtle:
+ *   1. The export is CENTERED on the origin (hips ~0), so her feet sit well
+ *      below y=0 (~-0.9) and her crown above it (~+0.74) — never assume
+ *      feet-at-zero, and never derive height from the head bone alone (that
+ *      made her ~0.6 m tall and slammed the camera onto her face).
+ *   2. A VRM's skinned-mesh *geometry* bounding boxes are in BIND space (a
+ *      phantom ~0→1.8 m column), NOT where the bones place her. So sample the
+ *      POSED skinned vertices — the only measure that matches what's on screen,
+ *      and only valid once the skeleton has updated (hence: first frame). */
+function frameCamera() {
+  vrm.scene.updateMatrixWorld(true);
+  const box = new THREE.Box3();
+  const v = new THREE.Vector3();
+  vrm.scene.traverse((o) => {
+    if (!o.isSkinnedMesh || !o.geometry?.attributes?.position || !o.skeleton) return;
+    o.skeleton.update();
+    const pos = o.geometry.attributes.position;
+    const step = Math.max(1, Math.floor(pos.count / 1200));  // cap the sample; plenty for bounds
+    for (let k = 0; k < pos.count; k += step) {
+      v.fromBufferAttribute(pos, k);
+      if (o.applyBoneTransform) o.applyBoneTransform(k, v);       // three r160+
+      else if (o.boneTransform) o.boneTransform(k, v);           // older name
+      v.applyMatrix4(o.matrixWorld);
+      box.expandByPoint(v);
+    }
+  });
+  if (box.isEmpty()) box.setFromObject(vrm.scene);   // non-skinned fallback
+  const center = new THREE.Vector3(); box.getCenter(center);
+  const size = new THREE.Vector3(); box.getSize(size);
+  const height = (size.y > 0.1 ? size.y : 1.5);
+  const fov = (camera.fov * Math.PI) / 180;
+  // Distance that fits her full height with a little head/foot room (1.28x).
+  const dist = (height / 2) / Math.tan(fov / 2) * 1.28;
+  controls.target.copy(center);
+  camera.position.set(center.x, center.y, center.z + dist);
+  // Zoom bounds relative to her size so orbit/zoom stay sensible on any model.
+  controls.minDistance = Math.max(0.4, dist * 0.35);
+  controls.maxDistance = dist * 3.2;
+  controls.update();
+}
 try {
   const man = await (await fetch("/vrm/manifest")).json();
   if (man.studio) {
@@ -192,24 +235,11 @@ try {
     // loop negates x/z after each clip.
     axisFlip = isV0 ? -1 : 1;
     window.__vrm = vrm;   // debug handle (console poking, tests)
-    // Fit-to-frame off her real skeleton (the studio's centering lesson, taken
-    // further: scene bounding boxes can include helper nodes far outside her
-    // body, so measure her height from the humanoid head bone instead — VRM
-    // guarantees the model stands at the origin, feet at y=0).
-    vrm.scene.updateMatrixWorld(true);
-    const headBone = vrm.humanoid?.getRawBoneNode("head");
-    let height = 1.5;
-    if (headBone) {
-      const hp = new THREE.Vector3();
-      headBone.getWorldPosition(hp);
-      height = hp.y + 0.13;   // crown sits a little above the head bone
-    } else {
-      const box = new THREE.Box3().setFromObject(vrm.scene);
-      height = box.max.y - Math.min(0, box.min.y);
-    }
-    const dist = (height / 2) / Math.tan((camera.fov * Math.PI / 180) / 2) * 1.18;
-    controls.target.set(0, height * 0.52, 0);
-    camera.position.set(0, height * 0.55, dist);
+    // Frame the camera on her AFTER the first render (see frameCamera + the
+    // render loop): a VRM's skinned bounds only settle to her real on-screen
+    // extent once the skeleton has updated once, so measuring during load reads
+    // a phantom bind-pose column (~0→1.8 m) and mis-frames her.
+    framePending = true;
     chip.style.display = "block";
   }
 } catch (err) {
@@ -415,6 +445,9 @@ function frame() {
     });
     if (pose.clip !== "sleep") autoBlink(performance.now() / 1000);
     vrm.update(dt);
+    // First frame with a live skeleton: now her skinned bounds are real, so
+    // frame the camera on her actual full-body extent (see frameCamera).
+    if (framePending) { framePending = false; frameCamera(); }
   }
   controls.update();
   renderer.render(scene, camera);

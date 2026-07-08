@@ -1,9 +1,149 @@
-# Alpecca — Handoff (updated 2026-07-02)
+# Alpecca — Handoff (updated 2026-07-07)
 
 Snapshot for whoever picks this up next (human or agent): current state, how to
 run her, what was built, what's solid vs. shaky, and what's next. Read `CLAUDE.md`
-for the canonical architecture, `docs/BRINGING_HER_TO_LIFE.md` for the honest
-review + phase plan. (An earlier handoff is folded into the history below.)
+for the canonical architecture, `docs/ALPECCA_CURRENT_PROGRESS.md` for the current
+state and plan. (An earlier handoff is folded into the history below.)
+
+---
+
+## VRM viewer framing + VCS port polish + launcher (2026-07-07, later session)
+
+Scope: the **experimental VRM companion path** — both the in-app `/vrm` page
+(`web/vrm.html`) and the ported **VCS studio** (`apps/vcs`, the clone of Jason's
+Emergent VRoid Companion Studio at emergentagent.com). Nothing here touches the
+2D/House HQ pipeline. NOTE: emergentagent.com is the SOURCE app being ported into
+`apps/vcs` — it is NOT a deploy target; do not push there.
+
+### `/vrm` page camera framing — FIXED + verified
+Her VRM loaded zoomed onto her head. Two compounding causes, neither is
+"feet at y=0":
+- The export is **origin-centered** — feet ~-0.90, hips ~0, crown ~+0.74.
+- A VRM's skinned-mesh `geometry.boundingBox` is a **phantom BIND-pose column**
+  (~0→1.8 m), not where the bones actually render her; `Box3.setFromObject`/
+  `expandByObject` read that phantom box and mis-frame her low + small.
+Fix (`web/vrm.html` `frameCamera()`): sample the **posed skinned vertices**
+(`applyBoneTransform` → world matrix → Box3) and run it on the **first rendered
+frame** (skinning only settles after the skeleton updates once). Camera targets
+the true center (y≈-0.08), distance fits her real ~1.65 m height. Verified via
+headless Chrome CDP (SwiftShader WebGL): full-body, centered; orbit + zoom work
+and zoom clamps (no clip-through). Shots: `data/screenshots/vrm_preview.png`
+(882×1104) + `vrm_preview_mobile.jpg` (22 KB). Phone artifact:
+https://claude.ai/code/artifact/799064ce-a3dd-4b54-befe-1ebf91cca45a
+Lesson saved to memory as `vrm-framing-skinned-bounds`.
+
+### VCS studio (`apps/vcs`) — port is COMPLETE + improved
+Feature-audited against the emergentagent.com reference: all 20 animation
+prefabs, all 4 tabs (Anim/Face/Pose/Mats), Runtime Behaviors, Procedural
+Timeline are present. On top of the port this session:
+- **Same framing fix** in `VRMViewer.jsx` `computeVRMBoundingBox()` — now samples
+  posed skinned vertices (was reading the phantom bind box).
+- **Foot grounding** — new `frontend/src/lib/vrmIK.js` (`snapGround` at load +
+  per-frame `groundFeet`, easing back for airtime/Jump). Her soles sit exactly on
+  the grid (verified toe-sole world-Y = 0.000); fixes the float-through-grid item.
+  Wired in `VRMViewer.jsx` (snapGround before auto-frame, groundFeet after
+  `vrm.update`). `state.groundBase` = resting offset, `groundOffset` = live.
+- **Texture Lab "Bold" mode (ControlNet UV-lock) wired end-to-end** —
+  backend `ai_service.py`: `_panel_edge_control()` builds the ControlNet control
+  image from the atlas ALPHA (island outlines + threshold-gated interior seams;
+  adaptive for opaque-vs-void atlases — avoids the beaded-mesh artifact from raw
+  FIND_EDGES), `_zerogpu_texture_cn()` calls the Space's `/texture_cn`,
+  `generate_material_texture(..., mode=)` routes restyle (low-denoise recolor) vs
+  bold (high-denoise + edge lock). `routes.py` + `api.js` carry `mode`;
+  `TextureLabDialog.jsx` has a Restyle/Bold header toggle threaded to both tabs.
+  Route-tested live: bold 17s / IP-Adapter restyle 20s, alpha byte-preserved.
+  Scripts: `scripts/test_route_bold.py`, `scripts/test_route_ipadapter.py`.
+- **One-click launcher** — `RUN_VCS.bat` (repo root): starts backend :8001 +
+  frontend :3200 in their own windows, opens http://localhost:3200 (Alpecca
+  auto-loads). Paths verified. Was two hand-typed terminals (RUN_LOCAL.md).
+
+### How to run / verify
+`RUN_VCS.bat` (or the two commands in `apps/vcs/RUN_LOCAL.md`). Backend has 20
+Alpecca VRM projects in Mongo; `StudioPage.jsx` auto-loads the newest on mount.
+localhost is PC-only (phone can't reach :3200). All changes are in the working
+tree (uncommitted); servers were reaped at session end.
+
+---
+
+## VCS (VRoid Companion Studio) — ZeroGPU texture pipeline + anim/texture upgrades (2026-07-07)
+
+Scope: this whole session was the **experimental VRM companion tool** at `apps/vcs`
+(the "VCS" port, backend :8001 + frontend :3200 + local MongoDB). Per CLAUDE.md the
+VRM path must NOT replace 2D/House HQ — nothing here touches the main pipeline.
+
+### The ZeroGPU pipeline (the infra everything else rides on)
+All heavy AI for the VCS Texture Lab runs on Jason's **PRO ZeroGPU Space
+`CREATORJD/alpecca-texture-lab`** (H200) — **Pony Diffusion V6 XL**
+(`Bakanayatsu/Pony-Diffusion-V6-XL-for-Anime`) for images + **Qwen2.5-VL-7B** for
+structured vision. This replaced the dead local-4GB path (times out >400s) and paid
+HF Inference (402). Local ComfyUI + Ollama remain as fallbacks.
+- Space source: `spaces/alpecca-texture-lab/app.py`. Redeploy via `scripts/deploy_texture_space.py` or `HfApi().upload_file(...)`. It's PRIVATE, on `zero-a10g`.
+- Endpoints (gradio api_name): `/texture` (restyle img2img + IP-Adapter, 11 args), `/texture_cn` (ControlNet UV-lock, 11 args), `/vision_json` (outfit extract + anime guard).
+- Backend calls it via `gradio_client` (`Client(space, token=HF_TOKEN)` — param is `token`, NOT hf_token). Routed by `AI_PROVIDER=zerogpu` in `apps/vcs/backend/.env` (+ `ZEROGPU_TEXTURE_SPACE`, `TEXTURE_RESTYLE_STRENGTH=0.32`, `TEXTURE_TINT_AMOUNT=0.7`, `ZEROGPU_IP_SCALE=0.6`).
+
+### Texture render fix — the core bug ("UV grid rendered as the texture"). FIXED + verified.
+Root cause: the generator was seeded with the **wireframe UV template** (or free-gen
+character art), so it painted a grid / a character that then wrapped as garbage.
+Fix = **restyle the material's ORIGINAL atlas in place**:
+`generate_material_texture` → `_flatten_atlas_for_init` (shading-multiply palette
+tint on the alpha region) → Pony **low-denoise img2img (0.32)** → `_reapply_alpha`
+(re-composite the original alpha so the transparent UV void stays empty).
+Frontend: `extractOriginalAtlas()` in `materialUtils.js` grabs `material.map` + its
+`flipY`; `DressTab`/`MaterialTab` send `original_atlas_data_url`; `applyTexture`
+re-applies with the original flipY. **Verified through the live route**
+(`/api/generate/material_texture`): alpha byte-identical (397,528 px), every panel
+held in its UV island, palette-accurate recolor. `scripts/test_restyle.py`,
+`scripts/test_route_texture.py`.
+
+### Animation upgrades (frontend, shipped, hot-reloaded, no console errors)
+- **Cross-fade:** `VRMViewer.jsx` `vrmaUrl` effect now uses ONE persistent
+  `AnimationMixer` + `crossFadeTo(0.45s)` (was: fresh mixer + `stopAllAction` = hard
+  cut). Clips cached per-url. Mood transitions blend. Render loop still keys off
+  `!!ref.vrmaMixer` (nulled only on vrmaUrl→null → procedural handoff).
+- **Procedural gaze:** `vrmAnimations.js` `computeGaze()` (saccades + aversion);
+  the lookAt branch uses it when the cursor's been idle >2.5s (eyes never freeze).
+- **Auto-load + live driver:** `StudioPage.jsx` mount effect auto-loads the newest
+  VRM project (nothing is persisted, so a refresh otherwise drops to empty) and
+  enables `alpeccaLive` if `/api/alpecca/pose` is reachable. The live driver
+  (VRMViewer 89–118) already maps her real mood→VRMA + expressions; pose data is
+  REAL (mood/expressions/glow from her app on :8765).
+
+### Texture upgrades from the OSS research (deployed to the Space + direct-tested)
+- **IP-Adapter (SDXL)** — `h94/IP-Adapter/ip-adapter_sdxl.bin`, lazy + defensive.
+  `/texture` now takes `ref_image_b64`+`ip_scale`; **FULLY threaded backend-side**
+  (`_zerogpu_texture` → `_image_call` → `generate_material_texture` passes the
+  garment ref as the IP image). Restyle now conditions fabric on the actual garment
+  IMAGE, not just text. Compile-clean; needs a backend restart + in-app DressTab run
+  to confirm the full flow.
+- **ControlNet UV-lock** — `/texture_cn` (`xinsir/controlnet-canny-sdxl-1.0`,
+  StableDiffusionXLControlNetImg2ImgPipeline, lazy + fallback to plain img2img).
+  Direct-tested: **strength 0.75 held every panel** while painting bold new fabric
+  (plain img2img scrambles at that strength). `scripts/test_controlnet.py`.
+  ⚠️ NOT wired into the backend/UI yet — Space endpoint only. And the PIL
+  `FIND_EDGES` control image is crude (beaded-mesh artifact) — feed clean
+  **panel-edge control from the atlas alpha** instead.
+
+### Current state / how to run (all servers were DOWN at handoff — reaped on session end)
+- Backend: `cd apps/vcs/backend && ../.venv/Scripts/python.exe -m uvicorn server:app --host 127.0.0.1 --port 8001` (restart REQUIRED to pick up `.env` `AI_PROVIDER=zerogpu` + latest `ai_service.py`).
+- Frontend: preview `vcs-frontend` in `.claude/launch.json`, or `npm --prefix apps/vcs/frontend start` (PORT=3200, `REACT_APP_BACKEND_URL=http://localhost:8001`).
+- Live companion needs her app on **:8765** (mood/pose feed) — start via `scripts/run_full.py`.
+- The Space stays live on HF independently.
+
+### Solid vs. shaky
+- **Solid:** texture render fix (route-verified); ZeroGPU pipeline (extract 22–37s, image 5–27s); animation crossfade+gaze (compile-clean); IP-Adapter (full chain) + ControlNet (Space) endpoints direct-tested; anime deviation guard.
+- **Shaky / NEXT (in order):** (1) **wire ControlNet** into the backend (`_zerogpu_texture_cn`) + a "bold / structure-lock" mode in `generate_material_texture` + a UI toggle, and pass an **alpha-derived panel-edge** control image; (2) restart backend + verify IP-Adapter improves the in-app DressTab flow; (3) **foot-grounding IK** (analytic 2-bone, new `lib/vrmIK.js` — feet float through the grid today); (4) **lipsync BLOCKED** — `wawa-lipsync` is the pick but needs her TTS audio (or a speaking-level signal) piped into VCS; it plays only in her own app. Expand motion library later via `bvh2vrma` + `Kalidokit`.
+
+### Key files touched
+- `spaces/alpecca-texture-lab/app.py` (3 endpoints: texture / texture_cn / vision_json)
+- `apps/vcs/backend/ai_service.py` (`_zerogpu_*`, `generate_material_texture`, `_flatten_atlas_for_init` tint, `_reapply_alpha`, `_hex_to_rgb`)
+- `apps/vcs/backend/routes.py` (MaterialTextureRequest + `original_atlas_data_url`/`strength`)
+- `apps/vcs/backend/.env` (zerogpu provider + tunables)
+- `apps/vcs/frontend/src/lib/{materialUtils.js (extractOriginalAtlas), vrmAnimations.js (computeGaze), api.js}`
+- `apps/vcs/frontend/src/components/VRMViewer.jsx` (crossfade + gaze)
+- `apps/vcs/frontend/src/pages/StudioPage.jsx` (auto-load + live driver)
+- `apps/vcs/frontend/src/components/dialogs/TextureLabDialog.jsx` (atlas wiring, ZeroGPU default provider)
+- `scripts/test_{restyle,route_texture,controlnet,zerogpu,zerogpu2,zerogpu3,backend_flow}.py`, `scripts/deploy_texture_space.py`
+- OSS research roadmap: workflow journal `subagents/workflows/wf_a00f92a6-85a/journal.jsonl` (8 findings: IK/mocap/lipsync/blending + ControlNet/IP-Adapter/PBR/projection). Ship-license flags: IDM-VTON / nvdiffrast / Ubisoft CHORD = non-commercial; DeepBump code GPL (load `.onnx` only).
 
 ---
 
@@ -504,7 +644,7 @@ fresh clone needs her pose/portrait PNGs replaced. The expression face uses
 
 ---
 
-## Work plan (where we are — from docs/BRINGING_HER_TO_LIFE.md)
+## Work plan (where we are — from docs/ALPECCA_CURRENT_PROGRESS.md)
 - **Phase 0 — runs reliably:** DONE (doctor + launchers).
 - **Phase 1 — visibly alive on her own:** DONE (livelier cadences + activity ticker).
 - **Phase 2 — presence:** DONE (expression face + lip-sync + mood-driven voice).

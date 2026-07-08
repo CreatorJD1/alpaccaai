@@ -415,6 +415,8 @@ def _cli(argv: list[str]) -> int:
     print("   ", with_access_token(url.rstrip("/") + "/house-hq"))
     print("  Base app:")
     print("   ", with_access_token(url))
+    print("  VRoid companion tool:")
+    print("   ", with_access_token(url.rstrip("/") + "/vrm"))
     r2_record = config.HOME / "r2_preview.json"
     try:
         r2 = json.loads(r2_record.read_text(encoding="utf-8"))
