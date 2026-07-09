@@ -7,6 +7,22 @@ state and plan. (An earlier handoff is folded into the history below.)
 
 ---
 
+## VCS texture/model-fidelity pass (2026-07-08)
+
+Scope: experimental VRM/VCS appearance work only. House HQ and the canonical 2D
+pipeline remain untouched.
+
+- Extended `apps/vcs/frontend/src/lib/materialUtils.js` so the existing
+  **Match to design** action applies more of Alpecca's locked design palette in
+  the browser: hair gradient, navy choker, ivory outfit tint, stocking cleanup,
+  dark shorts, cream/blue boots, and blue clip/accessory/lanyard-style materials
+  when material names allow safe targeting.
+- Updated `apps/vcs/frontend/src/components/panels/MaterialsPanel.jsx` to call
+  the broader matcher and report which material groups were affected.
+- This is a reversible VCS preview/material-map pass. It does not mutate the
+  `.vroid` source files directly; equivalent changes still need to be saved in
+  VRoid Studio for a locked source checkpoint/export.
+
 ## VRM viewer framing + VCS port polish + launcher (2026-07-07, later session)
 
 Scope: the **experimental VRM companion path** — both the in-app `/vrm` page

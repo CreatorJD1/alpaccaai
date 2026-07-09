@@ -9,6 +9,26 @@ turnaround art, animation timing, and future 2D-in-3D sprite generation.
 This VRM is an experimental reference rig, not a replacement for Alpecca's
 approved 2D identity art.
 
+## 2026-07-08 VCS Texture-Match Pass
+
+Focus shifted back to model and texture fidelity. The VCS Materials panel's
+**Match to design** action now applies a broader deterministic browser-side
+material pass to the loaded VRM:
+
+- silver-to-lavender hair gradient,
+- navy choker correction,
+- warm ivory outfit tint for recognized top/outfit materials,
+- white stocking cleanup for recognized stocking/sock/legwear materials,
+- dark shorts/bottom tint for recognized shorts/pants materials,
+- cream boots with pale-blue sole/side accents for recognized shoe/boot
+  materials,
+- glossy blue tint for recognized clip/bow/ribbon/accessory materials, plus
+  blue lanyard/badge/strap materials when those material names exist.
+
+This does not edit `.vroid` binaries directly. It is a reversible VCS preview
+pass on the loaded VRM's material maps; use it to validate color and marker
+direction before committing equivalent texture work inside VRoid Studio.
+
 ## Design Lock
 
 The VRM must preserve the same core identity rules as
