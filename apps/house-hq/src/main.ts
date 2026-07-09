@@ -399,6 +399,18 @@ type AlpeccaMemoryEvidence = {
   recency?: number;
   method?: string;
 };
+type AlpeccaMindpageState = {
+  enabled?: boolean;
+  source?: string;
+  context_fill?: number;
+  pressure_score?: number;
+  pressure?: string;
+  page_count?: number;
+  hot_page_count?: number;
+  history_messages?: number;
+  turns_until_history_eviction?: number;
+  unsummarized_eviction_backlog?: number;
+};
 type AlpeccaAiMessage = {
   type?: string;
   request_id?: string;
@@ -415,7 +427,12 @@ type AlpeccaAiMessage = {
   llm_online?: boolean;
   model_use?: AlpeccaModelUse;
   memory_evidence?: AlpeccaMemoryEvidence[];
-  cognition?: { models?: { last_call?: AlpeccaModelUse }; intent?: Record<string, unknown> };
+  mindpage?: AlpeccaMindpageState;
+  cognition?: {
+    models?: { last_call?: AlpeccaModelUse };
+    intent?: Record<string, unknown>;
+    mindpage?: AlpeccaMindpageState;
+  };
   living_loop?: {
     ok?: boolean;
     phase?: string;
@@ -878,6 +895,11 @@ hud.innerHTML = `
     <span>Living Loop</span>
     <strong id="alpeccaLivingIntent">Waiting</strong>
     <small id="alpeccaLivingQuestion">She is gathering grounded context before asking herself the next question.</small>
+    <div id="alpeccaMemoryPressure" class="memory-pressure" data-pressure="unavailable" title="Working-memory telemetry is unavailable">
+      <span>Working Memory</span>
+      <em id="alpeccaMemoryPressureLabel">Unavailable</em>
+      <i aria-hidden="true"><b id="alpeccaMemoryPressureBar"></b></i>
+    </div>
   </div>
   <div id="message" class="message">Click to enter the house</div>
   <div id="prompt" class="prompt hidden"></div>
@@ -1088,6 +1110,9 @@ const roomPanel = hud.querySelector<HTMLDivElement>("#roomPanel")!;
 const roomNameEl = hud.querySelector<HTMLSpanElement>("#roomName")!;
 const roomPurposeEl = hud.querySelector<HTMLElement>("#roomPurpose")!;
 const roomStatusEl = hud.querySelector<HTMLElement>("#roomStatus")!;
+const alpeccaMemoryPressureEl = hud.querySelector<HTMLDivElement>("#alpeccaMemoryPressure")!;
+const alpeccaMemoryPressureLabel = hud.querySelector<HTMLElement>("#alpeccaMemoryPressureLabel")!;
+const alpeccaMemoryPressureBar = hud.querySelector<HTMLElement>("#alpeccaMemoryPressureBar")!;
 const menu = hud.querySelector<HTMLDivElement>("#menu")!;
 const menuButton = hud.querySelector<HTMLButtonElement>("#menuButton")!;
 const environmentModeToggle = hud.querySelector<HTMLButtonElement>("#environmentModeToggle")!;
@@ -3622,6 +3647,27 @@ function setAlpeccaAiStatus(status: AlpeccaAiStatus, mood = alpeccaAiMood) {
     for (const terminal of alpeccaSourceTerminals.keys()) pulseAlpeccaSourceTerminal(terminal, status === "live" ? 1.8 : 0.9);
   }
   pulseAlpeccaSourceDashboard("", status === "live" ? 2.6 : 1.4);
+  if (status !== "live") setAlpeccaMindpageState(null);
+}
+
+function setAlpeccaMindpageState(state: AlpeccaMindpageState | null | undefined) {
+  if (!state || state.enabled === false || typeof state.context_fill !== "number") {
+    alpeccaMemoryPressureEl.dataset.pressure = "unavailable";
+    alpeccaMemoryPressureLabel.textContent = "Unavailable";
+    alpeccaMemoryPressureBar.style.width = "0%";
+    alpeccaMemoryPressureEl.title = "Working-memory telemetry is unavailable";
+    return;
+  }
+  const fill = THREE.MathUtils.clamp(state.context_fill, 0, 1);
+  const pressure = String(state.pressure || (fill >= 0.9 ? "high" : fill >= 0.75 ? "medium" : "low")).toLowerCase();
+  const band = pressure === "high" ? "High" : pressure === "medium" ? "Medium" : "Low";
+  const percent = Math.round(fill * 100);
+  const pages = Math.max(0, Number(state.page_count || 0));
+  const backlog = Math.max(0, Number(state.unsummarized_eviction_backlog || 0));
+  alpeccaMemoryPressureEl.dataset.pressure = pressure;
+  alpeccaMemoryPressureLabel.textContent = `${band} ${percent}%`;
+  alpeccaMemoryPressureBar.style.width = `${percent}%`;
+  alpeccaMemoryPressureEl.title = `Measured request pressure: ${percent}%. ${pages} compressed page${pages === 1 ? "" : "s"}; ${backlog} excluded message${backlog === 1 ? "" : "s"}.`;
 }
 
 function scheduleAlpeccaAiRetry(delay = 5) {
@@ -3730,6 +3776,8 @@ function handleAlpeccaAiMessage(raw: string) {
   if (typeof message.llm_online === "boolean") alpeccaAiLlmOnline = message.llm_online;
   if (message.model_use) alpeccaAiModelUse = message.model_use;
   else if (message.cognition?.models?.last_call) alpeccaAiModelUse = message.cognition.models.last_call;
+  const mindpage = message.mindpage || message.cognition?.mindpage;
+  if (mindpage) setAlpeccaMindpageState(mindpage);
   updateCoreStatusLabels();
   if (message.living_loop) setAlpeccaLivingState(message.living_loop, responseText);
   else if (message.cognition?.intent) {

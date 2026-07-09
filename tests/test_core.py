@@ -246,6 +246,210 @@ def test_mindpage_stats_reports_context_pressure():
         assert stats["pressure"] == "high"
 
 
+def test_mindpage_fit_context_shrinks_memories_then_history_before_musings():
+    from alpecca import mindpage
+
+    history = [
+        {"role": "user", "content": "u" * 40},
+        {"role": "assistant", "content": "a" * 40},
+        {"role": "user", "content": "v" * 40},
+        {"role": "assistant", "content": "b" * 40},
+    ]
+    fitted = mindpage.fit_context(
+        fixed_texts=["f" * 100],
+        memories=["m" * 80, "n" * 80],
+        history=history,
+        musings=["i" * 100],
+        num_ctx=70,
+        output_reserve=10,
+        protocol_reserve=10,
+    )
+
+    assert fitted["memories"] == []
+    assert fitted["history"] == []
+    assert fitted["musings"] == ["i" * 100]
+    assert fitted["snapshot"]["estimated_tokens_before_hard_limit"] <= 70
+    assert fitted["snapshot"]["dropped_memory_items"] == 2
+    assert fitted["snapshot"]["dropped_history_messages"] == 4
+
+
+def test_mindpage_pressure_relief_reaches_attached_history_before_claiming_drop():
+    from alpecca import mindpage
+    history = [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"turn {i} " + "x" * 40}
+        for i in range(12)
+    ]
+    attached = history[-6:]
+    attached_tokens = mindpage.history_token_estimate(attached)
+    snapshot = {
+        "num_ctx": 200,
+        "input_budget_tokens": 180,
+        "input_tokens": 170,
+        "estimated_tokens_before_hard_limit": 190,
+        "total_tokens": 190,
+        "history_messages": 6,
+        "history_tokens": attached_tokens,
+        "context_fill": 0.95,
+        "pressure": "high",
+        "breakdown": {"history": attached_tokens},
+    }
+
+    evicted, remaining = mindpage.select_history_for_page(
+        history, snapshot, target_fill=0.72, min_keep_messages=4
+    )
+    unattached_prefix = len(history) - snapshot["history_messages"]
+    attached_evicted = evicted[unattached_prefix:]
+    adjusted = mindpage.adjust_pressure_after_paging(snapshot, attached_evicted)
+
+    assert len(evicted) > unattached_prefix
+    assert len(remaining) >= 4
+    assert attached_evicted
+    assert adjusted["history_tokens"] < snapshot["history_tokens"]
+    assert adjusted["context_fill"] < snapshot["context_fill"]
+    assert adjusted["source"] == "estimated_after_page"
+
+
+def test_mindpage_prefault_is_relevant_bounded_and_promotes_hot():
+    from alpecca import mindpage
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "prefault.db"
+        state_store.init_db(db)
+        wanted = mindpage.write_page(
+            kind="episode",
+            topic="hardware gpu plan",
+            summary="We compared the GPU and pagefile plan.",
+            content="user: the GPU plan matters\nassistant: keep the pagefile bounded " * 20,
+            db_path=db,
+        )
+        mindpage.write_page(
+            kind="episode",
+            topic="birthday cake",
+            summary="A recipe for a birthday cake.",
+            content="user: bake a cake",
+            db_path=db,
+        )
+
+        pages = mindpage.prefault_pages(
+            "hardware GPU", token_budget=80, limit=2, db_path=db
+        )
+
+        assert pages and pages[0]["id"] == wanted
+        assert all(page["id"] == wanted for page in pages)
+        assert sum(mindpage.estimate_tokens(page["evidence_text"]) for page in pages) <= 80
+        hits = mindpage.search_pages("hardware GPU", include_cold=True, db_path=db)
+        assert hits[0]["tier"] == "hot"
+        assert mindpage.prefault_pages("unrelated orchestra", db_path=db) == []
+
+
+def test_mindpage_summary_preserves_episode_ending_and_questions():
+    from alpecca import mindpage
+    turns = [
+        {"role": "user", "content": "background " * 100},
+        {"role": "assistant", "content": "What constraint should we keep?"},
+        {"role": "user", "content": "We decided the page write must commit before deletion."},
+    ]
+
+    summary = mindpage.summarize_episode(turns, max_chars=400)
+
+    assert "What constraint should we keep?" in summary
+    assert "must commit before deletion" in summary
+
+
+def test_mindpage_maintenance_demotes_inactive_tiers():
+    from alpecca import mindpage
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "tiers.db"
+        state_store.init_db(db)
+        hot_id = mindpage.write_page(
+            kind="episode", topic="hot", summary="hot", content="hot", tier="hot", db_path=db
+        )
+        warm_id = mindpage.write_page(
+            kind="episode", topic="warm", summary="warm", content="warm", tier="warm", db_path=db
+        )
+        now = 10_000_000.0
+        with mindpage._connect(db) as conn:
+            conn.execute(
+                "UPDATE mindpage_pages SET last_access=? WHERE id=?",
+                (now - mindpage.HOT_TTL_SECONDS - 1, hot_id),
+            )
+            conn.execute(
+                "UPDATE mindpage_pages SET last_access=? WHERE id=?",
+                (now - mindpage.WARM_TTL_SECONDS - 1, warm_id),
+            )
+
+        result = mindpage.maintain_pages(db_path=db, now=now, force=True, decay=1.0)
+
+        assert result["hot_to_warm"] == 1
+        assert result["warm_to_cold"] == 1
+        with mindpage._connect(db) as conn:
+            tiers = {
+                int(row["id"]): row["tier"]
+                for row in conn.execute("SELECT id, tier FROM mindpage_pages")
+            }
+        assert tiers[hot_id] == "warm"
+        assert tiers[warm_id] == "cold"
+        assert mindpage.vacuum(db_path=db) is True
+
+
+def test_memory_fts_recalls_old_exact_match_outside_salience_pool():
+    from alpecca.db import connect
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "fts_memory.db"
+        state_store.init_db(db)
+        with connect(db) as conn:
+            conn.execute(
+                "INSERT INTO memories(ts, kind, content, salience, tokens, embedding) "
+                "VALUES(?, ?, ?, ?, ?, NULL)",
+                (1.0, "episodic", "crystal nebula password is cobalt", 0.1,
+                 json.dumps(["crystal", "nebula", "password", "cobalt"])),
+            )
+            conn.executemany(
+                "INSERT INTO memories(ts, kind, content, salience, tokens, embedding) "
+                "VALUES(?, ?, ?, ?, ?, NULL)",
+                [
+                    (float(i + 2), "episodic", f"high salience distraction {i}", 1.0,
+                     json.dumps(["high", "salience", "distraction", str(i)]))
+                    for i in range(520)
+                ],
+            )
+
+        hits = memory_store.recall("crystal nebula password", db_path=db, embed_fn=None)
+
+        assert hits
+        assert hits[0]["content"] == "crystal nebula password is cobalt"
+        assert hits[0]["recall_method"] == "keyword"
+
+
+def test_memory_fts_rebuilds_for_database_that_predates_index():
+    from alpecca.db import connect
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "legacy_memory.db"
+        with connect(db) as conn:
+            conn.execute(
+                """
+                CREATE TABLE memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts REAL NOT NULL,
+                    kind TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    salience REAL NOT NULL,
+                    tokens TEXT NOT NULL,
+                    embedding TEXT
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO memories(ts, kind, content, salience, tokens, embedding) "
+                "VALUES(1, 'episodic', 'legacy aurora recall marker', 0.2, ?, NULL)",
+                (json.dumps(["legacy", "aurora", "recall", "marker"]),),
+            )
+
+        state_store.init_db(db)
+        hits = memory_store.recall("legacy aurora marker", db_path=db, embed_fn=None)
+
+        assert hits and hits[0]["content"] == "legacy aurora recall marker"
+
+
 def test_constrained_choice_parse_matrix():
     from alpecca import choice
 
@@ -5058,6 +5262,42 @@ def test_chat_history_eviction_writes_mindpage_episode(monkeypatch):
 
     assert captured["turns"]
     assert len(mind._history) == mind_mod.HISTORY_MESSAGES * 2
+
+
+def test_chat_history_eviction_retains_turns_when_page_write_fails(monkeypatch):
+    from alpecca import mind as mind_mod
+    from alpecca import mindpage as mindpage_mod
+
+    mind = mind_mod.CoreMind()
+    original_count = mind_mod.HISTORY_MESSAGES * 4 + 2
+    mind._history = [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"old turn {i}"}
+        for i in range(original_count)
+    ]
+
+    def fake_generate(system_prompt, user_msg, history=None, tools=None, on_tool=None, tier="reason"):
+        return "I'm here with you."
+
+    def failed_write(_turns, db_path=None):
+        raise OSError("disk unavailable")
+
+    mind.llm.generate = fake_generate
+    mind.llm._last_call = {
+        "requested_tier": "reason",
+        "used_tier": "reason",
+        "backend": "test",
+        "model": "fake",
+        "ok": True,
+        "fallback": False,
+        "error": "",
+    }
+    monkeypatch.setattr(mindpage_mod, "write_episode_page", failed_write)
+
+    result = mind.chat("Hi Alpecca.", situation="")
+
+    assert len(mind._history) == original_count + 2
+    assert result["mindpage"]["unsummarized_eviction_backlog"] > 0
+    assert "disk unavailable" in result["mindpage"]["paging_error"]
 
 
 def test_soul_snapshot_carries_mindpage_pressure(monkeypatch):

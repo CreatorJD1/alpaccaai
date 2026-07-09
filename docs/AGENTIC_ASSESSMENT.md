@@ -113,12 +113,19 @@ safe by default; Layer B/C are experimental.
 
 Layer A:
 
-- Token budget ledger from `OLLAMA_NUM_CTX`
-- Compressed SQLite pages for evicted episodes
-- Summarize-on-evict with deterministic fallback
-- `recall_page(topic)` tool for model-initiated page faults
-- Memory indexes and bounded recall candidate pool
-- Memory-pressure stats routed through Soul snapshots and `/mindpage/stats`
+- Actual-request token budget ledger from `OLLAMA_NUM_CTX`, including prompt,
+  tools, attached history, protocol allowance, and output reserve
+- Compressed SQLite pages with failure-safe write-before-delete eviction
+- Deterministic summaries that preserve questions, decisions, and episode endings
+- Bounded automatic pre-fault plus `recall_page(topic)` explicit page faults
+- FTS5 lexical candidates unioned with bounded salience/recency memory recall
+- Hot/warm/cold page transitions and explicit maintenance/VACUUM hooks
+- One measured pressure snapshot routed through prompt, Soul, cognition,
+  WebSocket/API status, and House HQ
+
+Implemented 2026-07-09. Remaining Layer A research items are tokenizer-specific
+calibration, semantic page embeddings with provenance, hierarchical theme pages,
+and scheduling tier maintenance after runtime cadence is measured.
 
 Layer B:
 

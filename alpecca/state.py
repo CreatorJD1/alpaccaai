@@ -136,6 +136,8 @@ def init_db(db_path: Path = DB_PATH) -> None:
         from alpecca import mindpage as mindpage_mod
         mindpage_mod.install_memory_indexes(db_path)
         mindpage_mod.ensure_schema(db_path)
+        from alpecca import memory as memory_mod
+        memory_mod.ensure_search_index(db_path)
     except Exception:
         pass
 

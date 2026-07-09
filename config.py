@@ -224,11 +224,12 @@ CLOUD_SEND_SENSES = os.environ.get("ALPECCA_CLOUD_SEND_SENSES", "0") \
 # net after the whole chain (mind.generate).
 DEEP_BACKEND = os.environ.get("ALPECCA_DEEP_BACKEND", "local").lower()
 
-# The Ollama cloud model for the deep tier. EMPTY by default (2026-07-04):
-# Ollama's cloud hosts no qwen3.5:9b -- only the 397B -- and Jason rejected
-# every substitute (gpt-oss, 397b). With no approved cloud model there is no
-# ollama-cloud link; her depth runs on the local 9B. If he ever names a
-# cloud model himself, set it here and add "ollama-cloud" to DEEP_BACKEND.
+# The Ollama cloud model for the deep tier. EMPTY by default so no cloud model
+# runs without an explicit choice. Jason's approved setup (2026-07-09) wires
+# gemma4:cloud here via START_HERE.bat (ALPECCA_OLLAMA_CLOUD_MODEL=gemma4:cloud,
+# ALPECCA_DEEP_BACKEND=ollama-cloud); the local qwen3.5:9b remains the fallback
+# net. Never slot in a different model without his approval (gpt-oss and the
+# 397B were rejected on 2026-07-04).
 OLLAMA_CLOUD_MODEL = os.environ.get("ALPECCA_OLLAMA_CLOUD_MODEL", "")
 # Thinking budget for cloud deep calls. gpt-oss rarely needs a tenth of this;
 # the cap only exists so a pathological chain can't burn quota.
@@ -278,10 +279,10 @@ ZEROGPU_TOKEN = os.environ.get("ALPECCA_ZEROGPU_TOKEN", HF_TOKEN)
 ZEROGPU_VISION_API = _gradio_api_name("ALPECCA_ZEROGPU_VISION_API", "/vision")
 VISION_BACKEND = os.environ.get("ALPECCA_VISION_BACKEND", "auto").lower()
 # Ollama cloud sight: a vision-capable Ollama cloud model (same signed-in local
-# API as the deep tier). EMPTY by default (2026-07-04): the only vision-capable
-# cloud tag is the 397B, which Jason rejected -- so cloud sight is off unless
-# he names a model here himself. Ambient senses (screen glimpses, webcam)
-# never leave the machine regardless (see vision.py).
+# API as the deep tier). EMPTY by default so cloud sight is off without an
+# explicit choice. Jason's approved setup (2026-07-09) wires gemma4:cloud here
+# via START_HERE.bat (ALPECCA_VISION_CLOUD_MODEL=gemma4:cloud). Ambient senses
+# (screen glimpses, webcam) never leave the machine regardless (see vision.py).
 VISION_CLOUD_MODEL = os.environ.get("ALPECCA_VISION_CLOUD_MODEL", "")
 
 # --- Mindscape continuity -----------------------------------------------------

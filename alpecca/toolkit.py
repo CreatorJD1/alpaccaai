@@ -245,7 +245,7 @@ class InnateToolkit:
                 },
             },
         )
-        return tools[:7]
+        return tools
 
     def execute(self, tool_name: str, args: dict) -> str:
         if not self.enabled:

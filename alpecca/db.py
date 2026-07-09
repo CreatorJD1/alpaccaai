@@ -28,6 +28,7 @@ def connect(db_path: Path):
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA synchronous=NORMAL")
     except Exception:
         pass
     try:

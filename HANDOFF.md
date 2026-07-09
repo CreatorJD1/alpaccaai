@@ -1,4 +1,63 @@
-# Alpecca — Handoff (updated 2026-07-07)
+# Alpecca — Handoff (updated 2026-07-09)
+
+## Mindpage adaptive paging checkpoint (2026-07-09)
+
+- `alpecca/mindpage.py` now measures the actual formatted request instead of
+  treating raw history length as total context pressure. It includes system
+  prompt, current message, attached history, tool schemas, protocol allowance,
+  and output reserve, with deterministic optional-context shrink order.
+- Chat now performs bounded automatic pre-fault of relevant hot/warm pages and
+  injects labeled summary/excerpt evidence. Explicit `recall_page` searches all
+  tiers and is preserved inside the seven-tool cap for memory requests.
+- History deletion is commit-safe: a failed page write retains all messages and
+  exposes `paging_error` plus `unsummarized_eviction_backlog`.
+- The same measured snapshot reaches the factual prompt block, Soul Snapshot,
+  cognition state, chat/WebSocket reply, `/mindpage/stats`, and the House HQ
+  Working Memory gauge. Reflector now relieves pressure by paging chat history;
+  it no longer substitutes cognition-observation consolidation.
+- Long-term memory recall now unions the 500-row salience/recency pool with FTS5
+  lexical candidates. Malformed or mixed-dimension embeddings fall back to
+  keywords. Embedding calls run outside the write transaction during backfill.
+- Page faults promote to hot. `maintain_pages()` supports deterministic
+  hot-to-warm and warm-to-cold demotion; `vacuum()` is explicit and never runs
+  automatically. The disk limit is reported, not enforced through deletion.
+- Focused Mindpage/recall tests and `npm.cmd run house:build` pass. The full suite
+  must be run with `ALPECCA_CHAT_CLOUD_MODEL` unset because this machine's launcher
+  exports `gemma4:cloud`, which makes fake-local `_LLM` tests call the live cloud
+  client instead of their injected fake.
+- `docs/MINDPAGE.md` is the canonical implemented/deferred boundary. Layer B
+  llama.cpp slot persistence and Layer C OS pagefile/mmap deep-model work remain
+  experimental and were not activated.
+
+---
+
+## Active handoff for next Claude session (2026-07-09)
+
+- Scope is **VRoid base-model matching work** only; House HQ, core backend, and other app surfaces remain untouched.
+- User requirement remains: **disable layers instead of deleting**.
+- Current state:
+  - The updated regular-outfit source remains `data/alpecca_art_source/vrm_experiments/alpecca_vroid_proxy_v0.vroid` (9,650,830 bytes, saved 2026-07-09 12:19:40). It was preserved byte-for-byte as `alpecca_vroid_proxy_v0_updated_source_20260709_121940_preserved.vroid` before the base-view work.
+  - The stripped inspection model is a separate file: `data/alpecca_art_source/vrm_experiments/alpecca_vroid_proxy_v13_base_view_170cm.vroid` (7,321,206 bytes, saved 2026-07-09 15:07:52). Do not treat v13 as the regular-outfit source.
+  - Blank/no-item presets are active in v13 for `Tops`, `Bottoms`, `Socks`, and `Shoes`; neck/accessory routes remain absent. `Inner Top` and `Inner Bottom` expose no blank preset, so the minimal required underlayers remain. No item or texture layer was deleted.
+  - Base height was 170.2 cm / 5 ft 7 in when v13 was saved (`Fem Height=0.475`, `Masc Height=0.050`) with shoes disabled. VRoid displayed 170.3 cm after returning from Photo Booth with the same unchanged sliders; this is within the 170.2-170.4 cm gate and appears to be display/pose rounding.
+  - Full-body editor QA was completed at front, left/right 3/4, side, back 3/4, and back. A persistent front A-pose capture is `data/alpecca_art_source/vrm_experiments/qa_lane/alpecca_v13_base_front_20260709.png`.
+  - Adult/slim proportions, single ahoge, blue eyes, and pale blue lower hair color are present. The model is not design-complete: hair is shorter, straighter, and less layered than the locked references, and the left blue clip remains the simple-pin proxy rather than the required small X/bow accessory.
+  - Lanyard/accessory routing:
+    - Custom item fallback remains at `%USERPROFILE%\AppData\LocalLow\pixiv\VRoid Studio\custom_items\N00-NeckAccessory\2026-07-09-07-50-16-412.vroidcustomitem`.
+    - Matching package is `data/alpecca_art_source/vrm_experiments/xwear/alpecca_neck_accessory_lanyard_fallback_20260709.xwear`.
+  - BOOTH zip path is downloaded as `data/alpecca_art_source/vrm_experiments/accessory_workbench/booth_downloads/BWL_Group1000ThanksTicketHolder1.0.0Gift.zip` but encrypted (password-required).
+  - Custom scratch lanyard source package lives at `data/alpecca_art_source/vrm_experiments/accessory_workbench/lanyard_3d/` (`.obj/.mtl/.glb` + textures/spec).
+- Open items:
+  - Improve v13 hair length, layered/wavy mass, and soft lavender-blue lower transition against `design_lock_references/01-turnaround-front-side-back.jpg` and `02-volumetric-angle-reference.jpg` without changing the preserved v0 source.
+  - Replace the simple-pin proxy with a true small blue X/bow clip on Alpecca's left side through a compatible accessory/XWear route.
+  - Add persisted side, back 3/4, and back QA captures after the hair/clip correction; the orbit was visually checked but only the front image is currently saved.
+  - Keep using blank/no-item presets and separate source variants. Avoid delete, trash, or overwrite actions on the preserved regular-outfit source.
+- Canonical references for continuation:
+  - `PROJECT_CONTEXT.md`
+  - `docs/ALPECCA_CURRENT_PROGRESS.md` (if still present/authoritative)
+  - `HANDOFF.md` (this file)
+
+---
 
 Snapshot for whoever picks this up next (human or agent): current state, how to
 run her, what was built, what's solid vs. shaky, and what's next. Read `CLAUDE.md`
@@ -6,6 +65,80 @@ for the canonical architecture, `docs/ALPECCA_CURRENT_PROGRESS.md` for the curre
 state and plan. (An earlier handoff is folded into the history below.)
 
 ---
+
+## VRoid hoodie/lanyard cleanup checkpoint (2026-07-09)
+
+Scope: active VRoid source only; House HQ and the 2D pipeline remain untouched.
+
+- The active source `data/alpecca_art_source/vrm_experiments/alpecca_vroid_proxy_v0.vroid`
+  was saved in VRoid Studio at 2026-07-09 06:36:47 local time (9,532,476 bytes).
+- Hoodie artifact cleanup is now applied through the pass 05 clean overlay:
+  `vroid_texture_layers/continuous_texture_lane/pass_05/alpecca_v10_hoodie_minimal_reference_matched_no_buttons_2048.png`.
+  This removed the baked-in lanyard/buttons, dashed seam noise, and the stray lower
+  blue open-front line from the hoodie texture.
+- Jason clarified the white inner shirt is its own `Outfit > Inner Top` category.
+  The lanyard/ID base layer was moved there with a pure no-choker overlay:
+  `vroid_texture_layers/continuous_texture_lane/pass_06/alpecca_pass06_inner_top_lanyard_id_pure_no_choker_2048.png`.
+  A second chest-high pure overlay was added so the lanyard reads higher in the
+  hoodie opening:
+  `vroid_texture_layers/continuous_texture_lane/pass_06/alpecca_pass06_inner_top_lanyard_id_chest_high_pure_no_choker_2048.png`.
+  The older accidental `Neck Accessories` texture-edit dirty flag was explicitly
+  left unchecked in VRoid save prompts so it was not overwritten.
+- Front hair tips were restored with a softer lower-only overlay:
+  `vroid_texture_layers/continuous_texture_lane/pass_06/alpecca_pass06_hair_lower_tips_only_soft_blue_1024x2048.png`.
+  The too-strong full lower-gradient layer was hidden before saving the Front hair item.
+- The current worn regular outfit state was exported through VRoid Studio's
+  top-left `Bulk export worn items as XWear` path:
+  `data/alpecca_art_source/vrm_experiments/xwear/alpecca_regular_outfit_lanyard_inner_top_20260709.xwear`
+  (8,719,402 bytes, saved 2026-07-09 07:41:29). This is a full worn-outfit XWear
+  package, not a lanyard-only XWear, because VRoid exports accessories via the
+  bulk XWear route rather than individual accessory export.
+- Jason clarified that the lanyard should be an accessory; VRoid Studio 2.14.0
+  does not provide a native modern `Accessories` lanyard preset, and importing the
+  existing lanyard custom item routes it back to `Outfit > Neck Accessories`.
+  The fallback is now saved there as a custom neck/tie-section item:
+  `%USERPROFILE%\AppData\LocalLow\pixiv\VRoid Studio\custom_items\N00-NeckAccessory\2026-07-09-07-50-16-412.vroidcustomitem`.
+  The active source project was saved after that at 2026-07-09 07:50:33 local
+  time (9,672,693 bytes).
+- A corrected fallback XWear export from the worn `Outfit > Neck Accessories`
+  state is saved at
+  `data/alpecca_art_source/vrm_experiments/xwear/alpecca_neck_accessory_lanyard_fallback_20260709.xwear`
+  (8,737,591 bytes, saved 2026-07-09 07:52:38). This remains a VRoid bulk worn
+  item package, but the lanyard source item is now in the neck accessory/tie
+  category rather than the inner shirt texture route.
+- A separate custom 3D source model for the lanyard/badge was generated under
+  `data/alpecca_art_source/vrm_experiments/accessory_workbench/lanyard_3d/`:
+  `alpecca_lanyard_badge_source.obj`, `alpecca_lanyard_badge_source.mtl`, and
+  `generate_lanyard_obj.py`. After the BOOTH ZIP password block, Jason chose the
+  scratch-build route. The generator now outputs an upgraded no-collar/no-choker
+  source package: preferred self-contained
+  `alpecca_lanyard_badge_source.glb`, editable OBJ/MTL, external glTF/bin,
+  `textures/alpecca_id_badge_1024.png`, and
+  `alpecca_lanyard_badge_source.spec.json`. It includes a blue V-lanyard, strap
+  highlights/shadows, gray hardware, lower blue tag tails, and a UV-mapped
+  Alpecca ID badge face. Use the GLB as the active import source for the later
+  true accessory/XWear Package build path; parent it to the VRM `Chest` bone and
+  keep the badge slightly in front of the hoodie opening.
+- Jason provided BOOTH item `https://booth.pm/en/items/8077106`. It was opened
+  in Microsoft Edge while signed in and downloaded successfully to Downloads as
+  `BWL_Group1000ThanksTicketHolder1.0.0Gift.zip` (76,129,588 bytes), then copied
+  to
+  `data/alpecca_art_source/vrm_experiments/accessory_workbench/booth_downloads/`.
+  The archive is password-encrypted; listed contents include a Unity package,
+  `FBX/Group1000Keychain_Charm.fbx`, `FBX/Group1000Keychain_NeckStrap.fbx`, and
+  Blue/LightBlue texture PNGs, but extraction requires the password. The BOOTH
+  page states the extraction password is distributed through the creator's VRChat
+  group member-only post dated 2026-03-14 22:00. Do not bypass this; Jason needs
+  to provide the password or retrieve it through the intended route.
+- The rejected collar/choker body-skin texture remains off. Do not reintroduce a
+  standalone collar/choker; keep the lanyard as a separate accessory only.
+- Remaining model-fidelity gaps: the lanyard is now routed through
+  `Outfit > Neck Accessories`, but it is still constrained by VRoid's neck/tie
+  geometry and reads more tie-like than the reference. The separate OBJ source
+  model should be used for the later true accessory/XWear Package build. The blue
+  X/bow hair clip is still a proxy hair extra rather than a true modern
+  `Accessories` custom item, and full front/side/back orbit QA still needs a
+  manual VRoid camera pass.
 
 ## VCS texture/model-fidelity pass (2026-07-08)
 

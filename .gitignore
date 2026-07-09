@@ -52,3 +52,7 @@ claude.exe
 # multi-GB checkouts -- model checkpoints, their own .venv/.git, weights well past
 # GitHub's 100 MB file limit. They're fetched/set up locally, never committed.
 vendor/
+
+# Session scratch: rendered PDF/PNG artifacts and remote-attachment photo drops.
+tmp/
+.codex-remote-attachments/

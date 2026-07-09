@@ -1430,7 +1430,10 @@ def mindscape_state() -> dict:
 @app.get("/mindpage/stats")
 def mindpage_stats() -> dict:
     """Observable working-memory/page pressure for Alpecca."""
-    return mindpage_mod.stats(history=getattr(mind, "_history", []))
+    return mindpage_mod.stats(
+        history=getattr(mind, "_history", []),
+        ledger=getattr(mind, "_last_mindpage", None),
+    )
 
 
 @app.get("/mindscape/snapshot")

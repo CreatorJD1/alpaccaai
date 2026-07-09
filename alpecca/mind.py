@@ -51,6 +51,7 @@ from config import (
     CORE_MEMORY_LEARN_ONLY,
     RECAP_SALIENCE,
     CHAT_SEMANTIC_RECALL,
+    MINDPAGE,
 )
 from config import (DEEP_BACKEND, ANTHROPIC_API_KEY, ANTHROPIC_MODEL,
                     CLOUD_URL, CLOUD_MODEL, CLOUD_API_KEY,
@@ -947,6 +948,10 @@ class CoreMind:
         self._last_situation: str = ""            # last sensed window, for introspection
         self._session_start = time.time()
         self._history: list[dict] = []  # short rolling chat context for the LLM
+        # Canonical ledger for the most recent request actually sent to the
+        # model. Before the first turn, pressure falls back to a live history
+        # estimate; afterward Soul, API, prompt, and UI all share this snapshot.
+        self._last_mindpage: dict | None = None
         self._recent_replies: list[str] = []  # her recent replies, to catch bot-like repetition
         self._last_memory_evidence: list[dict] = []
         # Her own standing taste in how she likes to look. Persisted so she
@@ -1041,15 +1046,121 @@ class CoreMind:
         if not wants_action:
             return None
         combined = [*self.actuator.tools_schema(), *self.toolkit.schemas()]
-        if len(combined) > 7:
-            combined = combined[:7]
-        return combined
+        if len(combined) <= 7:
+            return combined
+        preferred_names = []
+        if any(term in user_low for term in ("make a plan", "draft a plan", "plan for", "workshop plan")):
+            preferred_names.append("make_plan")
+        if any(term in user_low for term in (
+            "memory", "remember", "recall", "earlier", "paged", "page out",
+        )):
+            preferred_names.extend(["recall_page", "memory_search"])
+        if "journal" in user_low:
+            preferred_names.extend(["journal_read", "journal_write"])
+        selected = []
+        selected_names = set()
+        for name in preferred_names:
+            for schema in combined:
+                schema_name = schema.get("function", {}).get("name")
+                if schema_name == name and schema_name not in selected_names:
+                    selected.append(schema)
+                    selected_names.add(schema_name)
+                    break
+        for schema in combined:
+            name = schema.get("function", {}).get("name")
+            if name not in selected_names:
+                selected.append(schema)
+                selected_names.add(name)
+            if len(selected) >= 7:
+                break
+        return selected[:7]
 
     def _execute_tool(self, tool_name: str, args: dict) -> str:
         tool_name = str(tool_name or "").strip()
         if self.toolkit.enabled and tool_name in {t["function"]["name"] for t in self.toolkit.schemas()}:
             return self.toolkit.execute(tool_name, args)
         return self.actuator.execute(tool_name, args)
+
+    def mindpage_state(self) -> dict:
+        """One canonical, externally observable working-memory snapshot."""
+        if self._last_mindpage is not None:
+            return dict(self._last_mindpage)
+        return mindpage_mod.pressure_snapshot(self._history)
+
+    def _page_history_prefix(self, count: int, reason: str) -> dict:
+        """Persist and then remove a history prefix; failed writes retain it."""
+        page_count = max(0, min(int(count), len(self._history)))
+        if not MINDPAGE or page_count <= 0:
+            return {"ok": False, "paged": 0, "reason": "nothing_to_page"}
+        evicted = list(self._history[:page_count])
+        try:
+            page_id = mindpage_mod.write_episode_page(evicted)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "paged": 0,
+                "reason": "write_failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        if not page_id:
+            return {"ok": False, "paged": 0, "reason": "write_not_committed"}
+        del self._history[:page_count]
+        cognition_mod.record_observation(cognition_mod.CognitionObservation(
+            source="mindpage",
+            room=self._location,
+            content=f"Paged out {len(evicted)} chat messages into Mindpage page {page_id}.",
+            confidence=1.0,
+            privacy_class="personal",
+            metadata={
+                "page_id": int(page_id),
+                "evicted_messages": len(evicted),
+                "reason": reason,
+            },
+        ))
+        if self._last_mindpage is not None:
+            self._last_mindpage = mindpage_mod.pressure_snapshot(
+                ledger=self._last_mindpage
+            )
+        return {"ok": True, "paged": len(evicted), "page_id": int(page_id), "reason": reason}
+
+    def page_history_to_target(self, target_fill: float = 0.72) -> dict:
+        """Let the Soul relieve measured context pressure through Mindpage."""
+        before = self.mindpage_state()
+        history_length = len(self._history)
+        unattached_prefix = max(
+            0,
+            history_length - int(before.get("history_messages") or 0),
+        )
+        evicted, _remaining = mindpage_mod.select_history_for_page(
+            self._history,
+            before,
+            target_fill=target_fill,
+            min_keep_messages=4,
+        )
+        result = self._page_history_prefix(len(evicted), "soul_pressure_relief")
+        if result.get("ok"):
+            attached_count = max(0, len(evicted) - unattached_prefix)
+            attached_evicted = evicted[-attached_count:] if attached_count else []
+            adjusted = mindpage_mod.adjust_pressure_after_paging(
+                before, attached_evicted
+            )
+            self._last_mindpage = mindpage_mod.pressure_snapshot(ledger=adjusted)
+        after = self.mindpage_state()
+        cognition_mod.record_observation(cognition_mod.CognitionObservation(
+            source="mindpage_pressure",
+            room=self._location,
+            content=(
+                f"Mindpage pressure action: {before.get('pressure', 'unknown')} "
+                f"{float(before.get('context_fill') or 0.0):.2f} -> "
+                f"{after.get('pressure', 'unknown')} "
+                f"{float(after.get('context_fill') or 0.0):.2f}; "
+                f"paged={int(result.get('paged') or 0)}."
+            ),
+            confidence=1.0,
+            privacy_class="local",
+            metadata={"before": before, "after": after, "result": result},
+        ))
+        return {"phase": "mindpage", "before": before, "after": after, **result}
 
     # --- Node 1: sense + update mood from the environment ------------------
 
@@ -1278,6 +1389,14 @@ class CoreMind:
             user_msg,
             embed_fn=memory_store.default_embed if CHAT_SEMANTIC_RECALL else None,
         )
+        paged_memories = []
+        if MINDPAGE:
+            try:
+                paged_memories = mindpage_mod.prefault_pages(user_msg)
+            except Exception:
+                # Paging is an enhancement. A damaged/unavailable page store must
+                # never take down the live conversation path.
+                paged_memories = []
         memory_evidence = [{
             "id": m.get("id"),
             "kind": m.get("kind", "episodic"),
@@ -1288,7 +1407,6 @@ class CoreMind:
             "recency": m.get("recall_recency", 0),
             "method": m.get("recall_method", "keyword"),
         } for m in memories]
-        self._last_memory_evidence = memory_evidence
 
         # Alpecca reads its own real state before speaking, so it can reflect on
         # itself honestly within the reply.
@@ -1361,35 +1479,136 @@ class CoreMind:
                                   + str(musings[0].get("content", "")).strip()[:160])
         except Exception:
             pass
-        try:
-            pressure = mindpage_mod.pressure_snapshot(self._history)
-            if pressure.get("context_fill", 0.0) >= 0.9:
-                pct = int(float(pressure.get("context_fill") or 0.0) * 100)
-                inner_bits.append(f"working memory pressure is {pct}% full")
-        except Exception:
-            pass
-        inner = "; ".join(b for b in inner_bits if b)
-
         abilities = self.actuator.describe()
         if self.toolkit.enabled:
             if abilities:
                 abilities = abilities.rstrip(".") + "; " + self.toolkit.describe()
             else:
                 abilities = self.toolkit.describe()
+        tool_schema = self._tool_schema(low)
+        who_prompt = people_mod.who_prompt(self._speaker)
+        core_block = core_mem.prompt_block(learning_only=CORE_MEMORY_LEARN_ONLY)
+
+        # Budget optional evidence before building the final request. Candidate
+        # order is relevance-first; fit_context drops the weakest memory/page
+        # evidence, then oldest history, then musings. The exact final request is
+        # measured again below after all prompt labels have been added.
+        memory_refs = []
+        for memory in memories[:2]:
+            memory_refs.append({
+                "kind": "memory",
+                "value": memory,
+                "score": float(memory.get("recall_score") or memory.get("salience") or 0.0),
+                "budget_text": (
+                    f"Past memory ({memory.get('kind', 'memory')}): "
+                    f"{str(memory.get('content') or '')[:180]}"
+                ),
+            })
+        for page in paged_memories:
+            memory_refs.append({
+                "kind": "page",
+                "value": page,
+                "score": float(page.get("score") or page.get("salience") or 0.0),
+                "budget_text": str(page.get("evidence_text") or ""),
+            })
+        memory_refs.sort(key=lambda item: item["score"], reverse=True)
+        base_prompt = prompts.build_system_prompt(
+            self.state, [], situation, self_narration=self_report.narrate(),
+            image_seen=image_desc or "", abilities=abilities,
+            who=who_prompt, inner="", core=core_block,
+            current_message=user_msg, compact=True,
+        )
+        history_window = self._history[-HISTORY_MESSAGES:]
+        fitted = mindpage_mod.fit_context(
+            fixed_texts=[base_prompt, user_msg, "working-memory telemetry reserve" + "x" * 260],
+            memories=[item["budget_text"] for item in memory_refs],
+            history=history_window,
+            musings=[bit for bit in inner_bits if bit],
+            tools=tool_schema,
+            prefault_page_count=len(paged_memories),
+        )
+        selected_refs = memory_refs[:len(fitted["memories"])]
+        prompt_memories = [item["value"] for item in selected_refs if item["kind"] == "memory"]
+        prompt_pages = [item["value"] for item in selected_refs if item["kind"] == "page"]
+        inner = "; ".join(fitted["musings"])
+        paged_block = "\n".join(
+            str(page.get("evidence_text") or "") for page in prompt_pages
+            if page.get("evidence_text")
+        )
+        for page in prompt_pages:
+            memory_evidence.append({
+                "id": page.get("id"),
+                "kind": "mindpage_episode",
+                "content": page.get("summary", ""),
+                "salience": page.get("salience", 0),
+                "score": page.get("score", 0),
+                "similarity": 0,
+                "recency": 0,
+                "method": "mindpage_prefault",
+            })
+        self._last_memory_evidence = memory_evidence
+
+        preliminary_pressure = mindpage_mod.pressure_snapshot(
+            ledger=fitted["snapshot"]
+        )
+        working_memory = mindpage_mod.pressure_prompt(preliminary_pressure)
         system_prompt = prompts.build_system_prompt(
-            self.state, memories, situation, self_narration=self_report.narrate(),
+            self.state, prompt_memories, situation, self_narration=self_report.narrate(),
             image_seen=image_desc or "", abilities=abilities,
             who=people_mod.who_prompt(self._speaker), inner=inner,
-            core=core_mem.prompt_block(learning_only=CORE_MEMORY_LEARN_ONLY),
-            current_message=user_msg,
-            compact=True,
+            core=core_block, current_message=user_msg, compact=True,
+            working_memory=working_memory, paged_memory=paged_block,
         )
+        prompt_history, exact_ledger = mindpage_mod.fit_request(
+            system_prompt, user_msg, fitted["history"], tools=tool_schema,
+        )
+        component_ledger = fitted["snapshot"]
+        exact_ledger["dropped_memory_items"] = int(
+            component_ledger.get("dropped_memory_items") or 0
+        )
+        exact_ledger["dropped_musing_items"] = int(
+            component_ledger.get("dropped_musing_items") or 0
+        )
+        exact_ledger["dropped_history_messages"] += int(
+            component_ledger.get("dropped_history_messages") or 0
+        )
+        exact_ledger["unsummarized_eviction_backlog"] = exact_ledger[
+            "dropped_history_messages"
+        ]
+        exact_ledger["prefault_page_count"] = len(prompt_pages)
+        exact_ledger["component_breakdown"] = component_ledger.get("breakdown", {})
+        self._last_mindpage = mindpage_mod.pressure_snapshot(ledger=exact_ledger)
+
+        # Rebuild once with the final measured value. The second hard fit accounts
+        # for the exact telemetry sentence itself and remains bounded.
+        system_prompt = prompts.build_system_prompt(
+            self.state, prompt_memories, situation, self_narration=self_report.narrate(),
+            image_seen=image_desc or "", abilities=abilities,
+            who=who_prompt, inner=inner, core=core_block,
+            current_message=user_msg, compact=True,
+            working_memory=mindpage_mod.pressure_prompt(self._last_mindpage),
+            paged_memory=paged_block,
+        )
+        prompt_history, final_ledger = mindpage_mod.fit_request(
+            system_prompt, user_msg, prompt_history, tools=tool_schema,
+        )
+        for key in (
+            "dropped_memory_items", "dropped_musing_items",
+            "prefault_page_count", "component_breakdown",
+        ):
+            final_ledger[key] = exact_ledger.get(key)
+        final_ledger["dropped_history_messages"] += int(
+            exact_ledger.get("dropped_history_messages") or 0
+        )
+        final_ledger["unsummarized_eviction_backlog"] = final_ledger[
+            "dropped_history_messages"
+        ]
+        self._last_mindpage = mindpage_mod.pressure_snapshot(ledger=final_ledger)
         cognition_mod.set_intent(cognition_mod.IntentState(
             "replying",
             "Alpecca is composing a reply from memory, state, and context.",
             target=self._speaker,
         ))
-        tool_schema = self._tool_schema(low)
         # Stream only plain conversational turns; tool turns can't. Passed as
         # an extra kwarg ONLY when live, so test fakes and older generate
         # signatures keep working untouched.
@@ -1398,7 +1617,7 @@ class CoreMind:
             if (on_token is not None and tool_schema is None) else {}
         )
         reply = self.llm.generate(
-            system_prompt, user_msg, self._history[-HISTORY_MESSAGES:],
+            system_prompt, user_msg, prompt_history,
             tools=tool_schema,
             on_tool=self._execute_tool if tool_schema else None,
             tier=reply_tier,
@@ -1418,7 +1637,7 @@ class CoreMind:
                     "opening, different words, and a fresh angle; do not reuse your "
                     "earlier phrasing.")
                 reply = self.llm.generate(fresh_prompt, user_msg,
-                                          self._history[-HISTORY_MESSAGES:],
+                                          prompt_history,
                                           tier=reply_tier)
                 if self.llm.last_call().get("fallback"):
                     break
@@ -1488,21 +1707,13 @@ class CoreMind:
         # anyway, and long sessions shouldn't grow memory without limit.
         if len(self._history) > HISTORY_MESSAGES * 4:
             evict_count = len(self._history) - HISTORY_MESSAGES * 2
-            evicted = self._history[:evict_count]
-            try:
-                page_id = mindpage_mod.write_episode_page(evicted)
-                if page_id:
-                    cognition_mod.record_observation(cognition_mod.CognitionObservation(
-                        source="mindpage",
-                        room=self._location,
-                        content=f"Paged out {len(evicted)} chat turns into Mindpage page {page_id}.",
-                        confidence=1.0,
-                        privacy_class="personal",
-                        metadata={"page_id": page_id, "evicted_turns": len(evicted)},
-                    ))
-            except Exception:
-                pass
-            del self._history[:evict_count]
+            paging_result = self._page_history_prefix(evict_count, "rolling_history_cap")
+            if not paging_result.get("ok"):
+                # Retain the full history for a later retry and expose the real
+                # backlog/error in the canonical snapshot. Nothing is discarded.
+                self._last_mindpage = dict(self._last_mindpage or {})
+                self._last_mindpage["unsummarized_eviction_backlog"] = evict_count
+                self._last_mindpage["paging_error"] = paging_result.get("error") or paging_result.get("reason")
         chat_turn_id = cognition_mod.record_chat_turn(cognition_mod.ChatTurn(
             user_text=user_msg,
             reply=reply,
@@ -1528,8 +1739,9 @@ class CoreMind:
             "state": self.state.as_dict(),
             "location": self._location,
             "moved": bool(moved),
-            "memories_used": [m["content"] for m in memories],
+            "memories_used": [m["content"] for m in prompt_memories],
             "memory_evidence": memory_evidence,
+            "mindpage": self.mindpage_state(),
             "self_reflection": self_report.narrate(),
             "appearance": self.current_appearance().as_dict(),
             "llm_online": self.llm.online,
@@ -1615,6 +1827,7 @@ class CoreMind:
             desires=desires,
             self_report=self.introspect().narrate(),
             capabilities=capabilities or {},
+            mindpage=self.mindpage_state(),
         )
 
     def proposal_state(self) -> dict:
@@ -2989,7 +3202,7 @@ class CoreMind:
             senses_active=self._prev_obs is not None and bool(self._prev_obs.window_title),
             person_fatigue=person_fatigue,
             trial_running=any(r["status"] == "trial" for r in selfmod.history(limit=3)),
-            memory_pressure=mindpage_mod.pressure_snapshot(self._history),
+            memory_pressure=self.mindpage_state(),
         )
 
     # --- Her journal + recursive self-questioning --------------------------
@@ -3051,7 +3264,9 @@ class CoreMind:
         """What her Soul is arbitrating right now: the ranked slate of intentions
         from her seven subagents and the one in focus, decided by the Good Person
         Principle. Read-only and fully explainable."""
-        plan = soul_mod.soul.deliberate(self._soul_snapshot())
+        snapshot = self._soul_snapshot()
+        plan = soul_mod.soul.deliberate(snapshot)
+        plan["snapshot"] = snapshot.as_dict()
         focus = plan.get("focus") or {}
         slate = plan.get("slate") or []
         if SOUL_LLM and focus and len(slate) > 1:
@@ -3201,8 +3416,7 @@ class CoreMind:
             return self.self_improve_tick()
         if sub == "Reflector":
             if "consolidate" in str((focus or {}).get("action", "")).lower():
-                return {"phase": "consolidated",
-                        "result": self.consolidate_observations(limit=16)}
+                return self.page_history_to_target(target_fill=0.72)
             return {"phase": "reflected", "text": self.reflect()}
         # ACTIONS: act on her strongest real want -- Doer reaches out, Wanderer
         # pursues curiosity/creation. Both become one concrete step on a desire.

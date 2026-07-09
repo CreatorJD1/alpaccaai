@@ -33,6 +33,7 @@ Important current priorities:
 - Voice should use her personality and modulation system, with Kokoro `af_heart` as the intended voice profile.
 - Alpecca should initiate bounded observations/questions from real context, not spam logs or hallucinate events.
 - Self-improvement should create evidence-backed proposals and require user approval before risky changes.
+- Mindpage software paging must measure the actual request budget, preserve evicted chat before deletion, and expose memory pressure as computed telemetry rather than a human-like feeling.
 
 ## Storage And Deployment
 
@@ -134,6 +135,7 @@ Room meanings:
 
 - `server.py`: FastAPI/WebSocket backend, app routes, TTS endpoints.
 - `alpecca/mind.py`: core loop and model fallback behavior.
+- `alpecca/mindpage.py`: context ledger, compressed chat pages, page faults, pressure metrics, and tier maintenance.
 - `alpecca/cognition.py`: observations, intent, proposals, behavior review.
 - `alpecca/tts.py`: Kokoro/OpenTTS/voice behavior.
 - `alpecca/prompts.py`: personality, grounding, prompt assembly.

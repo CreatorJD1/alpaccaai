@@ -221,6 +221,62 @@ canvas:active {
   -webkit-line-clamp: 4;
 }
 
+.memory-pressure {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 10px;
+  align-items: center;
+  padding-top: 6px;
+  border-top: 1px solid rgba(142, 238, 255, 0.18);
+}
+
+.memory-pressure span {
+  letter-spacing: 0;
+}
+
+.memory-pressure em {
+  color: #8eeeff;
+  font-size: 0.7rem;
+  font-style: normal;
+  font-weight: 850;
+}
+
+.memory-pressure i {
+  grid-column: 1 / -1;
+  height: 4px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+
+.memory-pressure b {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: #8eeeff;
+  transition: width 220ms ease, background-color 220ms ease;
+}
+
+.memory-pressure[data-pressure="medium"] em {
+  color: #f0bd59;
+}
+
+.memory-pressure[data-pressure="medium"] b {
+  background: #f0bd59;
+}
+
+.memory-pressure[data-pressure="high"] em {
+  color: #ff7e9e;
+}
+
+.memory-pressure[data-pressure="high"] b {
+  background: #ff7e9e;
+}
+
+.memory-pressure[data-pressure="unavailable"] {
+  opacity: 0.65;
+}
+
 .living-state[data-system="memory"] span,
 .living-state[data-system="room_review"] span {
   color: #8eeeff;

@@ -1134,6 +1134,7 @@ def state(
     desires: dict,
     self_report: str,
     capabilities: dict | None = None,
+    mindpage: dict | None = None,
     db_path: Path = DB_PATH,
 ) -> dict:
     return {
@@ -1151,6 +1152,7 @@ def state(
         "desires": desires,
         "self_report": self_report,
         "capabilities": capabilities or {},
+        "mindpage": mindpage or {},
         "action_proposals": recent_action_proposals(db_path=db_path),
         "proposal_evaluations": proposal_evaluations(db_path=db_path),
         "recursive_engagement": recent_recursive_engagement(db_path=db_path),

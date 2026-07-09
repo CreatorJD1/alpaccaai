@@ -73,6 +73,30 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return max(0.0, min(1.0, (dot / (na * nb) + 1.0) / 2.0))
 
 
+def _decode_vector(value) -> list[float] | None:
+    """Decode a stored vector defensively; malformed/mixed rows use keywords."""
+    if not value:
+        return None
+    try:
+        raw = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(raw, list) or not raw:
+            return None
+        vector = [float(item) for item in raw]
+        if not all(math.isfinite(item) for item in vector):
+            return None
+        return vector
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _decode_tokens(value) -> list[str]:
+    try:
+        raw = json.loads(value) if isinstance(value, str) else value
+        return [str(item) for item in raw] if isinstance(raw, list) else []
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+
+
 # --- Default embedder: local Ollama or Hugging Face, lazily initialized -----
 
 _EMBED_MODEL = "nomic-embed-text"
@@ -80,6 +104,7 @@ _ollama_client = None
 _ollama_ready: Optional[bool] = None  # None = untried, then True/False
 _hf_client = None
 _hf_ready: Optional[bool] = None
+_fts_ready_paths: set[str] = set()
 
 
 def default_embed(text: str) -> Optional[list]:
@@ -140,6 +165,90 @@ def _connect(db_path: Path):
     from alpecca.db import connect as _db_connect
     with _db_connect(db_path) as conn:
         yield conn
+
+
+def ensure_search_index(db_path: Path = DB_PATH) -> bool:
+    """Install an FTS5 lexical index and keep it synchronized with memories."""
+    cache_key = str(Path(db_path).resolve())
+    if cache_key in _fts_ready_paths:
+        return True
+    try:
+        with _connect(db_path) as conn:
+            existed = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories_fts'"
+            ).fetchone() is not None
+            conn.executescript(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                    content,
+                    content='memories',
+                    content_rowid='id'
+                );
+                CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
+                    INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
+                END;
+                CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+                    INSERT INTO memories_fts(memories_fts, rowid, content)
+                    VALUES('delete', old.id, old.content);
+                END;
+                CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE OF content ON memories BEGIN
+                    INSERT INTO memories_fts(memories_fts, rowid, content)
+                    VALUES('delete', old.id, old.content);
+                    INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
+                END;
+                """
+            )
+            needs_rebuild = not existed
+            sentinel = conn.execute(
+                "SELECT id, content FROM memories ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if sentinel and not needs_rebuild:
+                tokens = _tokenize(str(sentinel["content"] or ""))
+                if tokens:
+                    match = conn.execute(
+                        "SELECT 1 FROM memories_fts "
+                        "WHERE memories_fts MATCH ? AND rowid=? LIMIT 1",
+                        (f'"{tokens[0]}"', int(sentinel["id"])),
+                    ).fetchone()
+                    needs_rebuild = match is None
+            if needs_rebuild:
+                conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+        _fts_ready_paths.add(cache_key)
+        return True
+    except sqlite3.OperationalError:
+        # Some minimal SQLite builds omit FTS5. Recall still has the bounded
+        # salience/recency candidate path in that environment.
+        return False
+
+
+def _lexical_candidates(query_tokens: list[str], *, limit: int,
+                        db_path: Path) -> list[dict]:
+    if not query_tokens or not ensure_search_index(db_path):
+        return []
+    terms = []
+    for token in dict.fromkeys(query_tokens):
+        clean = str(token).replace('"', '""')
+        if clean:
+            terms.append(f'"{clean}"')
+    if not terms:
+        return []
+    expression = " OR ".join(terms[:16])
+    try:
+        with _connect(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT m.id, m.ts, m.kind, m.content, m.salience, m.tokens, m.embedding
+                FROM memories_fts
+                JOIN memories AS m ON m.id = memories_fts.rowid
+                WHERE memories_fts MATCH ?
+                ORDER BY bm25(memories_fts)
+                LIMIT ?
+                """,
+                (expression, max(1, int(limit))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+    except sqlite3.OperationalError:
+        return []
 
 
 def classify_kind(content: str, source: str = "", fallback: str = "episodic") -> str:
@@ -252,19 +361,27 @@ def recall(query: str, top_k: int = MEMORY_TOP_K, db_path: Path = DB_PATH,
     now = time.time()
     scored = []
     with _connect(db_path) as conn:
-        rows = conn.execute(
+        base_rows = conn.execute(
             "SELECT id, ts, kind, content, salience, tokens, embedding FROM memories "
             "ORDER BY salience DESC, ts DESC LIMIT ?",
             (max(int(top_k or 1), int(MEMORY_RECALL_CANDIDATE_LIMIT)),),
         ).fetchall()
+    rows_by_id = {int(row["id"]): dict(row) for row in base_rows}
+    lexical_limit = max(64, min(256, int(MEMORY_RECALL_CANDIDATE_LIMIT)))
+    for row in _lexical_candidates(q_tokens, limit=lexical_limit, db_path=db_path):
+        rows_by_id[int(row["id"])] = row
+    rows = list(rows_by_id.values())
     for r in rows:
-        m_vec = json.loads(r["embedding"]) if r["embedding"] else None
-        if q_vec is not None and m_vec is not None:
+        m_vec = _decode_vector(r["embedding"])
+        valid_semantic_pair = (
+            q_vec is not None and m_vec is not None and len(q_vec) == len(m_vec)
+        )
+        if valid_semantic_pair:
             sim = _cosine(q_vec, m_vec)
             floor = 0.05   # cosine is rarely exactly 0; ignore near-orthogonal
             method = "semantic"
         else:
-            sim = _similarity(q_tokens, json.loads(r["tokens"]))
+            sim = _similarity(q_tokens, _decode_tokens(r["tokens"]))
             floor = 0.0
             method = "keyword"
         if q_exact and _exact_phrase_match(q_exact, str(r["content"])):
@@ -313,35 +430,39 @@ def backfill_embeddings(batch: int = 16, db_path: Path = DB_PATH,
         return {"scanned": 0, "updated": 0, "skipped": 0, "errors": 0}
 
     with _connect(db_path) as conn:
-        # Only NULL embeddings are candidates; this guarantees idempotency.
+        # Read candidates in a short transaction. Embedding calls happen after
+        # this connection closes so other writers are never blocked by a model.
         rows = conn.execute(
             "SELECT id, content FROM memories WHERE embedding IS NULL ORDER BY ts LIMIT ?",
             (batch,),
         ).fetchall()
-        scanned = len(rows)
-        for row in rows:
-            content = (row["content"] or "").strip()
-            if not content:
-                skipped += 1
-                continue
-            try:
-                vec = embed_fn(content)
-            except Exception:
-                errors += 1
-                # A hard embedder failure in one row likely affects the batch.
-                break
-            if vec is None:
-                # Offline/unsupported model or caller-injected semantic disable.
-                skipped += 1
-                continue
-            try:
-                conn.execute(
-                    "UPDATE memories SET embedding=? WHERE id=?",
-                    (json.dumps(vec), row["id"]),
-                )
-                updated += 1
-            except Exception:
-                errors += 1
+    scanned = len(rows)
+    pending = []
+    for row in rows:
+        content = (row["content"] or "").strip()
+        if not content:
+            skipped += 1
+            continue
+        try:
+            vec = embed_fn(content)
+        except Exception:
+            errors += 1
+            break
+        if vec is None:
+            skipped += 1
+            continue
+        pending.append((json.dumps(vec), int(row["id"])))
+    if pending:
+        with _connect(db_path) as conn:
+            for encoded, memory_id in pending:
+                try:
+                    conn.execute(
+                        "UPDATE memories SET embedding=? WHERE id=? AND embedding IS NULL",
+                        (encoded, memory_id),
+                    )
+                    updated += int(conn.execute("SELECT changes() AS n").fetchone()["n"] or 0)
+                except Exception:
+                    errors += 1
     return {
         "scanned": scanned,
         "updated": updated,
@@ -354,11 +475,11 @@ def _is_near_duplicate(a: dict, b: dict) -> bool:
     """Whether two stored memories say essentially the same thing. Measured the
     same way relevance is -- cosine on embeddings when both have one, else token
     overlap -- so the diversity guard matches however recall scored them."""
-    a_vec = json.loads(a["embedding"]) if a["embedding"] else None
-    b_vec = json.loads(b["embedding"]) if b["embedding"] else None
-    if a_vec is not None and b_vec is not None:
+    a_vec = _decode_vector(a["embedding"])
+    b_vec = _decode_vector(b["embedding"])
+    if a_vec is not None and b_vec is not None and len(a_vec) == len(b_vec):
         return _cosine(a_vec, b_vec) >= MEMORY_DEDUP_COSINE
-    return _similarity(json.loads(a["tokens"]), json.loads(b["tokens"])) >= MEMORY_DEDUP_TOKEN
+    return _similarity(_decode_tokens(a["tokens"]), _decode_tokens(b["tokens"])) >= MEMORY_DEDUP_TOKEN
 
 
 def _select_diverse(scored: list, top_k: int) -> list[dict]:

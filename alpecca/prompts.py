@@ -137,7 +137,8 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
                         situation: str = "", self_narration: str = "",
                         image_seen: str = "", abilities: str = "",
                         who: str = "", inner: str = "", core: str = "",
-                        current_message: str = "", compact: bool = False) -> str:
+                        current_message: str = "", compact: bool = False,
+                        working_memory: str = "", paged_memory: str = "") -> str:
     """Assemble the full system prompt for one turn.
 
     `self_narration` is Alpecca's grounded introspective read of itself (from
@@ -148,6 +149,8 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
     `image_seen` is what her vision actually reported about an image shared
     this turn -- she responds to that, never to an imagined picture.
     `abilities` describes any actions she's been granted (actions.py).
+    `working_memory` is deterministic runtime telemetry, never imagined state.
+    `paged_memory` contains labeled summaries/excerpts faulted from local storage.
     """
     if compact:
         parts = [
@@ -212,7 +215,15 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
         parts += ["", "Your own inner musings right now -- imaginings and wonderings, "
                   "NOT things that really happened. Voice them as imaginings ('I keep "
                   "picturing...', 'I wonder...'), never as real events or a shared "
-                  "past with them: " + inner_text]
+                   "past with them: " + inner_text]
+
+    if working_memory:
+        memory_text = _compact_text(working_memory, 180) if compact else working_memory
+        parts += [
+            "",
+            "Working-memory limit (measured runtime fact, not an emotion): "
+            + memory_text,
+        ]
 
     if self_narration:
         self_text = _compact_text(self_narration, 340) if compact else self_narration
@@ -250,6 +261,16 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
         parts += ["", "Past memories that may be relevant. Use them carefully; "
                   "do not claim they are happening now unless the current message "
                   "confirms it:", lines]
+
+    if paged_memory:
+        page_text = _compact_text(paged_memory, 900) if compact else paged_memory
+        parts += [
+            "",
+            "Paged local memory evidence. Each item is explicitly labeled as a "
+            "summary or bounded excerpt of older conversation. Use only the detail "
+            "shown here and never treat it as a current event:",
+            page_text,
+        ]
 
     parts += [
         "",
