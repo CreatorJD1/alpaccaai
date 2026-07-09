@@ -38,9 +38,17 @@ Layer B is optional llama.cpp slot save/restore through a future
 `ALPECCA_LLM_BACKEND=llamacpp` path. Ollama remains the default because it does
 not expose KV slot persistence.
 
+Local optional llama.cpp downloads are present under:
+
+- `data/tools/llama.cpp/b9933/cpu-x64/`
+- `data/tools/llama.cpp/b9933/cuda-12.4-x64/`
+
 Layer C is a pagefile-powered local deep tier using mmap-capable open models,
 background-only calls, and hard timeouts. It should never run in the normal chat
 path.
+
+Optional vector support is available through `sqlite-vec==0.1.9`; see
+`requirements-mindpage-optional.txt`.
 
 ## Safety Rules
 

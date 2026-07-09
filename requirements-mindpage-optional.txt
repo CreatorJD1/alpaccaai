@@ -1,0 +1,4 @@
+# Optional Mindpage/vector-search extension.
+# This is Alex Garcia's sqlite-vec package, not sqliteai's similarly named
+# sqlite-vector package.
+sqlite-vec==0.1.9

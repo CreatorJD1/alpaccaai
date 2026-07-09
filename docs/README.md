@@ -21,6 +21,7 @@ as required passdown or reference logs.
 ### CURRENT
 - `docs/AGENTIC_ASSESSMENT.md`
 - `docs/MINDPAGE.md`
+- `docs/DOWNLOADED_SYSTEMS.md`
 - `docs/ALPECCA_CURRENT_PROGRESS.md`
 - `PROJECT_CONTEXT.md`
 - `HANDOFF.md`

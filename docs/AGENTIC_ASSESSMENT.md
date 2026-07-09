@@ -39,6 +39,8 @@ on parse/model failure, `CognitionObservation` logging for autonomous acts, and
   and explicit user-approved one-step execution through Workshop proposals.
 - Stage 5 initial automation: empty-by-default routines, off-by-default passive
   directory watchers, `/routines` routes, and observation logging.
+- Optional local systems downloaded for future stages: llama.cpp b9933
+  CPU/CUDA builds, `sqlite-vec==0.1.9`, and isolated `mcp==1.28.1` venv.
 
 Current model note: do not revive retired legacy model paths. Runtime planning
 uses the configured local Ollama model from `ALPECCA_MODEL`.
@@ -131,6 +133,8 @@ Layer C:
 Open-source constraint: new agentic paths use local Ollama/llama.cpp/stdlib or
 clearly optional open components. No Claude Agent SDK, Anthropic API, or
 proprietary agent framework is required for any new path.
+
+Downloaded optional systems are tracked in `docs/DOWNLOADED_SYSTEMS.md`.
 
 ## Verification Contract
 

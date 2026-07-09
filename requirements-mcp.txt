@@ -1,0 +1,5 @@
+# Optional MCP client/server SDK.
+# Install in an isolated venv to avoid changing Alpecca's main runtime pins:
+#   python -m venv data/tools/mcp-venv
+#   data/tools/mcp-venv/Scripts/python.exe -m pip install -r requirements-mcp.txt
+mcp==1.28.1
