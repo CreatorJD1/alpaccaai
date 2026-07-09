@@ -31,6 +31,13 @@ pipeline remain untouched.
   saved at 20:52:49 local time. The Accessories tab was verified as the correct
   route for the blue clip (`Import as Custom Item`), but the matching free
   BOOTH `.vroidcustomitem` candidates redirect to BOOTH sign-in for download.
+- Jason then provided `Star_shape_hair_pin.rar` and
+  `Simple_hair_pin_pink.rar`. Both are BOOTH `HairHanege` / VRoid `Extra`
+  custom items, not modern `Accessories` items. The star pin import was rejected
+  by VRoid Studio 2.14.0 as incompatible. The simple pin loaded through
+  `Hairstyle > Extra > Custom`, was recolored at the material level to blue, and
+  the active source `alpecca_vroid_proxy_v0.vroid` was saved at 21:07:39. This is
+  a proxy clip route, not the final perfect left-side bone/bow accessory.
 - Updated `apps/vcs/frontend/src/components/panels/MaterialsPanel.jsx` to call
   the broader matcher and report which material groups were affected.
 - This is a reversible VCS preview/material-map pass. It does not mutate the

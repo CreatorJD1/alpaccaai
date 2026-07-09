@@ -561,6 +561,15 @@ Remaining design gaps:
   `Accessories` custom item, not as a body-skin or hoodie texture layer. A
   source SVG exists for reference:
   `data/alpecca_art_source/vrm_custom_assets/alpecca_blue_x_hair_clip.svg`,
+- 2026-07-08 hair-pin import update: Jason provided
+  `Star_shape_hair_pin.rar` and `Simple_hair_pin_pink.rar`. Metadata inspection
+  showed both are `TransferableGroupType.N00.Level1.HairHanege`, which VRoid
+  exposes as `Hairstyle > Extra`, not the modern Accessories category. The star
+  pin failed to import in VRoid Studio 2.14.0 as incompatible. The simple pin
+  loaded as an Extra custom item, was recolored from pink to Alpecca blue at the
+  material level, moved off the forehead toward the side hair, and the source
+  was saved. Treat it as a temporary BOOTH-based clip proxy; the final target
+  remains a small glossy blue left-side bone/bow clip,
 - ahoge exists as a close preset, but still needs optional custom hair-guide
   refinement to match the exact front-reference curl,
 - hoodie is no longer yellow, but still needs exact ivory fabric, pale-blue trim,
