@@ -38,6 +38,25 @@ pipeline remain untouched.
   `Hairstyle > Extra > Custom`, was recolored at the material level to blue, and
   the active source `alpecca_vroid_proxy_v0.vroid` was saved at 21:07:39. This is
   a proxy clip route, not the final perfect left-side bone/bow accessory.
+- Later on 2026-07-08 the active source was improved again in VRoid Studio and
+  saved in place at 21:39:11 local time (`alpecca_vroid_proxy_v0.vroid`,
+  8,927,423 bytes). The hoodie got a new top repair layer
+  `alpecca_hoodie_ivory_details_v7_front_sleeve_corrections.png` over the v6
+  layer: it covers the too-heavy front rails, redraws slimmer pale-blue zipper
+  trim, moves the chest mark higher/smaller, rebuilds one clean black/blue tech
+  patch per sleeve, and keeps the existing back/cuff/hem work. The hoodie shade
+  color was changed from cool `#CFD6F7` to warm `#E8DED7` so the fabric reads
+  cream/ivory instead of blue-gray.
+- The active Body height was found at `167.6 cm`, which conflicted with Jason's
+  5 ft 7 in requirement. It was corrected in VRoid Body controls to `170.2 cm`
+  (`Fem Height=-0.058`) and saved. Current visible proportions still need
+  front/side/back adult-read QA, but the scale target is now aligned.
+- Multi-agent local workbench outputs were created under ignored `data/`:
+  `vrm_experiments/accessory_workbench/` contains an OBJ/MTL/SVG/spec for a
+  small glossy blue X/bone-bow hair clip proxy, and
+  `vroid_texture_layers/candidates/` contains three alternate hoodie overlay
+  candidates. These are not committed because `data/` is private/local source
+  art, but `docs/ALPECCA_VROID_ACCESSORY_WORKBENCH.md` points to the workbench.
 - Updated `apps/vcs/frontend/src/components/panels/MaterialsPanel.jsx` to call
   the broader matcher and report which material groups were affected.
 - This is a reversible VCS preview/material-map pass. It does not mutate the

@@ -45,6 +45,55 @@ art only as the identity reference for that BOOTH/custom item:
 - `data/alpecca_art_source/vrm_custom_assets/alpecca_blue_x_hair_clip.svg`
 - `data/alpecca_art_source/vrm_custom_assets/alpecca_blue_x_hair_clip_2048.png`
 
+## 2026-07-08 Hoodie Front/Sleeve And Height Pass
+
+The active source `alpecca_vroid_proxy_v0.vroid` was saved in place after a
+focused regular-outfit and base-scale pass. Verified disk state after save:
+`LastWriteTime=2026-07-08 21:39:11`, `Length=8927423`.
+
+Captured improvements:
+
+- Added `vroid_texture_layers/alpecca_hoodie_ivory_details_v6_front_sleeves.png`
+  to restore missing front hoodie details: zipper/trim paths, pocket accents,
+  blue pulls/tags, chest mark, sleeve modules, and hood-center dashes.
+- Added the corrective top layer
+  `vroid_texture_layers/alpecca_hoodie_ivory_details_v7_front_sleeve_corrections.png`
+  after review found v6 too heavy. v7 covers the oversized rails and misplaced
+  chest/sleeve marks, redraws slimmer pale-blue front trim, moves the chest mark
+  higher/smaller, and rebuilds one clean black/blue tech patch per sleeve.
+- Changed the top hoodie material shade color from cool `#CFD6F7` to warm
+  `#E8DED7`. This keeps the pale-blue trim readable while making the hoodie
+  body read as warm cream/ivory instead of blue-gray.
+- Verified the active Body height was not at the design target (`167.6 cm`) and
+  corrected it to `170.2 cm`, matching the 5 ft 7 in lock. The saved parameter
+  value visible in VRoid was `Fem Height=-0.058`.
+
+Parallel local workbench outputs:
+
+- `data/alpecca_art_source/vrm_experiments/accessory_workbench/` now contains an
+  open local OBJ/MTL/SVG/spec proxy for the small glossy blue left-side
+  X/bone-bow clip. This is a VCS/Blender/Unity/Three.js workbench asset, not a
+  `.vroidcustomitem`.
+- `docs/ALPECCA_VROID_ACCESSORY_WORKBENCH.md` points to the accessory workbench
+  and repeats the routing rule: use `Accessories > Import as Custom Item` when a
+  compatible item exists; do not fake the clip with skin, hoodie texture,
+  animal ears, hats, or unrelated presets.
+- `data/alpecca_art_source/vrm_experiments/vroid_texture_layers/candidates/`
+  contains three alternate hoodie overlay candidates for future manual import
+  tests. They were not applied over the saved v7 pass.
+
+Remaining blockers after this pass:
+
+- The current HairHanege/simple-pin item is still only a temporary blue proxy;
+  the final clip still needs a proper left-side custom accessory or post-export
+  head/hair-bone attachment.
+- Hair lower/underside lavender-blue gradient and side/back hair mass still need
+  QA and likely direct hair-material work.
+- Lanyard/ID, right-leg-only thigh strap, boot panel details, and final
+  side/back outfit checks are still not export-ready.
+- Adult 19-year-old read must still be verified from front, side, back, and
+  three-quarter views before any new `.vrm` export.
+
 ## Design Lock
 
 The VRM must preserve the same core identity rules as

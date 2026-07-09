@@ -1,6 +1,6 @@
 # Alpecca VRoid Claude Code Passdown
 
-Updated: 2026-07-06
+Updated: 2026-07-08
 
 ## Purpose
 
@@ -20,8 +20,8 @@ Active VRoid file:
 
 Latest verified save:
 
-- `LastWriteTime=2026-07-05 09:07:17`
-- `Length=9472191`
+- `LastWriteTime=2026-07-08 21:39:11`
+- `Length=8927423`
 
 Experiment manifest:
 
@@ -31,6 +31,8 @@ Do not look for the manifest under `vrm_experiments`; the correct path is one fo
 
 Recent texture files:
 
+- `C:\Users\Jason\Documents\GitHub\alpaccaai\data\alpecca_art_source\vrm_experiments\vroid_texture_layers\alpecca_hoodie_ivory_details_v7_front_sleeve_corrections.png`
+- `C:\Users\Jason\Documents\GitHub\alpaccaai\data\alpecca_art_source\vrm_experiments\vroid_texture_layers\alpecca_hoodie_ivory_details_v6_front_sleeves.png`
 - `C:\Users\Jason\Documents\GitHub\alpaccaai\data\alpecca_art_source\vrm_experiments\vroid_imports\Hoodie_byDAMON\alpecca_recolored_layers\alpecca_girlHoodie_show_recolor_v5_white_shirt.png`
 - `C:\Users\Jason\Documents\GitHub\alpaccaai\data\alpecca_art_source\vrm_experiments\vroid_texture_layers\alpecca_inside_plain_white_2048.png`
 - `C:\Users\Jason\Documents\GitHub\alpaccaai\data\alpecca_art_source\vrm_experiments\vroid_texture_layers\alpecca_hair_blue_tips_only_1024x2048.png`
@@ -118,6 +120,9 @@ Progress 2026-07-05 07:12-07:41 (Claude computer-use run, continued):
 - Boot geometry update 2026-07-08: active `alpecca_vroid_proxy_v0.vroid` was saved after improving the shoe silhouette in VRoid Studio. Current shoe values: `Overall Volume` 33.436, `Boot Volume` 57.753, `Toebox Width` 31.322, `Toebox Volume` 44.361, `Toebox Thickness` 28.855, `Foot Thickness` 22.159. The boots now read chunkier and keep the cream/blue palette; remaining footwear work is exact custom texture/model polish.
 - Accessory routing update 2026-07-08: VRoid's Accessories tab has the correct `Import as Custom Item` path for the hair clip, and the model currently has no Accessories items. Do not use `Create New` hats/bows/glasses/ears as a fake clip. Free BOOTH hair-clip candidates were found, but their `.vroidcustomitem` downloads redirect to BOOTH sign-in, so import is blocked until Jason provides a downloaded `.vroidcustomitem` or signs in.
 - Hair-pin BOOTH import update 2026-07-08: Jason provided `Star_shape_hair_pin.rar` and `Simple_hair_pin_pink.rar`. Both inspect as `HairHanege` custom items, shown by VRoid as `Hairstyle > Extra`, not the Accessories tab. Star pin import failed as incompatible with VRoid Studio 2.14.0. Simple pin loaded, was recolored from pink to Alpecca blue in the hair editor material list, moved off the forehead toward her side hair, saved as an Extra custom item, and `alpecca_vroid_proxy_v0.vroid` was saved at 21:07:39. This is only a BOOTH-based proxy, not the final exact blue bone/bow clip.
+- Hoodie/front/sleeve update 2026-07-08: active `alpecca_vroid_proxy_v0.vroid` was saved after importing `alpecca_hoodie_ivory_details_v6_front_sleeves.png`, then a corrective v7 layer `alpecca_hoodie_ivory_details_v7_front_sleeve_corrections.png`. v7 covers the too-heavy v6 front rails and misplaced chest/sleeve marks, redraws slimmer pale-blue zipper trim, moves the chest mark higher/smaller, and rebuilds one clean black/blue sleeve tech patch per sleeve. The top Hoodie material shade color was changed from cool `#CFD6F7` to warm `#E8DED7`, fixing the blue-gray cast on the cream fabric. Hoodie Open was overwritten and the project was saved.
+- Body height update 2026-07-08: active Body height was found at `167.6 cm`, below Jason's 5 ft 7 in target. In Body > Whole Body, `Fem Height` was set to `-0.058`, producing a visible `Model's Height: 170.2 cm`. The height panel was left visible and the project was saved from VRoid's menu. This aligns the current source with the adult 19-year-old / 5 ft 7 in design lock; still verify adult read from side/back views before export.
+- Accessory workbench update 2026-07-08: parallel local work produced `data/alpecca_art_source/vrm_experiments/accessory_workbench/` with an OBJ/MTL/SVG/spec proxy for the small glossy blue X/bone-bow clip. This is not a modern VRoid `.vroidcustomitem`; use it for VCS/Blender/Unity/Three.js attachment tests or as a modeling reference. `docs/ALPECCA_VROID_ACCESSORY_WORKBENCH.md` points to it. Preferred VRoid route remains `Accessories > Import as Custom Item` when Jason supplies a compatible downloaded item.
 - UV calibration upgrade: "Export Guide" in the layer context menu exports the exact UV wireframe (black lines + black fill outside islands, island interiors transparent) — analyzing that PNG in Python (transparent-fraction density map + per-row segment scan) gives exact island bounds and beats color-band guessing. Guides saved: `vroid_texture_layers/hoodie_outer_uv_guide.png`, `vroid_texture_layers/body_skin_uv_guide.png`.
 - Save flow gotcha: the centered "Close Texture Editor" dialog can eat the first click on Overwrite — click again if the dialog persists. Ctrl+S via MCP key tool works but can lag; verify by title asterisk clearing AND `.vroid` mtime.
 - Project saves verified on disk: 07:30:19 (8,939,459 bytes, back logo) and 07:41:15 (9,467,824 bytes, choker skin).
@@ -143,7 +148,7 @@ What is still not good enough:
 - Hair is much closer now but tips/wash have only been verified from the front camera.
 - Hair shape needs more attention: long flowing hair, side pieces, ahoge, and a small blue hair clip.
 - Face still needs stronger Alpecca identity: soft blue eyes, subtle nose shading, gentle anime face proportions, and less generic VRoid look.
-- Hoodie shape is closer, but hoodie texture may still need cleanup for cream fabric, white undershirt, and blue trim details.
+- Hoodie front and sleeves are now closer, with warm ivory shader shade and cleaner blue trim/patches, but the model still needs full rotation QA and a true open-jacket silhouette if VRoid assets allow it.
 - Do not make another VRM export unless Jason explicitly asks. The existing 2026-07-06 export is a first test artifact only.
 
 ## Design Lock
