@@ -189,6 +189,14 @@ HF_PROVIDER = os.environ.get("ALPECCA_HF_PROVIDER", "auto")
 # (older vectors simply fall back to keyword recall), so it's safe to flip.
 EMBED_BACKEND = os.environ.get("ALPECCA_EMBED_BACKEND", "ollama").lower()
 EMBED_HF_MODEL = os.environ.get("ALPECCA_EMBED_HF_MODEL", "BAAI/bge-m3")
+# Live chat stores memories WITHOUT vectors (so the embedder never evicts the
+# chat model mid-turn). This backfill embeds those rows during idle drift
+# ticks instead, so semantic recall eventually reaches chat memories too.
+# Small batches + a minimum gap keep it polite on a busy little GPU.
+EMBED_BACKFILL = os.environ.get("ALPECCA_EMBED_BACKFILL", "1") \
+    not in ("", "0", "false", "False")
+EMBED_BACKFILL_BATCH = int(os.environ.get("ALPECCA_EMBED_BACKFILL_BATCH", "16"))
+EMBED_BACKFILL_MIN_GAP_S = float(os.environ.get("ALPECCA_EMBED_BACKFILL_GAP", "120"))
 # Privacy: keep what she's sensed on your screen OUT of cloud prompts by default.
 CLOUD_SEND_SENSES = os.environ.get("ALPECCA_CLOUD_SEND_SENSES", "0") \
     not in ("", "0", "false", "False")

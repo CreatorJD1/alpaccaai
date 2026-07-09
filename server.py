@@ -802,6 +802,7 @@ async def lifespan(app: FastAPI):
 
     async def loop() -> None:
         last_living_tick = 0.0
+        last_embed_backfill = 0.0
         while True:
             await asyncio.sleep(DRIFT_INTERVAL)
             try:
@@ -906,6 +907,31 @@ async def lifespan(app: FastAPI):
                                 text,
                                 timeout=BACKGROUND_DELIVERY_TIMEOUT,
                             )
+                # Truly idle tick: quietly give vector embeddings to chat
+                # memories that were stored without one (live chat skips the
+                # embedder so it can't evict the chat model mid-turn). Small
+                # batches, spaced out, off-thread; says nothing unless it
+                # actually embedded something -- honest and unobtrusive.
+                from config import (EMBED_BACKFILL, EMBED_BACKFILL_BATCH,
+                                    EMBED_BACKFILL_MIN_GAP_S)
+                idle_tick = (reason is None and not reflect_now
+                             and not living_due and not chat_priority)
+                if (EMBED_BACKFILL and idle_tick
+                        and now - last_embed_backfill >= EMBED_BACKFILL_MIN_GAP_S):
+                    last_embed_backfill = now
+                    from alpecca import memory as _memory_mod
+                    done = await _bounded_thread(
+                        "embed_backfill",
+                        _memory_mod.backfill_embeddings,
+                        EMBED_BACKFILL_BATCH,
+                        timeout=BACKGROUND_REFLECT_TIMEOUT,
+                    )
+                    if done and done.get("embedded"):
+                        await _broadcast({
+                            "type": "activity",
+                            "text": (f"she filed {done['embedded']} memories for "
+                                     f"meaning-recall ({done['remaining']} to go)"),
+                        })
                 # Retry any outbound messages a transient channel hiccup dropped,
                 # so her words actually reach the person. Cheap when the queue's
                 # empty (no subprocess), and off-thread so chat never stalls.

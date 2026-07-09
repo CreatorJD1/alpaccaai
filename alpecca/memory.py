@@ -240,6 +240,38 @@ def remember(content: str, kind: str = "episodic", salience: float = 0.5,
                             source=source) is not None
 
 
+def backfill_embeddings(batch: int = 16, db_path: Path = DB_PATH,
+                        embed_fn: Optional[Embedder] = default_embed) -> dict:
+    """Embed memories that were stored without a vector (newest first).
+
+    Live chat deliberately writes memories with embed_fn=None so the embedding
+    model never competes with the chat model for VRAM mid-turn. This runs in
+    idle moments instead, giving those keyword-only memories a dense vector so
+    semantic recall can reach them too. Idempotent: only touches NULL-embedding
+    rows. If the embedder is unavailable (returns None), the batch aborts
+    quietly and leaves every row untouched -- no fake vectors, ever.
+    Returns {"embedded": n, "remaining": m} so callers can report honestly.
+    """
+    embedded = 0
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id, content FROM memories WHERE embedding IS NULL "
+            "ORDER BY ts DESC LIMIT ?", (int(batch),)
+        ).fetchall()
+        if embed_fn:
+            for mem_id, content in rows:
+                vec = embed_fn(content)
+                if vec is None:
+                    break
+                conn.execute("UPDATE memories SET embedding = ? WHERE id = ?",
+                             (json.dumps(vec), mem_id))
+                embedded += 1
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE embedding IS NULL"
+        ).fetchone()[0]
+    return {"embedded": embedded, "remaining": int(remaining)}
+
+
 def recall(query: str, top_k: int = MEMORY_TOP_K, db_path: Path = DB_PATH,
            embed_fn: Optional[Embedder] = default_embed) -> list[dict]:
     """Return the `top_k` memories most relevant to `query`.

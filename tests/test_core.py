@@ -319,6 +319,55 @@ def test_semantic_recall_finds_related_but_different_words():
         assert hits, "semantic recall should surface the topically-related memory"
         assert "Biscuit" in hits[0]["content"]
 
+def test_backfill_embeddings_only_fills_null_rows_and_is_idempotent():
+    fake = _fake_embedder()
+    calls = []
+    def counting(text):
+        calls.append(text)
+        return fake(text)
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "bf.db"
+        state_store.init_db(db)
+        # Chat-style memory: stored WITHOUT a vector (embed_fn=None).
+        memory_store.remember("Jason showed me his hardware bench", salience=0.8,
+                              db_path=db, embed_fn=None)
+        # Background-style memory: already has a vector.
+        memory_store.remember("My dog Biscuit loves the park", salience=0.8,
+                              db_path=db, embed_fn=fake)
+        out = memory_store.backfill_embeddings(db_path=db, embed_fn=counting)
+        assert out == {"embedded": 1, "remaining": 0}
+        assert len(calls) == 1, "must not re-embed rows that already have vectors"
+        # Idempotent: a second pass finds nothing to do.
+        out2 = memory_store.backfill_embeddings(db_path=db, embed_fn=counting)
+        assert out2 == {"embedded": 0, "remaining": 0}
+        assert len(calls) == 1
+
+def test_backfill_embeddings_aborts_quietly_when_embedder_down():
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "bf2.db"
+        state_store.init_db(db)
+        memory_store.remember("a moment worth keeping", salience=0.8,
+                              db_path=db, embed_fn=None)
+        out = memory_store.backfill_embeddings(db_path=db, embed_fn=lambda t: None)
+        assert out == {"embedded": 0, "remaining": 1}
+        # Row untouched: no fake vector was written.
+        hits = memory_store.recall("moment worth keeping", db_path=db, embed_fn=None)
+        assert hits and hits[0].get("recall_method") != "semantic"
+
+def test_backfill_makes_chat_memory_semantically_recallable():
+    fake = _fake_embedder()
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "bf3.db"
+        state_store.init_db(db)
+        # Stored the way live chat stores it: keyword-only.
+        memory_store.remember("My dog Biscuit loves the park", salience=0.8,
+                              db_path=db, embed_fn=None)
+        memory_store.backfill_embeddings(db_path=db, embed_fn=fake)
+        # No shared words with the memory -- only semantics can find it now.
+        hits = memory_store.recall("how is the puppy doing on its walk",
+                                   db_path=db, embed_fn=fake)
+        assert hits and "Biscuit" in hits[0]["content"]
+
 def test_recall_falls_back_to_keywords_without_embedder():
     with tempfile.TemporaryDirectory() as d:
         db = Path(d) / "kw.db"
