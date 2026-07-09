@@ -16,7 +16,6 @@ Focus shifted back to model and texture fidelity. The VCS Materials panel's
 material pass to the loaded VRM:
 
 - silver-to-lavender hair gradient,
-- navy choker correction,
 - warm ivory outfit tint for recognized top/outfit materials,
 - white stocking cleanup for recognized stocking/sock/legwear materials,
 - dark shorts/bottom tint for recognized shorts/pants materials,
@@ -28,6 +27,23 @@ material pass to the loaded VRM:
 This does not edit `.vroid` binaries directly. It is a reversible VCS preview
 pass on the loaded VRM's material maps; use it to validate color and marker
 direction before committing equivalent texture work inside VRoid Studio.
+
+## 2026-07-08 Collar Removal And Accessory Routing
+
+Jason rejected the blue collar/choker texture as a mismatch with Alpecca's
+locked design. The active `alpecca_vroid_proxy_v0.vroid` body skin custom item
+was edited in VRoid Studio: the top body-skin texture layer containing
+`alpecca_choker_skin_overlay_v1.png` was deleted, the custom `Skin` item was
+overwritten, and the `.vroid` project was saved in place.
+
+The blue hair clip must not be forced through body skin, hoodie texture,
+animal-ear, hat, or unrelated accessory presets. Treat it as its own
+`Accessories` custom item/category, preferably imported from a BOOTH hairpin or
+hair-ornament `.vroidcustomitem` once Jason supplies one. Use the local source
+art only as the identity reference for that BOOTH/custom item:
+
+- `data/alpecca_art_source/vrm_custom_assets/alpecca_blue_x_hair_clip.svg`
+- `data/alpecca_art_source/vrm_custom_assets/alpecca_blue_x_hair_clip_2048.png`
 
 ## Design Lock
 
@@ -529,7 +545,8 @@ Remaining design gaps:
 
 - no approved blue glossy bone/bow hair clip yet; VRoid's built-in accessory create menu
   exposed glasses and animal-ear categories, but no safe hair-clip preset in
-  this pass. A source SVG now exists for custom import/texture work:
+  this pass. Keep this as a separate BOOTH/imported `Accessories` custom item,
+  not as a body-skin or hoodie texture layer. A source SVG exists for reference:
   `data/alpecca_art_source/vrm_custom_assets/alpecca_blue_x_hair_clip.svg`,
 - ahoge exists as a close preset, but still needs optional custom hair-guide
   refinement to match the exact front-reference curl,
@@ -617,8 +634,9 @@ resolved:
 - true open hoodie-jacket silhouette or custom texture/model workaround,
 - custom-drawn or imported blue trim/zipper pulls/sleeve modules,
 - custom-drawn or imported blue lanyard and Alpecca ID badge,
-- blue glossy bone/bow hair clip on her left side, likely as a custom accessory/import or
-  hair-guide workaround,
+- blue glossy bone/bow hair clip on her left side, routed first as a BOOTH/imported
+  `Accessories` custom item; use a hair-guide workaround only if no suitable
+  hairpin custom item exists,
 - verify/refine the v5 single curved ahoge/cowlick, not twin tufts or
   animal-ear silhouettes,
 - custom-drawn or imported right-leg black thigh strap,
@@ -713,7 +731,8 @@ Next hair pass:
      as source art,
    - right thigh strap,
    - cream/white boots with pale-blue panels/soles,
-   - hair clip via accessory import or custom hair workaround using
+   - hair clip via BOOTH/imported accessory custom item, or last-resort custom
+     hair workaround, using
      `data/alpecca_art_source/vrm_custom_assets/alpecca_blue_x_hair_clip.svg`
      as source art.
 3. Save the `.vroid` experiment under an explicit Alpecca checkpoint name.

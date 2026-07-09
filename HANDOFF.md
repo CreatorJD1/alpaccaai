@@ -14,9 +14,16 @@ pipeline remain untouched.
 
 - Extended `apps/vcs/frontend/src/lib/materialUtils.js` so the existing
   **Match to design** action applies more of Alpecca's locked design palette in
-  the browser: hair gradient, navy choker, ivory outfit tint, stocking cleanup,
+  the browser: hair gradient, ivory outfit tint, stocking cleanup,
   dark shorts, cream/blue boots, and blue clip/accessory/lanyard-style materials
   when material names allow safe targeting.
+- Jason rejected the separate collar/choker texture as a design mismatch on
+  2026-07-08. The active `alpecca_vroid_proxy_v0.vroid` body-skin top layer was
+  deleted in VRoid Studio, the custom `Skin` item was overwritten, and the source
+  project was saved. Do not reintroduce collar/choker tinting in VCS or VRoid.
+- The blue hair clip should be kept as its own BOOTH/imported `Accessories`
+  custom item/category. Do not route it through body skin, hoodie textures,
+  animal ears, hats, or unrelated presets.
 - Updated `apps/vcs/frontend/src/components/panels/MaterialsPanel.jsx` to call
   the broader matcher and report which material groups were affected.
 - This is a reversible VCS preview/material-map pass. It does not mutate the
