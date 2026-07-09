@@ -495,6 +495,13 @@ Captured improvements:
 - black shorts,
 - white stocking proxy,
 - white high-top / chunky-sole footwear proxy with boosted sole parameters.
+- 2026-07-08 update on active `alpecca_vroid_proxy_v0.vroid`: boots were made
+  chunkier in VRoid Studio and saved in place. Shoe parameters now include
+  `Overall Volume` 33.436, `Boot Volume` 57.753, `Toebox Width` 31.322,
+  `Toebox Volume` 44.361, `Toebox Thickness` 28.855, and `Foot Thickness`
+  22.159. The cream/blue texture already reads closer than the earlier dark
+  boot proxy; final polish is now an exact custom boot texture/model pass, not
+  basic silhouette repair.
 
 VRoid toolset notes from this pass:
 
@@ -543,10 +550,16 @@ The latest supplied images strengthen the design lock:
 
 Remaining design gaps:
 
-- no approved blue glossy bone/bow hair clip yet; VRoid's built-in accessory create menu
-  exposed glasses and animal-ear categories, but no safe hair-clip preset in
-  this pass. Keep this as a separate BOOTH/imported `Accessories` custom item,
-  not as a body-skin or hoodie texture layer. A source SVG exists for reference:
+- no approved blue glossy bone/bow hair clip yet. On 2026-07-08 the active
+  Accessories tab was checked and confirmed to have the correct `Import as
+  Custom Item` route, while `Create New` only exposed built-in shapes such as
+  hats, bows, glasses, and similar presets that should not be used as a fake
+  clip. Free BOOTH candidates were found, including `[FREE] Butterfly Hairclip
+  VRoid Accessory`, but the actual `.vroidcustomitem` downloads redirected to
+  BOOTH sign-in, so the clip is still blocked until Jason provides a signed-in
+  download or local `.vroidcustomitem`. Keep this as a separate BOOTH/imported
+  `Accessories` custom item, not as a body-skin or hoodie texture layer. A
+  source SVG exists for reference:
   `data/alpecca_art_source/vrm_custom_assets/alpecca_blue_x_hair_clip.svg`,
 - ahoge exists as a close preset, but still needs optional custom hair-guide
   refinement to match the exact front-reference curl,
@@ -557,8 +570,9 @@ Remaining design gaps:
   `data/alpecca_art_source/vrm_custom_assets/alpecca_lanyard_badge_source.svg`,
 - right-leg black thigh strap is not separately modeled after switching to the
   cleaner white stocking proxy,
-- footwear now has better cream/white color read, but still needs a true
-  boot-like custom texture/model pass with pale-blue details,
+- footwear now has better cream/white color read and a chunkier saved silhouette,
+  but still needs a true boot-like custom texture/model pass with exact
+  pale-blue panels/details,
 - no `.vrm` export has been created yet.
 
 ## Base Model Focus

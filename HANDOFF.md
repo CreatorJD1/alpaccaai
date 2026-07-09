@@ -24,6 +24,13 @@ pipeline remain untouched.
 - The blue hair clip should be kept as its own BOOTH/imported `Accessories`
   custom item/category. Do not route it through body skin, hoodie textures,
   animal ears, hats, or unrelated presets.
+- Later on 2026-07-08, VRoid Studio was used to improve the active source
+  `alpecca_vroid_proxy_v0.vroid` boots in place: `Overall Volume` 33.436,
+  `Boot Volume` 57.753, `Toebox Width` 31.322, `Toebox Volume` 44.361,
+  `Toebox Thickness` 28.855, and `Foot Thickness` 22.159. The source file was
+  saved at 20:52:49 local time. The Accessories tab was verified as the correct
+  route for the blue clip (`Import as Custom Item`), but the matching free
+  BOOTH `.vroidcustomitem` candidates redirect to BOOTH sign-in for download.
 - Updated `apps/vcs/frontend/src/components/panels/MaterialsPanel.jsx` to call
   the broader matcher and report which material groups were affected.
 - This is a reversible VCS preview/material-map pass. It does not mutate the
