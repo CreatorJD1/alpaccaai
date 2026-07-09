@@ -74,6 +74,8 @@ from alpecca import home as home_mod
 from alpecca import desires as desires_mod
 from alpecca import selfmod
 from alpecca import soul as soul_mod
+from alpecca import mindpage as mindpage_mod
+from config import MINDPAGE as MINDPAGE_ENABLED
 from alpecca import journal as journal_mod
 from alpecca import learning as learning_mod
 from alpecca import cognition as cognition_mod
@@ -1104,6 +1106,11 @@ class CoreMind:
         if identity in ("creator", "guest"):
             self._speaker = identity
 
+    def mindpage_pressure(self) -> dict:
+        """Her working-memory pressure reading -- real numbers from the ledger."""
+        return mindpage_mod.pressure(self._history, OLLAMA_NUM_CTX,
+                                     history_cap=HISTORY_MESSAGES * 4)
+
     def _prompt_situation(self, base_situation: str = "") -> str:
         """The situation string for a prompt, honoring the cloud privacy rule.
 
@@ -1112,11 +1119,16 @@ class CoreMind:
         local and never travels off-machine, unless ALPECCA_CLOUD_SEND_SENSES=1.
         Locally, sight is woven in as before. This is the single choke point so
         every prompt path (chat, chatter, reflection) inherits the same rule."""
+        # Her own memory pressure is an internal sense (nothing about the
+        # machine), so it may ride along even when screen senses stay local.
+        note = mindpage_mod.narrate(self.mindpage_pressure()) if MINDPAGE_ENABLED else None
         if self.llm.is_cloud() and not CLOUD_SEND_SENSES:
-            return ""                      # nothing sensed leaves the machine
+            return note or ""              # nothing sensed leaves the machine
         s = base_situation or ""
         if self._sight:
             s = (s + "; " if s else "") + f"on their screen you can see: {self._sight}"
+        if note:
+            s = (s + "; " if s else "") + note
         return s
 
     def _house_context_room(self, situation: str = "") -> tuple[str, str]:
@@ -1423,7 +1435,15 @@ class CoreMind:
         # Keep the raw log bounded; only the last HISTORY_MESSAGES ride along
         # anyway, and long sessions shouldn't grow memory without limit.
         if len(self._history) > HISTORY_MESSAGES * 4:
-            del self._history[: len(self._history) - HISTORY_MESSAGES * 2]
+            cut = len(self._history) - HISTORY_MESSAGES * 2
+            if MINDPAGE_ENABLED:
+                # Page the evicted turns into a labeled episode memory instead
+                # of losing them -- never let paging break the chat turn.
+                try:
+                    mindpage_mod.evict_to_page(self._history[:cut])
+                except Exception:
+                    pass
+            del self._history[:cut]
         chat_turn_id = cognition_mod.record_chat_turn(cognition_mod.ChatTurn(
             user_text=user_msg,
             reply=reply,
@@ -2777,6 +2797,7 @@ class CoreMind:
             senses_active=self._prev_obs is not None and bool(self._prev_obs.window_title),
             person_fatigue=person_fatigue,
             trial_running=any(r["status"] == "trial" for r in selfmod.history(limit=3)),
+            memory_pressure=(self.mindpage_pressure()["fill"] if MINDPAGE_ENABLED else 0.0),
         )
 
     # --- Her journal + recursive self-questioning --------------------------

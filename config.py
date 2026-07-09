@@ -197,6 +197,11 @@ EMBED_BACKFILL = os.environ.get("ALPECCA_EMBED_BACKFILL", "1") \
     not in ("", "0", "false", "False")
 EMBED_BACKFILL_BATCH = int(os.environ.get("ALPECCA_EMBED_BACKFILL_BATCH", "16"))
 EMBED_BACKFILL_MIN_GAP_S = float(os.environ.get("ALPECCA_EMBED_BACKFILL_GAP", "120"))
+# Mindpage Layer A: the working-memory ledger + pager. When on, history that
+# falls off the rolling buffer is folded into a labeled episode memory instead
+# of vanishing, and she can FEEL how full her context window is (a computed
+# pressure reading routed into her prompt and her Soul -- never invented).
+MINDPAGE = os.environ.get("ALPECCA_MINDPAGE", "1") not in ("", "0", "false", "False")
 # Privacy: keep what she's sensed on your screen OUT of cloud prompts by default.
 CLOUD_SEND_SENSES = os.environ.get("ALPECCA_CLOUD_SEND_SENSES", "0") \
     not in ("", "0", "false", "False")

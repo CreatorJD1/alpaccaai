@@ -368,6 +368,63 @@ def test_backfill_makes_chat_memory_semantically_recallable():
                                    db_path=db, embed_fn=fake)
         assert hits and "Biscuit" in hits[0]["content"]
 
+def test_mindpage_pressure_reads_low_when_history_is_small():
+    from alpecca import mindpage
+    p = mindpage.pressure([{"role": "user", "content": "hi"}], num_ctx=8192)
+    assert p["level"] == "low" and p["fill"] < 0.6
+    assert mindpage.narrate(p) is None, "no pressure note when there's nothing to feel"
+
+def test_mindpage_pressure_narrates_near_full_window_and_eviction():
+    from alpecca import mindpage
+    # 90 long messages against a small window: high fill AND close to the trim.
+    hist = [{"role": "user", "content": "x" * 400}] * 90
+    p = mindpage.pressure(hist, num_ctx=4096, history_cap=96)
+    assert p["level"] == "high"
+    assert p["exchanges_until_evict"] == 3
+    note = mindpage.narrate(p)
+    assert note and "working memory" in note and "page out" in note
+
+def test_mindpage_evict_writes_labeled_summary_without_vector():
+    from alpecca import mindpage
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "mp.db"
+        state_store.init_db(db)
+        evicted = [
+            {"role": "user", "content": "tell me about the hardware bench"},
+            {"role": "assistant", "content": "it holds your soldering gear"},
+            {"role": "user", "content": "and the oscilloscope?"},
+            {"role": "assistant", "content": "top shelf, next to the probes"},
+        ]
+        mem_id = mindpage.evict_to_page(evicted, db_path=db)
+        assert mem_id is not None
+        hits = memory_store.recall("hardware bench conversation", db_path=db,
+                                   embed_fn=None)
+        assert hits and "paged out of working memory" in hits[0]["content"]
+        # VRAM rule: pages are stored vector-less; the idle backfill embeds them.
+        out = memory_store.backfill_embeddings(db_path=db,
+                                               embed_fn=_fake_embedder())
+        assert out["embedded"] == 1
+
+def test_mindpage_evict_returns_none_for_empty_turns():
+    from alpecca import mindpage
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "mp2.db"
+        state_store.init_db(db)
+        assert mindpage.evict_to_page([], db_path=db) is None
+        assert mindpage.evict_to_page([{"role": "user", "content": "  "}],
+                                      db_path=db) is None
+
+def test_soul_reflector_answers_real_memory_pressure():
+    from alpecca import soul
+    snap = soul.snapshot(EmotionalState(), memory_pressure=0.92)
+    intent = soul._reflector(snap)
+    assert intent is not None and "working memory" in intent.action
+    assert intent.rank == 4, "memory pressure is self-care; it must never outrank compassion"
+    # And below the threshold the pull simply isn't there.
+    calm = soul.snapshot(EmotionalState(), memory_pressure=0.3)
+    quiet = soul._reflector(calm)
+    assert quiet is None or "working memory" not in quiet.action
+
 def test_recall_falls_back_to_keywords_without_embedder():
     with tempfile.TemporaryDirectory() as d:
         db = Path(d) / "kw.db"

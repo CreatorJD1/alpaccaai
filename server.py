@@ -3003,6 +3003,21 @@ async def tts_warmup() -> dict:
     return await _warm_alpecca_voice()
 
 
+@app.get("/mindpage/stats")
+def mindpage_stats() -> dict:
+    """The working-memory ledger, read live: context fill, exchanges until the
+    rolling history pages out, and how many memories still await a vector.
+    Every number is computed from real state -- this is the same reading her
+    pressure sense and the Soul's Reflector see."""
+    from alpecca import memory as _memory_mod
+    stats = mind.mindpage_pressure()
+    with _memory_mod._connect(_memory_mod.DB_PATH) as conn:
+        stats["memories_awaiting_embedding"] = int(conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE embedding IS NULL"
+        ).fetchone()[0])
+    return stats
+
+
 @app.get("/introspect")
 def introspect() -> dict:
     """Alpecca's grounded self-report: what it can truthfully observe about its

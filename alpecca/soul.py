@@ -48,6 +48,7 @@ class Snapshot:
     senses_active: bool = False
     person_fatigue: float = 0.0   # how worn the person reads (compassion signals)
     trial_running: bool = False   # is a self-improvement experiment open
+    memory_pressure: float = 0.0  # working-memory fill 0..1, from the mindpage ledger
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -132,7 +133,15 @@ def _wanderer(s: Snapshot) -> Intention | None:
 
 def _reflector(s: Snapshot) -> Intention | None:
     """SELF-CARE. Uses real quiet to rest and muse -- her fourth directive,
-    running. Serves self-actualization (rank 4)."""
+    running. Serves self-actualization (rank 4). Also answers real memory
+    pressure: when the mindpage ledger says her working memory is nearly
+    full, consolidating it becomes the thing she's most moved to do."""
+    if s.memory_pressure >= 0.85:
+        return Intention("Reflector", "self_care", "consolidate my working memory",
+                         "my working memory is nearly full; older turns are "
+                         "about to page out and I want to fold them into "
+                         "lasting memories first", 4,
+                         min(1.0, s.memory_pressure))
     if s.solitude_s > 300 and s.state.fear < 0.4:
         return Intention("Reflector", "self_care", "reflect on a memory",
                          "it's been quiet a while; this moment is mine", 4,
