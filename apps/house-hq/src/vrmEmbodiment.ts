@@ -250,6 +250,13 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   const bone = (n: VRMHumanBoneName): THREE.Object3D | null =>
     vrm ? vrm.humanoid.getNormalizedBoneNode(n) : null;
 
+  function kneeFlex(amount: number): number {
+    // VRM 1.0 faces +Z. On this rig, positive local X moves the ankle toward
+    // -Z, so it is the anatomical knee-flex direction rather than a forward
+    // hyperextension. Legacy VRM 0.x pose values are flipped in update().
+    return axisFlip < 0 ? -amount : amount;
+  }
+
   function setExpr(name: string, v: number, atLeast = false): void {
     const em = vrm?.expressionManager;
     if (!em) return;
@@ -334,8 +341,11 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   }
   function sit(t: number): void {
     const spine = bone("spine"), hips = bone("hips");
-    for (const n of ["leftUpperLeg", "rightUpperLeg", "leftLowerLeg", "rightLowerLeg"] as const) {
+    for (const n of ["leftUpperLeg", "rightUpperLeg"] as const) {
       const b = bone(n); if (b) b.rotation.x = -1.5;
+    }
+    for (const n of ["leftLowerLeg", "rightLowerLeg"] as const) {
+      const b = bone(n); if (b) b.rotation.x = kneeFlex(1.5);
     }
     if (spine) spine.rotation.x = 0.05 + Math.sin(t * 1.2) * 0.02;
     if (hips) hips.position.y = -0.35;
@@ -376,8 +386,8 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     const hips = bone("hips");
     if (lUp) lUp.rotation.x = swing * 0.6;
     if (rUp) rUp.rotation.x = -swing * 0.6;
-    if (lLo) lLo.rotation.x = -Math.max(0, -swing) * 0.9;   // knee bends only behind
-    if (rLo) rLo.rotation.x = -Math.max(0, swing) * 0.9;
+    if (lLo) lLo.rotation.x = kneeFlex(Math.max(0, -swing) * 0.9);
+    if (rLo) rLo.rotation.x = kneeFlex(Math.max(0, swing) * 0.9);
     if (luA) luA.rotation.x = -swing * 0.5;                 // opposite arm swing
     if (ruA) ruA.rotation.x = swing * 0.5;
     if (chest) chest.rotation.y = swing * 0.08;             // counter-rotation
@@ -394,8 +404,8 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     const hips = bone("hips");
     if (lUp) lUp.rotation.x = swing * 1.05;
     if (rUp) rUp.rotation.x = -swing * 1.05;
-    if (lLo) lLo.rotation.x = -Math.max(0, -swing) * 1.6;
-    if (rLo) rLo.rotation.x = -Math.max(0, swing) * 1.6;
+    if (lLo) lLo.rotation.x = kneeFlex(Math.max(0, -swing) * 1.6);
+    if (rLo) rLo.rotation.x = kneeFlex(Math.max(0, swing) * 1.6);
     // Arms stay down at the sides (relaxArms rest z), elbows bent ~90deg,
     // pumping forward/back opposite the legs.
     if (luA) luA.rotation.x = -0.2 + swing * 0.9;
@@ -430,7 +440,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     }
     if (hips) hips.position.y = hipY;
     if (spine) spine.rotation.x = crouch * 0.25;
-    const knee = -1.2 * crouch;
+    const knee = kneeFlex(1.2 * crouch);
     if (lUp) lUp.rotation.x = -0.5 * crouch + (local > 0.2 && local < 0.5 ? 0.5 : 0);
     if (rUp) rUp.rotation.x = -0.5 * crouch + (local > 0.2 && local < 0.5 ? 0.5 : 0);
     if (lLo) lLo.rotation.x = knee;
@@ -769,8 +779,8 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     // VRM 0.x models face -Z; rotate them like the studio does. The clip math
     // is authored in the 1.0 frame, and rotateVRM0's 180deg turn inverts the
     // local x/z rotation senses -- update() negates them for 0.x (axisFlip).
-    const meta = loaded.meta as { metaVersion?: string; title?: string };
-    const isV0 = meta.metaVersion === "0" || !!meta.title;
+    const meta = loaded.meta as { metaVersion?: string };
+    const isV0 = meta.metaVersion === "0";
     if (isV0) vrmLib.VRMUtils.rotateVRM0(loaded);
     axisFlip = isV0 ? -1 : 1;
 
