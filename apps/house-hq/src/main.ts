@@ -1634,6 +1634,7 @@ function ensureAlpeccaVrmEmbodiment(): VrmEmbodiment {
       updateCoreStatusLabels();
     },
   });
+  (window as unknown as Record<string, unknown>).__ALPECCA_VRM__ = alpeccaVrmEmbodiment;
   return alpeccaVrmEmbodiment;
 }
 

@@ -35,6 +35,7 @@ export interface VrmEmbodiment {
   setMood(label: string, dims: { love?: number; compassion?: number; fear?: number; energy?: number }): void;
   setSpriteState(name: string, moving: boolean, talking: boolean): void;
   update(dt: number, camera: THREE.Camera, engaged: boolean, distanceToPlayer?: number): void;
+  debug(): { groundBase: number; groundOffset: number; lowestSoleY: number | null };
 }
 
 type MoodDims = { love: number; compassion: number; fear: number; energy: number };
@@ -142,6 +143,14 @@ const LOAD_WATCHDOG_MS = 45_000;
 const MEASURE_SAMPLES = 1200;
 const VRMA_FADE = 0.35;        // crossfade between mixer actions, like VCS
 const NOTICE_DISTANCE = 4.5;   // she notices you approaching inside this range
+
+// vrmIK.js: the bone origin isn't the sole -- ankles sit ~7 cm above it, toe
+// bones ~2 cm. Model-space metres; scaled by the wrapper's world scale when
+// measuring in world space.
+const SOLE_OFFSET: Partial<Record<VRMHumanBoneName, number>> = {
+  leftFoot: 0.07, rightFoot: 0.07, leftToes: 0.02, rightToes: 0.02,
+};
+const SOLE_BONES = Object.keys(SOLE_OFFSET) as VRMHumanBoneName[];
 
 function withWatchdog<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -509,6 +518,77 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     }
   }
 
+  /* ---- foot grounding (ported from apps/vcs vrmIK.js) ----
+   * Two causes of a buried/ sliding body: (1) origin-CENTERED VRoid exports
+   * stand with hips at y=0 and feet at ~-0.9, so a naive placement is
+   * half-buried; (2) clips -- .vrma hips-translation tracks especially --
+   * drop the feet below ground mid-motion, so no one-time offset holds.
+   * Fix: a ROOT-level clamp on vrm.scene. VCS applies world-scale offsets
+   * directly; here vrm.scene sits inside the SCALED wrapper, so every
+   * world-space correction is divided by the wrapper's world scale before
+   * being written to vrm.scene.position.y (and the model-space sole offsets
+   * are multiplied by it when measuring). groundBase/groundOffset stay in
+   * world units. Ground plane: deps.groundClearance. */
+  let groundBase = 0;     // resting offset from snapGround (world units)
+  let groundOffset = 0;   // current offset groundFeet eases (world units)
+  const groundY = deps.groundClearance;
+  const _sole = new THREE.Vector3();
+  const _wScale = new THREE.Vector3();
+
+  function worldScaleY(): number {
+    return wrapper ? Math.max(1e-6, wrapper.getWorldScale(_wScale).y) : 1;
+  }
+
+  // Lowest sole-point Y of the posed skeleton (world space), or null. RAW
+  // bones, not normalized: the raw skeleton is what the mesh actually wears.
+  function lowestSole(): number | null {
+    const h = vrm?.humanoid;
+    if (!h) return null;
+    const s = worldScaleY();
+    let lowest = Infinity;
+    for (const name of SOLE_BONES) {
+      const b = h.getRawBoneNode(name);
+      if (!b) continue;
+      b.getWorldPosition(_sole);   // forces parent matrixWorld refresh
+      const sole = _sole.y - (SOLE_OFFSET[name] ?? 0) * s;
+      if (sole < lowest) lowest = sole;
+    }
+    return Number.isFinite(lowest) ? lowest : null;
+  }
+
+  // One-time exact plant at activation (after the first vrm.update(0) and the
+  // wrapper scaling). The offset may be negative (authored floating) or
+  // strongly positive (origin-centered export); it becomes the resting
+  // baseline groundFeet eases back to.
+  function snapGround(): void {
+    const forVrm = vrm, w = wrapper;
+    if (!forVrm || !w) return;
+    w.updateWorldMatrix(true, true);
+    const lowest = lowestSole();
+    if (lowest == null) return;
+    const offset = groundY - lowest;
+    groundBase = offset;
+    groundOffset = offset;
+    forVrm.scene.position.y = offset / worldScaleY();
+    forVrm.scene.updateMatrixWorld(true);
+  }
+
+  // Per-frame grounding, AFTER vrm.update(dt). Fast rise (penetration is
+  // visibly wrong), slow settle (no pogo bounce) -- so intentional airtime
+  // (the jump cycle) still reads as airtime.
+  function groundFeet(dt: number): void {
+    const forVrm = vrm;
+    if (!forVrm) return;
+    const lowest = lowestSole();
+    if (lowest == null) return;
+    // `lowest` was measured WITH the current offset applied; undo it to get
+    // the animation's own pose. Lift above base only to fix penetration.
+    const target = Math.max(groundBase, groundY - (lowest - groundOffset));
+    const rate = target > groundOffset ? 20 : 6;
+    groundOffset += (target - groundOffset) * Math.min(1, (dt || 0.016) * rate);
+    forVrm.scene.position.y = groundOffset / worldScaleY();
+  }
+
   /* ---- measurement ----
    * A VRM's skinned-mesh geometry bounding boxes are BIND-space data -- a
    * phantom column that matches neither her height nor her feet. The only
@@ -557,13 +637,17 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       deps.parent.add(w);
 
       loaded.update(0);    // settles the normalized rig; bounds are real after this
-      const { height, minY } = measurePosed(loaded.scene, w);
+      const { height } = measurePosed(loaded.scene, w);
       const scale = deps.targetHeight / Math.max(0.1, height);
       w.scale.setScalar(scale);
-      w.position.y = -minY * scale + deps.groundClearance;
 
       vrm = loaded;
       wrapper = w;
+      // Vertical alignment comes from snapGround on the raw sole bones, NOT
+      // the vertex minY: a one-time vertex offset stops holding the moment
+      // clips drive the root. The posed-vertex pass above still owns the
+      // HEIGHT the scale factor is computed from.
+      snapGround();
       if (status !== "loading") return true;   // deactivated mid-load: cache, stay hidden
       w.visible = true;
       status = "active";
@@ -661,6 +745,8 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       wrapper = null;
       loadPromise = null;
       deepDispose = null;
+      groundBase = 0;
+      groundOffset = 0;
       status = "idle";
     },
 
@@ -737,6 +823,11 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       // blends from/into the procedural pose instead of hard-cutting.
       if (mixer) { mixer.update(dt); reapFaded(); }
       vrm.update(dt);
+      groundFeet(dt);   // after vrm.update: clamp the posed soles to the floor
+    },
+
+    debug(): { groundBase: number; groundOffset: number; lowestSoleY: number | null } {
+      return { groundBase, groundOffset, lowestSoleY: lowestSole() };
     },
   };
 }
