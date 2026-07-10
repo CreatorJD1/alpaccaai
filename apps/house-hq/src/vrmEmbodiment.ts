@@ -159,6 +159,7 @@ const BONES: readonly VRMHumanBoneName[] = [
   "leftUpperArm", "rightUpperArm", "leftLowerArm", "rightLowerArm",
   "leftHand", "rightHand", "chest", "upperChest", "head", "neck", "spine", "hips",
   "leftUpperLeg", "rightUpperLeg", "leftLowerLeg", "rightLowerLeg",
+  "leftFoot", "rightFoot",
 ];
 
 const MOUTH = ["aa", "ih", "ou", "ee", "oh"] as const;
@@ -330,6 +331,16 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     // -Z, so it is the anatomical knee-flex direction rather than a forward
     // hyperextension. Legacy VRM 0.x pose values are flipped in update().
     return axisFlip < 0 ? -amount : amount;
+  }
+
+  // Keep the sole roughly parallel to the floor as the leg swings: the foot is
+  // a child of the shin, so a flexed knee would otherwise dangle it toe-down
+  // (the "backward leg" look). Counter most of the thigh+shin pitch, minus a
+  // little so it still rolls heel-to-toe. Same-frame values, so axisFlip is
+  // already baked into lLoX/rLoX and needs no separate handling.
+  function levelFoot(side: "left" | "right", upX: number, loX: number): void {
+    const foot = bone(side === "left" ? "leftFoot" : "rightFoot");
+    if (foot) foot.rotation.x = -(upX + loX) * 0.72;
   }
 
   function setExpr(name: string, v: number, atLeast = false): void {
@@ -590,10 +601,14 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     const chest = bone("chest") ?? bone("upperChest");
     const head = bone("head");
     const hips = bone("hips");
-    if (lUp) lUp.rotation.x = swing * 0.5;
-    if (rUp) rUp.rotation.x = -swing * 0.5;
-    if (lLo) lLo.rotation.x = kneeFlex(Math.max(0, -swing) * 0.72);
-    if (rLo) rLo.rotation.x = kneeFlex(Math.max(0, swing) * 0.72);
+    const lUpX = swing * 0.5, rUpX = -swing * 0.5;
+    const lLoX = kneeFlex(Math.max(0, -swing) * 0.72), rLoX = kneeFlex(Math.max(0, swing) * 0.72);
+    if (lUp) lUp.rotation.x = lUpX;
+    if (rUp) rUp.rotation.x = rUpX;
+    if (lLo) lLo.rotation.x = lLoX;
+    if (rLo) rLo.rotation.x = rLoX;
+    levelFoot("left", lUpX, lLoX);   // keep the sole near the floor so the
+    levelFoot("right", rUpX, rLoX);  // flexed shin doesn't dangle a tiptoe
     if (luA) luA.rotation.x = -swing * 0.34;                 // opposite arm swing
     if (ruA) ruA.rotation.x = swing * 0.34;
     if (chest) chest.rotation.y = swing * 0.065;             // counter-rotation
@@ -614,10 +629,14 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     const spine = bone("spine");
     const chest = bone("chest") ?? bone("upperChest");
     const hips = bone("hips");
-    if (lUp) lUp.rotation.x = swing * 0.86;
-    if (rUp) rUp.rotation.x = -swing * 0.86;
-    if (lLo) lLo.rotation.x = kneeFlex(Math.max(0, -swing) * 1.35);
-    if (rLo) rLo.rotation.x = kneeFlex(Math.max(0, swing) * 1.35);
+    const lUpX = swing * 0.86, rUpX = -swing * 0.86;
+    const lLoX = kneeFlex(Math.max(0, -swing) * 1.35), rLoX = kneeFlex(Math.max(0, swing) * 1.35);
+    if (lUp) lUp.rotation.x = lUpX;
+    if (rUp) rUp.rotation.x = rUpX;
+    if (lLo) lLo.rotation.x = lLoX;
+    if (rLo) rLo.rotation.x = rLoX;
+    levelFoot("left", lUpX, lLoX);
+    levelFoot("right", rUpX, rLoX);
     // Arms stay down at the sides (relaxArms rest z), elbows bent ~90deg,
     // pumping forward/back opposite the legs.
     if (luA) luA.rotation.x = -0.18 + swing * 0.68;
