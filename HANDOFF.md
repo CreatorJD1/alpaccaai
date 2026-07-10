@@ -1,80 +1,162 @@
 # Alpecca — Handoff (updated 2026-07-10)
 
-## Active Claude Code Handoff: Stage 3 validation and tuning
+## Active Claude Code Handoff: Master Phase 3 onward
 
-### Scope
+### User direction and entry point
 
-Stage 3 is implemented. Continue with **runtime validation and bounded tuning**
-of local LLM-in-the-loop choice points; do not reimplement the feature or widen
-autonomy. The relevant paths are:
+Continue the **master architecture plan from Phase 3 onward**, not merely the
+smaller agentic Stage 3 choice-point feature. `docs/ALPECCA_MASTER_PLAN.md` is
+the full sequencing authority. Start with Phase 3: turn transactions and
+context isolation, then continue through Phases 4-14 in the order below.
 
-- `alpecca/choice.py`: strict tiny-JSON parser and local fast-tier chooser.
-- `alpecca/mind.py`: proactive judge/seed choice (`compose_volunteer`), living
-  world question choice (`living_world_tick`), and Soul same-rank tie-break
-  (`soul_state`).
-- `config.py`: `ALPECCA_LIVING_LLM`, `ALPECCA_SOUL_LLM`, and
-  `ALPECCA_PROACTIVE_LLM` are enabled by default; deterministic code remains
-  the fallback for any offline, malformed, timed-out, or out-of-range response.
-- `alpecca/soul.py`: compact hidden deliberation keeps background Soul work to
-  a selected focus plus quantized `{subagent, rank, urgency}` validation data.
-  The detailed slate is retained only for UI/review (`verbose=True`).
+The older agentic Stage 3 foundation already exists:
+`alpecca/choice.py` provides strict local tiny-JSON choices; `alpecca/mind.py`
+uses them for living questions, same-rank Soul ties, and proactive judgement;
+`alpecca/soul.py` has compact hidden deliberation. Preserve those pieces, but
+they do not substitute for actor isolation, commitments, approvals, or portal
+ownership.
 
-The seven Soul roles are symbolic, grounded Python readers. They are **not**
-seven concurrent LLM runtimes. Do not replace or bypass them. New LLM output is
-only permitted to choose within code-owned options and must never promote a
-lower-ranked Soul intention.
+Phase 2 is not honestly complete: a protected local session boundary exists,
+but authoritative `Principal` derivation, the Windows process singleton, and an
+active portal lease are still missing. Before modifying Phase 3, make the
+smallest Phase 2 prerequisite slice necessary to derive the actor/surface/epoch
+for every turn. Do not claim either phase complete until their exit gates pass.
 
-### Model and capability constraints
+### Phase 3: turn transactions and context isolation - START HERE
 
-- The approved local model is `qwen3.5:9b` through Ollama. Do not revive,
-  download, or reference `qwen3:8b`.
-- If a separate fast model is not already installed and approved, set
-  `ALPECCA_FAST_MODEL=qwen3.5:9b` for the Stage 3 smoke test rather than
-  downloading another model.
-- Keep live context at the configured 8K budget. Mindpage owns measured token
-  fitting; do not add verbose hidden deliberation to prompts.
-- No LLM call under `mind_lock`; no automatic external action; no system-level
-  mutation; no additional Alpecca instance.
-- Phone/contact-channel security and any communication-identifier work are
-  explicitly deferred until after the staged plan. Do not revoke, rotate,
-  delete, or alter existing keys/tokens or the public Alpecca identity.
+Build immutable per-turn context with at least `turn_id`, `conversation_id`,
+server-derived actor/principal, surface, privacy scope, cancellation token, and
+commit state. Replace global `_speaker` and shared `_history` semantics in
+`alpecca/mind.py`; requests must carry their own scoped history and memory view.
 
-### Acceptance gates
+Persist enough scoped state to recover safely after restart. Partition chat
+turns, short-term history, Mindpage pages/faults, memory retrieval, tool
+availability, and outbound replies by scope. Route identity must come from the
+protected server session/principal, never from a client `speaker`, `source`,
+channel, or display-name field. A timeout/cancel must fence all late writes,
+tool actions, broadcasts, and duplicate replies through a commit barrier.
 
-1. Run `python -m pytest -q tests\test_core.py` and
-   `python -m pytest -q tests\test_hidden_deliberation.py`; current checkpoint:
-   `352 passed` for `test_core.py`.
-2. Run `npm.cmd run house:build`; current checkpoint passes, with only the
-   existing Vite large-chunk advisory.
-3. With local Ollama available, run one living tick, one same-rank Soul
-   tie-break, and one eligible proactive check. Confirm the model receives only
-   bounded options, malformed output falls back quietly, and a real tie-break
-   records a secret-free `CognitionObservation` with source `soul_choice`.
-4. Confirm proactive delivery remains cooldown-bound: a false judge or any
-   failure must broadcast nothing and must not create a second follow-up.
-5. Confirm compact background Soul work contains no `slate`/`by_category` prose
-   while Workshop/UI review still receives the verbose, explainable slate.
+Exit gate: concurrent creator, guest, app, House HQ, and future Discord turns
+cannot see each other's context; a timed-out turn cannot produce a late side
+effect; restart preserves scope boundaries; stale portal epochs are rejected.
 
-Useful regression tests include `test_constrained_choice_parse_matrix`,
-`test_soul_llm_tiebreak_stays_within_winning_rank`,
-`test_proactive_llm_judge_false_stays_quiet`, and
-`tests/test_hidden_deliberation.py`.
+### Phase 4: cue, commitment, and action closure
 
-### Current repository state
+Add a structured cue envelope for corrections, confirmations, references,
+urgency, distress, questions, and action intent. Add durable commitments and
+tool receipts with `proposed -> approved -> running -> succeeded|failed|cancelled`.
+Alpecca may only say an action is complete when a successful receipt exists;
+otherwise she must state that it is proposed, pending approval, failed, or
+unavailable. Make "yes, do it" resume the correct scoped pending commitment.
 
-- Branch: `feat/vrm-preview`; latest pushed checkpoint: `afcbf07`.
-- Stage 0 recovery baseline: `a79a6a3`.
-- Stage 1 local authorization/capability boundary: `0eb1016`.
-- Compact Soul fallback: `bdbf8fc`; local tool/stream/fallback routing fix:
+### Phase 5: unified initiative and grounded affect
+
+Unify living-loop, proactive chat, routines, recursive follow-ups, and later
+Discord participation behind one per-scope relevance, cooldown, and dedupe
+budget. Feed the Phase 4 cue envelope into affect with evidence, confidence,
+and timestamps. Maintain the seven symbolic Soul roles; do not create seven
+LLM processes or inject verbose hidden reasoning into prompts.
+
+### Phase 6: Mindpage and resource coordinator
+
+Finish Mindpage/resource reliability: semantic-negative tests, buried-content
+indexing, hard refusal/compaction of unshrinkable requests, and one
+single-flight optional-work coordinator that cannot overlap with chat/TTS.
+Keep 8K as the initial measured context. Only promote Qwen 3.5 9B context after
+real 16K/24K/32K/48K measurements stay below 90 percent commit, retain 2 GiB
+physical-RAM headroom, and avoid sustained SSD paging. The 38,000 MiB pagefile
+is commit reserve, not extra VRAM or a reason to oversubscribe the laptop.
+
+### Phase 7: creator-approved pagefile broker - BLOCKED
+
+Implement only after Phase 6 supplies pressure evidence. It needs a separate
+minimal elevated helper, fresh one-use CreatorJD approval, live remeasurement,
+post-write readback, 4,096 MiB steps, 55,296 MiB cap, and 40 GiB free-space
+floor. Valid steps from the 38,000 MiB baseline are 42,096, 46,192, 50,288, and
+54,384 MiB. Do not modify pagefile settings in development or without explicit
+fresh creator approval.
+
+### Phase 8: bounded recursive self-improvement
+
+Restrict trials to allowlisted, consumed database parameters and policies. Every
+trial needs a proposal, hypothesis, metric, exposure window, evidence, end time,
+and exact rollback. Code, files, accounts, and operating-system changes remain
+outside the autonomous self-improvement surface.
+
+### Phase 9: multimodal and source perception
+
+Add scoped, read-only source browsing; bounded MIME-aware text/file extraction;
+image/audio limits; provenance; local-first vision/transcription; and an
+explicit provider-consent broker for private cloud egress. Screen, webcam, and
+microphone grants must be visible, logged, and stop on disconnect.
+
+### Phase 10: Discord presence and voice - BLOCKED
+
+Keep Discord participation/recursion disabled until scoped bridge envelopes,
+creator/guild/channel allowlists, conversation partitioning, guest capability
+denial, persistent rate limits, and nonce-bound creator approvals work. Add
+audio queues and live receive only after the text bridge passes its gate.
+
+### Phase 11: creator contact and notification outbox - DEFERRED
+
+Build a durable, idempotent outbox with app Web Push first, Discord DM second,
+SMS third, and phone calls only by separate opt-in. Keep destinations and IDs
+in secret-backed adapters, not prompts, cognition records, git, or Mindscape.
+Phone/contact-channel security and identifier work are deferred until after the
+staged plan at Jason's instruction.
+
+### Phase 12: V4 embodiment behavior and physics
+
+Keep V4 and all 74 spring joints. Correct root movement, stationary hips tracks,
+1.70 m scale, posed-sole grounding, expression reset, one-shot gesture
+scheduling, LookAround looping, and hoodie collider attachment. Gate on the
+documented ten-minute physics soak and four-angle design-lock turntable.
+
+### Phase 13: cloud egress and Mindscape continuity - BLOCKED
+
+Route all outbound inference through a data-classifying, allowlisted, audited
+broker. Mindscape must fail closed and use separate credentials, signed/versioned
+bounded snapshots, monotonic replay protection, CreatorJD-approved transactional
+restore, and an expired local portal lease before any interactive cloud fallback.
+Cloud is continuity standby, never a second CoreMind.
+
+### Phase 14: release soak and living documentation
+
+Run fresh-DB, concurrent actor, timeout, resource, Discord canary, Mindscape
+failover, and V4 turntable/animation drills. Then rebuild/deploy the Cloudflare
+shell and sync approved Hugging Face runtime assets. Update diagrams and status
+claims only from evidence.
+
+### Global constraints and verification
+
+- Approved local model: `qwen3.5:9b`; do not revive, download, or reference
+  `qwen3:8b`. If no approved fast model is installed, use Qwen 3.5 9B for smoke
+  tests rather than downloading another model.
+- No LLM call under `mind_lock`; no extra Alpecca instance; no autonomous code,
+  account, delete, purchase, or general OS action.
+- Do not revoke, rotate, delete, or alter existing keys/tokens or the preserved
+  public Alpecca identity. It is not server authorization.
+- Preserve `apps/house-hq/src/vrmEmbodiment.ts`, `config.py`, and untracked
+  `alpecca/creator_contact.py` / `alpecca/system_pressure.py` unless the active
+  phase explicitly adopts them after its gate.
+- Before every checkpoint run `python -m pytest -q tests\test_core.py` and
+  `npm.cmd run house:build`. Current verified baseline: `352 passed`; House HQ
+  build passes with only its existing large-chunk advisory.
+
+### Current checkpoint
+
+- Branch: `feat/vrm-preview`; save this handoff as its own narrow commit before
+  Claude begins implementation.
+- Stage 0 recovery baseline: `a79a6a3`; local authorization/capability work:
+  `0eb1016`; compact Soul work: `bdbf8fc`; local tool/stream fallback fix:
   `afcbf07`.
-- Preserve unrelated dirty work exactly as found:
-  `apps/house-hq/src/vrmEmbodiment.ts`, `config.py`, and untracked
-  `alpecca/creator_contact.py` / `alpecca/system_pressure.py`.
-- The legacy `data/access_token.txt` remains present and untouched. Public
-  identity is not server authorization; the protected local session boundary is
-  already committed and tested.
+- The legacy `data/access_token.txt` remains present and untouched.
 
-## Master architecture checkpoint (2026-07-09)
+Everything below this line is retained historical evidence. It may describe
+superseded status labels or old active scopes; the Phase 3 onward roadmap above,
+`PROJECT_CONTEXT.md`, and `docs/ALPECCA_MASTER_PLAN.md` control new work.
+
+## Historical architecture checkpoint (2026-07-09)
 
 - `docs/ALPECCA_MASTER_PLAN.md` and `docs/ALPECCA_MASTER_PLAN.pdf` are the
   dependency-ordered implementation plan produced from the AI-core, security,
