@@ -68,8 +68,13 @@ def _decode_credential_blob(blob: Any) -> str:
     if isinstance(blob, memoryview):
         blob = blob.tobytes()
     if isinstance(blob, bytes):
+        # pywin32's CredWrite stores str blobs as UTF-16-LE; blobs written by
+        # other tools are typically UTF-8. For ASCII-range secrets like ours,
+        # embedded NUL bytes reliably identify the UTF-16-LE form -- decoding
+        # that as UTF-8 would "succeed" and silently NUL-garble the secret.
+        encoding = "utf-16-le" if b"\x00" in blob else "utf-8"
         try:
-            value = blob.decode("utf-8")
+            value = blob.decode(encoding).rstrip("\x00")
         except UnicodeDecodeError as exc:
             raise RuntimeError("The stored authorization credential is invalid.") from exc
     elif isinstance(blob, str):
@@ -105,7 +110,10 @@ def _load_or_create_windows_credential() -> str:
             {
                 "Type": win32cred.CRED_TYPE_GENERIC,
                 "TargetName": CREDENTIAL_TARGET,
-                "CredentialBlob": generated.encode("utf-8"),
+                # pywin32 requires a str here (rejects bytes with a TypeError
+                # on cold start) and stores it as UTF-16-LE; the reader above
+                # detects and reverses that encoding.
+                "CredentialBlob": generated,
                 "Persist": win32cred.CRED_PERSIST_LOCAL_MACHINE,
                 "UserName": "Alpecca",
                 "Comment": "Alpecca server authorization secret",
