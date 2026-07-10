@@ -3260,12 +3260,20 @@ class CoreMind:
         qid = journal_mod.ask(q, mood=mood)
         return {"phase": "asked", "question": q, "id": qid}
 
-    def soul_state(self) -> dict:
+    def soul_state(self, *, details: bool = True) -> dict:
         """What her Soul is arbitrating right now: the ranked slate of intentions
         from her seven subagents and the one in focus, decided by the Good Person
-        Principle. Read-only and fully explainable."""
+        Principle. Read-only and fully explainable. Background self-directed
+        ticks request compact mode so prose reasons do not consume context."""
         snapshot = self._soul_snapshot()
-        plan = soul_mod.soul.deliberate(snapshot)
+        try:
+            plan = soul_mod.soul.deliberate(snapshot, verbose=details)
+        except TypeError as exc:
+            # Keep test/plugin monkey-patches written against the original
+            # one-argument Soul API working during the staged migration.
+            if "verbose" not in str(exc):
+                raise
+            plan = soul_mod.soul.deliberate(snapshot)
         plan["snapshot"] = snapshot.as_dict()
         focus = plan.get("focus") or {}
         slate = plan.get("slate") or []
@@ -3327,7 +3335,7 @@ class CoreMind:
         formed = self.form_desire()
         learned = self.learn_tick()
         # The Soul names what she's most moved to do, by her ranked ethic.
-        focus = self.soul_state().get("focus") or {}
+        focus = self.soul_state(details=False).get("focus") or {}
         acted = self._enact_focus(focus)
         note = self._activity_note(formed, learned, acted)
         if learned and learned.get("lesson"):

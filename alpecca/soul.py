@@ -236,7 +236,24 @@ class MasterAgent:
     intention is her focus; the rest are the texture beneath it. Every choice is
     explainable, because every intention names its real reason and directive."""
 
-    def deliberate(self, snap: Snapshot) -> dict:
+    @staticmethod
+    def _validation_vector(intentions: list[Intention]) -> list[dict]:
+        """Return a small, non-linguistic record of the seven-way arbitration.
+
+        This is deliberately not model-generated chain of thought. It is a
+        bounded diagnostic vector that can travel through background systems
+        without copying every intention's prose reason into a prompt.
+        """
+        return [
+            {
+                "subagent": item.subagent,
+                "rank": int(item.rank),
+                "urgency": round(max(0.0, min(1.0, float(item.urgency))), 3),
+            }
+            for item in intentions
+        ]
+
+    def deliberate(self, snap: Snapshot, *, verbose: bool = True) -> dict:
         intentions = [i for sa in SUBAGENTS if (i := sa(snap)) is not None]
         # Good Person Principle: lower directive rank wins; urgency breaks ties.
         intentions.sort(key=lambda i: (i.rank, -i.urgency))
@@ -248,11 +265,9 @@ class MasterAgent:
                       if i.rank == 1 or i.category != "emotions"), None)
         if focus is None and intentions:
             focus = intentions[0]
-        return {
+        plan = {
             "focus": focus.as_dict() if focus else None,
-            "slate": [i.as_dict() for i in intentions],
-            "by_category": {c: [i.as_dict() for i in intentions if i.category == c]
-                            for c in CATEGORIES},
+            "validation_vector": self._validation_vector(intentions),
             "principle": "Good Person Principle: " +
                          " > ".join(d["name"] for d in values.DIRECTIVES),
             # The multi-agent makeup: which subagents are deterministic sensors
@@ -260,6 +275,20 @@ class MasterAgent:
             "agents": {s.name: {"category": s.category, "kind": s.kind, "tier": s.tier}
                        for s in SUBAGENT_SPECS},
         }
+        if verbose:
+            plan["slate"] = [i.as_dict() for i in intentions]
+            plan["by_category"] = {
+                c: [i.as_dict() for i in intentions if i.category == c]
+                for c in CATEGORIES
+            }
+            plan["deliberation_mode"] = "verbose"
+        else:
+            plan["deliberation_mode"] = "compact"
+        return plan
+
+    def compact_plan(self, snap: Snapshot) -> dict:
+        """Arbitrate with only focus and bounded scores for background work."""
+        return self.deliberate(snap, verbose=False)
 
     def narrate(self, snap: Snapshot) -> str:
         """A short, honest first-person line: what she's most moved to do and

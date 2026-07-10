@@ -1,6 +1,10 @@
 ﻿# Docs Index
 
-**Last updated:** 2026-07-09
+**Last updated:** 2026-07-10
+
+Stage 0 is complete. Phone and communication-channel security is intentionally
+deferred until the post-stage hardening pass; no phone identifier or channel is
+changed by the current rollout.
 
 ## Canonical Sources
 
@@ -10,6 +14,7 @@ For implementation and behavior decisions, use:
 - `HANDOFF.md`
 - `docs/AGENTIC_ASSESSMENT.md`
 - `docs/ALPECCA_CURRENT_PROGRESS.md`
+- `docs/SOUL_FALLBACK_ARCHITECTURE.md`
 
 ## Freshness Rule
 
