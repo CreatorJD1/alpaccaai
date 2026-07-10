@@ -59,6 +59,42 @@
 
 ---
 
+## Cloud-interface refresh checkpoint (2026-07-09)
+
+Scope: cloud/hosting surfaces, docs corrections, and bridge/tunnel bring-up. The
+VRoid v13 work above remains the active handoff.
+
+- The adaptive Mindpage changeset is committed and pushed as `a5084c3` on
+  `feat/vrm-preview`: mindpage/mind/memory/prompts plus the House HQ Working
+  Memory gauge. 347 tests green and `npm.cmd run house:build` green at commit
+  time.
+- Multi-subagent code-audit corrections were folded into
+  `docs/ALPECCA_FEATURE_SKELETON_INFRASTRUCTURE.md` and the PDF was regenerated.
+  Three of the five defects were already resolved by the Mindpage pass
+  (tool-cap recall drop, adaptive pressure shrink, vacuum hook). Two remain
+  open — the routines DELETE route and ngrok URL capture — and are being fixed
+  in this session by parallel agents.
+- The Cloudflare R2 static shell was re-packaged and re-uploaded: 6 objects,
+  with all 304 art assets excluded per the no-art-on-Cloudflare rule. The new
+  bundle `index-EI-cuJEZ.js` replaced the stale Jul-2 `index-Boi8Fodb.js`.
+- Hugging Face runtime metadata was synced via
+  `publish_alpecca_art_library_hf.py --runtime-metadata-only`; 136 files
+  committed to `CREATORJD/alpecca-runtime-assets`.
+- `config.py` cloud-model comments were corrected to match the approved
+  launcher: `gemma4:cloud` for chat/deep/vision via `START_HERE.bat`, with
+  `qwen3.5:9b` as the local fallback. No unapproved model substitutions.
+- The Discord bridge was started and is online as `Alpecca_ai#0929` (1 server,
+  `dm_allow=none`). A Cloudflare quick tunnel is being established via
+  `scripts/share.py` for phone access.
+- Still pending/user-gated: Mindscape Worker hosted deploy (wrangler secret +
+  deploy + `ALPECCA_MINDSCAPE_URL` — explicit user go required), ZeroGPU brain
+  space wiring (`ALPECCA_ZEROGPU_SPACE` unset by design), Colab T4 fast tier
+  (`ALPECCA_COLAB_URL` unset), Stage 4 art generation (144 targets still
+  seeded-awaiting-generation), and the VRoid v13 base-model work per the active
+  handoff above.
+
+---
+
 Snapshot for whoever picks this up next (human or agent): current state, how to
 run her, what was built, what's solid vs. shaky, and what's next. Read `CLAUDE.md`
 for the canonical architecture, `docs/ALPECCA_CURRENT_PROGRESS.md` for the current

@@ -795,6 +795,8 @@ async def _run_routine(row: dict) -> dict:
         result = await _bounded_thread("routine_consolidate", mind.consolidate_observations, 16, timeout=12.0)
     elif kind == "embed_backfill":
         result = await _bounded_thread("routine_embed_backfill", memory_store.backfill_embeddings, timeout=10.0)
+    elif kind == "vacuum":
+        result = await _bounded_thread("routine_vacuum", mindpage_mod.vacuum, timeout=20.0)
     elif kind == "morning_greeting":
         result = await _bounded_thread(
             "routine_morning_greeting",
@@ -2092,6 +2094,14 @@ async def routines_update(routine_id: int, req: Request) -> dict:
     except KeyError:
         raise HTTPException(status_code=404, detail="routine not found")
     return {"routine": row, "routines": routines_mod.list_all()}
+
+
+@app.post("/routines/{routine_id}/delete")
+async def routines_delete(routine_id: int) -> dict:
+    """Remove a routine entirely. Toggling keeps history; deleting forgets it."""
+    if not routines_mod.remove(routine_id):
+        raise HTTPException(status_code=404, detail="routine not found")
+    return {"deleted": int(routine_id), "routines": routines_mod.list_all()}
 
 
 @app.post("/cognition/chat/review")

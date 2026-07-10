@@ -24,6 +24,7 @@ Run:
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -108,16 +109,46 @@ def _start_tunnel(kind: str, port: int) -> None:
             print("[app] ngrok not on PATH -- internet tunnel skipped "
                   "(https://ngrok.com/download).", file=sys.stderr)
             return
-        cmd = [exe, "http", str(port)]
+        # ngrok draws a TUI instead of printing a copyable line, so we don't
+        # scrape its output -- we ask its local inspection API for the URL.
+        _tunnel_proc = subprocess.Popen([exe, "http", str(port)])
+        url = _ngrok_public_url()
+        if url:
+            # Mirror the cloudflare path: persist the URL so tools can discover
+            # it, and print the clean shareable link.
+            preview_mod.write_state(url, port, provider="ngrok")
+            print(f"[app] ngrok preview: {preview_mod.with_access_token(url)}")
+        else:
+            print("[app] ngrok is running, but its public URL couldn't be read from "
+                  "its inspection API -- check the ngrok window for the https link.",
+                  file=sys.stderr)
+        return
     else:
         print(f"[app] unknown ALPECCA_TUNNEL={kind!r} (expected cloudflare|ngrok|off).",
               file=sys.stderr)
         return
-    print(f"[app] opening {kind} tunnel -- watch its output for the public URL, "
-          f"then append ?token=<your token> to it.")
-    # The tunnel CLI prints its public URL to its own stdout/stderr (left
-    # inheriting this console), so you can copy it from here.
-    subprocess.Popen(cmd)
+
+
+def _ngrok_public_url(timeout: float = 15.0) -> str | None:
+    """Ask ngrok's local inspection API (port 4040) for the public https URL.
+
+    ngrok takes a moment to establish the tunnel, so poll until it answers or
+    ``timeout`` runs out. Best effort: any failure just returns ``None`` and the
+    caller falls back to pointing at ngrok's own window."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels",
+                                        timeout=2) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            for tunnel in data.get("tunnels", []):
+                url = str(tunnel.get("public_url", ""))
+                if url.startswith("https://"):
+                    return url
+        except Exception:
+            pass                       # not listening yet, or no tunnel yet
+        time.sleep(0.5)
+    return None
 
 
 def main() -> None:

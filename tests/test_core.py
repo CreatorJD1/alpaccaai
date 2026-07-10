@@ -1966,6 +1966,82 @@ def test_routines_routes_create_and_toggle():
                 conn.execute("DELETE FROM routines WHERE id=?", (routine_id,))
 
 
+def test_routines_delete_route_removes_routine():
+    from fastapi.testclient import TestClient
+    import server
+    import sqlite3
+
+    client = TestClient(server.app)
+    routine_id = None
+    try:
+        r = client.post("/routines", json={
+            "name": "Route routine delete",
+            "hour": 9,
+            "weekday": -1,
+            "kind": "embed_backfill",
+            "enabled": True,
+        })
+        assert r.status_code == 200
+        routine_id = int(r.json()["routine"]["id"])
+
+        gone = client.post(f"/routines/{routine_id}/delete")
+        assert gone.status_code == 200
+        assert gone.json()["deleted"] == routine_id
+        assert routine_id not in [int(row["id"]) for row in gone.json()["routines"]]
+
+        listed = client.get("/routines")
+        assert listed.status_code == 200
+        assert routine_id not in [int(row["id"]) for row in listed.json()["routines"]]
+
+        missing = client.post(f"/routines/{routine_id}/delete")
+        assert missing.status_code == 404
+        routine_id = None
+    finally:
+        if routine_id is not None:
+            with sqlite3.connect(state_store.DB_PATH) as conn:
+                conn.execute("DELETE FROM routines WHERE id=?", (routine_id,))
+
+
+def test_routines_vacuum_kind_dispatches_mindpage_vacuum(monkeypatch):
+    import asyncio
+    from fastapi.testclient import TestClient
+    import server
+    import sqlite3
+
+    calls = []
+
+    def fake_vacuum(*args, **kwargs):
+        calls.append(True)
+        return True
+
+    monkeypatch.setattr(server.mindpage_mod, "vacuum", fake_vacuum)
+
+    client = TestClient(server.app)
+    routine_id = None
+    try:
+        r = client.post("/routines", json={
+            "name": "Route routine vacuum",
+            "hour": 3,
+            "weekday": -1,
+            "kind": "vacuum",
+            "enabled": True,
+        })
+        assert r.status_code == 200
+        routine = r.json()["routine"]
+        routine_id = int(routine["id"])
+        assert routine["kind"] == "vacuum"
+
+        ran = asyncio.run(server._run_routine(routine))
+        assert ran["ok"] is True
+        assert ran["kind"] == "vacuum"
+        assert ran["result"] is True
+        assert calls == [True]
+    finally:
+        if routine_id is not None:
+            with sqlite3.connect(state_store.DB_PATH) as conn:
+                conn.execute("DELETE FROM routines WHERE id=?", (routine_id,))
+
+
 def test_cognition_proposal_handoff_route_reports_markdown_packet():
     from fastapi.testclient import TestClient
     import config

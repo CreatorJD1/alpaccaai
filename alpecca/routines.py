@@ -12,6 +12,7 @@ KINDS = {
     "morning_greeting",
     "consolidate_observations",
     "embed_backfill",
+    "vacuum",
 }
 
 
@@ -98,6 +99,13 @@ def set_enabled(routine_id: int, enabled: bool, db_path: Path = DB_PATH) -> dict
     if row is None:
         raise KeyError(routine_id)
     return dict(row)
+
+
+def remove(routine_id: int, db_path: Path = DB_PATH) -> bool:
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        cur = conn.execute("DELETE FROM routines WHERE id=?", (int(routine_id),))
+    return cur.rowcount > 0
 
 
 def due(now: float | None = None, db_path: Path = DB_PATH) -> list[dict]:

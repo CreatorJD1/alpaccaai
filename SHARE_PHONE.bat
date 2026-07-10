@@ -3,9 +3,10 @@ REM ============================================================
 REM   ALPECCA - phone link (Cloudflare tunnel, token-gated).
 REM   Double-click this. It installs cloudflared if missing,
 REM   then starts her and prints your tap-to-open PUBLIC LINK:
-REM     https://<random>.trycloudflare.com/?token=...
-REM   The link is always behind her access token; the first tap
-REM   drops a 30-day cookie on your phone. Ctrl-C here ends it.
+REM     https://<random>.trycloudflare.com/
+REM   The link is clean (no token in the URL) -- the app seeds
+REM   your phone's identity itself, and the first tap drops a
+REM   30-day cookie on your phone. Ctrl-C here ends it.
 REM ============================================================
 title Alpecca (phone link)
 cd /d "%~dp0"
