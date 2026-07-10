@@ -646,6 +646,26 @@ type AlpeccaSourceTerminal = {
   pulseTimer: number;
   autonomousTimer: number;
 };
+type AlpeccaTerminalHand = "left" | "right";
+type AlpeccaTerminalPhase = "approach" | "reach" | "contact" | "retract";
+type AlpeccaTerminalTiming = {
+  reachSeconds: number;
+  contactSeconds: number;
+  retractSeconds: number;
+};
+type AlpeccaTerminalTarget = {
+  id: string;
+  featureId: string;
+  roomId: string;
+  label: string;
+  group: THREE.Group;
+  approach: THREE.Vector3;
+  attention: THREE.Vector3;
+  contact: THREE.Vector3;
+  contactNormal: THREE.Vector3;
+  hand: AlpeccaTerminalHand;
+  timing: AlpeccaTerminalTiming;
+};
 type AlpeccaSourceDashboardNode = {
   featureId: string;
   material: THREE.MeshBasicMaterial;
@@ -1266,6 +1286,7 @@ const interactableMeshes = new Map<string, Interactable>();
 const interactableObjects: THREE.Object3D[] = [];
 const alpeccaRoomDevices = new Map<string, AlpeccaRoomDevice>();
 const alpeccaSourceTerminals = new Map<string, AlpeccaSourceTerminal>();
+const alpeccaTerminalTargets = new Map<string, AlpeccaTerminalTarget>();
 const alpeccaSourceGalleryPanels = new Map<string, AlpeccaSourceGalleryPanel>();
 const alpeccaExpressionTextures = new Map<string, THREE.Texture>();
 const alpeccaAvatarTextures = new Map<string, THREE.Texture>();
@@ -1665,6 +1686,7 @@ async function activateAlpeccaVrm() {
 }
 
 function deactivateAlpeccaVrm() {
+  releaseAlpeccaVrmTerminalTarget();
   alpeccaVrmEmbodiment?.deactivate();
   alpeccaEmbodimentState = "sprite";
   localStorage.setItem(alpeccaEmbodimentStorageKey, "sprite");
@@ -1675,11 +1697,13 @@ function deactivateAlpeccaVrm() {
 
 function updateAlpeccaEmbodiment(dt: number) {
   if (!isAlpeccaVrm3D() || !alpeccaVrmEmbodiment) return;
-  const engaged = isAlpeccaTalking() || alpecca.attentionTimer > 0 || !alpeccaChat.classList.contains("hidden");
+  const talking = isAlpeccaTalking();
+  const engaged = talking || alpecca.attentionTimer > 0 || !alpeccaChat.classList.contains("hidden");
   const distanceToPlayer = Math.hypot(
     camera.position.x - alpecca.group.position.x,
     camera.position.z - alpecca.group.position.z,
   );
+  alpeccaVrmEmbodiment.setSpriteState(alpecca.state, alpecca.moving, talking);
   alpeccaVrmEmbodiment.update(dt, camera, engaged, distanceToPlayer);
 }
 
@@ -2584,6 +2608,13 @@ const alpecca = {
   showcaseState: "idleDown" as AlpeccaAnimationName,
   livePatrolSpeed: 0.26,
   selfReviewTargetRoom: "",
+  terminalTargetId: "",
+  terminalGesturePlayed: false,
+  terminalGestureTimer: 0,
+  terminalFeatureActivated: false,
+  terminalContactAborted: false,
+  terminalVrmTargetId: "",
+  terminalInteractionPhase: "idle" as AlpeccaTerminalPhase | "idle",
   patrolPoints: alpeccaExplorePoints.map((point) => point.position),
 };
 
@@ -3250,6 +3281,7 @@ function routeAlpeccaToLivingLoopTarget(loop?: AlpeccaAiMessage["living_loop"]) 
   alpecca.dwellTimer = 0;
   alpecca.inspectTimer = 0;
   alpecca.inspectNoticeTimer = 0;
+  clearAlpeccaTerminalInteraction();
   setAlpeccaIntent("observing", alpeccaExplorePoints[index].roomName);
 }
 
@@ -5117,6 +5149,60 @@ function runAlpeccaFeature(featureId: string) {
   showMessage(`${feature.room} source bridge is offline. ${feature.page ? "Opening the source page may still work if Alpecca is running." : "Using local game mode."}`, 5);
 }
 
+const alpeccaTerminalReachDistance = 0.58;
+const alpeccaTerminalApproachLeadDistance = 1.15;
+const alpeccaTerminalDefaultTiming: AlpeccaTerminalTiming = {
+  reachSeconds: 0.56,
+  contactSeconds: 0.34,
+  retractSeconds: 0.7,
+};
+
+function registerAlpeccaTerminalTarget(
+  id: string,
+  featureId: string,
+  roomId: string,
+  label: string,
+  group: THREE.Group,
+  contactLocal: THREE.Vector3,
+  attentionLocal: THREE.Vector3,
+  hand: AlpeccaTerminalHand = "right",
+  timing: AlpeccaTerminalTiming = alpeccaTerminalDefaultTiming,
+) {
+  group.updateWorldMatrix(true, false);
+  const contactNormal = new THREE.Vector3(0, 0, 1).transformDirection(group.matrixWorld).normalize();
+  const contact = group.localToWorld(contactLocal.clone());
+  const attention = group.localToWorld(attentionLocal.clone());
+  const approach = contact.clone().addScaledVector(contactNormal, alpeccaTerminalReachDistance);
+  approach.y = 0.04;
+  alpeccaTerminalTargets.set(id, {
+    id,
+    featureId,
+    roomId,
+    label,
+    group,
+    approach,
+    attention,
+    contact,
+    contactNormal,
+    hand,
+    timing: { ...timing },
+  });
+}
+
+function alpeccaTerminalTargetForPoint(point: AlpeccaExplorePoint) {
+  const roomTargets = [...alpeccaTerminalTargets.values()].filter((target) => target.roomId === point.roomId);
+  if (!roomTargets.length) return null;
+  const assigned = point.featureId
+    ? roomTargets.find((target) => target.featureId === point.featureId)
+    : null;
+  if (assigned) return assigned;
+  return roomTargets.reduce((nearest, candidate) => {
+    const nearestDistance = nearest.approach.distanceToSquared(point.position);
+    const candidateDistance = candidate.approach.distanceToSquared(point.position);
+    return candidateDistance < nearestDistance ? candidate : nearest;
+  });
+}
+
 function addSourceTerminal(featureId: string, pos: THREE.Vector3Tuple, yaw: number) {
   const feature = alpeccaSourceFeatures[featureId];
   if (!feature) return;
@@ -5178,6 +5264,16 @@ function addSourceTerminal(featureId: string, pos: THREE.Vector3Tuple, yaw: numb
     pulseTimer: 0,
     autonomousTimer: 0,
   });
+  const roomId = officeRooms.find((room) => room.name === feature.room)?.id ?? officeRoomAtPosition(pos[0], pos[2]).id;
+  registerAlpeccaTerminalTarget(
+    `source-${feature.id}`,
+    feature.id,
+    roomId,
+    `${feature.room} ${feature.label}`,
+    group,
+    new THREE.Vector3(0.28, pos[1] + 0.4, -0.08),
+    new THREE.Vector3(0, pos[1] + 0.34, 0.04),
+  );
 
   register({
     id: `source-${feature.id}`,
@@ -6317,6 +6413,15 @@ function addPrototypeTerminal(featureId: string, pos: THREE.Vector3Tuple, yaw: n
   const light = new THREE.PointLight(feature.color, 0.28, 2.6, 2);
   light.position.set(pos[0], pos[1] + 0.25, pos[2]);
   scene.add(light);
+  registerAlpeccaTerminalTarget(
+    `prototype-${feature.id}`,
+    feature.id,
+    "terminal-ring",
+    label,
+    group,
+    new THREE.Vector3(0.16, 0.52, -0.13),
+    new THREE.Vector3(0, 0.52, -0.16),
+  );
   register({
     id: `prototype-${featureId}-terminal`,
     label,
@@ -6609,6 +6714,7 @@ function routeAlpeccaToRoom(roomId: string) {
   alpecca.route.length = 0;
   alpecca.walkSegmentTimer = 2.6 + Math.random() * 1.8;
   alpecca.walkPauseTimer = 0;
+  clearAlpeccaTerminalInteraction();
 }
 
 function agiLayerTargetRoom(layer: AlpeccaAgiLayer) {
@@ -8135,6 +8241,7 @@ function runAlpeccaSelfReview(reason: string) {
     alpecca.routeTargetIndex = -1;
     alpecca.routeStep = 0;
     alpecca.route.length = 0;
+    clearAlpeccaTerminalInteraction();
   }
   showMessage(`Alpecca self-review: ${selfReviewActionForRoom(targetRoom.id)}.`, 3.8);
   sendAlpeccaRecursiveMemory(alpeccaSelfMirror.note, true);
@@ -10616,6 +10723,113 @@ function alpeccaInspectionAnimation(point: AlpeccaExplorePoint): AlpeccaAnimatio
   return chosen;
 }
 
+function setAlpeccaVrmTerminalTarget(target: AlpeccaTerminalTarget | null, phase: AlpeccaTerminalPhase) {
+  const targetId = target?.id ?? "";
+  if (alpecca.terminalVrmTargetId === targetId && alpecca.terminalInteractionPhase === phase) return;
+  if (!alpeccaVrmEmbodiment) {
+    alpecca.terminalVrmTargetId = "";
+    alpecca.terminalInteractionPhase = "idle";
+    return;
+  }
+  alpeccaVrmEmbodiment.setInteractionTarget(target?.contact ?? null, phase);
+  alpecca.terminalVrmTargetId = targetId;
+  alpecca.terminalInteractionPhase = target ? phase : "idle";
+}
+
+function releaseAlpeccaVrmTerminalTarget() {
+  if (!alpecca.terminalVrmTargetId && alpecca.terminalInteractionPhase === "idle") return;
+  setAlpeccaVrmTerminalTarget(null, "retract");
+}
+
+function clearAlpeccaTerminalInteraction() {
+  releaseAlpeccaVrmTerminalTarget();
+  alpecca.terminalTargetId = "";
+  alpecca.terminalGesturePlayed = false;
+  alpecca.terminalGestureTimer = 0;
+  alpecca.terminalFeatureActivated = false;
+  alpecca.terminalContactAborted = false;
+  document.body.dataset.alpeccaTerminalTarget = "";
+  document.body.dataset.alpeccaTerminalState = "idle";
+}
+
+function alpeccaTerminalInteractionDuration(target: AlpeccaTerminalTarget) {
+  return target.timing.reachSeconds + target.timing.contactSeconds + target.timing.retractSeconds;
+}
+
+function activateAlpeccaTerminalAtContact(target: AlpeccaTerminalTarget, point: AlpeccaExplorePoint) {
+  if (alpecca.terminalFeatureActivated) return;
+  alpecca.terminalFeatureActivated = true;
+  setAlpeccaActivity(`Alpecca is using ${target.label}.`, "observe", 2.4);
+  runAlpeccaAutonomousFeature(point);
+}
+
+function hasAlpeccaTerminalContact(): boolean {
+  if (!isAlpeccaVrm3D() || !alpeccaVrmEmbodiment) return false;
+  const status = alpeccaVrmEmbodiment.interactionContactStatus;
+  return status.available && status.inContact;
+}
+
+function abortAlpeccaTerminalContact(target: AlpeccaTerminalTarget) {
+  if (alpecca.terminalContactAborted || alpecca.terminalFeatureActivated) return;
+  alpecca.terminalContactAborted = true;
+  alpecca.terminalGestureTimer = 0;
+  releaseAlpeccaVrmTerminalTarget();
+  document.body.dataset.alpeccaTerminalState = "contact-unavailable";
+  setAlpeccaActivity(`Alpecca could not confirm contact with ${target.label}.`, "observe", 2.8);
+  showMessage(`Terminal contact was not confirmed. ${target.label} was not used.`, 3.8);
+}
+
+function updateAlpeccaTerminalInteraction(target: AlpeccaTerminalTarget, point: AlpeccaExplorePoint) {
+  if (alpecca.terminalTargetId !== target.id) {
+    releaseAlpeccaVrmTerminalTarget();
+    alpecca.terminalTargetId = target.id;
+    alpecca.terminalGesturePlayed = false;
+    alpecca.terminalGestureTimer = 0;
+    alpecca.terminalFeatureActivated = false;
+    alpecca.terminalContactAborted = false;
+  }
+  if (alpecca.terminalContactAborted) {
+    releaseAlpeccaVrmTerminalTarget();
+    document.body.dataset.alpeccaTerminalState = "contact-unavailable";
+    return;
+  }
+  faceAlpeccaToward(target.attention);
+  alpecca.groundYaw = alpecca.group.rotation.y;
+  setAlpeccaIntent("inspecting", target.label);
+  document.body.dataset.alpeccaTerminalTarget = target.id;
+
+  if (!alpecca.terminalGesturePlayed) {
+    alpecca.terminalGesturePlayed = true;
+    alpecca.terminalGestureTimer = alpeccaTerminalInteractionDuration(target);
+    document.body.dataset.alpeccaTerminalState = "reach";
+    setAlpeccaVrmTerminalTarget(target, "reach");
+    setAlpeccaAnimation("point", true, true);
+    if (alpeccaVrmEmbodiment && isAlpeccaVrm3D()) {
+      alpeccaVrmEmbodiment.setSpriteState("point", false, false);
+    }
+    return;
+  }
+
+  const elapsed = alpeccaTerminalInteractionDuration(target) - alpecca.terminalGestureTimer;
+  const contactStart = target.timing.reachSeconds;
+  const retractStart = contactStart + target.timing.contactSeconds;
+  const phase: AlpeccaTerminalPhase =
+    elapsed < contactStart ? "reach" : elapsed < retractStart ? "contact" : "retract";
+  document.body.dataset.alpeccaTerminalState = phase;
+  setAlpeccaVrmTerminalTarget(target, phase);
+  if (elapsed >= contactStart && hasAlpeccaTerminalContact()) {
+    activateAlpeccaTerminalAtContact(target, point);
+  } else if (elapsed >= retractStart) {
+    abortAlpeccaTerminalContact(target);
+  }
+
+  if (alpecca.terminalGestureTimer <= 0) {
+    releaseAlpeccaVrmTerminalTarget();
+    document.body.dataset.alpeccaTerminalState = "attending";
+    setAlpeccaAnimation("idleDown", true);
+  }
+}
+
 function pushAlpeccaRoutePoint(route: THREE.Vector3[], point: THREE.Vector3) {
   const previous = route[route.length - 1] ?? alpecca.group.position;
   if (Math.hypot(previous.x - point.x, previous.z - point.z) > 0.22) route.push(point.clone());
@@ -10625,6 +10839,7 @@ function buildAlpeccaRoute(targetIndex: number) {
   const point = alpeccaExplorePoints[targetIndex % alpeccaExplorePoints.length];
   const stageSpec = alpeccaStageSpecForRoom(point.roomId);
   const finalStage = point.restOnly && stageSpec.restPad ? stageSpec.restPad : stageSpec.stagePad;
+  const terminalTarget = alpeccaTerminalTargetForPoint(point);
   const currentRoom = officeRoomAtPosition(alpecca.group.position.x, alpecca.group.position.z);
   const startGuide = alpeccaRouteGuides[currentRoom.id] ?? alpeccaRouteGuides.entry;
   const destinationGuide = alpeccaRouteGuides[point.roomId] ?? alpeccaRouteGuides.entry;
@@ -10647,8 +10862,9 @@ function buildAlpeccaRoute(targetIndex: number) {
     if (point.roomId === "library") pushAlpeccaRoutePoint(route, new THREE.Vector3(-2.82, 0.04, -1.86));
   }
 
-  pushAlpeccaRoutePoint(route, finalStage.center);
-  return route.length > 0 ? route : [finalStage.center.clone()];
+  const finalTarget = terminalTarget?.approach ?? finalStage.center;
+  pushAlpeccaRoutePoint(route, finalTarget);
+  return route.length > 0 ? route : [finalTarget.clone()];
 }
 
 function resolveAlpeccaNavigationTarget(targetIndex: number) {
@@ -10678,7 +10894,7 @@ function faceAlpeccaToward(target: THREE.Vector3) {
   if (Math.abs(dx) + Math.abs(dz) > 0.001) alpecca.group.rotation.y = Math.atan2(dx, dz);
 }
 
-function activateRoomStationByAlpecca(point: AlpeccaExplorePoint) {
+function activateRoomStationByAlpecca(point: AlpeccaExplorePoint, deferFeatureFeedback = false) {
   if (isAlpeccaRestExplorePoint(point)) return "";
   const room = officeRooms.find((item) => item.id === point.roomId);
   if (!room || activeRoomIds.has(room.stationId)) return "";
@@ -10686,22 +10902,27 @@ function activateRoomStationByAlpecca(point: AlpeccaExplorePoint) {
   if (!station || station.type !== "collect" || station.collected) return "";
   const result = station.onUse(station);
   pulseAlpeccaRoomDevice(point.roomId);
-  pulseAlpeccaSourceDashboard(point.featureId || "", 3.2);
-  if (point.featureId) pulseAlpeccaSourceTerminal(point.featureId, 3.2, true);
+  if (!deferFeatureFeedback) {
+    pulseAlpeccaSourceDashboard(point.featureId || "", 3.2);
+    if (point.featureId) pulseAlpeccaSourceTerminal(point.featureId, 3.2, true);
+  }
   return result;
 }
 
 function announceAlpeccaInspection(point: AlpeccaExplorePoint) {
   if (alpecca.inspectNoticeTimer > 0) return;
   alpecca.inspectNoticeTimer = 8;
-  const stationResult = activateRoomStationByAlpecca(point);
+  const terminalTarget = alpeccaTerminalTargetForPoint(point);
+  // Room-station activation remains part of arrival. Terminal-specific source
+  // feedback is still deferred to the hand-contact choreography below.
+  const stationResult = activateRoomStationByAlpecca(point)
   const room = officeRooms.find((item) => item.id === point.roomId);
   const online = point.roomId === "entry" || isAlpeccaRestExplorePoint(point) || activeRoomIds.has(room?.stationId || point.roomId);
   pulseAlpeccaRoomDevice(point.roomId);
   pulseAlpeccaRoomDetails(point.roomId);
   updateAlpeccaMemoryTrace(point, online);
   showMessage(stationResult || `Alpecca ${point.action} in ${point.roomName}. ${online ? "System online." : "System still offline."}`, 3.8);
-  runAlpeccaAutonomousFeature(point);
+  if (!terminalTarget) runAlpeccaAutonomousFeature(point);
   completeAlpeccaImprovementTask(point, online);
 }
 
@@ -10779,6 +11000,7 @@ function advanceAlpeccaExplorePoint() {
   alpecca.route.length = 0;
   alpecca.walkSegmentTimer = 2.6 + Math.random() * 1.8;
   alpecca.walkPauseTimer = 0;
+  clearAlpeccaTerminalInteraction();
 }
 
 function updateAlpecca(dt: number) {
@@ -10807,6 +11029,15 @@ function updateAlpecca(dt: number) {
   if (alpeccaLiveAttentionTimer > 0) alpeccaLiveAttentionTimer -= dt;
   if (alpecca.expressiveTimer > 0) alpecca.expressiveTimer -= dt;
   if (alpecca.animationLockTimer > 0) alpecca.animationLockTimer -= dt;
+  if (alpecca.terminalGestureTimer > 0) alpecca.terminalGestureTimer = Math.max(0, alpecca.terminalGestureTimer - dt);
+  if (
+    alpecca.terminalGesturePlayed &&
+    alpecca.terminalGestureTimer <= 0 &&
+    alpecca.terminalInteractionPhase !== "idle"
+  ) {
+    releaseAlpeccaVrmTerminalTarget();
+    document.body.dataset.alpeccaTerminalState = "attending";
+  }
   if (alpecca.talkTimer > 0) alpecca.talkTimer = Math.max(0, alpecca.talkTimer - dt);
   if (alpecca.startTimer > 0) alpecca.startTimer -= dt;
   if (alpecca.dwellTimer > 0) alpecca.dwellTimer -= dt;
@@ -10857,9 +11088,12 @@ function updateAlpecca(dt: number) {
     alpecca.route.length = 0;
     alpecca.walkPauseTimer = 0;
     alpecca.dwellTimer = 0;
+    clearAlpeccaTerminalInteraction();
   }
   const activeExploreIndex = anxious ? 0 : alpecca.exploreIndex;
   const explorePoint = alpeccaExplorePoints[activeExploreIndex % alpeccaExplorePoints.length];
+  const terminalTarget = alpeccaTerminalTargetForPoint(explorePoint);
+  const attentionTarget = terminalTarget?.attention ?? explorePoint.lookAt;
   const restPoint = isAlpeccaRestExplorePoint(explorePoint);
   const navigation = resolveAlpeccaNavigationTarget(activeExploreIndex);
   const target = navigation.target;
@@ -10869,9 +11103,9 @@ function updateAlpecca(dt: number) {
   if (playerEngaged) {
     alpecca.group.rotation.y = Math.atan2(dx, dz);
     alpecca.groundYaw = alpecca.group.rotation.y;
-  } else if (alpecca.inspectTimer > 0) faceAlpeccaToward(explorePoint.lookAt);
+  } else if (alpecca.inspectTimer > 0) faceAlpeccaToward(attentionTarget);
   else if (distanceToTarget > 0.12) faceAlpeccaToward(target);
-  else faceAlpeccaToward(explorePoint.lookAt);
+  else faceAlpeccaToward(attentionTarget);
   updateAlpeccaHeadLook(distanceToPlayer, playerEngaged, dt);
   alpecca.livePatrolSpeed = lively ? 0.22 : sleepy ? 0.12 : 0.18;
   const isWalking =
@@ -10888,8 +11122,16 @@ function updateAlpecca(dt: number) {
     (!sleepy || restPoint) &&
     distanceToTarget > 0.12;
   alpecca.walkIntent = isWalking;
+  const terminalChoreographyActive = Boolean(
+    terminalTarget &&
+    alpecca.terminalGesturePlayed &&
+    (alpecca.terminalGestureTimer > 0 || (
+      !alpecca.terminalFeatureActivated && !alpecca.terminalContactAborted
+    )),
+  );
 
   if (alpecca.showcaseTimer > 0) {
+    releaseAlpeccaVrmTerminalTarget();
     setAlpeccaIntent("observing", alpecca.showcaseState);
     alpecca.showcaseTimer = Math.max(0, alpecca.showcaseTimer - dt);
     alpecca.moving = alpecca.showcaseState.startsWith("walk") || alpecca.showcaseState.startsWith("run");
@@ -10906,6 +11148,7 @@ function updateAlpecca(dt: number) {
   }
 
   if (alpecca.expressiveTimer > 0) {
+    releaseAlpeccaVrmTerminalTarget();
     setAlpeccaIntent("remembering", alpecca.activeFolder);
     alpecca.moving = false;
     alpecca.walkIntent = false;
@@ -10920,7 +11163,18 @@ function updateAlpecca(dt: number) {
   }
 
   if (isWalking) {
-    setAlpeccaIntent("approaching", explorePoint.roomName);
+    setAlpeccaIntent("approaching", terminalTarget?.label ?? explorePoint.roomName);
+    if (terminalTarget) {
+      document.body.dataset.alpeccaTerminalTarget = terminalTarget.id;
+      document.body.dataset.alpeccaTerminalState = "approaching";
+      if (navigation.final && distanceToTarget <= alpeccaTerminalApproachLeadDistance) {
+        setAlpeccaVrmTerminalTarget(terminalTarget, "approach");
+      } else {
+        releaseAlpeccaVrmTerminalTarget();
+      }
+    } else {
+      clearAlpeccaTerminalInteraction();
+    }
     toTarget.normalize();
     alpecca.groundYaw = Math.atan2(toTarget.x, toTarget.z);
     senseAlpeccaAvoidance(toTarget, dt);
@@ -10945,7 +11199,15 @@ function updateAlpecca(dt: number) {
       advanceAlpeccaExplorePoint();
     }
     setAlpeccaAnimation(directionalAlpeccaAnimation(visiblyMoved ? "walk" : "idle", movementDirection));
+  } else if (terminalChoreographyActive && terminalTarget) {
+    alpecca.moving = false;
+    alpecca.walkIntent = false;
+    alpecca.lastMovedDistance = 0;
+    alpecca.stuckTimer = 0;
+    updateAlpeccaTerminalInteraction(terminalTarget, explorePoint);
   } else if (playerEngaged) {
+    if (alpecca.terminalGesturePlayed) releaseAlpeccaVrmTerminalTarget();
+    else clearAlpeccaTerminalInteraction();
     setAlpeccaIntent(talking ? "replying" : alpeccaAiAwaitingReply ? "thinking" : "listening", "player");
     alpecca.moving = false;
     alpecca.walkIntent = false;
@@ -10955,6 +11217,8 @@ function updateAlpecca(dt: number) {
     faceAlpeccaSpriteToPlayer(dx, dz);
     setAlpeccaAnimation(talking ? "talkDown" : "idleDown");
   } else if (alpecca.waveTimer > 0) {
+    if (alpecca.terminalGesturePlayed) releaseAlpeccaVrmTerminalTarget();
+    else clearAlpeccaTerminalInteraction();
     setAlpeccaIntent("greeting", "player");
     alpecca.moving = false;
     alpecca.walkIntent = false;
@@ -10967,6 +11231,17 @@ function updateAlpecca(dt: number) {
     alpecca.walkIntent = false;
     alpecca.lastMovedDistance = 0;
     alpecca.stuckTimer = 0;
+    if (terminalTarget) {
+      document.body.dataset.alpeccaTerminalTarget = terminalTarget.id;
+      document.body.dataset.alpeccaTerminalState = "approaching";
+      if (navigation.final && distanceToTarget <= alpeccaTerminalApproachLeadDistance) {
+        setAlpeccaVrmTerminalTarget(terminalTarget, "approach");
+      } else {
+        releaseAlpeccaVrmTerminalTarget();
+      }
+    } else {
+      clearAlpeccaTerminalInteraction();
+    }
     setAlpeccaAnimation(directionalAlpeccaAnimation("idle", toTarget));
   } else {
     alpecca.moving = false;
@@ -10995,11 +11270,16 @@ function updateAlpecca(dt: number) {
       announceAlpeccaInspection(explorePoint);
     }
     if (alpecca.inspectTimer > 0) {
-      setAlpeccaIntent("inspecting", explorePoint.roomName);
       setAlpeccaSpriteFlip(false);
-      faceAlpeccaToward(explorePoint.lookAt);
-      setAlpeccaAnimation(alpeccaInspectionAnimation(explorePoint));
+      if (terminalTarget) updateAlpeccaTerminalInteraction(terminalTarget, explorePoint);
+      else {
+        clearAlpeccaTerminalInteraction();
+        setAlpeccaIntent("inspecting", explorePoint.roomName);
+        faceAlpeccaToward(explorePoint.lookAt);
+        setAlpeccaAnimation(alpeccaInspectionAnimation(explorePoint));
+      }
     } else {
+      releaseAlpeccaVrmTerminalTarget();
       if (alpecca.intent !== "observing" && alpecca.intent !== "creating") setAlpeccaIntent("idle", "house");
       setAlpeccaSpriteFlip(false);
       setAlpeccaAnimation(emotionalAlpeccaAnimation());
@@ -11053,7 +11333,9 @@ function updateAlpecca(dt: number) {
     window.__HOUSE_DEBUG__.alpecca.inspecting = alpecca.inspectTimer > 0 ? explorePoint.roomName : "";
     window.__HOUSE_DEBUG__.alpecca.destination = explorePoint.roomName;
     window.__HOUSE_DEBUG__.alpecca.markers = alpeccaExplorePoints.filter((point) => point.marker).length;
-    window.__HOUSE_DEBUG__.alpecca.interacting = alpecca.inspectTimer > 0 ? alpeccaRoomDevices.get(explorePoint.roomId)?.label ?? "" : "";
+    window.__HOUSE_DEBUG__.alpecca.interacting = alpecca.inspectTimer > 0
+      ? terminalTarget?.label ?? alpeccaRoomDevices.get(explorePoint.roomId)?.label ?? ""
+      : "";
     window.__HOUSE_DEBUG__.alpecca.stuck = alpecca.stuckTimer;
     window.__HOUSE_DEBUG__.alpecca.routeStep = `${Math.min(alpecca.routeStep + 1, alpecca.route.length)}/${alpecca.route.length}`;
     window.__HOUSE_DEBUG__.alpecca.scaleX = alpecca.sprite?.scale.x ?? 1;
@@ -11967,6 +12249,7 @@ function runManualFrameStep(detail: { dt?: number; frames?: number; alpeccaX?: n
     alpecca.startTimer = 0;
     alpecca.walkSegmentTimer = 2.6;
     alpecca.walkPauseTimer = 0;
+    clearAlpeccaTerminalInteraction();
   }
   if (alpecca.ready && detail.alpeccaAnimation) {
     showcaseAlpeccaAnimation(detail.alpeccaAnimation, 3.2);

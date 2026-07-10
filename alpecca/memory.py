@@ -105,6 +105,7 @@ _ollama_ready: Optional[bool] = None  # None = untried, then True/False
 _hf_client = None
 _hf_ready: Optional[bool] = None
 _fts_ready_paths: set[str] = set()
+_scope_ready_paths: set[str] = set()
 
 
 def default_embed(text: str) -> Optional[list]:
@@ -167,6 +168,29 @@ def _connect(db_path: Path):
         yield conn
 
 
+def _memory_scope(value: str) -> str:
+    """Keep an actor/scope label bounded before it reaches SQLite."""
+    clean = re.sub(r"[^a-zA-Z0-9_.:-]+", "-", str(value or "shared").strip())
+    return (clean.strip("-._:") or "shared")[:160]
+
+
+def ensure_scope_schema(db_path: Path = DB_PATH) -> None:
+    """Backfill the Phase 3 memory scope column for old and temporary DBs."""
+    key = str(Path(db_path).resolve())
+    if key in _scope_ready_paths:
+        return
+    with _connect(db_path) as conn:
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(memories)")}
+        if "scope" not in cols:
+            conn.execute("ALTER TABLE memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'shared'")
+        conn.execute("UPDATE memories SET scope='shared' WHERE scope IS NULL OR trim(scope)='' ")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS memories_scope_salience_idx "
+            "ON memories(scope, salience DESC, ts DESC)"
+        )
+    _scope_ready_paths.add(key)
+
+
 def ensure_search_index(db_path: Path = DB_PATH) -> bool:
     """Install an FTS5 lexical index and keep it synchronized with memories."""
     cache_key = str(Path(db_path).resolve())
@@ -222,7 +246,7 @@ def ensure_search_index(db_path: Path = DB_PATH) -> bool:
 
 
 def _lexical_candidates(query_tokens: list[str], *, limit: int,
-                        db_path: Path) -> list[dict]:
+                        db_path: Path, scopes: tuple[str, ...]) -> list[dict]:
     if not query_tokens or not ensure_search_index(db_path):
         return []
     terms = []
@@ -234,17 +258,18 @@ def _lexical_candidates(query_tokens: list[str], *, limit: int,
         return []
     expression = " OR ".join(terms[:16])
     try:
+        placeholders = ", ".join("?" for _ in scopes)
         with _connect(db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT m.id, m.ts, m.kind, m.content, m.salience, m.tokens, m.embedding
+                SELECT m.id, m.ts, m.kind, m.content, m.salience, m.tokens, m.embedding, m.scope
                 FROM memories_fts
                 JOIN memories AS m ON m.id = memories_fts.rowid
-                WHERE memories_fts MATCH ?
+                WHERE memories_fts MATCH ? AND m.scope IN (""" + placeholders + """)
                 ORDER BY bm25(memories_fts)
                 LIMIT ?
                 """,
-                (expression, max(1, int(limit))),
+                (expression, *scopes, max(1, int(limit))),
             ).fetchall()
         return [dict(row) for row in rows]
     except sqlite3.OperationalError:
@@ -311,7 +336,7 @@ def classify_kind(content: str, source: str = "", fallback: str = "episodic") ->
 def remember_with_id(content: str, kind: str = "episodic", salience: float = 0.5,
                      db_path: Path = DB_PATH,
                      embed_fn: Optional[Embedder] = default_embed,
-                     source: str = "") -> int | None:
+                     source: str = "", scope: str = "shared") -> int | None:
     """Store a memory if it clears the salience bar. Returns its id if kept.
 
     `salience` is "how much does this matter" in [0, 1]. We don't store every
@@ -323,29 +348,32 @@ def remember_with_id(content: str, kind: str = "episodic", salience: float = 0.5
     if salience < MEMORY_SALIENCE_THRESHOLD:
         return None
     kind = classify_kind(content, source=source, fallback=kind)
+    scope = _memory_scope(scope)
     tokens = _tokenize(content)
     vec = embed_fn(content) if embed_fn else None
+    ensure_scope_schema(db_path)
     with _connect(db_path) as conn:
         cur = conn.execute(
-            "INSERT INTO memories (ts, kind, content, salience, tokens, embedding) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO memories (ts, kind, content, salience, tokens, embedding, scope) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (time.time(), kind, content, salience, json.dumps(tokens),
-             json.dumps(vec) if vec is not None else None),
+             json.dumps(vec) if vec is not None else None, scope),
         )
         return int(cur.lastrowid)
 
 
 def remember(content: str, kind: str = "episodic", salience: float = 0.5,
              db_path: Path = DB_PATH, embed_fn: Optional[Embedder] = default_embed,
-             source: str = "") -> bool:
+             source: str = "", scope: str = "shared") -> bool:
     """Store a memory if it clears the salience bar. Returns whether it was kept."""
     return remember_with_id(content, kind=kind, salience=salience,
                             db_path=db_path, embed_fn=embed_fn,
-                            source=source) is not None
+                            source=source, scope=scope) is not None
 
 
 def recall(query: str, top_k: int = MEMORY_TOP_K, db_path: Path = DB_PATH,
-           embed_fn: Optional[Embedder] = default_embed) -> list[dict]:
+           embed_fn: Optional[Embedder] = default_embed, *,
+           scope: str = "shared", include_shared: bool = True) -> list[dict]:
     """Return the `top_k` memories most relevant to `query`.
 
     Relevance blends a *meaning* score with salience and a mild recency nudge, so
@@ -360,15 +388,23 @@ def recall(query: str, top_k: int = MEMORY_TOP_K, db_path: Path = DB_PATH,
     q_exact = query.strip().lower()
     now = time.time()
     scored = []
+    requested_scope = _memory_scope(scope)
+    scopes = (requested_scope,) if requested_scope == "shared" or not include_shared else (
+        requested_scope, "shared",
+    )
+    ensure_scope_schema(db_path)
+    placeholders = ", ".join("?" for _ in scopes)
     with _connect(db_path) as conn:
         base_rows = conn.execute(
-            "SELECT id, ts, kind, content, salience, tokens, embedding FROM memories "
-            "ORDER BY salience DESC, ts DESC LIMIT ?",
-            (max(int(top_k or 1), int(MEMORY_RECALL_CANDIDATE_LIMIT)),),
+            "SELECT id, ts, kind, content, salience, tokens, embedding, scope FROM memories "
+            f"WHERE scope IN ({placeholders}) ORDER BY salience DESC, ts DESC LIMIT ?",
+            (*scopes, max(int(top_k or 1), int(MEMORY_RECALL_CANDIDATE_LIMIT))),
         ).fetchall()
     rows_by_id = {int(row["id"]): dict(row) for row in base_rows}
     lexical_limit = max(64, min(256, int(MEMORY_RECALL_CANDIDATE_LIMIT)))
-    for row in _lexical_candidates(q_tokens, limit=lexical_limit, db_path=db_path):
+    for row in _lexical_candidates(
+        q_tokens, limit=lexical_limit, db_path=db_path, scopes=scopes,
+    ):
         rows_by_id[int(row["id"])] = row
     rows = list(rows_by_id.values())
     for r in rows:

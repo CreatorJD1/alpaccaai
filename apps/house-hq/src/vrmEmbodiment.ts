@@ -27,13 +27,22 @@ export interface VrmEmbodimentDeps {
   onStatus: (status: EmbodimentStatus, detail?: string, progress?: number) => void;
 }
 
+export type VrmInteractionContactStatus = Readonly<{
+  available: boolean;
+  inContact: boolean;
+  distance: number | null;
+  threshold: number;
+}>;
+
 export interface VrmEmbodiment {
   readonly status: EmbodimentStatus;
+  readonly interactionContactStatus: VrmInteractionContactStatus;
   activate(): Promise<boolean>;
   deactivate(): void;
   dispose(): void;
   setMood(label: string, dims: { love?: number; compassion?: number; fear?: number; energy?: number }): void;
-  setSpriteState(name: string, moving: boolean, talking: boolean): void;
+  setSpriteState(name: string, moving: boolean, talking: boolean, forceOneShot?: boolean): void;
+  setInteractionTarget(target: THREE.Vector3 | null, phase: "approach" | "reach" | "contact" | "retract"): void;
   update(dt: number, camera: THREE.Camera, engaged: boolean, distanceToPlayer?: number): void;
   debug(): { groundBase: number; groundOffset: number; lowestSoleY: number | null; springJoints: number; springColliders: number };
 }
@@ -97,8 +106,8 @@ const CLIP_VRMA: Record<string, string> = {
 // base. That randomized rotation is what keeps her from reading as a looping
 // animatronic.
 const IDLE_FLAVOR_VRMA = ["LookAround", "Thinking", "Relax"];
-const IDLE_FLOURISH_MIN = 8;
-const IDLE_FLOURISH_MAX = 20;
+const IDLE_FLOURISH_MIN = 14;
+const IDLE_FLOURISH_MAX = 32;
 const nextFlourishDelay = (): number =>
   IDLE_FLOURISH_MIN + Math.random() * (IDLE_FLOURISH_MAX - IDLE_FLOURISH_MIN);
 
@@ -153,11 +162,38 @@ const BONES: readonly VRMHumanBoneName[] = [
 ];
 
 const MOUTH = ["aa", "ih", "ou", "ee", "oh"] as const;
+type MouthShape = (typeof MOUTH)[number];
 
 const LOAD_WATCHDOG_MS = 45_000;
 const MEASURE_SAMPLES = 1200;
 const VRMA_FADE = 0.35;        // crossfade between mixer actions, like VCS
 const NOTICE_DISTANCE = 4.5;   // she notices you approaching inside this range
+const BLINK_INTERVAL_MIN = 2.8;
+const BLINK_INTERVAL_MAX = 6.5;
+const MAX_MOUTH_WEIGHT = 0.55;
+const INTERACTION_REACH_WEIGHT = {
+  approach: 0.22,
+  reach: 0.72,
+  contact: 0.9,
+  retract: 0,
+} as const;
+const MAX_REACH_ANGLE = 1.05;
+const MAX_ELBOW_BEND = 0.62;
+const MAX_WRIST_TURN = 0.16;
+const INTERACTION_CONTACT_THRESHOLD = 0.2;
+
+// A named action may remain selected longer than its performance. These caps
+// stop the procedural fallback from waving/jumping/dancing forever while a
+// state waits to change or a .vrma is unavailable.
+const PROCEDURAL_PERFORMANCE_SECONDS: Partial<Record<string, number>> = {
+  wave: 1.8,
+  point: 1.6,
+  cheer: 2.6,
+  dance: 3.0,
+  cry: 3.2,
+  thinking: 3.8,
+  jump: 1.4,
+};
 
 // vrmIK.js: the bone origin isn't the sole -- ankles sit ~7 cm above it, toe
 // bones ~2 cm. Model-space metres; scaled by the wrapper's world scale when
@@ -199,9 +235,47 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   let spriteMoving = false;
   let spriteTalking = false;
 
+  // Terminal interaction is a world-space target copied from House HQ. The
+  // arm remains procedural and bounded; it never translates the avatar root or
+  // mutates the target supplied by the caller.
+  let interactionTarget: THREE.Vector3 | null = null;
+  let interactionPhase: "approach" | "reach" | "contact" | "retract" = "retract";
+  let interactionWeight = 0;
+  let interactionElapsed = 0;
+  let interactionContactAvailable = false;
+  let interactionInContact = false;
+  let interactionContactDistance: number | null = null;
+  const interactionLookTarget = new THREE.Object3D();
+  interactionLookTarget.name = "Alpecca terminal gaze target";
+  const reachUpperWorld = new THREE.Vector3();
+  const reachDirectionWorld = new THREE.Vector3();
+  const reachDirectionLocal = new THREE.Vector3();
+  const reachRestDirection = new THREE.Vector3();
+  const reachParentWorld = new THREE.Quaternion();
+  const reachAim = new THREE.Quaternion();
+  const reachClampedAim = new THREE.Quaternion();
+  const reachElbow = new THREE.Quaternion();
+  const reachWrist = new THREE.Quaternion();
+  const reachEuler = new THREE.Euler();
+  const interactionHandWorld = new THREE.Vector3();
+
   let clipName = "idle";
   let clipTime = 0;   // restarts when the resolved clip changes (fresh cycle)
-  let elapsed = 0;    // monotonic while active; drives the blink cycle
+
+  // Face timing is stateful instead of tied to a fixed modulo cycle. That
+  // avoids synchronized machine-like blinking and gives speech short closures
+  // between varied visemes rather than holding one mouth shape open.
+  let blinkIn = nextBlinkDelay();
+  let blinkElapsed = 0;
+  let blinkDuration = 0.14;
+  let blinkActive = false;
+  let blinkFollowup = false;
+  let blinkShouldFollow = false;
+  let lipShape: MouthShape = "aa";
+  let lipShapeIndex = 0;
+  let lipTarget = 0;
+  let lipNow = 0;
+  let lipPhaseIn = 0;
 
   // .vrma playback: one persistent mixer, clips cached per motion name.
   let mixer: THREE.AnimationMixer | null = null;
@@ -216,6 +290,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   // immediately replay (finishedForClip gates it until the state changes), and
   // idle gets randomized flourish one-shots instead of a permanent loop.
   let finishedForClip: string | null = null;
+  let forcedReplayClip: "point" | "wave" | null = null;
   let flourishName: string | null = null;
   let lastFlourish = "";
   let flourishIn = nextFlourishDelay();
@@ -262,7 +337,134 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     if (!em) return;
     const cur = em.getValue(name);
     if (cur == null) return;
-    em.setValue(name, atLeast ? Math.max(cur, v) : v);
+    const value = c01(Number.isFinite(v) ? v : 0);
+    em.setValue(name, atLeast ? Math.max(c01(cur), value) : value);
+  }
+
+  function nextBlinkDelay(): number {
+    return BLINK_INTERVAL_MIN + Math.random() * (BLINK_INTERVAL_MAX - BLINK_INTERVAL_MIN);
+  }
+
+  function resetBlinkTiming(): void {
+    blinkIn = nextBlinkDelay();
+    blinkElapsed = 0;
+    blinkDuration = 0.14;
+    blinkActive = false;
+    blinkFollowup = false;
+    blinkShouldFollow = false;
+  }
+
+  function resetLipTiming(): void {
+    lipShape = "aa";
+    lipShapeIndex = 0;
+    lipTarget = 0;
+    lipNow = 0;
+    lipPhaseIn = 0.04;
+  }
+
+  function resetFaceValues(): void {
+    vrm?.expressionManager?.resetValues();
+  }
+
+  function setBlink(v: number): void {
+    const em = vrm?.expressionManager;
+    if (!em) return;
+    const value = c01(v);
+    if (em.getValue("blink") != null) {
+      em.setValue("blink", value);
+      return;
+    }
+    if (em.getValue("blinkLeft") != null) em.setValue("blinkLeft", value);
+    if (em.getValue("blinkRight") != null) em.setValue("blinkRight", value);
+  }
+
+  function validInteractionTarget(target: THREE.Vector3 | null): target is THREE.Vector3 {
+    return !!target
+      && Number.isFinite(target.x)
+      && Number.isFinite(target.y)
+      && Number.isFinite(target.z);
+  }
+
+  function clearInteraction(): void {
+    interactionTarget = null;
+    interactionPhase = "retract";
+    interactionWeight = 0;
+    interactionElapsed = 0;
+    invalidateInteractionContactStatus();
+    if (vrm?.lookAt?.target === interactionLookTarget) {
+      vrm.lookAt.target = null;
+      vrm.lookAt.reset();
+    }
+  }
+
+  function invalidateInteractionContactStatus(): void {
+    interactionContactAvailable = false;
+    interactionInContact = false;
+    interactionContactDistance = null;
+  }
+
+  function updateInteractionContactStatus(): void {
+    invalidateInteractionContactStatus();
+    const target = interactionTarget;
+    const hand = vrm?.humanoid.getRawBoneNode("rightHand") ?? null;
+    if (!target || !hand) return;
+    hand.getWorldPosition(interactionHandWorld);
+    const distance = interactionHandWorld.distanceTo(target);
+    if (!Number.isFinite(distance)) return;
+    interactionContactAvailable = true;
+    interactionContactDistance = distance;
+    interactionInContact = distance <= INTERACTION_CONTACT_THRESHOLD;
+  }
+
+  function advanceInteraction(dt: number): boolean {
+    const desired = interactionTarget ? INTERACTION_REACH_WEIGHT[interactionPhase] : 0;
+    const response = interactionPhase === "retract" ? 9 : interactionPhase === "contact" ? 12 : 7;
+    interactionWeight = THREE.MathUtils.damp(interactionWeight, desired, response, dt);
+    interactionElapsed += dt;
+    if ((interactionPhase === "retract" || !interactionTarget) && interactionWeight < 0.004) {
+      interactionWeight = 0;
+      interactionTarget = null;
+    }
+    return interactionTarget !== null && (interactionPhase !== "retract" || interactionWeight > 0);
+  }
+
+  function applyInteractionReach(): void {
+    const target = interactionTarget;
+    if (!target || interactionWeight <= 0) return;
+    const upper = bone("rightUpperArm");
+    const lower = bone("rightLowerArm");
+    const hand = bone("rightHand");
+    const parent = upper?.parent;
+    if (!upper || !lower || !hand || !parent || lower.position.lengthSq() < 1e-8) return;
+
+    parent.updateWorldMatrix(true, false);
+    upper.getWorldPosition(reachUpperWorld);
+    reachDirectionWorld.copy(target).sub(reachUpperWorld);
+    if (reachDirectionWorld.lengthSq() < 1e-8) return;
+    parent.getWorldQuaternion(reachParentWorld).invert();
+    reachDirectionLocal.copy(reachDirectionWorld).applyQuaternion(reachParentWorld).normalize();
+    reachRestDirection.copy(lower.position).normalize();
+    reachAim.setFromUnitVectors(reachRestDirection, reachDirectionLocal);
+
+    const aimAngle = reachAim.angleTo(reachClampedAim.identity());
+    reachClampedAim.identity().slerp(
+      reachAim,
+      aimAngle > MAX_REACH_ANGLE ? MAX_REACH_ANGLE / aimAngle : 1,
+    );
+    upper.quaternion.slerp(reachClampedAim, interactionWeight);
+
+    const contactSettle = interactionPhase === "contact"
+      ? Math.sin(interactionElapsed * 2.4) * 0.012
+      : 0;
+    const elbowBend = MAX_ELBOW_BEND * interactionWeight;
+    reachElbow.setFromEuler(reachEuler.set(0.04, 0.06, -elbowBend));
+    lower.quaternion.slerp(reachElbow, Math.min(1, interactionWeight * 0.82));
+    reachWrist.setFromEuler(reachEuler.set(
+      -MAX_WRIST_TURN * 0.35,
+      MAX_WRIST_TURN * 0.55,
+      -MAX_WRIST_TURN * 0.4 + contactSettle,
+    ));
+    hand.quaternion.slerp(reachWrist, Math.min(1, interactionWeight * 0.72));
   }
 
   /* ---- the studio's clip engine (ported from web/vrm.html) ---- */
@@ -375,26 +577,36 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     if (ll) { ll.rotation.z = 2.5; ll.rotation.y = -0.5; }
     if (rl) { rl.rotation.z = -2.5; rl.rotation.y = 0.5; }
   }
-  // Locomotion cycles ported from vrmAnimations.js -- self-timed (sin(t*3) /
-  // sin(t*6)), so they run off the clip clock like every other clip.
+  // Locomotion stays cyclic while she is actually moving, but a slow cadence
+  // drift and restrained counter-motion keep every step from landing on the
+  // exact same mechanical beat.
   function walk(t: number): void {
-    const swing = Math.sin(t * 3);
+    const cadence = t * 3 + Math.sin(t * 0.47) * 0.12;
+    const stride = 0.9 + Math.sin(t * 0.31) * 0.08;
+    const swing = Math.sin(cadence) * stride;
     const lUp = bone("leftUpperLeg"), rUp = bone("rightUpperLeg");
     const lLo = bone("leftLowerLeg"), rLo = bone("rightLowerLeg");
     const luA = bone("leftUpperArm"), ruA = bone("rightUpperArm");
     const chest = bone("chest") ?? bone("upperChest");
+    const head = bone("head");
     const hips = bone("hips");
-    if (lUp) lUp.rotation.x = swing * 0.6;
-    if (rUp) rUp.rotation.x = -swing * 0.6;
-    if (lLo) lLo.rotation.x = kneeFlex(Math.max(0, -swing) * 0.9);
-    if (rLo) rLo.rotation.x = kneeFlex(Math.max(0, swing) * 0.9);
-    if (luA) luA.rotation.x = -swing * 0.5;                 // opposite arm swing
-    if (ruA) ruA.rotation.x = swing * 0.5;
-    if (chest) chest.rotation.y = swing * 0.08;             // counter-rotation
-    if (hips) hips.position.y = -Math.abs(swing) * 0.02;    // step bob
+    if (lUp) lUp.rotation.x = swing * 0.5;
+    if (rUp) rUp.rotation.x = -swing * 0.5;
+    if (lLo) lLo.rotation.x = kneeFlex(Math.max(0, -swing) * 0.72);
+    if (rLo) rLo.rotation.x = kneeFlex(Math.max(0, swing) * 0.72);
+    if (luA) luA.rotation.x = -swing * 0.34;                 // opposite arm swing
+    if (ruA) ruA.rotation.x = swing * 0.34;
+    if (chest) chest.rotation.y = swing * 0.065;             // counter-rotation
+    if (head) head.rotation.y = -swing * 0.025;
+    if (hips) {
+      hips.position.y = -Math.abs(Math.sin(cadence)) * 0.016;
+      hips.rotation.y = -swing * 0.035;
+    }
   }
   function run(t: number): void {
-    const swing = Math.sin(t * 6);
+    const cadence = t * 5.6 + Math.sin(t * 0.62) * 0.14;
+    const stride = 0.92 + Math.sin(t * 0.39) * 0.07;
+    const swing = Math.sin(cadence) * stride;
     const lUp = bone("leftUpperLeg"), rUp = bone("rightUpperLeg");
     const lLo = bone("leftLowerLeg"), rLo = bone("rightLowerLeg");
     const luA = bone("leftUpperArm"), ruA = bone("rightUpperArm");
@@ -402,19 +614,22 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     const spine = bone("spine");
     const chest = bone("chest") ?? bone("upperChest");
     const hips = bone("hips");
-    if (lUp) lUp.rotation.x = swing * 1.05;
-    if (rUp) rUp.rotation.x = -swing * 1.05;
-    if (lLo) lLo.rotation.x = kneeFlex(Math.max(0, -swing) * 1.6);
-    if (rLo) rLo.rotation.x = kneeFlex(Math.max(0, swing) * 1.6);
+    if (lUp) lUp.rotation.x = swing * 0.86;
+    if (rUp) rUp.rotation.x = -swing * 0.86;
+    if (lLo) lLo.rotation.x = kneeFlex(Math.max(0, -swing) * 1.35);
+    if (rLo) rLo.rotation.x = kneeFlex(Math.max(0, swing) * 1.35);
     // Arms stay down at the sides (relaxArms rest z), elbows bent ~90deg,
     // pumping forward/back opposite the legs.
-    if (luA) luA.rotation.x = -0.2 + swing * 0.9;
-    if (ruA) ruA.rotation.x = -0.2 - swing * 0.9;
-    if (llA) llA.rotation.x = -1.6;
-    if (rlA) rlA.rotation.x = -1.6;
-    if (spine) spine.rotation.x = 0.18;   // forward lean
-    if (chest) chest.rotation.y = swing * 0.15;
-    if (hips) hips.position.y = -Math.abs(swing) * 0.04;
+    if (luA) luA.rotation.x = -0.18 + swing * 0.68;
+    if (ruA) ruA.rotation.x = -0.18 - swing * 0.68;
+    if (llA) llA.rotation.x = -1.4;
+    if (rlA) rlA.rotation.x = -1.4;
+    if (spine) spine.rotation.x = 0.14;   // forward lean
+    if (chest) chest.rotation.y = swing * 0.11;
+    if (hips) {
+      hips.position.y = -Math.abs(Math.sin(cadence)) * 0.032;
+      hips.rotation.y = -swing * 0.05;
+    }
   }
   function jump(t: number): void {
     // Crouch -> launch -> land -> recover on a 1.4s cycle.
@@ -463,48 +678,95 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     point: wave,   // procedural fallback while the PeaceSign .vrma is away
   };
 
-  // vrmAnimations.js applyClipExpressions: the clip's facial profile merges
-  // atLeast (max) ON TOP of the mood-lerped weights, every frame, whichever
-  // engine drives the bones -- plus the time-driven talking mouth at ~0.28s
-  // per shape with a sine envelope, and the mood's talk-emotion overlay.
-  function applyClipExpressions(clip: string, t: number): void {
+  // The clip profile merges on top of the mood face after resetValues() has
+  // cleared every registered preset/custom expression. Speech uses short,
+  // irregular viseme holds with frequent closures; it never leaves a previous
+  // vowel latched after talking stops.
+  function applyClipExpressions(clip: string, dt: number): void {
     const preset = CLIP_EXPRESSIONS[clip];
     if (preset) for (const name of Object.keys(preset)) setExpr(name, preset[name] ?? 0, true);
     if (clip === "talking") {
-      const cyc = 0.28, idx = Math.floor(t / cyc), local = (t % cyc) / cyc;
-      const env = Math.max(0, Math.sin(local * Math.PI) * (0.55 + 0.35 * Math.sin(t * 3.0)));
-      setExpr(MOUTH[idx % MOUTH.length], env, true);
-      setExpr(TALK_EMOTIONS[moodLabel] ?? "relaxed", 0.55, true);
+      lipPhaseIn -= dt;
+      if (lipPhaseIn <= 0) {
+        if (Math.random() < 0.24) {
+          lipTarget = 0;
+          lipPhaseIn = 0.04 + Math.random() * 0.09;
+        } else {
+          const jump = 1 + Math.floor(Math.random() * (MOUTH.length - 1));
+          lipShapeIndex = (lipShapeIndex + jump) % MOUTH.length;
+          lipShape = MOUTH[lipShapeIndex] ?? "aa";
+          lipTarget = 0.18 + Math.random() * (MAX_MOUTH_WEIGHT - 0.18);
+          lipPhaseIn = 0.07 + Math.random() * 0.11;
+        }
+      }
+      const response = lipTarget > lipNow ? 24 : 32;
+      lipNow += (lipTarget - lipNow) * (1 - Math.exp(-Math.max(0, dt) * response));
+      if (lipNow > 0.008) setExpr(lipShape, Math.min(MAX_MOUTH_WEIGHT, lipNow), true);
+      setExpr(TALK_EMOTIONS[moodLabel] ?? "relaxed", 0.32, true);
     }
   }
 
   function applyExpressions(dt: number): void {
     for (const k of Object.keys(exprTarget)) {
       const cur = exprNow[k] ?? 0;
-      const next = cur + ((exprTarget[k] ?? 0) - cur) * Math.min(1, dt * 3);
+      const next = cur + (c01(exprTarget[k] ?? 0) - cur) * (1 - Math.exp(-Math.max(0, dt) * 3));
       exprNow[k] = next;
       setExpr(k, next);
     }
   }
-  // Mood lerp + clip profile can stack (happy from the mood AND the clip);
-  // past a combined 1.0 the face reads uncanny. Scale the emotions back
-  // proportionally and keep "relaxed" (half-lidded eyes) below 0.6.
+  // V.4's full-face mood presets include their own eye and mouth shapes. Keep
+  // them supportive rather than dominant so a happy mood cannot hold the mouth
+  // open or overpower blink/lip controls.
   function capEmotions(): void {
     const em = vrm?.expressionManager;
     if (!em) return;
+    const caps: Record<string, number> = {
+      happy: 0.5,
+      sad: 0.62,
+      surprised: 0.42,
+      angry: 0,
+      relaxed: 0.46,
+    };
+    for (const [name, cap] of Object.entries(caps)) {
+      const value = em.getValue(name);
+      if (value != null) em.setValue(name, Math.min(cap, c01(value)));
+    }
     const names = ["happy", "sad", "surprised", "angry"];
     const sum = names.reduce((s, n) => s + (em.getValue(n) ?? 0), 0);
     if (sum > 1) for (const n of names) em.setValue(n, (em.getValue(n) ?? 0) / sum);
-    const relaxed = em.getValue("relaxed");
-    if (relaxed != null && relaxed > 0.6) em.setValue("relaxed", 0.6);
   }
 
-  function autoBlink(t: number): void {
-    const cyc = 4.5, local = t % cyc;
-    let v = 0;
-    if (local < 0.15) v = local / 0.15;
-    else if (local < 0.3) v = 1 - (local - 0.15) / 0.15;
-    if (v > 0) setExpr("blink", v, true);
+  function autoBlink(dt: number): void {
+    if (!blinkActive) {
+      blinkIn -= dt;
+      if (blinkIn > 0) return;
+      blinkActive = true;
+      blinkElapsed = 0;
+      blinkDuration = 0.11 + Math.random() * 0.06;
+      const followup = blinkFollowup;
+      blinkFollowup = false;
+      blinkShouldFollow = !followup && Math.random() < 0.16;
+    }
+
+    blinkElapsed += dt;
+    const local = c01(blinkElapsed / blinkDuration);
+    const closeEnd = 0.34;
+    const v = local < closeEnd
+      ? Math.sin((local / closeEnd) * Math.PI * 0.5)
+      : Math.cos(((local - closeEnd) / (1 - closeEnd)) * Math.PI * 0.5);
+    setBlink(v);
+
+    if (local >= 1) {
+      blinkActive = false;
+      blinkElapsed = 0;
+      if (blinkShouldFollow) {
+        blinkFollowup = true;
+        blinkIn = 0.08 + Math.random() * 0.08;
+      } else {
+        blinkIn = nextBlinkDelay();
+      }
+      blinkShouldFollow = false;
+    }
   }
 
   // Which clip she performs right now: speech wins, then the airborne action,
@@ -526,6 +788,10 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     if (n.startsWith("point")) return "point";
     if (n.startsWith("climb")) return "idle";
     return MOOD_CLIPS[moodLabel] ?? "idle";   // idle* and unknowns read her mood
+  }
+
+  function settledPoseFor(clip: string): string {
+    return clip === "cry" || clip === "thinking" ? "idle_soft" : "idle";
   }
 
   /* ---- .vrma playback (pattern from apps/vcs VRMViewer.jsx) ---- */
@@ -727,6 +993,9 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
 
       vrm = loaded;
       wrapper = w;
+      resetFaceValues();
+      resetBlinkTiming();
+      resetLipTiming();
       // Vertical alignment comes from snapGround on the raw sole bones, NOT
       // the vertex minY: a one-time vertex offset stops holding the moment
       // clips drive the root. The posed-vertex pass above still owns the
@@ -795,8 +1064,23 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       return status;
     },
 
+    get interactionContactStatus(): VrmInteractionContactStatus {
+      return {
+        available: interactionContactAvailable,
+        inContact: interactionInContact,
+        distance: interactionContactDistance,
+        threshold: INTERACTION_CONTACT_THRESHOLD,
+      };
+    },
+
     async activate(): Promise<boolean> {
       if (vrm && wrapper) {   // cached fast path: just re-show
+        resetFaceValues();
+        resetBlinkTiming();
+        resetLipTiming();
+        clipTime = 0;
+        finishedForClip = null;
+        forcedReplayClip = null;
         wrapper.visible = true;
         status = "active";
         deps.onStatus("active");
@@ -812,12 +1096,18 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     },
 
     deactivate(): void {
+      resetFaceValues();
+      resetBlinkTiming();
+      resetLipTiming();
+      clearInteraction();
       if (wrapper) wrapper.visible = false;
       status = "idle";
       deps.onStatus("idle");
     },
 
     dispose(): void {
+      resetFaceValues();
+      clearInteraction();
       if (mixer) {
         mixer.stopAllAction();
         if (vrm) mixer.uncacheRoot(vrm.scene);
@@ -825,6 +1115,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       mixer = null;
       currentAction = null;
       currentVrmaName = null;
+      forcedReplayClip = null;
       fading.length = 0;
       vrmaClips.clear();   // clips were retargeted to this vrm instance
       vrmaLoading.clear();
@@ -848,21 +1139,51 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       exprTarget = expressionsForState(dims);
     },
 
-    setSpriteState(name, moving, talking): void {
+    setSpriteState(name, moving, talking, forceOneShot = false): void {
       spriteName = name;
       spriteMoving = moving;
       spriteTalking = talking;
+      const requestedClip = resolveClip();
+      if (forceOneShot && (requestedClip === "point" || requestedClip === "wave")) {
+        clipTime = 0;
+        finishedForClip = null;
+        forcedReplayClip = requestedClip;
+      }
+    },
+
+    setInteractionTarget(target, phase): void {
+      invalidateInteractionContactStatus();
+      if (phase === "retract") {
+        if (interactionTarget && validInteractionTarget(target)) interactionTarget.copy(target);
+        if (interactionPhase !== phase) interactionElapsed = 0;
+        interactionPhase = phase;
+        return;
+      }
+      if (!validInteractionTarget(target)) {
+        if (interactionPhase !== "retract") interactionElapsed = 0;
+        interactionPhase = "retract";
+        return;
+      }
+      if (!interactionTarget) interactionTarget = new THREE.Vector3();
+      interactionTarget.copy(target);
+      if (interactionPhase !== phase) interactionElapsed = 0;
+      interactionPhase = phase;
     },
 
     update(dt, camera, engaged, distanceToPlayer = Infinity): void {
       if (status !== "active" || !vrm || !wrapper || !wrapper.visible) return;
-      elapsed += dt;
+      dt = Math.max(0, Math.min(0.1, Number.isFinite(dt) ? dt : 0));
+      const interactionActive = advanceInteraction(dt);
       const next = resolveClip();
       if (next !== clipName) {
+        const previous = clipName;
         clipName = next;
         clipTime = 0;              // fresh cycle
         finishedForClip = null;    // a new state may perform again
+        if (forcedReplayClip && forcedReplayClip !== next) forcedReplayClip = null;
         if (flourishName) { flourishName = null; flourishIn = nextFlourishDelay(); }
+        if (previous === "talking" || next === "talking") resetLipTiming();
+        if (clipHoldsEyesClosed(previous) || clipHoldsEyesClosed(next)) resetBlinkTiming();
       }
       clipTime += dt;
 
@@ -876,7 +1197,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       let vrmaDriven = false;
       let wantVrma: string | null = null;
       let wantMode: PlayMode = "loop";
-      if (!spriteMoving) {
+      if (!spriteMoving && !interactionActive) {
         const mapped = CLIP_VRMA[clipName] ?? null;
         if (mapped && finishedForClip !== clipName) {
           wantVrma = mapped;
@@ -895,7 +1216,11 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       if (wantVrma && deps.animationUrl && !vrmaFailed.has(wantVrma)) {
         const clip = vrmaClips.get(wantVrma);
         if (clip) {
-          if (currentVrmaName !== wantVrma) playVrma(wantVrma, clip, wantMode);
+          const forceReplay = forcedReplayClip === clipName;
+          if (currentVrmaName !== wantVrma || forceReplay) {
+            playVrma(wantVrma, clip, wantMode);
+            if (forceReplay) forcedReplayClip = null;
+          }
           vrmaDriven = true;
         } else {
           requestVrma(wantVrma);   // procedural carries this frame while it fetches
@@ -906,16 +1231,23 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       }
       if (!vrmaDriven) stopVrma();
 
-      for (const s of MOUTH) setExpr(s, 0);
-      setExpr("blink", 0);
+      // The face belongs entirely to this frame. resetValues clears every
+      // registered expression, including custom values an animation or prior
+      // state may have left behind; the desired mood/clip/blink is then rebuilt.
+      resetFaceValues();
       applyExpressions(dt);
+
+      const performanceLimit = PROCEDURAL_PERFORMANCE_SECONDS[clipName];
+      const performanceSettled = finishedForClip === clipName
+        || (!vrmaDriven && performanceLimit !== undefined && clipTime >= performanceLimit);
+      const poseClip = performanceSettled ? settledPoseFor(clipName) : clipName;
 
       if (!vrmaDriven) {
         for (const n of BONES) { const b = bone(n); if (b) b.rotation.set(0, 0, 0); }
         const hips = bone("hips");
         if (hips) hips.position.set(0, 0, 0);
         relaxArms();
-        (CLIPS[clipName] ?? idle)(clipTime);
+        (CLIPS[poseClip] ?? idle)(clipTime);
         // Clip constants are in the 1.0 frame; 0.x normalized bones spin x/z
         // the other way (measured in web/vrm.html), so negate. Mixer-driven
         // frames skip all of this: resetting or posing bones would fight the
@@ -930,18 +1262,29 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
 
       // Face: the clip's expression profile layers atLeast on top of the mood
       // weights; a clip that holds the eyes closed suppresses the auto-blink.
-      applyClipExpressions(clipName, clipTime);
-      if (!clipHoldsEyesClosed(clipName)) autoBlink(elapsed);
+      applyClipExpressions(poseClip, dt);
+      if (clipHoldsEyesClosed(poseClip)) setBlink(1);
+      else autoBlink(dt);
       capEmotions();   // stacked layers must never exceed a natural face
 
-      // Senses: she looks at you when engaged, or simply when you come near
-      // (mirrors the sprite's head-look awareness, in world units).
-      if (vrm.lookAt) vrm.lookAt.target = engaged || distanceToPlayer < NOTICE_DISTANCE ? camera : null;
       // The mixer updates after any procedural writes so a fading action
       // blends from/into the procedural pose instead of hard-cutting.
       if (mixer) { mixer.update(dt); reapFaded(); }
+      // Terminal contact owns only the right arm and gaze. Absolute bounded
+      // targets are rebuilt after the mixer every frame, preventing additive
+      // rotation drift while still allowing a fading clip to settle beneath it.
+      if (interactionActive) applyInteractionReach();
+      if (vrm.lookAt) {
+        if (interactionActive && interactionTarget) {
+          interactionLookTarget.position.copy(interactionTarget);
+          vrm.lookAt.target = interactionLookTarget;
+        } else {
+          vrm.lookAt.target = engaged || distanceToPlayer < NOTICE_DISTANCE ? camera : null;
+        }
+      }
       vrm.update(dt);
       groundFeet(dt);   // after vrm.update: clamp the posed soles to the floor
+      updateInteractionContactStatus();
     },
 
     debug(): { groundBase: number; groundOffset: number; lowestSoleY: number | null; springJoints: number; springColliders: number } {

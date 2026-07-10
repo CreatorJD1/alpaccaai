@@ -27,13 +27,43 @@ Executing the focus stays with mind.py / server.py; the Soul only decides.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, replace
+import math
+from numbers import Real
+from typing import Mapping, TypedDict
 
 from alpecca.homeostasis import EmotionalState
 from alpecca import affect as affect_mod
 from alpecca import values
 
 CATEGORIES = ("emotions", "actions", "self_care", "compassion")
+HIGH_MEMORY_PRESSURE = 0.90
+
+
+class MemoryPressureSignal(TypedDict, total=False):
+    """Compact, factual pressure evidence accepted by a Soul snapshot."""
+
+    score: float
+    severity: str
+    overflow: bool
+    unshrinkable: bool
+    evidence: Mapping[str, object] | tuple[str, ...]
+
+
+_PRESSURE_URGENCY_DELTAS = {
+    "high": {
+        "Feeler": 0.05,
+        "Carer": 0.03,
+        "Reflector": 0.12,
+        "Improver": -0.08,
+    },
+    "overflow": {
+        "Feeler": 0.10,
+        "Carer": 0.05,
+        "Reflector": 0.20,
+        "Improver": -0.16,
+    },
+}
 
 
 @dataclass
@@ -48,7 +78,7 @@ class Snapshot:
     senses_active: bool = False
     person_fatigue: float = 0.0   # how worn the person reads (compassion signals)
     trial_running: bool = False   # is a self-improvement experiment open
-    memory_pressure: dict = field(default_factory=dict)
+    memory_pressure: MemoryPressureSignal | Mapping[str, object] | None = None
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -134,11 +164,6 @@ def _wanderer(s: Snapshot) -> Intention | None:
 def _reflector(s: Snapshot) -> Intention | None:
     """SELF-CARE. Uses real quiet to rest and muse -- her fourth directive,
     running. Serves self-actualization (rank 4)."""
-    pressure = s.memory_pressure or {}
-    if float(pressure.get("context_fill") or 0.0) >= 0.9:
-        return Intention("Reflector", "self_care", "consolidate working memory",
-                         "my working memory is nearly full and should be paged down", 4,
-                         min(1.0, float(pressure.get("context_fill") or 0.0)))
     if s.solitude_s > 300 and s.state.fear < 0.4:
         return Intention("Reflector", "self_care", "reflect on a memory",
                          "it's been quiet a while; this moment is mine", 4,
@@ -221,6 +246,54 @@ SENSE_AGENTS = tuple(s.name for s in SUBAGENT_SPECS if s.kind == "sense")
 REASON_AGENTS = tuple(s.name for s in SUBAGENT_SPECS if s.kind == "reason")
 
 
+def _pressure_score(signal: Mapping[str, object]) -> float | None:
+    for key in ("score", "pressure_score", "fill_ratio", "context_fill"):
+        value = signal.get(key)
+        if isinstance(value, bool) or not isinstance(value, Real):
+            continue
+        score = float(value)
+        if math.isfinite(score) and 0.0 <= score <= 1.0:
+            return score
+    return None
+
+
+def _has_pressure_evidence(signal: Mapping[str, object]) -> bool:
+    evidence = signal.get("evidence")
+    if isinstance(evidence, Mapping):
+        return bool(evidence)
+    if isinstance(evidence, (tuple, list, set, frozenset)):
+        return bool(evidence)
+    return False
+
+
+def _pressure_mode(signal: object) -> str | None:
+    if not isinstance(signal, Mapping):
+        return None
+    overflow = signal.get("overflow") is True or signal.get("unshrinkable") is True
+    if overflow:
+        return "overflow"
+    score = _pressure_score(signal)
+    if score is not None:
+        return "high" if score >= HIGH_MEMORY_PRESSURE else None
+    severity = str(signal.get("severity") or signal.get("pressure") or "").lower()
+    if not _has_pressure_evidence(signal):
+        return None
+    if severity == "critical":
+        return "overflow"
+    if severity == "high":
+        return "high"
+    return None
+
+
+def _adjust_pressure_urgency(intent: Intention, signal: object) -> Intention:
+    mode = _pressure_mode(signal)
+    delta = _PRESSURE_URGENCY_DELTAS.get(mode or "", {}).get(intent.subagent)
+    if delta is None:
+        return intent
+    urgency = max(0.0, min(1.0, float(intent.urgency) + delta))
+    return replace(intent, urgency=urgency)
+
+
 def spec_for(name: str) -> "SubagentSpec | None":
     for s in SUBAGENT_SPECS:
         if s.name == name:
@@ -255,6 +328,10 @@ class MasterAgent:
 
     def deliberate(self, snap: Snapshot, *, verbose: bool = True) -> dict:
         intentions = [i for sa in SUBAGENTS if (i := sa(snap)) is not None]
+        intentions = [
+            _adjust_pressure_urgency(intention, snap.memory_pressure)
+            for intention in intentions
+        ]
         # Good Person Principle: lower directive rank wins; urgency breaks ties.
         intentions.sort(key=lambda i: (i.rank, -i.urgency))
         # The focus is what she's moved to *do*. Feeling and expressing (the

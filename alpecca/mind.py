@@ -88,6 +88,15 @@ from alpecca import speech as speech_mod
 from alpecca import colab_t4
 from alpecca import choice as choice_mod
 from alpecca import planner as planner_mod
+from alpecca import turn_context as turn_context_mod
+from alpecca import cues as cues_mod
+from alpecca import commitments as commitments_mod
+from alpecca import commitment_language as commitment_language_mod
+from alpecca import action_closure as action_closure_mod
+from alpecca import affect_evidence as affect_evidence_mod
+from alpecca import initiative as initiative_mod
+from alpecca import memory_pressure as memory_pressure_mod
+from alpecca import soul_pressure_signal as soul_pressure_signal_mod
 from config import Proactive as ProactiveCfg, Reflection as ReflectionCfg, Actions as ActionsCfg
 
 
@@ -98,6 +107,16 @@ from config import Proactive as ProactiveCfg, Reflection as ReflectionCfg, Actio
 # thought). If stripping leaves nothing we return the original text untouched,
 # which can only happen on degenerate output anyway.
 _THINK_RE = re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL)
+
+_PHASE5_AFFECT_POSTURES = {
+    "correction": "prioritize the correction and avoid superseded context",
+    "confirmation": "acknowledge the confirmed direction without inferring execution",
+    "reference": "resolve the referenced context before relying on it",
+    "urgency": "use a concise, time-aware response strategy",
+    "distress": "use a calm, support-focused response strategy",
+    "question": "prioritize a direct answer grounded in available evidence",
+    "action_intent": "separate the requested action from approval and execution state",
+}
 
 
 def strip_think(text: str) -> str:
@@ -949,13 +968,16 @@ class CoreMind:
     def __init__(self) -> None:
         state_store.init_db()
         cognition_mod.init_db()
+        turn_context_mod.ensure_history_schema()
         self.state: EmotionalState = state_store.load_state()
         self.llm = _LLM()
         self._prev_obs: Observation | None = None
         self._last_signals: dict | None = None   # last fatigue read, for introspection
         self._last_situation: str = ""            # last sensed window, for introspection
         self._session_start = time.time()
-        self._history: list[dict] = []  # short rolling chat context for the LLM
+        # Phase 3: session-partitioned chat histories keyed by conversation_id.
+        # The "default" key provides backward compatibility for tests and HTTP.
+        self._histories: dict[str, list[dict]] = {}
         # Canonical ledger for the most recent request actually sent to the
         # model. Before the first turn, pressure falls back to a live history
         # estimate; afterward Soul, API, prompt, and UI all share this snapshot.
@@ -986,10 +1008,16 @@ class CoreMind:
         # stays put there with you instead of wandering off (see maybe_roam).
         self._screen_sharing: bool = False
         # Who she believes she's with: 'creator' (Jason, the default on his own
-        # machine) or 'guest'. Updated by voice recognition when it's available.
+        # machine) or 'guest'. Retained as a read-only default for code paths
+        # that haven't migrated to TurnContext yet. Phase 3 chat() derives
+        # identity from ctx.principal instead of mutating this global.
         self._speaker: str = "creator"
         # When she last spoke unprompted, for the proactive cooldown.
         self._last_volunteer_ts: float = 0.0
+        # Phase 5 adds a second, per-scope pacing boundary at delivery time.
+        # It is pure/in-memory and is never consulted by direct chat replies.
+        self._initiative_budget = initiative_mod.InitiativeBudget()
+        self._last_initiative_decision: dict | None = None
         # When the person last said something -- idle chatter waits for quiet.
         # Starts at "now" so she doesn't pounce the moment the server boots.
         self._last_user_ts: float = time.time()
@@ -1022,7 +1050,8 @@ class CoreMind:
             return "smart"
         return mode
 
-    def _tool_schema(self, user_low: str) -> list[dict] | None:
+    def _tool_schema(self, user_low: str, *,
+                     turn: turn_context_mod.TurnContext | None = None) -> list[dict] | None:
         mode = self._tool_mode()
         if not (self.actuator.enabled or self.toolkit.enabled):
             return None
@@ -1053,7 +1082,12 @@ class CoreMind:
             wants_action = True
         if not wants_action:
             return None
-        combined = [*self.actuator.tools_schema(), *self.toolkit.schemas()]
+        # External actuator schemas have not yet acquired a scope-bound
+        # approval/receipt path.  Do not offer them to an explicit network turn
+        # until that Phase 4 boundary exists; legacy direct callers retain
+        # today's behavior for compatibility.
+        actuator_schemas = [] if turn is not None else self.actuator.tools_schema()
+        combined = [*actuator_schemas, *self.toolkit.schemas()]
         if len(combined) <= 7:
             return combined
         preferred_names = []
@@ -1083,26 +1117,92 @@ class CoreMind:
                 break
         return selected[:7]
 
-    def _execute_tool(self, tool_name: str, args: dict) -> str:
+    def _execute_tool(self, tool_name: str, args: dict, *,
+                      turn: turn_context_mod.TurnContext | None = None) -> str:
         tool_name = str(tool_name or "").strip()
         if self.toolkit.enabled and tool_name in {t["function"]["name"] for t in self.toolkit.schemas()}:
-            return self.toolkit.execute(tool_name, args)
+            return self.toolkit.execute(tool_name, args, turn=turn)
+        if turn is not None:
+            return "This action is unavailable until its scoped approval path is ready."
         return self.actuator.execute(tool_name, args)
+
+    def _execute_turn_tool(self, turn: turn_context_mod.TurnContext,
+                           tool_name: str, args: dict) -> str:
+        """Fence tool dispatch when a generation outlives its request."""
+        if not turn.allow_work():
+            return "This turn was cancelled before the tool could run."
+        return self._execute_tool(tool_name, args, turn=turn)
+
+    # --- Phase 3: per-conversation history management ---------------------
+
+    def _get_history(self, conversation_id: str = "default", *,
+                     turn: turn_context_mod.TurnContext | None = None) -> list[dict]:
+        """Return one scope-local rolling history, loading it on first use."""
+        key = turn.scope_key if turn is not None else conversation_id
+        if key not in self._histories:
+            self._histories[key] = (
+                turn_context_mod.load_history(turn) if turn is not None else []
+            )
+        return self._histories[key]
+
+    def end_conversation(self, conversation_id: str) -> dict:
+        """Page remaining history and remove a finished conversation."""
+        history = self._histories.pop(conversation_id, [])
+        if not history:
+            return {"ok": True, "paged": 0, "reason": "empty_conversation"}
+        if not MINDPAGE:
+            return {"ok": True, "paged": 0, "reason": "mindpage_disabled"}
+        try:
+            page_id = mindpage_mod.write_episode_page(history)
+            if page_id:
+                cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                    source="mindpage",
+                    room=self._location,
+                    content=f"Conversation {conversation_id[:8]} ended; paged {len(history)} messages into page {page_id}.",
+                    confidence=1.0,
+                    privacy_class="personal",
+                    metadata={"page_id": int(page_id), "conversation_id": conversation_id, "reason": "conversation_end"},
+                ))
+                return {"ok": True, "paged": len(history), "page_id": int(page_id)}
+        except Exception:
+            pass
+        return {"ok": False, "paged": 0, "reason": "page_write_failed"}
+
+    @property
+    def _history(self) -> list[dict]:
+        """Backward-compat property: returns the 'default' conversation history.
+
+        Existing tests and code paths that reference mind._history keep working.
+        """
+        return self._get_history("default")
+
+    @_history.setter
+    def _history(self, value: list[dict]) -> None:
+        # Tests and older direct-call integrations assign this compatibility
+        # property. Network turns always use their explicit scoped history.
+        self._histories["default"] = list(value or [])
 
     def mindpage_state(self) -> dict:
         """One canonical, externally observable working-memory snapshot."""
         if self._last_mindpage is not None:
             return dict(self._last_mindpage)
-        return mindpage_mod.pressure_snapshot(self._history)
+        return mindpage_mod.pressure_snapshot(self._get_history("default"))
 
-    def _page_history_prefix(self, count: int, reason: str) -> dict:
+    def _page_history_prefix(self, count: int, reason: str,
+                             conversation_id: str = "default",
+                             scope: str = "shared") -> dict:
         """Persist and then remove a history prefix; failed writes retain it."""
-        page_count = max(0, min(int(count), len(self._history)))
+        history = self._get_history(conversation_id)
+        page_count = max(0, min(int(count), len(history)))
         if not MINDPAGE or page_count <= 0:
             return {"ok": False, "paged": 0, "reason": "nothing_to_page"}
-        evicted = list(self._history[:page_count])
+        evicted = list(history[:page_count])
         try:
-            page_id = mindpage_mod.write_episode_page(evicted)
+            page_id = (
+                mindpage_mod.write_episode_page(evicted)
+                if scope == "shared"
+                else mindpage_mod.write_episode_page(evicted, scope=scope)
+            )
         except Exception as exc:
             return {
                 "ok": False,
@@ -1112,7 +1212,7 @@ class CoreMind:
             }
         if not page_id:
             return {"ok": False, "paged": 0, "reason": "write_not_committed"}
-        del self._history[:page_count]
+        del history[:page_count]
         cognition_mod.record_observation(cognition_mod.CognitionObservation(
             source="mindpage",
             room=self._location,
@@ -1123,6 +1223,7 @@ class CoreMind:
                 "page_id": int(page_id),
                 "evicted_messages": len(evicted),
                 "reason": reason,
+                "scope": scope,
             },
         ))
         if self._last_mindpage is not None:
@@ -1344,10 +1445,306 @@ class CoreMind:
             self._recent_replies.append(r)
             del self._recent_replies[:-8]
 
+    @staticmethod
+    def _phase4_action_label(claim: commitment_language_mod.ActionClaim) -> str:
+        """Turn a future-tense sentence into a compact commitment action."""
+        action = re.sub(
+            r"^\s*i(?:\s+will|['\u2019]ll|\s+am\s+going\s+to|['\u2019]m\s+going\s+to)\s+",
+            "",
+            claim.text,
+            count=1,
+            flags=re.IGNORECASE,
+        ).strip().rstrip(".!?")
+        return (action or "the promised action")[:commitment_language_mod.MAX_ACTION_CHARS]
+
+    @staticmethod
+    def _phase4_commitment_evidence(
+        cue_envelope: cues_mod.CueEnvelope,
+        turn: turn_context_mod.TurnContext,
+        claim: commitment_language_mod.ActionClaim,
+    ) -> dict:
+        """Build bounded, JSON-safe evidence for one proposed commitment."""
+        audit = turn.audit_metadata()
+        return {
+            "source": "assistant_future_action",
+            "assistant_claim": claim.text[:commitment_language_mod.MAX_ACTION_CHARS],
+            "cues": [
+                {
+                    "kind": signal.kind,
+                    "confidence": signal.confidence,
+                    "evidence": list(signal.evidence),
+                }
+                for signal in cue_envelope.signals
+                if signal.detected
+            ],
+            "turn": {
+                key: audit[key]
+                for key in (
+                    "turn_id",
+                    "conversation_id",
+                    "principal",
+                    "surface",
+                    "privacy_scope",
+                    "portal_epoch",
+                    "commit_state",
+                )
+            },
+        }
+
+    @staticmethod
+    def _phase4_confirmation_evidence(
+        cue_envelope: cues_mod.CueEnvelope,
+        turn: turn_context_mod.TurnContext,
+        resolution: action_closure_mod.ConfirmationResolution,
+    ) -> dict:
+        """Build bounded approval evidence from the authenticated turn."""
+        audit = turn.audit_metadata()
+        return {
+            "source": "authenticated_confirmation",
+            "cues": [
+                {
+                    "kind": signal.kind,
+                    "confidence": signal.confidence,
+                    "evidence": list(signal.evidence),
+                }
+                for signal in cue_envelope.signals
+                if signal.detected
+            ],
+            "resolution": {
+                "commitment_id": resolution.commitment_id,
+                "candidate_ids": list(resolution.candidate_ids),
+                "outcome": resolution.outcome,
+            },
+            "turn": {
+                key: audit[key]
+                for key in (
+                    "turn_id",
+                    "conversation_id",
+                    "principal",
+                    "surface",
+                    "privacy_scope",
+                    "portal_epoch",
+                    "commit_state",
+                )
+            },
+        }
+
+    @staticmethod
+    def _phase4_guard_text(
+        state: commitment_language_mod.CommitmentReceiptState,
+        claim_kind: commitment_language_mod.ClaimKind,
+    ) -> str:
+        """Describe ledger state without making another completion claim."""
+        action = state.action or "this action"
+        subject = action[:1].upper() + action[1:]
+        if state.status == "proposed":
+            return (
+                f"I have proposed this action: {action}. "
+                "It has not been approved or run."
+            )
+        if state.status == "approval-pending":
+            return f"{subject} is approved but has not run, so I cannot confirm success."
+        if state.status == "running":
+            return f"{subject} is still running, so I cannot confirm success yet."
+        if state.status == "failed":
+            return f"{subject} failed, so I cannot report success."
+        if state.status == "cancelled":
+            return f"{subject} was cancelled, so I cannot report success."
+        if state.status == "succeeded":
+            return (
+                f"The ledger reports {action} as succeeded, but no successful "
+                "receipt is available, so I cannot confirm success."
+            )
+        if claim_kind == "future-action":
+            return f"{subject} is unavailable, so I cannot promise it."
+        return (
+            "I cannot confirm success because a successful receipt for "
+            f"{action} is unavailable."
+        )
+
+    @classmethod
+    def _phase4_enforce_commitment_language(
+        cls,
+        reply: str,
+        state: commitment_language_mod.CommitmentReceiptState | dict | None,
+    ) -> commitment_language_mod.CommitmentLanguageResult:
+        """Apply stricter CoreMind delivery rules to action claims.
+
+        A proposed record proves only that a promise was captured; it does not
+        authorize future-tense execution language. Completion wording requires
+        the successful terminal receipt enforced by commitment_language.
+        """
+        normalized = commitment_language_mod.coerce_commitment_receipt_state(state)
+        analysis = commitment_language_mod.classify_action_claims(reply)
+        pieces: list[str] = []
+        cursor = 0
+        guard_added = False
+        rewritten = False
+        for claim in analysis.claims:
+            unsupported_completion = (
+                claim.kind == "completion" and not normalized.has_successful_receipt
+            )
+            unsupported_future = (
+                claim.kind == "future-action"
+                and normalized.status in {
+                    "proposed", "failed", "cancelled", "unavailable",
+                }
+            )
+            if not (unsupported_completion or unsupported_future):
+                continue
+            pieces.append(analysis.text[cursor:claim.start])
+            if not guard_added:
+                pieces.append(cls._phase4_guard_text(normalized, claim.kind))
+                guard_added = True
+            cursor = claim.end
+            rewritten = True
+        guarded_reply = (
+            " ".join("".join([*pieces, analysis.text[cursor:]]).split())
+            if rewritten else analysis.text
+        )
+        return commitment_language_mod.CommitmentLanguageResult(
+            reply=guarded_reply,
+            original=analysis.text,
+            truncated=analysis.truncated,
+            claims=analysis.claims,
+            state=normalized,
+            rewritten=rewritten,
+        )
+
+    @staticmethod
+    def _phase5_affect_metadata(
+        cue_envelope: cues_mod.CueEnvelope,
+        turn: turn_context_mod.TurnContext,
+        *,
+        observed_at: float,
+    ) -> dict:
+        """Assess cue evidence without asserting or mutating inner feelings."""
+        events = []
+        ignored_kinds = []
+        detected_count = 0
+        for signal in cue_envelope.signals:
+            if not signal.detected:
+                continue
+            detected_count += 1
+            posture = _PHASE5_AFFECT_POSTURES.get(str(signal.kind))
+            if posture is None:
+                ignored_kinds.append(str(signal.kind)[:40])
+                continue
+            try:
+                evidence = affect_evidence_mod.AffectEvidenceEnvelope.create(
+                    source="chat_cue",
+                    cue_kind=signal.kind,
+                    confidence=signal.confidence,
+                    timestamp=observed_at,
+                    observable_state=posture,
+                )
+                decision = affect_evidence_mod.assess_affect_evidence(
+                    evidence,
+                    now=observed_at,
+                )
+            except (TypeError, ValueError):
+                ignored_kinds.append(str(signal.kind)[:40])
+                continue
+            events.append({
+                "cue_kind": signal.kind,
+                "confidence": signal.confidence,
+                "cue_evidence": list(signal.evidence),
+                "decision": decision.as_dict(),
+            })
+
+        eligible = [
+            event for event in events
+            if bool(event["decision"].get("should_update"))
+        ]
+        if eligible:
+            reason = "eligible_evidence"
+        elif events:
+            reason = "no_eligible_evidence"
+        elif detected_count:
+            reason = "unknown_or_invalid_cue"
+        else:
+            reason = "no_grounded_cue"
+        return {
+            "eligible": bool(eligible),
+            "state_changed": False,
+            "reason": reason,
+            "operational_states": [
+                str(event["decision"]["evidence"]["observable_state"])
+                for event in eligible
+            ],
+            "events": events,
+            "ignored_kinds": ignored_kinds[:7],
+            "provenance": {
+                "source": "cue_parser",
+                "turn_id": turn.turn_id,
+                "scope": turn.memory_scope,
+                "observed_at": observed_at,
+            },
+        }
+
+    def _phase6_pressure_bundle(self) -> dict | None:
+        """Adapt the latest measured Mindpage ledger without sampling state."""
+        if not isinstance(self._last_mindpage, dict) or not self._last_mindpage:
+            return None
+        ledger = dict(self._last_mindpage)
+        facts = memory_pressure_mod.adapt_memory_pressure(ledger)
+        normalized: dict[str, object] = {}
+        for key, value in (
+            ("enabled", facts.enabled),
+            ("context_fill", facts.fill_ratio),
+            ("pressure_score", facts.pressure_score),
+            ("overflow", facts.overflow),
+            ("unshrinkable", facts.unshrinkable),
+            ("unsummarized_eviction_backlog", facts.eviction_backlog),
+        ):
+            if value is not None:
+                normalized[key] = value
+        for key in ("disk_fill", "disk_over_budget", "paging_error"):
+            if key in ledger:
+                normalized[key] = ledger[key]
+
+        signal = soul_pressure_signal_mod.build_soul_pressure_signal(normalized)
+        if signal.vector.overall is None:
+            return None
+        snapshot_signal = signal.as_snapshot_memory_pressure()
+        snapshot_signal.update({
+            "source": "mindpage_latest_ledger",
+            "severity": facts.severity,
+            "reasons": list(facts.reasons[:4]),
+            "evidence": dict(facts.evidence),
+        })
+        if facts.overflow is not None:
+            snapshot_signal["overflow"] = facts.overflow
+        if facts.unshrinkable is not None:
+            snapshot_signal["unshrinkable"] = facts.unshrinkable
+        return {
+            "snapshot_signal": snapshot_signal,
+            "metadata": {
+                "available": True,
+                "source": "mindpage_latest_ledger",
+                "ledger_source": str(ledger.get("source") or "")[:40],
+                "severity": facts.severity,
+                "note": facts.description[:240],
+                "reasons": list(facts.reasons[:4]),
+                "context_fill": facts.fill_ratio,
+                "pressure_score": signal.vector.overall,
+            },
+        }
+
+    def _cancelled_turn_result(self, turn: turn_context_mod.TurnContext) -> dict:
+        """Return a non-committing worker result after a timeout/disconnect."""
+        return {
+            "reply": "",
+            "cancelled": True,
+            "turn": turn.audit_metadata(),
+            "model_use": {"backend": "cancelled", "fallback": True},
+        }
+
     def chat(self, user_msg: str, situation: str = "",
              image_desc: str | None = None,
              reply_tier: str = "reason",
-             on_token=None) -> dict:
+             on_token=None,
+             turn: turn_context_mod.TurnContext | None = None) -> dict:
         """Run one conversational turn and return a structured result the UI can
         render: the reply plus the resulting mood (so the avatar can react).
 
@@ -1359,48 +1756,57 @@ class CoreMind:
         the UI can show her words as they form. The returned reply remains
         authoritative: repetition regen and every other vet still run on the
         complete text, and regen retries never stream."""
+        implicit_turn = turn is None
+        turn = turn or turn_context_mod.TurnContext.default()
+        if not turn.allow_work():
+            return self._cancelled_turn_result(turn)
+        # Phase 4 cue parsing is pure and bounded. Keep it ahead of history,
+        # memory, model, and persistence work so one turn has a stable envelope.
+        cue_observed_at = time.time()
+        cue_envelope = cues_mod.parse_cue_envelope(user_msg)
+        affect_metadata = self._phase5_affect_metadata(
+            cue_envelope, turn, observed_at=cue_observed_at,
+        )
         if not STREAM_CHAT:
             on_token = None
-        self._last_user_ts = time.time()
+        speaker = turn.principal
+        history = self._get_history("default") if implicit_turn else self._get_history(turn=turn)
+        moved = False
         low = user_msg.lower()
         live_house_room, legacy_house_room = self._house_context_room(situation)
-        if legacy_house_room and legacy_house_room != self._location:
-            self._location = legacy_house_room
-            state_store.save_location(legacy_house_room)
-        cognition_mod.set_intent(cognition_mod.IntentState(
-            "listening",
-            "The person is speaking directly to Alpecca.",
-            target=self._speaker,
-        ))
-        chat_obs_id = cognition_mod.record_observation(cognition_mod.CognitionObservation(
-            source="chat",
-            room=self._location,
-            content=f"The person said: {user_msg}",
-            confidence=1.0,
-            privacy_class="personal",
-            metadata={"has_image": bool(image_desc)},
-        ))
-        # A real exchange perks her up right away (she wakes from drowsy) and
-        # empties her wanting-of-company -- you're here now.
-        self.state = self.state.update_energy(active=True)
-        self.state = self.state.update_social_hunger(0.0)
+        pending_house_room = (
+            legacy_house_room if legacy_house_room and legacy_house_room != self._location else ""
+        )
+        # Build the prompt against a snapshot.  Mutating mood/location/memory is
+        # deferred until the turn crosses its commit barrier after generation.
+        pending_state = self.state.update_energy(active=True).update_social_hunger(0.0)
         # A question, or a longer message bringing something new, piques her --
         # mild novelty she can feel as interest.
         if "?" in user_msg or len(user_msg.split()) > 12:
-            self.state = self.state.update_curiosity(Emotion.CURIOSITY_NOVELTY_CAP)
+            pending_state = pending_state.update_curiosity(Emotion.CURIOSITY_NOVELTY_CAP)
         # Recall relevant memories for this message. By default live chat uses
         # keyword recall so an embedding model call does not evict or stall
         # the configured chat model before Alpecca answers. ALPECCA_CHAT_SEMANTIC_RECALL can
         # opt in to semantic query recall for live turns when that budget is
         # acceptable.
-        memories = memory_store.recall(
-            user_msg,
-            embed_fn=memory_store.default_embed if CHAT_SEMANTIC_RECALL else None,
-        )
+        recall_kwargs = {
+            "embed_fn": memory_store.default_embed if CHAT_SEMANTIC_RECALL else None,
+        }
+        # Preserve the longstanding direct CoreMind API, including minimal
+        # caller/test recall adapters. Network turns always carry an explicit
+        # scope; direct calls use the legacy shared-memory default.
+        if implicit_turn:
+            memories = memory_store.recall(user_msg, **recall_kwargs)
+        else:
+            memories = memory_store.recall(
+                user_msg, scope=turn.memory_scope, **recall_kwargs,
+            )
         paged_memories = []
         if MINDPAGE:
             try:
-                paged_memories = mindpage_mod.prefault_pages(user_msg)
+                paged_memories = mindpage_mod.prefault_pages(
+                    user_msg, scope=turn.memory_scope,
+                )
             except Exception:
                 # Paging is an enhancement. A damaged/unavailable page store must
                 # never take down the live conversation path.
@@ -1419,10 +1825,6 @@ class CoreMind:
         # Alpecca reads its own real state before speaking, so it can reflect on
         # itself honestly within the reply.
         self_report = self.introspect()
-
-        # If they asked her to go somewhere in her home, honor it now so her
-        # reply and her avatar reflect the move.
-        moved = self.try_go_to_room(user_msg)
 
         # Ambient sight enriches the situation beyond the window title -- but on
         # the cloud brain, what she's sensed on your screen is kept local.
@@ -1493,8 +1895,8 @@ class CoreMind:
                 abilities = abilities.rstrip(".") + "; " + self.toolkit.describe()
             else:
                 abilities = self.toolkit.describe()
-        tool_schema = self._tool_schema(low)
-        who_prompt = people_mod.who_prompt(self._speaker)
+        tool_schema = self._tool_schema(low, turn=None if implicit_turn else turn)
+        who_prompt = people_mod.who_prompt(speaker)
         core_block = core_mem.prompt_block(learning_only=CORE_MEMORY_LEARN_ONLY)
 
         # Budget optional evidence before building the final request. Candidate
@@ -1526,7 +1928,7 @@ class CoreMind:
             who=who_prompt, inner="", core=core_block,
             current_message=user_msg, compact=True,
         )
-        history_window = self._history[-HISTORY_MESSAGES:]
+        history_window = history[-HISTORY_MESSAGES:]
         fitted = mindpage_mod.fit_context(
             fixed_texts=[base_prompt, user_msg, "working-memory telemetry reserve" + "x" * 260],
             memories=[item["budget_text"] for item in memory_refs],
@@ -1554,7 +1956,6 @@ class CoreMind:
                 "recency": 0,
                 "method": "mindpage_prefault",
             })
-        self._last_memory_evidence = memory_evidence
 
         preliminary_pressure = mindpage_mod.pressure_snapshot(
             ledger=fitted["snapshot"]
@@ -1563,7 +1964,7 @@ class CoreMind:
         system_prompt = prompts.build_system_prompt(
             self.state, prompt_memories, situation, self_narration=self_report.narrate(),
             image_seen=image_desc or "", abilities=abilities,
-            who=people_mod.who_prompt(self._speaker), inner=inner,
+            who=people_mod.who_prompt(speaker), inner=inner,
             core=core_block, current_message=user_msg, compact=True,
             working_memory=working_memory, paged_memory=paged_block,
         )
@@ -1615,19 +2016,25 @@ class CoreMind:
         cognition_mod.set_intent(cognition_mod.IntentState(
             "replying",
             "Alpecca is composing a reply from memory, state, and context.",
-            target=self._speaker,
+            target=speaker,
         ))
         # Stream only plain conversational turns; tool turns can't. Passed as
         # an extra kwarg ONLY when live, so test fakes and older generate
         # signatures keep working untouched.
+        def guarded_token(token: str) -> None:
+            if on_token is not None and turn.allow_work():
+                on_token(token)
+
         stream_kwargs = (
-            {"on_token": on_token}
+            {"on_token": guarded_token}
             if (on_token is not None and tool_schema is None) else {}
         )
         reply = self.llm.generate(
             system_prompt, user_msg, prompt_history,
             tools=tool_schema,
-            on_tool=self._execute_tool if tool_schema else None,
+            on_tool=(
+                lambda name, args: self._execute_turn_tool(turn, name, args)
+            ) if tool_schema else None,
             tier=reply_tier,
             **stream_kwargs,
         )
@@ -1649,11 +2056,184 @@ class CoreMind:
                                           tier=reply_tier)
                 if self.llm.last_call().get("fallback"):
                     break
-        self._note_reply(reply)
+        if not turn.begin_commit():
+            return self._cancelled_turn_result(turn)
+
+        # Phase 4 action closure starts only after the cancellation fence has
+        # entered its commit phase. Resolve a confirmation against the pending
+        # records that belong to this authenticated scope before considering a
+        # new assistant-authored proposal.
+        confirmation_metadata = {
+            "authenticated": not implicit_turn,
+            "detected": cue_envelope.confirmation.detected,
+            "outcome": "not-confirmation",
+            "scope": turn.memory_scope if not implicit_turn else "",
+            "commitment_id": None,
+            "candidate_ids": [],
+            "action": "",
+            "approved": False,
+            "state": "none",
+            "truncated": False,
+            "error": "",
+        }
+        approved_commitment = None
+        if cue_envelope.confirmation.detected and implicit_turn:
+            confirmation_metadata["outcome"] = "unauthenticated"
+        elif not implicit_turn:
+            try:
+                pending_commitments = (
+                    commitments_mod.list_commitments(
+                        scope=turn.memory_scope,
+                        state=commitments_mod.PROPOSED,
+                        limit=action_closure_mod.MAX_COMMITMENTS,
+                    )
+                    if cue_envelope.confirmation.detected else ()
+                )
+                confirmation_resolution = action_closure_mod.resolve_confirmation(
+                    cue_envelope,
+                    pending_commitments,
+                    scope=turn.memory_scope,
+                )
+                confirmation_metadata.update({
+                    "outcome": confirmation_resolution.outcome,
+                    "commitment_id": confirmation_resolution.commitment_id,
+                    "candidate_ids": list(confirmation_resolution.candidate_ids),
+                    "action": confirmation_resolution.action,
+                    "truncated": confirmation_resolution.truncated,
+                })
+                if confirmation_resolution.outcome == "resolved":
+                    approved_commitment = commitments_mod.transition_commitment(
+                        int(confirmation_resolution.commitment_id),
+                        commitments_mod.APPROVED,
+                        scope=turn.memory_scope,
+                        evidence=self._phase4_confirmation_evidence(
+                            cue_envelope, turn, confirmation_resolution,
+                        ),
+                    )
+                    confirmation_metadata.update({
+                        "approved": True,
+                        "state": approved_commitment.get(
+                            "state", commitments_mod.APPROVED,
+                        ),
+                        "action": approved_commitment.get(
+                            "action", confirmation_resolution.action,
+                        ),
+                    })
+            except Exception as exc:
+                # Resolution can race another scoped turn. Never infer approval
+                # from a failed transition, and never execute as a fallback.
+                confirmation_metadata.update({
+                    "outcome": "transition-failed",
+                    "approved": False,
+                    "state": "none",
+                    "error": f"{type(exc).__name__}: {exc}"[:160],
+                })
+
+        # A user request alone never creates a commitment: the assistant must
+        # make an explicit future-action claim in the final generated draft.
+        # Confirmation turns never create a second proposal for the action they
+        # are trying to resolve, including ambiguous/no-pending confirmations.
+        claim_analysis = commitment_language_mod.classify_action_claims(reply)
+        future_claim = next(
+            (claim for claim in claim_analysis.claims if claim.kind == "future-action"),
+            None,
+        )
+        proposed_commitment = None
+        commitment_error = ""
+        action_label = ""
+        if future_claim is not None:
+            action_label = self._phase4_action_label(future_claim)
+        if future_claim is not None and not cue_envelope.confirmation.detected:
+            try:
+                proposed_commitment = commitments_mod.create_commitment(
+                    action_label,
+                    scope=turn.memory_scope,
+                    evidence=self._phase4_commitment_evidence(
+                        cue_envelope, turn, future_claim,
+                    ),
+                )
+            except Exception as exc:
+                # A failed ledger write cannot leave an ungrounded promise in
+                # the visible reply. The language pass below marks it unavailable.
+                commitment_error = f"{type(exc).__name__}: {exc}"[:160]
+
+        active_commitment = approved_commitment or proposed_commitment
+        language_state = (
+            action_closure_mod.commitment_language_state(active_commitment)
+            if active_commitment is not None
+            else commitment_language_mod.CommitmentReceiptState(
+                status="unavailable", action=action_label,
+            )
+        )
+        language_result = self._phase4_enforce_commitment_language(
+            reply, language_state,
+        )
+        reply = language_result.reply
+        commitment_metadata = {
+            "created": proposed_commitment is not None,
+            "approved": approved_commitment is not None,
+            "source": (
+                "confirmation" if approved_commitment is not None
+                else "assistant_future_action" if proposed_commitment is not None
+                else "none"
+            ),
+            "id": (
+                active_commitment.get("id")
+                if active_commitment is not None else None
+            ),
+            "state": (
+                active_commitment.get("state", commitments_mod.PROPOSED)
+                if active_commitment is not None
+                else ("unavailable" if claim_analysis.claims else "none")
+            ),
+            "scope": (
+                active_commitment.get("scope", turn.memory_scope)
+                if active_commitment is not None
+                else turn.memory_scope if future_claim is not None else ""
+            ),
+            "action": (
+                active_commitment.get("action", action_label)
+                if active_commitment is not None else action_label
+            ),
+            "claim": (
+                {"kind": future_claim.kind, "text": future_claim.text}
+                if future_claim is not None else None
+            ),
+            "claims": [
+                {"kind": claim.kind, "text": claim.text}
+                for claim in claim_analysis.claims
+            ],
+            "language_rewritten": language_result.rewritten,
+            "error": commitment_error,
+        }
+
+        # The barrier is now committed to a timely result. Everything below is
+        # the single visible transaction for this scoped conversation.
+        self._last_user_ts = time.time()
+        if pending_house_room:
+            self._location = pending_house_room
+            state_store.save_location(pending_house_room)
+        moved = bool(self.try_go_to_room(user_msg))
+        cognition_mod.set_intent(cognition_mod.IntentState(
+            "listening",
+            "The person is speaking directly to Alpecca.",
+            target=speaker,
+        ))
+        chat_obs_id = cognition_mod.record_observation(cognition_mod.CognitionObservation(
+            source="chat",
+            room=self._location,
+            content=f"The person said: {user_msg}",
+            confidence=1.0,
+            privacy_class=turn.memory_scope,
+            scope=turn.memory_scope,
+            metadata={"has_image": bool(image_desc), **turn.audit_metadata()},
+        ))
 
         # Update Love from how the exchange felt, and persist.
+        self._note_reply(reply)
+        self._last_memory_evidence = memory_evidence
         reward = prompts.estimate_reward(user_msg)
-        self.state = self.state.update_love(reward)
+        self.state = pending_state.update_love(reward)
         state_store.save_state(self.state, trigger="chat")
         spoken_reply = speech_mod.spoken_performance_text(reply, self.state)
 
@@ -1661,7 +2241,7 @@ class CoreMind:
         salience = prompts.estimate_salience(user_msg)
         memory_id = memory_store.remember_with_id(
             f"The person said: {user_msg}", kind="episodic", salience=salience,
-            source="chat", embed_fn=None,
+            source="chat", embed_fn=None, scope=turn.memory_scope,
         )
         if chat_obs_id:
             cognition_mod.mark_observation_remembered(chat_obs_id, memory_id)
@@ -1696,48 +2276,60 @@ class CoreMind:
         if image_desc:
             image_memory_id = memory_store.remember_with_id(
                 f"They showed me an image: {image_desc}", kind="episodic", salience=0.6,
-                source="image", embed_fn=None,
+                source="image", embed_fn=None, scope=turn.memory_scope,
             )
             image_obs_id = cognition_mod.record_observation(cognition_mod.CognitionObservation(
                 source="image",
                 room=self._location,
                 content=f"Alpecca saw an image: {image_desc}",
                 confidence=0.75,
-                privacy_class="personal",
+                privacy_class=turn.memory_scope,
+                scope=turn.memory_scope,
             ))
             if image_obs_id:
                 cognition_mod.mark_observation_remembered(image_obs_id, image_memory_id)
 
-        # Keep a little rolling context for conversational continuity.
-        self._history.append({"role": "user", "content": user_msg})
-        self._history.append({"role": "assistant", "content": reply})
+        # Keep a little rolling context for this conversation only.
+        history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": reply})
         # Keep the raw log bounded; only the last HISTORY_MESSAGES ride along
         # anyway, and long sessions shouldn't grow memory without limit.
-        if len(self._history) > HISTORY_MESSAGES * 4:
-            evict_count = len(self._history) - HISTORY_MESSAGES * 2
-            paging_result = self._page_history_prefix(evict_count, "rolling_history_cap")
+        if len(history) > HISTORY_MESSAGES * 4:
+            evict_count = len(history) - HISTORY_MESSAGES * 2
+            paging_result = self._page_history_prefix(
+                evict_count, "rolling_history_cap",
+                conversation_id="default" if implicit_turn else turn.scope_key,
+                scope=turn.memory_scope,
+            )
             if not paging_result.get("ok"):
                 # Retain the full history for a later retry and expose the real
                 # backlog/error in the canonical snapshot. Nothing is discarded.
                 self._last_mindpage = dict(self._last_mindpage or {})
                 self._last_mindpage["unsummarized_eviction_backlog"] = evict_count
                 self._last_mindpage["paging_error"] = paging_result.get("error") or paging_result.get("reason")
+        turn_model_use = {**self.llm.last_call(), "turn": turn.audit_metadata()}
         chat_turn_id = cognition_mod.record_chat_turn(cognition_mod.ChatTurn(
             user_text=user_msg,
             reply=reply,
             room=self._location,
             mood=self.state.mood_label(),
             intent="replying",
-            model_use=self.llm.last_call(),
+            model_use=turn_model_use,
             memory_evidence=memory_evidence,
             observation_id=chat_obs_id,
-            privacy_class="personal",
+            privacy_class=turn.memory_scope,
+            scope=turn.memory_scope,
         ))
         cognition_mod.set_intent(cognition_mod.IntentState(
             "waiting",
             "Alpecca replied and is waiting for the next cue.",
             target=self._location,
         ))
+
+        if not implicit_turn:
+            turn_context_mod.save_history(turn, history)
+        turn.finish_commit()
+        pressure_bundle = self._phase6_pressure_bundle()
 
         return {
             "reply": reply,
@@ -1750,12 +2342,20 @@ class CoreMind:
             "memories_used": [m["content"] for m in prompt_memories],
             "memory_evidence": memory_evidence,
             "mindpage": self.mindpage_state(),
+            "memory_pressure": (
+                pressure_bundle["metadata"] if pressure_bundle is not None else None
+            ),
             "self_reflection": self_report.narrate(),
             "appearance": self.current_appearance().as_dict(),
             "llm_online": self.llm.online,
-            "model_use": self.llm.last_call(),
+            "model_use": turn_model_use,
             "chat_turn_id": chat_turn_id,
             "intent": cognition_mod.current_intent(),
+            "turn": turn.audit_metadata(),
+            "cues": cue_envelope.as_dict(),
+            "affect_evidence": affect_metadata,
+            "commitment": commitment_metadata,
+            "confirmation": confirmation_metadata,
         }
 
     def write_session_recap(self, db_path=None,
@@ -2425,10 +3025,40 @@ class CoreMind:
                 return random.choice(seeds)
         return None
 
-    def compose_volunteer(self, reason: str) -> str:
+    def compose_volunteer(self, reason: str, *, scope: str = "shared") -> str:
         """Turn a grounded reason into her own short unprompted words. Safe to
-        call outside the mind lock -- it only reads state. Offline, she speaks
-        the reason plainly rather than through the canned echo voice."""
+        call outside the mind lock. A pure per-scope initiative budget is
+        reserved before any model call; a defer returns no outgoing text.
+        Offline, she speaks the reason plainly rather than through the canned
+        echo voice."""
+        reason_key = " ".join(str(reason or "").split())
+        if reason_key:
+            decision = self._initiative_budget.decide(
+                scope=scope,
+                relevance=1.0,
+                dedupe_key=f"volunteer:{reason_key.casefold()}"[:256],
+                user_active=False,
+                outreach=True,
+            )
+            self._last_initiative_decision = {
+                "decision": decision.decision,
+                "reason": decision.reason,
+                "scope": decision.scope,
+                "dedupe_key": decision.dedupe_key,
+                "relevance": decision.relevance,
+                "decided_at": decision.decided_at,
+                "retry_at": decision.retry_at,
+                "retry_after": decision.retry_after,
+                "window_used": decision.window_used,
+                "window_cap": decision.window_cap,
+                "ignored_streak": decision.ignored_streak,
+            }
+            if not decision.allowed:
+                return ""
+        else:
+            # No grounded candidate means no Phase 5 budget event. Preserve the
+            # legacy compose behavior for compatibility with direct callers.
+            self._last_initiative_decision = None
         if not self.llm.online:
             return f"(quietly) I just wanted to say -- {reason}."
         self_report = self.introspect()
@@ -3202,6 +3832,12 @@ class CoreMind:
         person_fatigue = max(float(sig.get("weary_face", 0.0)),
                              float(sig.get("long_session", 0.0)),
                              float(sig.get("late_night", 0.0)) * 0.7)
+        pressure_bundle = self._phase6_pressure_bundle()
+        soul_pressure = (
+            pressure_bundle["snapshot_signal"]
+            if pressure_bundle is not None
+            else self.mindpage_state()
+        )
         return soul_mod.snapshot(
             self.state,
             desires_summary=desires_mod.summary(),
@@ -3210,7 +3846,7 @@ class CoreMind:
             senses_active=self._prev_obs is not None and bool(self._prev_obs.window_title),
             person_fatigue=person_fatigue,
             trial_running=any(r["status"] == "trial" for r in selfmod.history(limit=3)),
-            memory_pressure=self.mindpage_state(),
+            memory_pressure=soul_pressure,
         )
 
     # --- Her journal + recursive self-questioning --------------------------

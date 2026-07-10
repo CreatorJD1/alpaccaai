@@ -69,7 +69,8 @@ def init_db(db_path: Path = DB_PATH) -> None:
                 content     TEXT NOT NULL,
                 salience    REAL NOT NULL,
                 tokens      TEXT NOT NULL,
-                embedding   TEXT
+                embedding   TEXT,
+                scope       TEXT NOT NULL DEFAULT 'shared'
             );
 
             -- Her self-set goals: wants she forms from real internals and acts
@@ -108,6 +109,13 @@ def init_db(db_path: Path = DB_PATH) -> None:
         mem_cols = {r["name"] for r in conn.execute("PRAGMA table_info(memories)")}
         if "embedding" not in mem_cols:
             conn.execute("ALTER TABLE memories ADD COLUMN embedding TEXT")
+        if "scope" not in mem_cols:
+            conn.execute("ALTER TABLE memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'shared'")
+        conn.execute("UPDATE memories SET scope='shared' WHERE scope IS NULL OR trim(scope)='' ")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS memories_scope_salience_idx "
+            "ON memories(scope, salience DESC, ts DESC)"
+        )
         state_cols = {r["name"] for r in conn.execute("PRAGMA table_info(state)")}
         if "appearance_seed" not in state_cols:
             conn.execute("ALTER TABLE state ADD COLUMN appearance_seed INTEGER")

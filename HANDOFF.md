@@ -130,7 +130,7 @@ claims only from evidence.
 ### Global constraints and verification
 
 - Approved local model: `qwen3.5:9b`; do not revive, download, or reference
-  `qwen3:8b`. If no approved fast model is installed, use Qwen 3.5 9B for smoke
+  the retired legacy model. If no approved fast model is installed, use Qwen 3.5 9B for smoke
   tests rather than downloading another model.
 - No LLM call under `mind_lock`; no extra Alpecca instance; no autonomous code,
   account, delete, purchase, or general OS action.

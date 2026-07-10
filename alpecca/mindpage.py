@@ -71,6 +71,11 @@ def _connect(db_path: Path = DB_PATH):
     return _db_connect(db_path)
 
 
+def _scope(value: str) -> str:
+    clean = re.sub(r"[^a-zA-Z0-9_.:-]+", "-", str(value or "shared").strip())
+    return (clean.strip("-._:") or "shared")[:160]
+
+
 def ensure_schema(db_path: Path = DB_PATH) -> None:
     with _connect(db_path) as conn:
         conn.execute(
@@ -87,7 +92,8 @@ def ensure_schema(db_path: Path = DB_PATH) -> None:
                 token_est    INTEGER NOT NULL,
                 last_access  REAL NOT NULL,
                 access_count INTEGER NOT NULL DEFAULT 0,
-                salience     REAL NOT NULL
+                salience     REAL NOT NULL,
+                scope        TEXT NOT NULL DEFAULT 'shared'
             )
             """
         )
@@ -102,6 +108,14 @@ def ensure_schema(db_path: Path = DB_PATH) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mindpage_topic ON mindpage_pages(topic)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mindpage_access ON mindpage_pages(last_access)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mindpage_tier ON mindpage_pages(tier, salience)")
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(mindpage_pages)")}
+        if "scope" not in cols:
+            conn.execute("ALTER TABLE mindpage_pages ADD COLUMN scope TEXT NOT NULL DEFAULT 'shared'")
+        conn.execute("UPDATE mindpage_pages SET scope='shared' WHERE scope IS NULL OR trim(scope)='' ")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mindpage_scope_access "
+            "ON mindpage_pages(scope, tier, salience DESC, last_access DESC)"
+        )
         cache_key = str(Path(db_path).resolve())
         if cache_key not in _page_fts_ready_paths:
             try:
@@ -216,6 +230,7 @@ def topic_from_text(text: str, fallback: str = "conversation episode") -> str:
 def write_page(*, kind: str, topic: str, summary: str, content: str,
                tier: str = "warm", salience: float = 0.45,
                embedding: list | None = None,
+               scope: str = "shared",
                db_path: Path = DB_PATH) -> int:
     if not MINDPAGE:
         return 0
@@ -228,20 +243,21 @@ def write_page(*, kind: str, topic: str, summary: str, content: str,
             """
             INSERT INTO mindpage_pages
                 (ts, tier, kind, topic, summary, content_blob, embedding,
-                 token_est, last_access, access_count, salience)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                 token_est, last_access, access_count, salience, scope)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             """,
             (
                 now, page_tier, kind, topic[:160], summary[:1200], blob,
                 json.dumps(embedding) if embedding is not None else None,
                 estimate_tokens(content) + estimate_tokens(summary),
-                now, float(max(0.0, min(1.0, salience))),
+                now, float(max(0.0, min(1.0, salience))), _scope(scope),
             ),
         )
         return int(cur.lastrowid)
 
 
-def write_episode_page(turns: list[dict], db_path: Path = DB_PATH) -> int | None:
+def write_episode_page(turns: list[dict], *, scope: str = "shared",
+                       db_path: Path = DB_PATH) -> int | None:
     if not MINDPAGE:
         return None
     content = turns_to_text(turns)
@@ -255,6 +271,7 @@ def write_episode_page(turns: list[dict], db_path: Path = DB_PATH) -> int | None
         content=content,
         tier="warm",
         salience=0.48,
+        scope=scope,
         db_path=db_path,
     )
 
@@ -275,6 +292,7 @@ def _query_words(text: str) -> set[str]:
 
 
 def search_pages(query: str, limit: int = 5, *, include_cold: bool = False,
+                 scope: str = "shared", include_shared: bool = True,
                  db_path: Path = DB_PATH) -> list[dict]:
     """Search bounded page metadata without inflating stored transcripts."""
     if not MINDPAGE or not str(query or "").strip():
@@ -284,18 +302,25 @@ def search_pages(query: str, limit: int = 5, *, include_cold: bool = False,
     q_words = _query_words(q_text)
     if not q_words:
         return []
-    where = "" if include_cold else "WHERE tier != 'cold'"
+    requested_scope = _scope(scope)
+    scopes = (requested_scope,) if requested_scope == "shared" or not include_shared else (
+        requested_scope, "shared",
+    )
+    placeholders = ", ".join("?" for _ in scopes)
+    cold_where = "" if include_cold else " AND tier != 'cold'"
+    where = f"WHERE scope IN ({placeholders}){cold_where}"
     terms = " OR ".join(f'"{word}"' for word in sorted(q_words)[:16])
     with _connect(db_path) as conn:
         base_rows = conn.execute(
             f"""
             SELECT id, ts, tier, kind, topic, summary, token_est, last_access,
-                   access_count, salience
+                    access_count, salience, scope
             FROM mindpage_pages
             {where}
             ORDER BY salience DESC, last_access DESC
             LIMIT 120
             """
+            , scopes
         ).fetchall()
         fts_rows = []
         if terms:
@@ -304,14 +329,14 @@ def search_pages(query: str, limit: int = 5, *, include_cold: bool = False,
                 fts_rows = conn.execute(
                     f"""
                     SELECT p.id, p.ts, p.tier, p.kind, p.topic, p.summary,
-                           p.token_est, p.last_access, p.access_count, p.salience
+                           p.token_est, p.last_access, p.access_count, p.salience, p.scope
                     FROM mindpage_fts
                     JOIN mindpage_pages AS p ON p.id = mindpage_fts.rowid
-                    WHERE mindpage_fts MATCH ? {cold_clause}
+                    WHERE mindpage_fts MATCH ? AND p.scope IN ({placeholders}) {cold_clause}
                     ORDER BY bm25(mindpage_fts)
                     LIMIT 120
                     """,
-                    (terms,),
+                    (terms, *scopes),
                 ).fetchall()
             except sqlite3.OperationalError:
                 fts_rows = []
@@ -336,13 +361,22 @@ def search_pages(query: str, limit: int = 5, *, include_cold: bool = False,
 
 
 def fault_page(page_id: int, *, max_tokens: int = 1000,
+               scope: str = "shared", include_shared: bool = True,
                db_path: Path = DB_PATH) -> dict | None:
     """Inflate one page, promote it to hot, and bound returned content."""
     if not MINDPAGE:
         return None
     ensure_schema(db_path)
+    requested_scope = _scope(scope)
+    scopes = (requested_scope,) if requested_scope == "shared" or not include_shared else (
+        requested_scope, "shared",
+    )
+    placeholders = ", ".join("?" for _ in scopes)
     with _connect(db_path) as conn:
-        row = conn.execute("SELECT * FROM mindpage_pages WHERE id=?", (int(page_id),)).fetchone()
+        row = conn.execute(
+            f"SELECT * FROM mindpage_pages WHERE id=? AND scope IN ({placeholders})",
+            (int(page_id), *scopes),
+        ).fetchone()
         if not row:
             return None
         conn.execute(
@@ -359,16 +393,27 @@ def fault_page(page_id: int, *, max_tokens: int = 1000,
     return item
 
 
-def get_page(page_id: int, db_path: Path = DB_PATH) -> dict | None:
-    return fault_page(page_id, max_tokens=1_000_000, db_path=db_path)
+def get_page(page_id: int, db_path: Path = DB_PATH, *, scope: str = "shared",
+             include_shared: bool = True) -> dict | None:
+    return fault_page(
+        page_id, max_tokens=1_000_000, scope=scope,
+        include_shared=include_shared, db_path=db_path,
+    )
 
 
-def recall_page(query: str, limit: int = 3, db_path: Path = DB_PATH) -> list[dict]:
+def recall_page(query: str, limit: int = 3, db_path: Path = DB_PATH, *,
+                scope: str = "shared", include_shared: bool = True) -> list[dict]:
     """Explicit page fault across every tier, including cold pages."""
-    hits = search_pages(query, limit=limit, include_cold=True, db_path=db_path)
+    hits = search_pages(
+        query, limit=limit, include_cold=True, scope=scope,
+        include_shared=include_shared, db_path=db_path,
+    )
     out = []
     for hit in hits:
-        page = fault_page(int(hit["id"]), max_tokens=1000, db_path=db_path)
+        page = fault_page(
+            int(hit["id"]), max_tokens=1000, scope=scope,
+            include_shared=include_shared, db_path=db_path,
+        )
         if page:
             page["score"] = hit.get("score")
             page["overlap"] = hit.get("overlap")
@@ -378,13 +423,17 @@ def recall_page(query: str, limit: int = 3, db_path: Path = DB_PATH) -> list[dic
 
 
 def prefault_pages(query: str, *, token_budget: int = DEFAULT_PREFAULT_TOKENS,
-                   limit: int = 2, db_path: Path = DB_PATH) -> list[dict]:
+                   limit: int = 2, scope: str = "shared",
+                   include_shared: bool = True,
+                   db_path: Path = DB_PATH) -> list[dict]:
     """Fault relevant hot/warm pages into a strict per-turn token allowance."""
     budget = max(0, int(token_budget))
     if not MINDPAGE or budget <= 0:
         return []
-    candidates = search_pages(query, limit=max(1, int(limit)), include_cold=False,
-                              db_path=db_path)
+    candidates = search_pages(
+        query, limit=max(1, int(limit)), include_cold=False, scope=scope,
+        include_shared=include_shared, db_path=db_path,
+    )
     selected = []
     remaining = budget
     for candidate in candidates:
@@ -393,8 +442,10 @@ def prefault_pages(query: str, *, token_budget: int = DEFAULT_PREFAULT_TOKENS,
         # Reserve room for the summary and labels; a stronger match receives a
         # larger excerpt, but no page can consume the whole per-turn allowance.
         per_page = min(remaining, max(80, budget // max(1, int(limit))))
-        page = fault_page(int(candidate["id"]), max_tokens=max(24, per_page - 40),
-                          db_path=db_path)
+        page = fault_page(
+            int(candidate["id"]), max_tokens=max(24, per_page - 40), scope=scope,
+            include_shared=include_shared, db_path=db_path,
+        )
         if not page:
             continue
         summary = str(page.get("summary") or "")
@@ -463,6 +514,15 @@ def _ledger(*, fixed_tokens: int, memory_tokens: int, history_tokens: int,
         + output_reserve + protocol_reserve
     )
     context_limit = max(1, int(num_ctx))
+    minimum_required = fixed_tokens + tool_tokens + output_reserve + protocol_reserve
+    context_fits = total <= context_limit
+    fixed_overflow = minimum_required > context_limit
+    if context_fits:
+        fit_status = "fit"
+    elif fixed_overflow:
+        fit_status = "fixed_overflow"
+    else:
+        fit_status = "overflow"
     fill = min(1.0, total / context_limit)
     input_budget = max(0, context_limit - output_reserve - protocol_reserve)
     input_tokens = fixed_tokens + memory_tokens + history_tokens + musing_tokens + tool_tokens
@@ -483,6 +543,15 @@ def _ledger(*, fixed_tokens: int, memory_tokens: int, history_tokens: int,
         "protocol_reserve_tokens": protocol_reserve,
         "total_tokens": min(context_limit, total),
         "estimated_tokens_before_hard_limit": total,
+        "required_context_tokens": total,
+        "minimum_required_tokens": minimum_required,
+        "overflow_tokens": max(0, total - context_limit),
+        "fixed_overflow_tokens": max(0, minimum_required - context_limit),
+        "context_fits": context_fits,
+        "fit_status": fit_status,
+        "overflow": not context_fits,
+        "fixed_overflow": fixed_overflow,
+        "unshrinkable": fixed_overflow,
         "context_fill": round(fill, 4),
         "pressure_score": round(fill, 4),
         "pressure": _pressure_band(fill),
@@ -569,9 +638,6 @@ def fit_context(*, fixed_texts: Iterable[str], memories: list[str],
         dropped_musing_items=dropped_musings,
         prefault_page_count=min(prefault_page_count, len(kept_memories)),
     )
-    snapshot["overflow"] = (
-        snapshot["estimated_tokens_before_hard_limit"] > max(1, int(num_ctx))
-    )
     return {
         "memories": kept_memories,
         "history": kept_history,
@@ -619,9 +685,6 @@ def fit_request(system_prompt: str, user_message: str, history: list[dict],
         history_messages=len(selected),
         dropped_history_messages=len(dropped),
         dropped_history_tokens=history_token_estimate(dropped),
-    )
-    snapshot["overflow"] = (
-        snapshot["estimated_tokens_before_hard_limit"] > max(1, int(num_ctx))
     )
     return selected, snapshot
 
@@ -856,9 +919,6 @@ def stats(history: list[dict] | None = None, db_path: Path = DB_PATH,
             history_messages=len(raw_history),
         )
         ledger["source"] = "history_estimate"
-        ledger["overflow"] = (
-            ledger["estimated_tokens_before_hard_limit"] > max(1, int(num_ctx))
-        )
     result = dict(ledger)
     result.update(_page_stats(db_path))
     result["enabled"] = True
@@ -872,6 +932,9 @@ def pressure_snapshot(history: list[dict] | None = None, db_path: Path = DB_PATH
         "enabled", "source", "measured_at", "num_ctx", "input_budget_tokens",
         "input_tokens", "output_reserve_tokens", "total_tokens", "context_fill",
         "estimated_tokens_before_hard_limit",
+        "required_context_tokens", "minimum_required_tokens", "overflow_tokens",
+        "fixed_overflow_tokens", "context_fits", "fit_status", "fixed_overflow",
+        "unshrinkable",
         "pressure_score", "pressure", "history_tokens", "history_messages",
         "turns_until_history_eviction", "unsummarized_eviction_backlog",
         "prefault_page_count", "page_count", "hot_page_count", "hot_page_tokens",

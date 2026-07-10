@@ -7,6 +7,7 @@ house and profile UI grounded in real backend state instead of inferred vibes.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -35,6 +36,14 @@ PROPOSAL_STATUSES = {"noticed", "planned", "testing", "accepted", "rejected", "s
 CLOSED_PROPOSAL_STATUSES = {"accepted", "rejected", "superseded"}
 EVALUATION_PHASES = {"noticed", "baseline", "planned", "testing", "result", "accepted", "rejected"}
 
+_SCOPE_RE = re.compile(r"[^a-zA-Z0-9_.:-]+")
+
+
+def _scope(value: str) -> str:
+    """Normalize a storage scope before it is used in cognition records."""
+    clean = _SCOPE_RE.sub("-", str(value or "shared").strip()).strip("-._:")
+    return (clean or "shared")[:160]
+
 
 @dataclass
 class CognitionObservation:
@@ -43,6 +52,7 @@ class CognitionObservation:
     confidence: float = 1.0
     room: str = ""
     privacy_class: str = "local"
+    scope: str = "shared"
     metadata: dict[str, Any] = field(default_factory=dict)
     ts: float = field(default_factory=time.time)
 
@@ -51,6 +61,7 @@ class CognitionObservation:
         self.content = (self.content or "").strip()[:1000]
         self.room = (self.room or "")[:80]
         self.privacy_class = (self.privacy_class or "local")[:40]
+        self.scope = _scope(self.scope)
         self.confidence = max(0.0, min(1.0, float(self.confidence)))
         return self
 
@@ -145,6 +156,7 @@ class ChatTurn:
     memory_evidence: list[dict[str, Any]] = field(default_factory=list)
     observation_id: int | None = None
     privacy_class: str = "personal"
+    scope: str = "shared"
     ts: float = field(default_factory=time.time)
 
     def clean(self) -> "ChatTurn":
@@ -154,6 +166,7 @@ class ChatTurn:
         self.mood = (self.mood or "")[:80]
         self.intent = (self.intent or "replying")[:80]
         self.privacy_class = (self.privacy_class or "personal")[:40]
+        self.scope = _scope(self.scope)
         if self.observation_id is not None:
             self.observation_id = int(self.observation_id)
         return self
@@ -180,6 +193,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
                 content        TEXT NOT NULL,
                 confidence     REAL NOT NULL,
                 privacy_class  TEXT NOT NULL,
+                scope          TEXT NOT NULL DEFAULT 'shared',
                 metadata       TEXT,
                 remembered     INTEGER NOT NULL DEFAULT 0,
                 memory_id      INTEGER
@@ -233,6 +247,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
                 memory_evidence  TEXT,
                 observation_id   INTEGER,
                 privacy_class    TEXT NOT NULL,
+                scope            TEXT NOT NULL DEFAULT 'shared',
                 FOREIGN KEY(observation_id) REFERENCES cognition_observations(id)
             );
             """
@@ -242,6 +257,31 @@ def init_db(db_path: Path = DB_PATH) -> None:
             conn.execute("ALTER TABLE cognition_observations ADD COLUMN remembered INTEGER NOT NULL DEFAULT 0")
         if "memory_id" not in cols:
             conn.execute("ALTER TABLE cognition_observations ADD COLUMN memory_id INTEGER")
+        if "scope" not in cols:
+            conn.execute(
+                "ALTER TABLE cognition_observations "
+                "ADD COLUMN scope TEXT NOT NULL DEFAULT 'shared'"
+            )
+        conn.execute(
+            "UPDATE cognition_observations SET scope='shared' "
+            "WHERE scope IS NULL OR trim(scope)=''"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS cognition_observations_scope_id_idx "
+            "ON cognition_observations(scope, id DESC)"
+        )
+        chat_cols = {r["name"] for r in conn.execute("PRAGMA table_info(chat_turns)")}
+        if "scope" not in chat_cols:
+            conn.execute(
+                "ALTER TABLE chat_turns ADD COLUMN scope TEXT NOT NULL DEFAULT 'shared'"
+            )
+        conn.execute(
+            "UPDATE chat_turns SET scope='shared' WHERE scope IS NULL OR trim(scope)=''"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS chat_turns_scope_id_idx "
+            "ON chat_turns(scope, id DESC)"
+        )
         proposal_cols = {r["name"] for r in conn.execute("PRAGMA table_info(action_proposals)")}
         if "payload" not in proposal_cols:
             conn.execute("ALTER TABLE action_proposals ADD COLUMN payload TEXT")
@@ -283,8 +323,8 @@ def record_observation(obs: CognitionObservation, db_path: Path = DB_PATH) -> in
     with _connect(db_path) as conn:
         cur = conn.execute(
             "INSERT INTO cognition_observations "
-            "(ts, source, room, content, confidence, privacy_class, metadata) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(ts, source, room, content, confidence, privacy_class, scope, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 obs.ts,
                 obs.source,
@@ -292,17 +332,25 @@ def record_observation(obs: CognitionObservation, db_path: Path = DB_PATH) -> in
                 obs.content,
                 obs.confidence,
                 obs.privacy_class,
+                obs.scope,
                 json.dumps(obs.metadata, ensure_ascii=True),
             ),
         )
         return int(cur.lastrowid)
 
 
-def recent_observations(limit: int = 12, db_path: Path = DB_PATH) -> list[dict]:
+def recent_observations(limit: int = 12, db_path: Path = DB_PATH, *,
+                        scope: str = "shared") -> list[dict]:
+    """Return records from one privacy scope, newest first.
+
+    Omit neither the scope nor its filter for conversation-facing callers: the
+    shared default is reserved for Alpecca's own non-user-specific activity.
+    """
+    scope = _scope(scope)
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM cognition_observations ORDER BY id DESC LIMIT ?",
-            (limit,),
+            "SELECT * FROM cognition_observations WHERE scope=? ORDER BY id DESC LIMIT ?",
+            (scope, limit),
         ).fetchall()
     out = []
     for r in rows:
@@ -315,12 +363,14 @@ def recent_observations(limit: int = 12, db_path: Path = DB_PATH) -> list[dict]:
     return out
 
 
-def unremembered_observations(limit: int = 20, db_path: Path = DB_PATH) -> list[dict]:
+def unremembered_observations(limit: int = 20, db_path: Path = DB_PATH, *,
+                              scope: str = "shared") -> list[dict]:
+    scope = _scope(scope)
     with _connect(db_path) as conn:
         rows = conn.execute(
             "SELECT * FROM cognition_observations "
-            "WHERE remembered = 0 ORDER BY id DESC LIMIT ?",
-            (limit,),
+            "WHERE remembered = 0 AND scope=? ORDER BY id DESC LIMIT ?",
+            (scope, limit),
         ).fetchall()
     out = []
     for r in rows:
@@ -350,8 +400,8 @@ def record_chat_turn(turn: ChatTurn, db_path: Path = DB_PATH) -> int | None:
         cur = conn.execute(
             "INSERT INTO chat_turns "
             "(ts, room, mood, intent, user_text, reply, model_use, "
-            "memory_evidence, observation_id, privacy_class) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "memory_evidence, observation_id, privacy_class, scope) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 turn.ts,
                 turn.room,
@@ -363,17 +413,20 @@ def record_chat_turn(turn: ChatTurn, db_path: Path = DB_PATH) -> int | None:
                 _json_list(turn.memory_evidence),
                 turn.observation_id,
                 turn.privacy_class,
+                turn.scope,
             ),
         )
         return int(cur.lastrowid)
 
 
-def recent_chat_turns(limit: int = 8, db_path: Path = DB_PATH) -> list[dict]:
+def recent_chat_turns(limit: int = 8, db_path: Path = DB_PATH, *,
+                      scope: str = "shared") -> list[dict]:
     limit = max(1, min(50, int(limit)))
+    scope = _scope(scope)
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM chat_turns ORDER BY id DESC LIMIT ?",
-            (limit,),
+            "SELECT * FROM chat_turns WHERE scope=? ORDER BY id DESC LIMIT ?",
+            (scope, limit),
         ).fetchall()
     out = []
     for r in rows:

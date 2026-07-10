@@ -21,6 +21,8 @@ import os
 import re
 import socket
 import sys
+import threading
+import uuid
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -59,6 +61,8 @@ from alpecca import routines as routines_mod
 from alpecca import watchers as watchers_mod
 from alpecca import auth as auth_mod
 from alpecca import capabilities as capabilities_mod
+from alpecca import resource_coordinator as resource_coordinator_mod
+from alpecca import turn_context as turn_context_mod
 
 ROOT_DIR = Path(__file__).parent
 WEB_DIR = ROOT_DIR / "web"
@@ -89,6 +93,9 @@ face_sense = vision.FaceSense(gate=_conversation_quiet)
 # Connected chat clients, so Alpecca can speak to whoever is listening when
 # she has something to say unprompted.
 ws_clients: set[WebSocket] = set()
+_ws_portal_epochs: dict[WebSocket, str] = {}
+_ws_portal_turns: dict[WebSocket, turn_context_mod.TurnContext] = {}
+_active_ws_portal: tuple[WebSocket, str] | None = None
 
 BACKGROUND_WS_SOURCES = {
     "house-presence",
@@ -169,7 +176,7 @@ def _runtime_status(check_models: bool = True) -> dict:
             model=COLAB_MODEL,
             api_key=COLAB_API_KEY,
         )
-    return runtime_status_mod.build_runtime_status(
+    status = runtime_status_mod.build_runtime_status(
         models=models,
         llm_online=mind.llm.online,
         deep_backend=DEEP_BACKEND,
@@ -178,6 +185,8 @@ def _runtime_status(check_models: bool = True) -> dict:
         senses=_sense_status(),
         ollama=ollama,
     )
+    status["optional_work"] = _optional_work_telemetry()
+    return status
 
 
 def _living_systems_context(check_models: bool = False) -> dict:
@@ -221,22 +230,123 @@ def _mindscape_snapshot(check_models: bool = True) -> dict:
     )
 
 
-async def _broadcast(payload: dict) -> None:
-    """Best-effort fan-out to every connected chat client."""
-    for client in list(ws_clients):
-        try:
-            await client.send_json(payload)
-        except Exception:
-            ws_clients.discard(client)
+def _retire_ws_portal(socket: WebSocket, *, portal_epoch: str | None = None,
+                      reason: str = "disconnect") -> bool:
+    """Fence one portal without allowing an old finalizer to close its successor."""
+    global _active_ws_portal
+    current = _ws_portal_epochs.get(socket)
+    if current is None or (portal_epoch is not None and current != portal_epoch):
+        return False
+    _ws_portal_epochs.pop(socket, None)
+    turn = _ws_portal_turns.pop(socket, None)
+    if turn is not None:
+        turn.cancel(reason)
+    ws_clients.discard(socket)
+    if _active_ws_portal == (socket, current):
+        _active_ws_portal = None
+    return True
 
-# CoreMind state is shared between the background drift loop and any number of
-# WebSocket connections, all of which mutate the mood and the rolling history.
-# An asyncio lock serializes the critical sections so a tick can't land between
-# a chat's perceive() and update_love() and leave inconsistent state behind.
+
+def _open_ws_portal(socket: WebSocket, portal_epoch: str | None = None) -> str:
+    """Claim the single writable WebSocket portal and retire its predecessor."""
+    global _active_ws_portal
+    epoch = str(portal_epoch or uuid.uuid4().hex)
+    previous = _active_ws_portal
+    if previous is not None:
+        _retire_ws_portal(
+            previous[0], portal_epoch=previous[1], reason="portal_epoch_replaced",
+        )
+    _ws_portal_epochs[socket] = epoch
+    _active_ws_portal = (socket, epoch)
+    ws_clients.add(socket)
+    return epoch
+
+
+def _ws_portal_epoch_current(socket: WebSocket, portal_epoch: str) -> bool:
+    return (
+        _active_ws_portal == (socket, portal_epoch)
+        and _ws_portal_epochs.get(socket) == portal_epoch
+    )
+
+
+def _begin_ws_portal_turn(socket: WebSocket,
+                          turn: turn_context_mod.TurnContext) -> bool:
+    if (
+        not _ws_portal_epoch_current(socket, turn.portal_epoch)
+        or turn.cancelled.is_set()
+    ):
+        turn.cancel("stale_portal_epoch")
+        return False
+    previous = _ws_portal_turns.get(socket)
+    if previous is not None and previous is not turn:
+        previous.cancel("superseded_turn")
+    _ws_portal_turns[socket] = turn
+    return True
+
+
+def _finish_ws_portal_turn(socket: WebSocket,
+                           turn: turn_context_mod.TurnContext) -> bool:
+    if _ws_portal_turns.get(socket) is not turn:
+        return False
+    _ws_portal_turns.pop(socket, None)
+    return True
+
+
+def _ws_portal_allows(socket: WebSocket,
+                      turn: turn_context_mod.TurnContext | None = None,
+                      *, portal_epoch: str | None = None,
+                      allow_cancelled: bool = False) -> bool:
+    current = _ws_portal_epochs.get(socket)
+    if current is None or not _ws_portal_epoch_current(socket, current):
+        return False
+    if portal_epoch is not None and current != portal_epoch:
+        return False
+    if turn is None:
+        return True
+    return (
+        current == turn.portal_epoch
+        and _ws_portal_turns.get(socket) is turn
+        and (allow_cancelled or not turn.cancelled.is_set())
+    )
+
+
+async def _send_ws_json(socket: WebSocket, payload: dict, *,
+                        turn: turn_context_mod.TurnContext | None = None,
+                        portal_epoch: str | None = None,
+                        allow_cancelled: bool = False) -> bool:
+    """Send only through the current portal epoch; retire failed transports."""
+    if not _ws_portal_allows(
+        socket, turn, portal_epoch=portal_epoch,
+        allow_cancelled=allow_cancelled,
+    ):
+        if socket not in _ws_portal_epochs:
+            ws_clients.discard(socket)
+        return False
+    current = _ws_portal_epochs.get(socket)
+    try:
+        await socket.send_json(payload)
+        return True
+    except Exception:
+        _retire_ws_portal(
+            socket, portal_epoch=current, reason="send_failed",
+        )
+        return False
+
+
+async def _broadcast(payload: dict,
+                     turn: turn_context_mod.TurnContext | None = None) -> None:
+    """Best-effort fan-out, optionally fenced to one active turn and epoch."""
+    for client in list(ws_clients):
+        await _send_ws_json(client, payload, turn=turn)
+
+# ``mind_lock`` only protects the short observation snapshot.  Turn commit
+# barriers fence writes after generation; no LLM call runs under this lock.
 mind_lock = asyncio.Lock()
 active_chat_turns = 0
+active_tts_requests = 0
 last_chat_turn_started = 0.0
 CHAT_PRIORITY_QUIET_SECONDS = 12.0
+_optional_work_coordinator = resource_coordinator_mod.ResourceCoordinator()
 # Must OUTLAST the LLM's own request bound (ALPECCA_OLLAMA_TIMEOUT), or the UI
 # gives up on turns the brain would have finished: her qwen3.5:9b takes ~25s
 # warm and ~40s on a cold load, and the old hardcoded 30s here served the
@@ -344,7 +454,10 @@ def _background_autonomy_snapshot() -> dict:
     }
 
 
-def _ws_chat_timeout_result(user_text: str) -> dict:
+def _ws_chat_timeout_result(user_text: str,
+                            turn: turn_context_mod.TurnContext | None = None,
+                            *, record: bool = True) -> dict:
+    turn = turn or turn_context_mod.TurnContext.default()
     low = user_text.strip().lower()
     if low in {"hi", "hello", "hey", "hiya", "yo"}:
         reply = "Hi. I'm here with you. What should we focus on next?"
@@ -364,25 +477,32 @@ def _ws_chat_timeout_result(user_text: str) -> dict:
         "ok": False,
         "fallback": True,
         "error": "WebSocket chat generation timed out.",
+        "turn": turn.audit_metadata(),
     }
-    try:
-        cognition_mod.record_chat_turn(cognition_mod.ChatTurn(
-            user_text=user_text,
-            reply=reply,
-            room=getattr(mind, "_location", ""),
-            mood=mind.state.mood_label(),
-            intent="replying",
-            model_use=model_use,
-            memory_evidence=[],
-            privacy_class="personal",
-        ))
-        cognition_mod.set_intent(cognition_mod.IntentState(
-            "waiting",
-            "Alpecca returned a bounded fallback reply after the live model stalled.",
-            target=getattr(mind, "_speaker", "creator"),
-        ))
-    except Exception:
-        pass
+    # A timeout cancels its TurnContext before this fallback is built. Keep the
+    # user-visible bounded reply, but do not create a late chat/intent write.
+    if record and not turn.cancelled.is_set():
+        try:
+            chat_turn_fields = {
+                "user_text": user_text,
+                "reply": reply,
+                "room": getattr(mind, "_location", ""),
+                "mood": mind.state.mood_label(),
+                "intent": "replying",
+                "model_use": model_use,
+                "memory_evidence": [],
+                "privacy_class": turn.memory_scope,
+            }
+            if "scope" in getattr(cognition_mod.ChatTurn, "__dataclass_fields__", {}):
+                chat_turn_fields["scope"] = turn.memory_scope
+            cognition_mod.record_chat_turn(cognition_mod.ChatTurn(**chat_turn_fields))
+            cognition_mod.set_intent(cognition_mod.IntentState(
+                "waiting",
+                "Alpecca returned a bounded fallback reply after the live model stalled.",
+                target=turn.principal,
+            ))
+        except Exception:
+            pass
     return {
         "reply": reply,
         "mood": mind.state.mood_label(),
@@ -396,6 +516,7 @@ def _ws_chat_timeout_result(user_text: str) -> dict:
         "llm_online": mind.llm.online,
         "model_use": model_use,
         "intent": cognition_mod.current_intent(),
+        "turn": turn.audit_metadata(),
     }
 
 
@@ -423,11 +544,14 @@ def _reply_repeats_user_text(user_text: str, reply: str) -> bool:
     return False
 
 
-def _repair_echo_reply(user_text: str, result: dict) -> dict:
+def _repair_echo_reply(user_text: str, result: dict,
+                       turn: turn_context_mod.TurnContext | None = None) -> dict:
     reply = str((result or {}).get("reply") or "").strip()
     if not _reply_repeats_user_text(user_text, reply):
         return result
-    repaired = _ws_chat_timeout_result(user_text)
+    # CoreMind has already committed the rejected draft. This is a
+    # presentation-only repair, never another chat/cognition write.
+    repaired = _ws_chat_timeout_result(user_text, turn=turn, record=False)
     repaired["model_use"] = {
         **(result.get("model_use") or {}),
         "requested_tier": (result.get("model_use") or {}).get("requested_tier", "reason"),
@@ -452,52 +576,79 @@ def _house_chat_reply_tier(user_text: str) -> str:
     return "reason"
 
 
-async def _locked_ws_chat_turn(user_text: str, image_desc: str | None = None,
+async def _locked_ws_chat_turn(turn: turn_context_mod.TurnContext,
+                               user_text: str, image_desc: str | None = None,
                                situation_hint: str = "",
                                reply_tier: str = "reason",
                                on_token=None) -> dict:
+    # Keep sensor state coherent, but never hold this state lock across a model
+    # call. A synchronous worker is serialized below until it finishes even if
+    # its caller has already timed out.
     async with mind_lock:
         obs = _observe()
         mind.perceive(obs)
-        situation = situation_hint or obs.window_title or ""
-        kwargs = {"on_token": on_token} if on_token is not None else {}
-        result = await asyncio.to_thread(
-            mind.chat,
-            user_text,
-            situation=situation,
-            image_desc=image_desc,
-            reply_tier=reply_tier,
-            **kwargs,
-        )
-        return _repair_echo_reply(user_text, result)
+    if not turn.allow_work():
+        return {"cancelled": True, "turn": turn.audit_metadata()}
+    situation = situation_hint or obs.window_title or ""
+    kwargs = {"on_token": on_token} if on_token is not None else {}
+    result = await asyncio.to_thread(
+        mind.chat,
+        user_text,
+        situation=situation,
+        image_desc=image_desc,
+        reply_tier=reply_tier,
+        turn=turn,
+        **kwargs,
+    )
+    if result.get("cancelled"):
+        return result
+    return _repair_echo_reply(user_text, result, turn=turn)
+
+
+def _consume_late_turn(task: "asyncio.Task") -> None:
+    """Observe a shielded worker's result so it cannot become an unhandled task."""
+    try:
+        task.result()
+    except (asyncio.CancelledError, Exception):
+        pass
 
 
 async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = None,
                                      situation_hint: str = "",
                                      reply_tier: str = "reason",
-                                     on_token=None) -> dict:
+                                     on_token=None,
+                                     turn: turn_context_mod.TurnContext | None = None) -> dict:
     global active_chat_turns, last_chat_turn_started
+    turn = turn or turn_context_mod.TurnContext.create(
+        uuid.uuid4().hex, principal="creator", surface="direct",
+    )
     active_chat_turns += 1
     last_chat_turn_started = _time.time()
+    worker = asyncio.create_task(
+        _locked_ws_chat_turn(
+            turn,
+            user_text,
+            image_desc=image_desc,
+            situation_hint=situation_hint,
+            reply_tier=reply_tier,
+            on_token=on_token,
+        )
+    )
     try:
         return await asyncio.wait_for(
-            _locked_ws_chat_turn(
-                user_text,
-                image_desc=image_desc,
-                situation_hint=situation_hint,
-                reply_tier=reply_tier,
-                on_token=on_token,
-            ),
-            timeout=WS_CHAT_REPLY_TIMEOUT_SECONDS,
+            asyncio.shield(worker), timeout=WS_CHAT_REPLY_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError:
-        return _ws_chat_timeout_result(user_text)
+        turn.cancel("timeout")
+        worker.add_done_callback(_consume_late_turn)
+        return _ws_chat_timeout_result(user_text, turn=turn)
     finally:
         active_chat_turns = max(0, active_chat_turns - 1)
 
 
 async def _pump_reply_tokens(socket: WebSocket, q: "asyncio.Queue",
-                             request_id: str, source: str) -> None:
+                             request_id: str, source: str,
+                             turn: turn_context_mod.TurnContext) -> None:
     """Forward streamed reply tokens to one client until the None sentinel.
     Send errors just end the pump -- a vanished client shouldn't take the
     chat turn (or the server) down with it."""
@@ -505,17 +656,55 @@ async def _pump_reply_tokens(socket: WebSocket, q: "asyncio.Queue",
         tok = await q.get()
         if tok is None:
             return
-        try:
-            await socket.send_json({"type": "reply_token",
-                                    "request_id": request_id,
-                                    "source": source,
-                                    "token": tok})
-        except Exception:
+        sent = await _send_ws_json(
+            socket,
+            {"type": "reply_token", "request_id": request_id,
+             "source": source, "token": tok},
+            turn=turn,
+        )
+        if not sent:
             return
 
 
 def _player_chat_priority_active() -> bool:
     return active_chat_turns > 0 or (_time.time() - last_chat_turn_started) < CHAT_PRIORITY_QUIET_SECONDS
+
+
+def _optional_work_telemetry() -> dict:
+    """Return a compact status view without exposing coordinator internals."""
+    snapshot = _optional_work_coordinator.snapshot()
+    recent = _optional_work_coordinator.telemetry()[-8:]
+    return {
+        "chat_active": snapshot["chat_active"],
+        "tts_active": snapshot["tts_active"],
+        "active": {
+            "job_id": snapshot["active_job_id"],
+            "category": snapshot["active_category"],
+            "cancelled": snapshot["active_cancelled"],
+        },
+        "recent": [
+            {
+                "event": item.event,
+                "category": item.category,
+                "detail": item.detail,
+            }
+            for item in recent
+        ],
+    }
+
+
+def _optional_work_deferred(result: object) -> bool:
+    return isinstance(result, dict) and result.get("status") == "deferred"
+
+
+async def _release_optional_work_when_settled(
+    coordinator: resource_coordinator_mod.ResourceCoordinator,
+    lease: resource_coordinator_mod.OptionalWorkLease,
+    settled: threading.Event,
+) -> None:
+    """Keep a timed-out worker's lease reserved until its thread really exits."""
+    await asyncio.to_thread(settled.wait)
+    coordinator.finish(lease)
 
 
 async def _bounded_thread(label: str, fn, *args, timeout: float = 5.0, **kwargs):
@@ -534,6 +723,56 @@ async def _bounded_thread(label: str, fn, *args, timeout: float = 5.0, **kwargs)
         _mindscape_sync_status["last_status"] = "background_timeout"
         _mindscape_sync_status["last_error"] = f"{label} exceeded {timeout:.1f}s"
         return None
+
+
+async def _optional_bounded_thread(
+    category: resource_coordinator_mod.OptionalCategory,
+    label: str,
+    fn,
+    *args,
+    timeout: float = 5.0,
+    **kwargs,
+):
+    """Run optional work through one lease while retaining bounded-thread behavior."""
+    coordinator = _optional_work_coordinator
+    coordinator.set_foreground(
+        chat_active=_player_chat_priority_active(),
+        tts_active=active_tts_requests > 0,
+    )
+    decision = coordinator.start(category)
+    if not decision.accepted or decision.lease is None:
+        return {
+            "status": "deferred",
+            "reason": decision.reason,
+            "category": category,
+        }
+
+    lease = decision.lease
+    settled = threading.Event()
+
+    def guarded():
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            settled.set()
+
+    try:
+        result = await _bounded_thread(label, guarded, timeout=timeout)
+    except BaseException as exc:
+        coordinator.fail(lease, exc)
+        raise
+
+    if settled.is_set():
+        coordinator.finish(lease)
+    else:
+        # `_bounded_thread` has already recorded its timeout and returned None.
+        # Its native thread still runs, so retain the single-flight slot until it
+        # reaches a safe natural exit.
+        coordinator.cancel(lease, "timeout")
+        asyncio.create_task(
+            _release_optional_work_when_settled(coordinator, lease, settled)
+        )
+    return result
 
 
 async def _state_thread(label: str, fn, *args, **kwargs):
@@ -793,15 +1032,24 @@ async def _run_routine(row: dict) -> dict:
     kind = str(row.get("kind") or "")
     name = str(row.get("name") or kind)
     if kind == "daily_recap":
-        result = await _bounded_thread("routine_daily_recap", mind.write_session_recap, timeout=20.0)
+        result = await _optional_bounded_thread(
+            "routine", "routine_daily_recap", mind.write_session_recap, timeout=20.0
+        )
     elif kind == "consolidate_observations":
-        result = await _bounded_thread("routine_consolidate", mind.consolidate_observations, 16, timeout=12.0)
+        result = await _optional_bounded_thread(
+            "routine", "routine_consolidate", mind.consolidate_observations, 16, timeout=12.0
+        )
     elif kind == "embed_backfill":
-        result = await _bounded_thread("routine_embed_backfill", memory_store.backfill_embeddings, timeout=10.0)
+        result = await _optional_bounded_thread(
+            "routine", "routine_embed_backfill", memory_store.backfill_embeddings, timeout=10.0
+        )
     elif kind == "vacuum":
-        result = await _bounded_thread("routine_vacuum", mindpage_mod.vacuum, timeout=20.0)
+        result = await _optional_bounded_thread(
+            "routine", "routine_vacuum", mindpage_mod.vacuum, timeout=20.0
+        )
     elif kind == "morning_greeting":
-        result = await _bounded_thread(
+        result = await _optional_bounded_thread(
+            "routine",
             "routine_morning_greeting",
             mind.compose_volunteer,
             "scheduled morning greeting",
@@ -809,6 +1057,13 @@ async def _run_routine(row: dict) -> dict:
         )
     else:
         result = {"error": f"unknown routine kind: {kind}"}
+    if _optional_work_deferred(result):
+        return {
+            "ok": True,
+            "status": "deferred",
+            "kind": kind,
+            "result": result,
+        }
     cognition_mod.record_observation(cognition_mod.CognitionObservation(
         source="routine",
         room=getattr(mind, "_location", ""),
@@ -891,13 +1146,15 @@ async def lifespan(app: FastAPI):
                 if (not chat_priority and EMBED_BACKFILL
                         and now - float(_background_autonomy_status.get("last_backfill_at") or 0.0)
                         >= BACKGROUND_EMBED_BACKFILL_INTERVAL):
-                    backfill = await _bounded_thread(
+                    backfill = await _optional_bounded_thread(
+                        "backfill",
                         "memory_backfill",
                         memory_store.backfill_embeddings,
                         timeout=8.0,
                     )
-                    _background_autonomy_status["last_backfill_at"] = now
-                    if isinstance(backfill, dict):
+                    if not _optional_work_deferred(backfill):
+                        _background_autonomy_status["last_backfill_at"] = now
+                    if isinstance(backfill, dict) and not _optional_work_deferred(backfill):
                         _background_autonomy_status["last_backfill_run"] = backfill
                         if int(backfill.get("updated") or 0) > 0:
                             await _broadcast({
@@ -916,7 +1173,8 @@ async def lifespan(app: FastAPI):
                     # self-improve, or recursive self-question) -- slow, entirely
                     # hers, and chat must never queue behind it. Its note (if any)
                     # goes to the activity ticker so you can watch her stir.
-                    res = await _bounded_thread(
+                    res = await _optional_bounded_thread(
+                        "reflection",
                         "idle_self_direct",
                         mind.idle_self_direct,
                         timeout=BACKGROUND_REFLECT_TIMEOUT,
@@ -1035,7 +1293,8 @@ async def lifespan(app: FastAPI):
                 if AutomationCfg.ROUTINES:
                     for row in routines_mod.due():
                         result = await _run_routine(row)
-                        routines_mod.mark_ran(int(row["id"]))
+                        if result.get("status") != "deferred":
+                            routines_mod.mark_ran(int(row["id"]))
                         await _broadcast({
                             "type": "activity",
                             "text": f"routine '{row.get('name')}' ran: {result.get('status', 'ok')}",
@@ -3287,20 +3546,32 @@ async def tts(req: Request):
     # shown in chat; expressive text shaping is opt-in for previews/tests.
     synth_text = spoken_text or (speech_mod.spoken_performance_text(text, synth_state) if performance_mode else text)
     speech_cues = speech_mod.speech_cues(synth_state)
+    global active_tts_requests
+    active_tts_requests += 1
+    _optional_work_coordinator.set_foreground(
+        chat_active=_player_chat_priority_active(), tts_active=True
+    )
     try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(tts_mod.synth, synth_text, synth_state),
-            timeout=TTS_ROUTE_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        tts_mod._last_error = "server voice timed out while warming or synthesizing"
-        return Response(
-            status_code=204,
-            headers={
-                "X-Alpecca-TTS-Status": "fallback",
-                "X-Alpecca-TTS-Error": _header_text(tts_mod._last_error),
-                "X-Alpecca-Voice-Preview": preview_header,
-            },
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(tts_mod.synth, synth_text, synth_state),
+                timeout=TTS_ROUTE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            tts_mod._last_error = "server voice timed out while warming or synthesizing"
+            return Response(
+                status_code=204,
+                headers={
+                    "X-Alpecca-TTS-Status": "fallback",
+                    "X-Alpecca-TTS-Error": _header_text(tts_mod._last_error),
+                    "X-Alpecca-Voice-Preview": preview_header,
+                },
+            )
+    finally:
+        active_tts_requests = max(0, active_tts_requests - 1)
+        _optional_work_coordinator.set_foreground(
+            chat_active=_player_chat_priority_active(),
+            tts_active=active_tts_requests > 0,
         )
     if not result:
         headers = {"X-Alpecca-TTS-Status": "fallback"}
@@ -3408,7 +3679,6 @@ async def channel_inbound(req: Request) -> dict:
     reply_target = (payload.get("reply_target") or "").strip()
     situation_hint = (payload.get("situation") or payload.get("context") or "").strip()
     room = (payload.get("room") or payload.get("location") or "").strip()
-    speaker = (payload.get("speaker") or "").strip().lower()
     image_desc = (payload.get("image_desc") or "").strip() or None
     # A surface (e.g. Discord) can hand us a raw image; run it through the same
     # vision + self-recognition path the app uses, so she actually sees it.
@@ -3445,21 +3715,25 @@ async def channel_inbound(req: Request) -> dict:
     if room:
         situation_hint = f"{situation_hint} (room: {room})"
 
-    if speaker in {"creator", "guest"}:
-        async with mind_lock:
-            mind.set_speaker(speaker)
+    decision = getattr(req.state, "authorization", None)
+    principal = getattr(decision, "principal", "guest") or "guest"
+    turn = turn_context_mod.TurnContext.create(
+        uuid.uuid4().hex,
+        principal=principal,
+        surface="channel",
+        portal_epoch="local-channel",
+    )
     result = await _ws_chat_turn_with_timeout(
         text,
         image_desc=image_desc,
         situation_hint=situation_hint,
         reply_tier=_house_chat_reply_tier(text),
+        turn=turn,
     )
     reply = result.get("reply", "")
     delivered = openclaw_bridge.try_deliver(reply, reply_target=reply_target)
     _mindscape_request_event_sync("channel_inbound")
     result = {**result, "delivered": delivered, "source": channel, "sender": sender}
-    if speaker:
-        result["speaker"] = speaker
     return result
 
 
@@ -3530,19 +3804,27 @@ async def ws(socket: WebSocket) -> None:
         await socket.close(code=1008)    # policy violation
         return
     await socket.accept()
-    ws_clients.add(socket)
-    # Greet with the current state so the avatar renders immediately. The
-    # features block tells modern clients what they may opt into; old clients
-    # ignore it and keep today's exact single-frame behavior.
-    await socket.send_json({"type": "state", "state": mind.state.as_dict(),
-                            "mood": mind.state.mood_label(),
-                            "appearance": mind.current_appearance().as_dict(),
-                            "llm_online": mind.llm.online,
-                            "cognition": mind.cognition_state(),
-                            "features": {"stream_chat": bool(STREAM_CHAT)}})
+    conversation_id = uuid.uuid4().hex
+    portal_epoch = _open_ws_portal(socket)
+    active_turn: turn_context_mod.TurnContext | None = None
     try:
+        # Greet only through the epoch that claimed this portal. A simultaneous
+        # newer connection can fence this one before its first frame.
+        if not await _send_ws_json(
+            socket,
+            {"type": "state", "state": mind.state.as_dict(),
+             "mood": mind.state.mood_label(),
+             "appearance": mind.current_appearance().as_dict(),
+             "llm_online": mind.llm.online,
+             "cognition": mind.cognition_state(),
+             "features": {"stream_chat": bool(STREAM_CHAT)}},
+            portal_epoch=portal_epoch,
+        ):
+            return
         while True:
             raw = await socket.receive_text()
+            if not _ws_portal_epoch_current(socket, portal_epoch):
+                return
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
@@ -3557,6 +3839,8 @@ async def ws(socket: WebSocket) -> None:
                 continue
             if _ws_background_source(source) and user_text:
                 async with mind_lock:
+                    if not _ws_portal_epoch_current(socket, portal_epoch):
+                        return
                     observed = _record_ws_background_observation(
                         source,
                         user_text,
@@ -3567,13 +3851,13 @@ async def ws(socket: WebSocket) -> None:
                             "background": True,
                         },
                     )
-                await socket.send_json({
-                    "type": "observation_ack",
-                    "request_id": request_id,
-                    "source": source,
-                    "ok": True,
-                    **observed,
-                })
+                if not await _send_ws_json(
+                    socket,
+                    {"type": "observation_ack", "request_id": request_id,
+                     "source": source, "ok": True, **observed},
+                    portal_epoch=portal_epoch,
+                ):
+                    return
                 _mindscape_request_event_sync("ws_background_observation")
                 continue
 
@@ -3596,6 +3880,8 @@ async def ws(socket: WebSocket) -> None:
                 image_desc = image_desc or (
                     "you couldn't make the image out -- your vision model isn't "
                     "available right now")
+            if not _ws_portal_epoch_current(socket, portal_epoch):
+                return
             if not user_text:
                 user_text = ("(they're showing you something through the camera "
                              "right now)" if msg.get("source") == "camera"
@@ -3609,12 +3895,24 @@ async def ws(socket: WebSocket) -> None:
             on_token = None
             pump_task = None
             token_q: asyncio.Queue | None = None
+            active_turn = turn_context_mod.TurnContext.create(
+                conversation_id,
+                principal=decision.principal,
+                surface="websocket",
+                portal_epoch=portal_epoch,
+            )
+            if not _begin_ws_portal_turn(socket, active_turn):
+                return
             if wants_stream:
                 # Live draft: tokens flow out as she writes; the final vetted
                 # reply frame below stays authoritative and replaces the draft.
-                await socket.send_json({"type": "reply_start",
-                                        "request_id": request_id,
-                                        "source": source})
+                if not await _send_ws_json(
+                    socket,
+                    {"type": "reply_start", "request_id": request_id,
+                     "source": source},
+                    turn=active_turn,
+                ):
+                    return
                 loop = asyncio.get_running_loop()
                 token_q = asyncio.Queue()
                 # Ordering is safe: every call_soon_threadsafe from the worker
@@ -3623,13 +3921,16 @@ async def ws(socket: WebSocket) -> None:
                 on_token = (lambda tok, _l=loop, _q=token_q:
                             _l.call_soon_threadsafe(_q.put_nowait, tok))
                 pump_task = asyncio.create_task(
-                    _pump_reply_tokens(socket, token_q, request_id, source))
+                    _pump_reply_tokens(
+                        socket, token_q, request_id, source, active_turn,
+                    ))
             result = await _ws_chat_turn_with_timeout(
                 user_text,
                 image_desc=image_desc,
                 situation_hint=context,
                 reply_tier=_house_chat_reply_tier(user_text),
                 on_token=on_token,
+                turn=active_turn,
             )
             if pump_task is not None and token_q is not None:
                 token_q.put_nowait(None)          # end-of-stream sentinel
@@ -3637,18 +3938,28 @@ async def ws(socket: WebSocket) -> None:
                     await pump_task
                 except Exception:
                     pass                          # client gone mid-stream is fine
-            await socket.send_json({
-                "type": "reply",
-                "request_id": request_id,
-                "source": source,
-                **({"streamed": True} if wants_stream else {}),
-                **result,
-            })
+            turn_for_reply = active_turn
+            sent = await _send_ws_json(
+                socket,
+                {"type": "reply", "request_id": request_id,
+                 "source": source,
+                 **({"streamed": True} if wants_stream else {}),
+                 **result},
+                turn=turn_for_reply,
+                allow_cancelled=(turn_for_reply.barrier.reason == "timeout"),
+            )
+            _finish_ws_portal_turn(socket, turn_for_reply)
+            active_turn = None
+            if not sent:
+                return
             _mindscape_request_event_sync("chat_reply")
     except WebSocketDisconnect:
-        pass
+        if active_turn is not None:
+            active_turn.cancel("disconnect")
     finally:
-        ws_clients.discard(socket)
+        _retire_ws_portal(
+            socket, portal_epoch=portal_epoch, reason="disconnect",
+        )
 
 
 if __name__ == "__main__":

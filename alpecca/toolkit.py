@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 from config import Actions as ActionsCfg
@@ -16,6 +17,20 @@ from alpecca import home as home_mod
 from alpecca import journal as journal_mod
 from alpecca import memory as memory_store
 from alpecca import mindpage as mindpage_mod
+from alpecca import source_perception as source_perception_mod
+from alpecca.turn_context import TurnContext
+
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_SOURCE_INSPECTION_ROOTS = {
+    "source": _REPOSITORY_ROOT / "alpecca",
+    "docs": _REPOSITORY_ROOT / "docs",
+}
+_SOURCE_BLOCKED_PARTS = {"data", ".git", "credentials", "secrets"}
+_SOURCE_BLOCKED_NAMES = {
+    ".env", ".env.local", "access_token.txt", "credentials.json",
+    "id_rsa", "secrets.json", "token.json",
+}
 
 
 def _coerce_room(text: str) -> str:
@@ -67,6 +82,7 @@ class InnateToolkit:
             "move to a Home room",
             "draft approval-required plans",
             "recall a paged-out conversation episode",
+            "inspect a bounded repository source or docs file when the creator asks",
         ]
 
     def describe(self) -> str:
@@ -101,6 +117,28 @@ class InnateToolkit:
                             },
                         },
                         "required": ["query"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "source_inspect",
+                    "description": "Creator-only local inspection of one bounded repository source or docs file.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "root": {
+                                "type": "string",
+                                "enum": ["source", "docs"],
+                                "description": "Safe repository area; source is the default.",
+                            },
+                            "path": {
+                                "type": "string",
+                                "description": "Relative file path under the selected safe area.",
+                            },
+                        },
+                        "required": ["path"],
                     },
                 },
             },
@@ -247,32 +285,47 @@ class InnateToolkit:
         )
         return tools
 
-    def execute(self, tool_name: str, args: dict) -> str:
+    def execute(self, tool_name: str, args: dict, *,
+                turn: TurnContext | None = None) -> str:
+        """Run one innate tool inside an explicit, still-live turn scope.
+
+        Innate tools used to fall back to the process-wide stores when called
+        without context.  That is unsafe now that a CoreMind can serve more
+        than one privacy scope, so contextless calls fail closed until their
+        caller supplies the authenticated turn envelope.
+        """
         if not self.enabled:
             return "innate tools are currently disabled"
+        if turn is None:
+            return "error: innate tools require an active TurnContext"
+        if not turn.allow_work():
+            return "error: turn was cancelled before the innate tool could run"
         args = args or {}
         handlers = {
             "memory_search": self._memory_search,
-            "journal_read": self._journal_read,
-            "journal_write": self._journal_write,
-            "note_to_self": self._note_to_self,
             "self_status": self._self_status,
-            "go_to_room": self._go_to_room,
             "recall_page": self._recall_page,
-            "make_plan": self._make_plan,
+            "source_inspect": self._source_inspect,
         }
+        unscoped_tools = {
+            "journal_read", "journal_write", "note_to_self", "go_to_room", "make_plan",
+        }
+        if tool_name in unscoped_tools:
+            return (
+                f"error: {tool_name} is unavailable in a scoped turn because its "
+                "storage or side effects are not scope-partitioned"
+            )
         fn = handlers.get(tool_name)
         if not fn:
             return f"unknown tool: {tool_name}"
-        started = time.time()
         try:
-            result = fn(args)
-            status = "ok" if not str(result).startswith("error") else "error"
+            result = fn(args, turn)
         except Exception as exc:
             result = f"tool failed: {exc}"
-            status = "error"
-        self._record_observation(tool_name, args, str(result), status=status,
-                                 latency_ms=(time.time() - started) * 1000.0)
+        if not turn.allow_work():
+            return "error: turn was cancelled before the innate tool result could be used"
+        # Cognition observations are not scope-keyed yet. Do not write tool
+        # args/results there from a private turn until that store is partitioned.
         return str(result)
 
     def _record_observation(self, tool_name: str, args: dict, result: str, status: str = "ok",
@@ -297,12 +350,17 @@ class InnateToolkit:
             metadata=payload,
         ))
 
-    def _memory_search(self, args: dict) -> str:
+    def _memory_search(self, args: dict, turn: TurnContext) -> str:
         query = str(args.get("query") or "").strip()
         if not query:
             return "error: memory_search requires non-empty query"
         limit = _coerce_limit(args.get("limit", 8), default=8)
-        hits = memory_store.recall(query, top_k=limit)
+        hits = memory_store.recall(
+            query,
+            top_k=limit,
+            scope=turn.memory_scope,
+            include_shared=False,
+        )
         if not hits:
             return f"no memory hit for: {query}"
         rows = []
@@ -361,22 +419,23 @@ class InnateToolkit:
                                origin=f"tool:note_to_self @{self.mind.state.mood_label()}")
         return f"note_to_self stored as desire {did} ({kind})"
 
-    def _self_status(self, _args: dict) -> str:
-        payload = self.mind.cognition_state(
-            senses={"tooling": True},
-            capabilities={"tools": {"innate_enabled": self.enabled}},
-        )
-        # Keep status compact and deterministic for model consumption.
+    def _self_status(self, _args: dict, turn: TurnContext) -> str:
+        """Return only the current turn's observable execution state.
+
+        Core mood, cognition totals, and global memory counts are not scoped
+        stores, so exposing them to a turn would reveal process-wide state.
+        """
+        audit = turn.audit_metadata()
         status = {
-            "mood": self.mind.state.mood_label(),
-            "location": getattr(self.mind, "_location", ""),
-            "memory_count": memory_store.count(),
-            "cognition": {
-                "intent": payload.get("intent"),
-                "mood": payload.get("mood"),
-                "models": payload.get("models", {}),
+            "turn": {
+                "turn_id": audit["turn_id"],
+                "conversation_id": audit["conversation_id"],
+                "principal": audit["principal"],
+                "surface": audit["surface"],
+                "privacy_scope": audit["privacy_scope"],
+                "portal_epoch": audit["portal_epoch"],
+                "commit_state": audit["commit_state"],
             },
-            "memory_counts": payload.get("memory_counts", {}),
         }
         return json.dumps(status, ensure_ascii=False)
 
@@ -401,11 +460,16 @@ class InnateToolkit:
         self.mind._last_roam_ts = time.time()
         return f"moved to {room_id}"
 
-    def _recall_page(self, args: dict) -> str:
+    def _recall_page(self, args: dict, turn: TurnContext) -> str:
         topic = str(args.get("topic") or args.get("query") or "").strip()
         if not topic:
             return "error: recall_page requires topic"
-        hits = mindpage_mod.recall_page(topic, limit=3)
+        hits = mindpage_mod.recall_page(
+            topic,
+            limit=3,
+            scope=turn.memory_scope,
+            include_shared=False,
+        )
         if not hits:
             return f"no paged episode hit for: {topic}"
         return json.dumps({
@@ -421,6 +485,29 @@ class InnateToolkit:
                 } for hit in hits
             ],
         }, ensure_ascii=False)
+
+    def _source_inspect(self, args: dict, turn: TurnContext) -> str:
+        """Inspect only creator-approved source/docs paths through the local guard."""
+        if turn.principal != "creator":
+            return "error: source_inspect is available only to the creator"
+        root = str(args.get("root") or "source").strip().lower()
+        if root not in _SOURCE_INSPECTION_ROOTS:
+            return "error: source_inspect root must be source or docs"
+        relative_path = args.get("path")
+        if not isinstance(relative_path, str) or not relative_path.strip():
+            return "error: source_inspect requires a relative path"
+        parts = [part.lower() for part in relative_path.replace("\\", "/").split("/") if part]
+        if any(part in _SOURCE_BLOCKED_PARTS for part in parts):
+            return "error: source_inspect does not allow data or credential paths"
+        filename = parts[-1] if parts else ""
+        if filename in _SOURCE_BLOCKED_NAMES:
+            return "error: source_inspect does not allow credential files"
+        result = source_perception_mod.inspect_local_source(
+            root,
+            relative_path,
+            allowed_roots=_SOURCE_INSPECTION_ROOTS,
+        )
+        return json.dumps(result.as_dict(), ensure_ascii=False)
 
     def _make_plan(self, args: dict) -> str:
         if not ActionsCfg.PLANNER:
