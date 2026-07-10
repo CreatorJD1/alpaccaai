@@ -747,6 +747,11 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     deepDispose = vrmLib.VRMUtils.deepDispose;
 
     const res = await fetch(deps.manifestUrl());
+    if (res.status === 401) {
+      // The auth boundary wants a session cookie; the legacy token query no
+      // longer authorizes anything. Point at the fix instead of the symptom.
+      throw new Error("authorization session needed - reopen through START_HERE or the launcher");
+    }
     if (!res.ok) throw new Error(`manifest fetch failed (HTTP ${res.status})`);
     const man = (await res.json()) as { vrm_mode?: boolean; model_file?: string | null };
     if (!man.vrm_mode || !man.model_file) throw new Error("no VRM body installed (manifest has no model_file)");
