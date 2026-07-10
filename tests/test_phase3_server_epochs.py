@@ -51,6 +51,42 @@ def _turn(epoch: str, conversation: str = "conversation") -> turn_context.TurnCo
     )
 
 
+def test_server_owned_conversation_identity_survives_creator_reconnects():
+    first = server._server_conversation_id(
+        "creator", "websocket", ephemeral_seed="portal-one"
+    )
+    reconnected = server._server_conversation_id(
+        "creator", "websocket", ephemeral_seed="portal-two"
+    )
+    other_surface = server._server_conversation_id(
+        "creator", "channel", ephemeral_seed="portal-two"
+    )
+
+    assert first == reconnected == "creator-websocket-primary"
+    assert other_surface == "creator-channel-primary"
+    assert other_surface != first
+
+
+def test_guest_conversation_identity_is_ephemeral_without_server_subject():
+    first = server._server_conversation_id(
+        "guest", "websocket", ephemeral_seed="portal-one"
+    )
+    second = server._server_conversation_id(
+        "guest", "websocket", ephemeral_seed="portal-two"
+    )
+
+    assert first == "guest-websocket-portal-one"
+    assert second == "guest-websocket-portal-two"
+    assert first != second
+
+
+def test_house_hq_has_server_owned_transport_routes():
+    routes = {getattr(route, "path", "") for route in server.app.routes}
+
+    assert "/channel/house-hq" in routes
+    assert "/ws/house-hq" in routes
+
+
 def test_new_epoch_fences_stale_turn_send_broadcast_and_finalizer():
     async def exercise() -> None:
         old_socket = FakeSocket()

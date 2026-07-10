@@ -3025,16 +3025,23 @@ class CoreMind:
                 return random.choice(seeds)
         return None
 
-    def compose_volunteer(self, reason: str, *, scope: str = "shared") -> str:
+    def compose_volunteer(
+        self,
+        reason: str,
+        *,
+        scope: str = "shared",
+        turn: turn_context_mod.TurnContext | None = None,
+    ) -> str:
         """Turn a grounded reason into her own short unprompted words. Safe to
         call outside the mind lock. A pure per-scope initiative budget is
         reserved before any model call; a defer returns no outgoing text.
         Offline, she speaks the reason plainly rather than through the canned
         echo voice."""
+        history_scope = turn.scope_key if turn is not None else scope
         reason_key = " ".join(str(reason or "").split())
         if reason_key:
             decision = self._initiative_budget.decide(
-                scope=scope,
+                scope=history_scope,
                 relevance=1.0,
                 dedupe_key=f"volunteer:{reason_key.casefold()}"[:256],
                 user_active=False,
@@ -3070,7 +3077,14 @@ class CoreMind:
              "prompted by anything.")
         reply = self.llm.generate(system_prompt, "(say it in your own words)",
                                   tier="fast")
-        self._history.append({"role": "assistant", "content": reply})
+        history = (
+            self._get_history(turn=turn)
+            if turn is not None
+            else self._get_history(history_scope)
+        )
+        history.append({"role": "assistant", "content": reply})
+        if turn is not None:
+            turn_context_mod.save_history(turn, history)
         return reply
 
     # --- The fourth directive, running: idle reflection ---------------------

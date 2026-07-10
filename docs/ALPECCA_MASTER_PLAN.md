@@ -194,7 +194,7 @@ Exit gate: a second CoreMind process exits or attaches; exactly one portal can
 write; caller-supplied names cannot become CreatorJD; stale epochs are rejected;
 explicit handoff immediately fences the old portal.
 
-### Phase 3: Turn transactions and context isolation - NOT STARTED
+### Phase 3: Turn transactions and context isolation - DONE (2026-07-10)
 
 Replace global `_speaker` and shared `_history` semantics with immutable
 `turn_id`, `conversation_id`, actor, surface, privacy scope, cancellation token,
@@ -204,7 +204,13 @@ Exit gate: concurrent creator/guest/app/Discord turns cannot exchange identity
 or private context; a timed-out call produces no late write, tool action, or
 duplicate response; scoped history survives restart.
 
-### Phase 4: Cue, commitment, and action closure - NOT STARTED
+Evidence: immutable scoped `TurnContext` objects, commit barriers, per-scope
+history/memory/Mindpage/tool paths, stale portal fencing, stable creator
+conversation ids, v1 history promotion, and distinct House HQ server routes are
+covered by the Phase 3 focused test suites. Future Discord identities remain
+ephemeral and capability-denied until Phase 10 provides signed bridge subjects.
+
+### Phase 4: Cue, commitment, and action closure - PARTIAL
 
 Derive a structured cue envelope for correction, confirmation, reference,
 urgency, distress, question, and action intent. Add durable commitments and tool
@@ -214,6 +220,13 @@ Completion language requires a successful receipt.
 Exit gate: "yes, do it" resumes the intended pending action; every "I did" links
 to evidence; every "I will" has a durable commitment or is rewritten as a
 proposal/inability; commitments survive restarts.
+
+Current evidence: cue parsing, scoped durable commitment states, confirmation
+resolution, receipt-gated completion wording, and restart persistence exist.
+Safe execution is still missing: prose commitments have no validated tool
+payload, and the old planner executor does not yet provide trustworthy success
+receipts. Phase 4 next adds one creator-only, scope-bound, read-only execution
+slice before any broader action is enabled.
 
 ### Phase 5: Unified initiative and grounded affect - PARTIAL
 

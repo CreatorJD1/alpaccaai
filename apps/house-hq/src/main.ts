@@ -1765,7 +1765,7 @@ function defaultAlpeccaWsBaseUrl() {
   if (configured) {
     const url = new URL(configured);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.pathname = "/ws";
+    url.pathname = "/ws/house-hq";
     url.search = "";
     url.hash = "";
     return url.toString();
@@ -1773,9 +1773,9 @@ function defaultAlpeccaWsBaseUrl() {
   const host = window.location.hostname;
   const localVite = (host === "127.0.0.1" || host === "localhost") && window.location.port === "5173";
   if (isStaticPreviewHost(host)) return "";
-  if (localVite) return "ws://127.0.0.1:8765/ws";
+  if (localVite) return "ws://127.0.0.1:8765/ws/house-hq";
   const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${scheme}//${window.location.host}/ws`;
+  return `${scheme}//${window.location.host}/ws/house-hq`;
 }
 
 const alpeccaAiBaseUrl = defaultAlpeccaHttpBaseUrl();
@@ -4244,7 +4244,7 @@ async function sendAlpeccaChat(text: string) {
     speaker: "guest",
     request_id: requestId,
   };
-  const inboundUrl = alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/channel/inbound`);
+  const inboundUrl = alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/channel/house-hq`);
   if (alpeccaAiBaseUrl && inboundUrl) {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     try {

@@ -235,6 +235,26 @@ def test_proactive_compose_uses_independent_scope_budgets(monkeypatch):
     assert len(generated) == 2
 
 
+def test_proactive_compose_writes_only_its_turn_history(monkeypatch):
+    mind, _mind_mod = _core_mind(
+        monkeypatch,
+        lambda *_args, **_kwargs: "A scoped proactive line.",
+    )
+    first_turn = _turn("scope-first")
+    second_turn = _turn("scope-second")
+
+    assert mind.compose_volunteer("first reason", turn=first_turn)
+    assert mind.compose_volunteer("second reason", turn=second_turn)
+
+    assert mind._get_history(turn=first_turn) == [
+        {"role": "assistant", "content": "A scoped proactive line."}
+    ]
+    assert mind._get_history(turn=second_turn) == [
+        {"role": "assistant", "content": "A scoped proactive line."}
+    ]
+    assert mind._history == []
+
+
 def test_empty_proactive_reason_preserves_legacy_no_budget_path(monkeypatch):
     mind, _mind_mod = _core_mind(
         monkeypatch,

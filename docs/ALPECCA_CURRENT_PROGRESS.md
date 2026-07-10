@@ -1,6 +1,6 @@
 ﻿# Alpecca Current Progress
 
-Last updated: **2026-07-09**
+Last updated: **2026-07-10**
 
 Use this as the short active status pointer.
 
@@ -19,25 +19,35 @@ Use this as the short active status pointer.
   limits are observable and never trigger silent deletion.
 - Stage 3 constrained choices now cover living-loop question choice, Soul
   same-rank tie-breaks, and proactive chatter judge/seed choice.
+- Master Plan Phase 3 turn transactions and context isolation are complete:
+  creator history survives reconnect/restart, portal epochs only fence stale
+  transports, House HQ and the app have server-owned surface routes, and
+  timeout/cancelled turns cannot commit late replies or tool writes.
+- Master Plan Phase 4 is partial. Cue parsing, scoped commitments,
+  confirmations, state transitions, and receipt-gated completion language are
+  present; approved commitments still need a validated, scope-bound execution
+  payload and trustworthy tool receipt before the phase can be called done.
 - The memory path for live chat remains keyword-first (`embed_fn=None`), now with
   bounded FTS5 lexical retrieval and background semantic backfill support.
 - No default behavior changes were made to art pipelines, House HQ animation
   architecture, or model replacement.
 
-## Security And Architecture Hold
+## Security And Architecture State
 
 A July 9 adversarial audit found that several older diagrams marked features as
-done too early. Until Phase 1 of `docs/ALPECCA_MASTER_PLAN.md` passes:
+done too early. The protected local boundary, creator principal, process
+singleton, active portal fencing, and scoped turn transactions now exist. The
+following higher-risk features remain held:
 
 - Public tunnels and live computer control are security-blocked.
 - The current Alpecca value is intentionally preserved as part of her public
   identity. It appears in House HQ source and generated bundles, so it must not
-  be accepted as proof of authorization; server authentication remains blocked
-  until identity and authorization are separated.
-- Creator identity, action approval, and portal ownership are not yet
-  authoritative server-side contracts.
-- CoreMind speaker/history state is not safely partitioned across app, Discord,
-  guest, and creator conversations.
+  be accepted as proof of authorization. Server authorization now uses the
+  separate protected secret/session path and ignores the public identity value.
+- Action execution is not enabled merely because a commitment or Workshop item
+  was approved; Phase 4 must produce a validated payload and successful receipt.
+- Future Discord/guest identities remain ephemeral and capability-denied until
+  signed bridge subjects and allowlists exist.
 - Discord text/media and Mindscape exist as partial adapters, not secure
   autonomous presence.
 - `alpecca/creator_contact.py` and `alpecca/system_pressure.py` are untracked WIP

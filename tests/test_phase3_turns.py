@@ -31,7 +31,7 @@ def test_turn_context_canonicalizes_identity_and_scope():
         principal="creator",
         surface="house hq",
         privacy_scope="creator private",
-        portal_epoch="portal 7",
+        portal_epoch="portal 8",
     )
 
     assert creator.principal == "creator"
@@ -43,6 +43,9 @@ def test_turn_context_canonicalizes_identity_and_scope():
     assert creator.portal_epoch == "portal-7"
     assert creator.turn_id != same_scope_new_turn.turn_id
     assert creator.scope_key == same_scope_new_turn.scope_key
+    assert creator.scope_key.startswith("v2:")
+    assert "portal-7" not in creator.scope_key
+    assert same_scope_new_turn.portal_epoch == "portal-8"
     assert creator.scope_key != untrusted_identity.scope_key
     with pytest.raises(dataclasses.FrozenInstanceError):
         creator.principal = "guest"
@@ -54,36 +57,29 @@ def test_durable_history_isolated_by_full_turn_scope(tmp_path):
         "conversation-1",
         principal="creator",
         surface="app",
-        privacy_scope="creator-private",
+        privacy_scope="history-scope",
         portal_epoch="portal-a",
     )
     guest = turn_context.TurnContext.create(
         "conversation-1",
         principal="guest",
         surface="app",
-        privacy_scope="guest-private",
+        privacy_scope="history-scope",
         portal_epoch="portal-a",
     )
     other_conversation = turn_context.TurnContext.create(
         "conversation-2",
         principal="creator",
         surface="app",
-        privacy_scope="creator-private",
+        privacy_scope="history-scope",
         portal_epoch="portal-a",
     )
     other_surface = turn_context.TurnContext.create(
         "conversation-1",
         principal="creator",
         surface="house-hq",
-        privacy_scope="creator-private",
+        privacy_scope="history-scope",
         portal_epoch="portal-a",
-    )
-    other_epoch = turn_context.TurnContext.create(
-        "conversation-1",
-        principal="creator",
-        surface="app",
-        privacy_scope="creator-private",
-        portal_epoch="portal-b",
     )
 
     turn_context.save_history(
@@ -106,17 +102,11 @@ def test_durable_history_isolated_by_full_turn_scope(tmp_path):
         [{"role": "user", "content": "other-surface marker"}],
         db_path=db_path,
     )
-    turn_context.save_history(
-        other_epoch,
-        [{"role": "user", "content": "other-epoch marker"}],
-        db_path=db_path,
-    )
-
     restarted_creator = turn_context.TurnContext.create(
         "conversation-1",
         principal="creator",
         surface="app",
-        privacy_scope="creator-private",
+        privacy_scope="history-scope",
         portal_epoch="portal-a",
     )
     assert turn_context.load_history(restarted_creator, db_path=db_path) == [
@@ -131,15 +121,104 @@ def test_durable_history_isolated_by_full_turn_scope(tmp_path):
     assert turn_context.load_history(other_surface, db_path=db_path) == [
         {"role": "user", "content": "other-surface marker"}
     ]
-    assert turn_context.load_history(other_epoch, db_path=db_path) == [
-        {"role": "user", "content": "other-epoch marker"}
-    ]
-
     turn_context.clear_history(guest, db_path=db_path)
     assert turn_context.load_history(guest, db_path=db_path) == []
     assert turn_context.load_history(restarted_creator, db_path=db_path) == [
         {"role": "user", "content": "creator-only history marker"}
     ]
+
+
+def test_reconnect_with_new_portal_epoch_retains_durable_history(tmp_path):
+    db_path = tmp_path / "reconnect-history.db"
+    first_portal = turn_context.TurnContext.create(
+        "stable-conversation",
+        principal="creator",
+        surface="websocket",
+        privacy_scope="creator-private",
+        portal_epoch="portal-old",
+    )
+    turn_context.save_history(
+        first_portal,
+        [{"role": "user", "content": "before reconnect"}],
+        db_path=db_path,
+    )
+
+    reconnected = turn_context.TurnContext.create(
+        "stable-conversation",
+        principal="creator",
+        surface="websocket",
+        privacy_scope="creator-private",
+        portal_epoch="portal-new",
+    )
+
+    assert reconnected.scope_key == first_portal.scope_key
+    assert reconnected.portal_epoch != first_portal.portal_epoch
+    assert reconnected.audit_metadata()["portal_epoch"] == "portal-new"
+    assert turn_context.load_history(reconnected, db_path=db_path) == [
+        {"role": "user", "content": "before reconnect"}
+    ]
+
+    updated_history = [
+        {"role": "user", "content": "before reconnect"},
+        {"role": "assistant", "content": "after reconnect"},
+    ]
+    turn_context.save_history(reconnected, updated_history, db_path=db_path)
+    assert turn_context.load_history(first_portal, db_path=db_path) == updated_history
+
+    from alpecca.db import connect
+
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT scope_key, portal_epoch FROM conversation_histories"
+        ).fetchall()
+    assert [(row["scope_key"], row["portal_epoch"]) for row in rows] == [
+        (reconnected.scope_key, "portal-new")
+    ]
+
+
+def test_creator_primary_promotes_latest_epoch_bound_v1_history(tmp_path):
+    db_path = tmp_path / "legacy-history.db"
+    turn_context.ensure_history_schema(db_path)
+    from alpecca.db import connect
+
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO conversation_histories
+                (scope_key, principal, surface, privacy_scope, portal_epoch,
+                 conversation_id, updated_at, history_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "v1:creator-personal:creator:websocket:old-epoch:random-id",
+                "creator",
+                "websocket",
+                "creator-personal",
+                "old-epoch",
+                "random-id",
+                10.0,
+                '[{"role":"user","content":"legacy reconnect marker"}]',
+            ),
+        )
+
+    primary = turn_context.TurnContext.create(
+        "creator-websocket-primary",
+        principal="creator",
+        surface="websocket",
+        portal_epoch="new-epoch",
+    )
+    assert turn_context.load_history(primary, db_path=db_path) == [
+        {"role": "user", "content": "legacy reconnect marker"}
+    ]
+
+    with connect(db_path) as conn:
+        promoted = conn.execute(
+            "SELECT history_json, portal_epoch FROM conversation_histories "
+            "WHERE scope_key=?",
+            (primary.scope_key,),
+        ).fetchone()
+    assert promoted is not None
+    assert promoted["portal_epoch"] == "new-epoch"
 
 
 def test_scoped_memory_and_mindpage_retrieval_do_not_cross_private_scopes(tmp_path):

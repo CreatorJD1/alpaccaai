@@ -172,9 +172,15 @@ class TurnContext:
 
     @property
     def scope_key(self) -> str:
+        """Stable durable identity for one conversation history.
+
+        A portal epoch identifies a transport lease, not a conversation.  It
+        remains on the turn for stale-portal fencing and audit metadata, but a
+        reconnect must resolve to the same durable history row.
+        """
         return ":".join((
-            "v1", self.privacy_scope, self.principal, self.surface,
-            self.portal_epoch, self.conversation_id,
+            "v2", self.privacy_scope, self.principal, self.surface,
+            self.conversation_id,
         ))
 
     @property
@@ -245,18 +251,46 @@ def load_history(context: TurnContext, db_path: Path = DB_PATH) -> list[dict]:
     ensure_history_schema(db_path)
     from alpecca.db import connect
 
+    promote_legacy = False
     with connect(db_path) as conn:
         row = conn.execute(
             "SELECT history_json FROM conversation_histories WHERE scope_key=?",
             (context.scope_key,),
         ).fetchone()
+        # Phase 3 originally included the transport epoch (and a random socket
+        # conversation id) in its v1 key. Promote the newest matching creator
+        # row when the stable per-surface primary conversation first loads.
+        # Guests are never coalesced this way because they require a distinct
+        # server-issued subject before durable cross-session identity is safe.
+        if (
+            row is None
+            and context.principal == "creator"
+            and context.conversation_id.endswith("-primary")
+        ):
+            row = conn.execute(
+                """
+                SELECT history_json
+                  FROM conversation_histories
+                 WHERE scope_key LIKE 'v1:%'
+                   AND principal=?
+                   AND surface=?
+                   AND privacy_scope=?
+                 ORDER BY updated_at DESC
+                 LIMIT 1
+                """,
+                (context.principal, context.surface, context.privacy_scope),
+            ).fetchone()
+            promote_legacy = row is not None
     if not row:
         return []
     try:
         value = json.loads(row["history_json"])
     except (TypeError, ValueError, json.JSONDecodeError):
         return []
-    return _clean_history(value if isinstance(value, list) else [])
+    cleaned = _clean_history(value if isinstance(value, list) else [])
+    if cleaned and promote_legacy:
+        save_history(context, cleaned, db_path=db_path)
+    return cleaned
 
 
 def save_history(context: TurnContext, history: list[dict], db_path: Path = DB_PATH) -> None:
@@ -273,6 +307,7 @@ def save_history(context: TurnContext, history: list[dict], db_path: Path = DB_P
                  conversation_id, updated_at, history_json)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(scope_key) DO UPDATE SET
+                portal_epoch=excluded.portal_epoch,
                 updated_at=excluded.updated_at,
                 history_json=excluded.history_json
             """,

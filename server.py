@@ -112,6 +112,55 @@ def _ws_background_source(source: str) -> bool:
     return (source or "").strip().lower() in BACKGROUND_WS_SOURCES
 
 
+def _server_conversation_id(
+    principal: str,
+    surface: str,
+    *,
+    ephemeral_seed: str = "",
+) -> str:
+    """Return a server-owned durable conversation identifier.
+
+    Alpecca currently has one authenticated creator principal, so that
+    principal keeps one durable conversation per surface across reconnects and
+    process restarts. Future guest support needs a server-issued subject before
+    it can persist safely; until then guest contexts are deliberately scoped to
+    a server-generated connection/request seed instead of any caller-supplied
+    speaker, source, or display name.
+    """
+    role = "creator" if principal == "creator" else "guest"
+    clean_surface = re.sub(r"[^a-z0-9]+", "-", str(surface or "unknown").lower())
+    clean_surface = clean_surface.strip("-")[:48] or "unknown"
+    if role == "creator":
+        return f"creator-{clean_surface}-primary"
+    clean_seed = re.sub(r"[^a-z0-9]+", "-", str(ephemeral_seed or uuid.uuid4().hex).lower())
+    clean_seed = clean_seed.strip("-")[:64] or uuid.uuid4().hex
+    return f"guest-{clean_surface}-{clean_seed}"
+
+
+def _websocket_route_surface(socket: WebSocket) -> str:
+    path = str(getattr(getattr(socket, "url", None), "path", ""))
+    return "house-hq" if path == "/ws/house-hq" else "websocket"
+
+
+def _proactive_turn_context() -> turn_context_mod.TurnContext:
+    active = _active_ws_portal
+    if active is not None:
+        socket, epoch = active
+        surface = _websocket_route_surface(socket)
+        return turn_context_mod.TurnContext.create(
+            _server_conversation_id("creator", surface),
+            principal="creator",
+            surface=surface,
+            portal_epoch=epoch,
+        )
+    return turn_context_mod.TurnContext.create(
+        _server_conversation_id("creator", "channel"),
+        principal="creator",
+        surface="channel",
+        portal_epoch="local-channel",
+    )
+
+
 def _record_ws_background_observation(
     source: str,
     text: str,
@@ -620,7 +669,9 @@ async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = No
                                      turn: turn_context_mod.TurnContext | None = None) -> dict:
     global active_chat_turns, last_chat_turn_started
     turn = turn or turn_context_mod.TurnContext.create(
-        uuid.uuid4().hex, principal="creator", surface="direct",
+        _server_conversation_id("creator", "direct"),
+        principal="creator",
+        surface="direct",
     )
     active_chat_turns += 1
     last_chat_turn_started = _time.time()
@@ -1221,10 +1272,12 @@ async def lifespan(app: FastAPI):
                     if reachable:
                         # Compose outside the lock -- the LLM call can take
                         # seconds and chat shouldn't stall behind her musing.
+                        proactive_turn = _proactive_turn_context()
                         text = await _bounded_thread(
                             "compose_volunteer",
                             mind.compose_volunteer,
                             reason,
+                            turn=proactive_turn,
                             timeout=BACKGROUND_VOLUNTEER_TIMEOUT,
                         )
                         if text:
@@ -3656,6 +3709,7 @@ def portrait() -> FileResponse:
 
 
 @app.post("/channel/inbound")
+@app.post("/channel/house-hq")
 async def channel_inbound(req: Request) -> dict:
     """Inbound bridge for OpenClaw (or any other messaging surface).
 
@@ -3717,11 +3771,18 @@ async def channel_inbound(req: Request) -> dict:
 
     decision = getattr(req.state, "authorization", None)
     principal = getattr(decision, "principal", "guest") or "guest"
+    route_surface = (
+        "house-hq" if req.url.path == "/channel/house-hq" else "channel"
+    )
     turn = turn_context_mod.TurnContext.create(
-        uuid.uuid4().hex,
+        _server_conversation_id(
+            principal,
+            route_surface,
+            ephemeral_seed=uuid.uuid4().hex,
+        ),
         principal=principal,
-        surface="channel",
-        portal_epoch="local-channel",
+        surface=route_surface,
+        portal_epoch=f"local-{route_surface}",
     )
     result = await _ws_chat_turn_with_timeout(
         text,
@@ -3775,6 +3836,7 @@ def _decode_image(data_url: str) -> bytes | None:
 
 
 @app.websocket("/ws")
+@app.websocket("/ws/house-hq")
 async def ws(socket: WebSocket) -> None:
     client_host = socket.client.host if socket.client else ""
     decision = _AUTHORITY.authorize_request(
@@ -3804,8 +3866,13 @@ async def ws(socket: WebSocket) -> None:
         await socket.close(code=1008)    # policy violation
         return
     await socket.accept()
-    conversation_id = uuid.uuid4().hex
     portal_epoch = _open_ws_portal(socket)
+    route_surface = _websocket_route_surface(socket)
+    conversation_id = _server_conversation_id(
+        decision.principal,
+        route_surface,
+        ephemeral_seed=portal_epoch,
+    )
     active_turn: turn_context_mod.TurnContext | None = None
     try:
         # Greet only through the epoch that claimed this portal. A simultaneous
@@ -3898,7 +3965,7 @@ async def ws(socket: WebSocket) -> None:
             active_turn = turn_context_mod.TurnContext.create(
                 conversation_id,
                 principal=decision.principal,
-                surface="websocket",
+                surface=route_surface,
                 portal_epoch=portal_epoch,
             )
             if not _begin_ws_portal_turn(socket, active_turn):

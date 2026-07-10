@@ -1,13 +1,13 @@
 # Alpecca — Handoff (updated 2026-07-10)
 
-## Active Claude Code Handoff: Master Phase 3 onward
+## Active Claude Code Handoff: Master Phase 4 onward
 
 ### User direction and entry point
 
-Continue the **master architecture plan from Phase 3 onward**, not merely the
+Continue the **master architecture plan from Phase 4 onward**, not merely the
 smaller agentic Stage 3 choice-point feature. `docs/ALPECCA_MASTER_PLAN.md` is
-the full sequencing authority. Start with Phase 3: turn transactions and
-context isolation, then continue through Phases 4-14 in the order below.
+the full sequencing authority. Phase 3's turn transaction and context-isolation
+gate passed on 2026-07-10; continue through Phases 4-14 in the order below.
 
 The older agentic Stage 3 foundation already exists:
 `alpecca/choice.py` provides strict local tiny-JSON choices; `alpecca/mind.py`
@@ -16,13 +16,12 @@ uses them for living questions, same-rank Soul ties, and proactive judgement;
 they do not substitute for actor isolation, commitments, approvals, or portal
 ownership.
 
-Phase 2 is not honestly complete: a protected local session boundary exists,
-but authoritative `Principal` derivation, the Windows process singleton, and an
-active portal lease are still missing. Before modifying Phase 3, make the
-smallest Phase 2 prerequisite slice necessary to derive the actor/surface/epoch
-for every turn. Do not claim either phase complete until their exit gates pass.
+The Phase 2 prerequisite slice is now present: protected authorization derives
+the creator principal, the Windows process singleton prevents a second live
+CoreMind, and one active WebSocket portal epoch fences its predecessor. Broader
+device/passkey pairing remains future hardening and is not a Phase 3 blocker.
 
-### Phase 3: turn transactions and context isolation - START HERE
+### Phase 3: turn transactions and context isolation - DONE (2026-07-10)
 
 Build immutable per-turn context with at least `turn_id`, `conversation_id`,
 server-derived actor/principal, surface, privacy scope, cancellation token, and
@@ -36,11 +35,16 @@ protected server session/principal, never from a client `speaker`, `source`,
 channel, or display-name field. A timeout/cancel must fence all late writes,
 tool actions, broadcasts, and duplicate replies through a commit barrier.
 
-Exit gate: concurrent creator, guest, app, House HQ, and future Discord turns
-cannot see each other's context; a timed-out turn cannot produce a late side
-effect; restart preserves scope boundaries; stale portal epochs are rejected.
+Implemented evidence: immutable `TurnContext`, server-derived principal and
+surface, scoped history/memory/Mindpage/tool access, commit barriers, stable
+creator conversation ids, durable reconnect/restart recovery, and separate
+House HQ routes (`/channel/house-hq`, `/ws/house-hq`). Portal epochs remain
+transport fences rather than durable history identity. The latest compatible v1
+creator history is promoted once to the v2 primary scope; guest contexts remain
+ephemeral until a server-issued guest subject exists. Focused Phase 3 tests cover
+scope isolation, timeout late-write rejection, stale epochs, and reconnects.
 
-### Phase 4: cue, commitment, and action closure
+### Phase 4: cue, commitment, and action closure - IN PROGRESS
 
 Add a structured cue envelope for corrections, confirmations, references,
 urgency, distress, questions, and action intent. Add durable commitments and
@@ -149,7 +153,7 @@ claims only from evidence.
   Claude begins implementation.
 - Stage 0 recovery baseline: `a79a6a3`; local authorization/capability work:
   `0eb1016`; compact Soul work: `bdbf8fc`; local tool/stream fallback fix:
-  `afcbf07`.
+  `afcbf07`; scoped cognition/V4 checkpoint: `cde2d91`.
 - The legacy `data/access_token.txt` remains present and untouched.
 
 Everything below this line is retained historical evidence. It may describe
