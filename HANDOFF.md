@@ -1,4 +1,78 @@
-# Alpecca — Handoff (updated 2026-07-09)
+# Alpecca — Handoff (updated 2026-07-10)
+
+## Active Claude Code Handoff: Stage 3 validation and tuning
+
+### Scope
+
+Stage 3 is implemented. Continue with **runtime validation and bounded tuning**
+of local LLM-in-the-loop choice points; do not reimplement the feature or widen
+autonomy. The relevant paths are:
+
+- `alpecca/choice.py`: strict tiny-JSON parser and local fast-tier chooser.
+- `alpecca/mind.py`: proactive judge/seed choice (`compose_volunteer`), living
+  world question choice (`living_world_tick`), and Soul same-rank tie-break
+  (`soul_state`).
+- `config.py`: `ALPECCA_LIVING_LLM`, `ALPECCA_SOUL_LLM`, and
+  `ALPECCA_PROACTIVE_LLM` are enabled by default; deterministic code remains
+  the fallback for any offline, malformed, timed-out, or out-of-range response.
+- `alpecca/soul.py`: compact hidden deliberation keeps background Soul work to
+  a selected focus plus quantized `{subagent, rank, urgency}` validation data.
+  The detailed slate is retained only for UI/review (`verbose=True`).
+
+The seven Soul roles are symbolic, grounded Python readers. They are **not**
+seven concurrent LLM runtimes. Do not replace or bypass them. New LLM output is
+only permitted to choose within code-owned options and must never promote a
+lower-ranked Soul intention.
+
+### Model and capability constraints
+
+- The approved local model is `qwen3.5:9b` through Ollama. Do not revive,
+  download, or reference `qwen3:8b`.
+- If a separate fast model is not already installed and approved, set
+  `ALPECCA_FAST_MODEL=qwen3.5:9b` for the Stage 3 smoke test rather than
+  downloading another model.
+- Keep live context at the configured 8K budget. Mindpage owns measured token
+  fitting; do not add verbose hidden deliberation to prompts.
+- No LLM call under `mind_lock`; no automatic external action; no system-level
+  mutation; no additional Alpecca instance.
+- Phone/contact-channel security and any communication-identifier work are
+  explicitly deferred until after the staged plan. Do not revoke, rotate,
+  delete, or alter existing keys/tokens or the public Alpecca identity.
+
+### Acceptance gates
+
+1. Run `python -m pytest -q tests\test_core.py` and
+   `python -m pytest -q tests\test_hidden_deliberation.py`; current checkpoint:
+   `352 passed` for `test_core.py`.
+2. Run `npm.cmd run house:build`; current checkpoint passes, with only the
+   existing Vite large-chunk advisory.
+3. With local Ollama available, run one living tick, one same-rank Soul
+   tie-break, and one eligible proactive check. Confirm the model receives only
+   bounded options, malformed output falls back quietly, and a real tie-break
+   records a secret-free `CognitionObservation` with source `soul_choice`.
+4. Confirm proactive delivery remains cooldown-bound: a false judge or any
+   failure must broadcast nothing and must not create a second follow-up.
+5. Confirm compact background Soul work contains no `slate`/`by_category` prose
+   while Workshop/UI review still receives the verbose, explainable slate.
+
+Useful regression tests include `test_constrained_choice_parse_matrix`,
+`test_soul_llm_tiebreak_stays_within_winning_rank`,
+`test_proactive_llm_judge_false_stays_quiet`, and
+`tests/test_hidden_deliberation.py`.
+
+### Current repository state
+
+- Branch: `feat/vrm-preview`; latest pushed checkpoint: `afcbf07`.
+- Stage 0 recovery baseline: `a79a6a3`.
+- Stage 1 local authorization/capability boundary: `0eb1016`.
+- Compact Soul fallback: `bdbf8fc`; local tool/stream/fallback routing fix:
+  `afcbf07`.
+- Preserve unrelated dirty work exactly as found:
+  `apps/house-hq/src/vrmEmbodiment.ts`, `config.py`, and untracked
+  `alpecca/creator_contact.py` / `alpecca/system_pressure.py`.
+- The legacy `data/access_token.txt` remains present and untouched. Public
+  identity is not server authorization; the protected local session boundary is
+  already committed and tested.
 
 ## Master architecture checkpoint (2026-07-09)
 
