@@ -1871,7 +1871,7 @@ def test_planner_retries_once_after_malformed_json():
     assert cognition.proposal_payload(result["proposals"][0])["tool"] == "self_status"
 
 
-def test_cognition_route_executes_only_user_approved_planner_step():
+def test_cognition_route_retires_legacy_planner_execution():
     from fastapi.testclient import TestClient
     import server
     import sqlite3
@@ -1888,22 +1888,15 @@ def test_cognition_route_executes_only_user_approved_planner_step():
     client = TestClient(server.app)
     auth_headers = {server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET}
     try:
-        denied = client.post(f"/cognition/proposals/{proposal_id}", json={
-            "status": "accepted",
-            "approved_by_user": False,
-            "execute": True,
-        }, headers=auth_headers)
-        assert denied.status_code == 403
-
-        accepted = client.post(f"/cognition/proposals/{proposal_id}", json={
+        retired = client.post(f"/cognition/proposals/{proposal_id}", json={
             "status": "accepted",
             "approved_by_user": True,
             "execute": True,
         }, headers=auth_headers)
-        assert accepted.status_code == 200
-        data = accepted.json()
-        assert data["execution"]["tool"] == "self_status"
-        assert data["execution"]["evaluation"]["metric"] == "planner_step_execution"
+        assert retired.status_code == 409
+        assert "payload-backed commitment" in retired.json()["detail"]
+        row = cognition.get_action_proposal(proposal_id)
+        assert row["status"] == "planned"
     finally:
         with sqlite3.connect(state_store.DB_PATH) as conn:
             conn.execute("DELETE FROM proposal_evaluations WHERE proposal_id=?", (int(proposal_id),))
@@ -2036,6 +2029,11 @@ def test_routines_vacuum_kind_dispatches_mindpage_vacuum(monkeypatch):
         return True
 
     monkeypatch.setattr(server.mindpage_mod, "vacuum", fake_vacuum)
+    monkeypatch.setattr(
+        server.mind,
+        "reserve_initiative",
+        lambda **_kwargs: {"allowed": True, "decision": "allow"},
+    )
 
     client = TestClient(server.app)
     headers = {server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET}
@@ -4743,16 +4741,15 @@ def test_tts_auto_does_not_substitute_edge_for_af_heart():
     assert "_synth_edge" not in kokoro_block
 
 
-def test_classic_voice_panel_is_read_only_not_voice_picker():
+def test_void_system_voice_panel_is_read_only_not_voice_picker():
     root = Path(__file__).resolve().parent.parent
-    text = (root / "web" / "home.html").read_text(encoding="utf-8")
-    start = text.index("function voicePanelHTML")
-    panel = text[start:text.index("function systemStatusHTML", start)]
-    assert "Hear Alpecca's current voice" in panel
+    text = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    start = text.index('if (systemId === "voice")')
+    panel = text[start:text.index('if (systemId === "studio")', start)]
+    assert "Hear current voice" in panel
+    assert "data-system-action=\"voice-preview\"" in panel
     assert "Voice samples" not in panel
-    assert "testAlpeccaVoice('lively')" not in panel
-    assert "testAlpeccaVoice('tender')" not in panel
-    assert "viewer is not choosing a voice mode" in panel
+    assert "viewer does not choose her voice mode" in panel
 
 
 def test_house_hq_exposes_chat_grounding_review_action():
@@ -6197,9 +6194,7 @@ def test_chat_zerogpu_timeout_falls_back_to_local(monkeypatch):
 
 
 def test_sentence_splitter_reference_cases_for_js_port():
-    """Pins speech._sentences behavior. web/home.html carries a JS port
-    (sentencesOf) for sentence-level TTS -- if this test's expectations move,
-    the JS port must move with them."""
+    """Pins the sentence boundaries used by the local TTS path."""
     from alpecca.speech import _sentences
 
     assert _sentences("Hello there. How are you? I'm fine!") == [

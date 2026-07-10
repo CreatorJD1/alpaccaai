@@ -15,8 +15,9 @@ The captured URL is written to `<data>/preview.json` and `<data>/preview_url.txt
 so the UI, a test, or another agent can answer "what's the public preview URL?"
 without scraping a console. Stop a tunnel this script owns with Ctrl-C.
 
-PRIVACY: a quick-tunnel link is only as private as ALPECCA_ACCESS_TOKEN. Blank
-token = anyone with the URL reaches her. Set a token before handing the link out.
+PRIVACY: quick-tunnel URLs do not carry credentials. A remote browser must be
+enrolled and then presents a signed HttpOnly trusted-device cookie. Still treat
+the tunnel URL as private and stop it when the preview is finished.
 """
 from __future__ import annotations
 

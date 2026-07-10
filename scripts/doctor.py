@@ -7,7 +7,8 @@ Run it any time she won't start, or just to check she's healthy:
 It checks the things that actually block a launch -- Python, the few required
 packages, Ollama + her model, the port, and which senses are switched on -- and
 for anything missing it prints the exact command to fix it. It imports nothing
-from the project, so it works even when config itself is the problem.
+from config. Authorization probes deliberately reuse ``alpecca.auth`` so the
+doctor and server read the same protected credential without exposing it.
 
 Phase 0 of docs/BRINGING_HER_TO_LIFE.md: make her runnable before anything else.
 """
@@ -20,8 +21,14 @@ import shutil
 import socket
 import sys
 import urllib.error
-import urllib.parse
 import urllib.request
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from alpecca import auth as auth_mod  # noqa: E402
 
 G, R, Y, B, X = "\033[92m", "\033[91m", "\033[93m", "\033[96m", "\033[0m"
 try:
@@ -31,6 +38,8 @@ except Exception:
 
 blockers: list[str] = []
 notes: list[str] = []
+authorization_headers: dict[str, str] = {}
+alpecca_server_identified = False
 
 
 def ok(msg): print(f"  {G}OK{X}    {msg}")
@@ -52,17 +61,22 @@ def env_on(name: str, default: str = "0") -> bool:
     return not env_off(name, default)
 
 
-def route_url(path: str, token: str = "") -> str:
-    url = f"http://127.0.0.1:{port}{path}"
-    if token:
-        join = "&" if "?" in url else "?"
-        url = f"{url}{join}token={urllib.parse.quote(token)}"
-    return url
+def route_url(path: str) -> str:
+    return f"http://127.0.0.1:{port}{path}"
 
 
-def fetch_json(path: str, token: str = "", timeout: float = 1.8) -> dict | None:
+def fetch_json(
+    path: str,
+    timeout: float = 1.8,
+    *,
+    authenticated: bool = True,
+) -> dict | None:
+    if authenticated and not alpecca_server_identified:
+        return None
+    headers = authorization_headers if authenticated else {}
+    req = urllib.request.Request(route_url(path), headers=headers)
     try:
-        with urllib.request.urlopen(route_url(path, token), timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status != 200:
                 return None
             return json.loads(resp.read().decode("utf-8") or "{}")
@@ -70,9 +84,11 @@ def fetch_json(path: str, token: str = "", timeout: float = 1.8) -> dict | None:
         return None
 
 
-def post_tts_preview(token: str = "", preview: str = "tender",
+def post_tts_preview(preview: str = "tender",
                      timeout: float = 75.0) -> dict | None:
-    url = route_url("/tts", token)
+    if not alpecca_server_identified:
+        return {"status": 0, "error": "Alpecca is not identified on /healthz"}
+    url = route_url("/tts")
     data = json.dumps({
         "text": f"Alpecca {preview} voice preview.",
         "preview": preview,
@@ -80,7 +96,10 @@ def post_tts_preview(token: str = "", preview: str = "tender",
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={
+            **authorization_headers,
+            "Content-Type": "application/json",
+        },
         method="POST",
     )
     try:
@@ -203,8 +222,19 @@ else:
     warn(f"deep tier '{deep}' configured; doctor only verifies local/zerogpu deeply")
 
 # --- Auth -----------------------------------------------------------------
-token = os.environ.get("ALPECCA_ACCESS_TOKEN", "")
 remote = os.environ.get("ALPECCA_REMOTE", "0") not in ("", "0", "false", "False")
+repo_root = str(REPO_ROOT)
+home_dir = os.environ.get("ALPECCA_HOME", str(REPO_ROOT / "data"))
+authorization_error = ""
+try:
+    authorization_secret = auth_mod.load_or_create_authorization_secret(
+        Path(home_dir)
+    )
+    authorization_headers = {
+        auth_mod.AUTHORIZATION_HEADER: authorization_secret,
+    }
+except Exception as exc:
+    authorization_error = f"{type(exc).__name__}: {exc}"
 
 # --- Port -----------------------------------------------------------------
 print("\nNetwork")
@@ -213,13 +243,11 @@ s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 try:
     s.bind(("127.0.0.1", port)); ok(f"port {port} is free")
 except OSError:
-    try:
-        with urllib.request.urlopen(route_url("/state", token), timeout=1.2) as resp:
-            if resp.status == 200:
-                ok(f"port {port} is in use by a responding Alpecca server")
-            else:
-                warn(f"port {port} is in use and /state returned {resp.status}")
-    except Exception:
+    health = fetch_json("/healthz", timeout=1.2, authenticated=False)
+    if health == {"service": "alpecca", "version": 1}:
+        alpecca_server_identified = True
+        ok(f"port {port} is in use by Alpecca (/healthz identified version 1)")
+    else:
         bad(f"port {port} is already in use, but Alpecca routes did not answer",
             f"close the other server window, or:  "
             f"Get-NetTCPConnection -LocalPort {port} | %{{ Stop-Process -Id $_.OwningProcess -Force }}")
@@ -228,22 +256,49 @@ finally:
 
 # --- Auth / routes ---------------------------------------------------------
 print("\nApp routes")
-if token:
-    ok("access token configured")
-elif remote:
-    bad("remote access is ON but no ALPECCA_ACCESS_TOKEN is set",
-        "set ALPECCA_ACCESS_TOKEN or turn ALPECCA_REMOTE off")
+if authorization_headers:
+    if auth_mod.AUTH_ENV_NAME in os.environ:
+        provider = f"the {auth_mod.AUTH_ENV_NAME} protected override"
+    elif os.name == "nt":
+        provider = "Windows Credential Manager"
+    else:
+        provider = "the process-local authorization fallback"
+    ok(f"protected authorization header ready via {provider} (secret not displayed)")
 else:
-    ok("private local mode; no access token required")
+    bad(
+        f"protected authorization credential unavailable ({authorization_error})",
+        "install pywin32 on Windows, then re-run python scripts\\doctor.py",
+    )
+
+ok("loopback browser access uses one-use trusted-device bootstrap")
+if remote:
+    ok("remote auth uses HTTPS trusted-device enrollment and a signed HttpOnly session")
+else:
+    ok("remote access is off; its auth path is HTTPS trusted-device enrollment")
 
 def check_route(path: str, label: str):
-    url = route_url(path, token)
+    if not alpecca_server_identified:
+        warn(f"{label} route not checked; no running Alpecca process was identified",
+             f"start her, then open http://127.0.0.1:{port}")
+        return
+    if not authorization_headers:
+        warn(f"{label} route not checked; protected authorization is unavailable")
+        return
+    req = urllib.request.Request(route_url(path), headers=authorization_headers)
     try:
-        with urllib.request.urlopen(url, timeout=1.5) as resp:
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
             if resp.status == 200:
                 ok(f"{label} route returns 200")
             else:
                 warn(f"{label} route returned {resp.status}")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            warn(
+                f"{label} rejected the protected authorization header",
+                "restart the doctor and server under the same Windows user/credential",
+            )
+        else:
+            warn(f"{label} route returned {exc.code}")
     except Exception:
         warn(f"{label} route not responding yet", f"start her, then open http://127.0.0.1:{port}")
 
@@ -262,8 +317,6 @@ else:
     warn("House HQ build output missing", "npm.cmd run house:build")
 
 print("\nRemote preview (phone / mobile data)")
-repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-home_dir = os.environ.get("ALPECCA_HOME", os.path.join(repo_root, "data"))
 cf_config = os.environ.get(
     "ALPECCA_CLOUDFLARE_CONFIG",
     os.path.join(home_dir, "cloudflared", "config.yml"),
@@ -281,7 +334,14 @@ if cloudflared:
 else:
     warn("cloudflared is not installed", "winget install cloudflare.cloudflared")
 if public_url or cf_hostname:
-    ok(f"stable public URL configured: {public_url or 'https://' + cf_hostname}")
+    enrollment_url = public_url or "https://" + cf_hostname
+    if enrollment_url.startswith("https://"):
+        ok(f"HTTPS trusted-device enrollment URL configured: {enrollment_url}")
+    else:
+        warn(
+            f"remote URL is not HTTPS: {enrollment_url}",
+            "configure an HTTPS Cloudflare URL for trusted-device enrollment",
+        )
 elif os.path.exists(cf_env_hint):
     warn("stable tunnel env exists but is not loaded for this shell",
          f"type {cf_env_hint} and set those ALPECCA_* values before starting Alpecca")
@@ -424,7 +484,7 @@ else:
     except Exception as exc:
         warn(f"high-quality F5 voice status failed: {type(exc).__name__}: {exc}")
     warn("first Kokoro line can take a minute while the model warms/downloads")
-    live_voice = fetch_json("/voice", token)
+    live_voice = fetch_json("/voice")
     if live_voice:
         voice = live_voice.get("voice", "")
         profile = live_voice.get("profile", "")
@@ -441,12 +501,12 @@ else:
                  "restart the server after setting ALPECCA_KOKORO_VOICE=af_heart and ALPECCA_KOKORO_IDENTITY_LOCK=1")
         ok(f"live modulation now: {primary or 'content'} / {style or 'present'} / {tempo or 'measured'} / {rate or 100}% / warmth {warmth or 'n/a'} / breath {breath or 'n/a'}")
     else:
-        warn("live /voice is not responding yet", f"start her, then open {route_url('/voice', token)}")
-    if fetch_json("/system/status", token):
+        warn("live /voice is not responding yet", f"start her, then open {route_url('/voice')}")
+    if fetch_json("/system/status"):
         ok("live /system/status is available for app-side voice diagnostics")
     preview_requested = "--voice-preview" in sys.argv or env_on("ALPECCA_DOCTOR_TTS", "0")
     if preview_requested:
-        preview = post_tts_preview(token, "tender")
+        preview = post_tts_preview("tender")
         if preview and preview.get("status") == 200:
             if preview.get("engine") == "kokoro" and preview.get("voice") == "af_heart" and preview.get("identity_lock") == "1":
                 ok(f"live /tts preview uses Kokoro original voice: {preview.get('voice')} / {preview.get('profile')}")

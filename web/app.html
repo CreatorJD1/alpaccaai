@@ -3,13 +3,13 @@
 
      One private place that hands Jason every way to carry her along: the
      Windows launcher, install-as-app on Android and iPhone (each with a QR of
-     her own address + token so a phone joins in a single scan), the Discord
+     her own address so a phone can enroll as a trusted device), the Discord
      invite, and the share/tunnel recipes from scripts/share.py.
 
      Self-contained on purpose: styles live in this file and the only script it
      loads is her own vendored QR library (/web/vendor/qrcode.min.js) -- no CDN,
      no network dependency, the same local-first line as the rest of her web
-     shell. The page is served through the same token middleware as everything
+     shell. The page is served through the same trusted-device middleware as everything
      else, so it is exactly as private as she is. -->
 <html lang="en">
 <head>
@@ -221,11 +221,10 @@
       <p class="sub" style="margin-bottom:4px"><strong style="color:var(--ink)">Anywhere</strong>
         &mdash; a free Cloudflare tunnel (needs <code>cloudflared</code> installed):</p>
       <span class="cmd">python scripts/share.py --tunnel</span>
-      <p class="note"><span class="warn">Privacy:</span> a public tunnel link is
-        UNAUTHENTICATED &mdash; anyone with it can chat with her and see her
-        memories. Keep <code>ALPECCA_FILES</code> off while sharing publicly, only
-        hand the link to yourself, and stop it (Ctrl-C) when done. The WiFi option
-        keeps everything on your own network and is the safer choice.</p>
+      <p class="note"><span class="warn">Privacy:</span> the link opens only after
+        creator-password validation, then trusts that browser through an HttpOnly
+        device cookie. Keep <code>ALPECCA_FILES</code> off while sharing remotely,
+        only hand the link to yourself, and stop it (Ctrl-C) when done.</p>
     </section>
 
   </div>
@@ -233,21 +232,16 @@
   <footer>her home is <a href="/">right here</a> &mdash; this page just carries her further</footer>
 </div>
 
-<!-- Her own vendored QR library -- no CDN ever sees the token in these codes. -->
+<!-- Her own vendored QR library; no login credential is embedded in its codes. -->
 <script src="/web/vendor/qrcode.min.js"></script>
 <script>
 (function () {
   "use strict";
 
-  /* The QR target is THIS origin plus the access token, so scanning it lands a
-     phone already authenticated (the ?token= visit sets her auth cookie -- the
-     existing middleware behavior). Cookie-less fallback: the token is read
-     straight from the URL we were opened with, so this works even on a first
-     visit before any cookie exists. Opened via the tunnel, location.origin is
-     the tunnel URL and the QR carries her from anywhere; opened on the LAN,
-     it carries her across the room. */
-  var token = new URLSearchParams(location.search).get("token") || "";
-  var target = location.origin + "/?token=" + token;
+  /* The QR contains only this server origin. On first use the phone validates
+     the creator password and receives its own long-lived HttpOnly trusted-device
+     cookie; no password, token, or session value appears in the URL. */
+  var target = location.origin + "/";
 
   /* Paint one QR onto a canvas: modules read via qr.isDark(), scaled up with a
      4-module quiet zone (the white border scanners require). Drawn at integer

@@ -39,8 +39,15 @@ as required passdown or reference logs.
 ### HISTORICAL / PASSDOWN
 - `docs/ALPECCA_V11_*.md`
 - `docs/ALPECCA_VROID_*.md`
-- `docs/PASSDOWN_remote_computer_access.md`
 - `docs/ALPECCA_V11_REFERENCE_CONTACT_SHEET.jpg`
+
+### SUPERSEDED / ARCHIVED (2026-07-10)
+- `docs/archive/2026-07-10/PASSDOWN_remote_computer_access.md`:
+  **SUPERSEDED** by `PROJECT_CONTEXT.md`, `HANDOFF.md`,
+  `docs/ALPECCA_MASTER_PLAN.md`, and `docs/ALPECCA_CURRENT_PROGRESS.md`.
+  Its token-in-URL and unrestricted remote computer-access pipeline is retained
+  only as historical evidence; current access uses creator trust and protected
+  trusted-device sessions.
 
 ### ARCHIVED (2026-07-08)
 - `docs/archive/2026-07-08/*`

@@ -1,7 +1,7 @@
 """Serve Alpecca so your phone can reach her -- on WiFi or through Cloudflare.
 
-This launcher binds the local server to all interfaces and prints token-gated
-links for desktop, LAN, and optional Cloudflare access. If a local Alpecca server
+This launcher binds the local server to all interfaces and prints clean
+trusted-device links for desktop, LAN, and optional Cloudflare access. If a local Alpecca server
 is already running, the tunnel points to that same instance instead of creating a
 second mind.
 """
@@ -61,16 +61,16 @@ def start_tunnel(port: int) -> None:
     print("  PUBLIC LINK (same Alpecca instance, open on your phone):")
     print("   ", preview_mod.with_access_token(url.strip()))
     print("  ", "reused existing tunnel" if proc is None else "opened one tunnel to the existing server")
-    print("  First open drops a 30-day cookie on that phone.")
+    print("  First remote open enrolls that browser; later opens reuse its HttpOnly trust cookie.")
     print("=" * 64 + "\n")
 
 
-def start_tunnel_when_ready(port: int, token: str) -> None:
+def start_tunnel_when_ready(port: int) -> None:
     """Wait for the local server, then publish the Cloudflare link."""
     from alpecca import instance as instance_mod
 
     for _ in range(60):
-        if instance_mod.existing_server_url(port, token=token, timeout=1.0):
+        if instance_mod.existing_server_url(port, timeout=1.0):
             start_tunnel(port)
             return
         time.sleep(1.0)
@@ -80,25 +80,26 @@ def start_tunnel_when_ready(port: int, token: str) -> None:
 def main() -> None:
     os.environ["ALPECCA_SERVER_HOST"] = "0.0.0.0"
 
-    from config import ACCESS_TOKEN, HOST, PORT
+    from config import HOST, PORT
     from alpecca import instance as instance_mod
 
     ip = lan_ip()
-    local = f"http://127.0.0.1:{PORT}/?token={ACCESS_TOKEN}"
-    phone = f"http://{ip}:{PORT}/?token={ACCESS_TOKEN}"
+    local = f"http://127.0.0.1:{PORT}/"
+    phone = f"http://{ip}:{PORT}/"
 
-    print("\nAlpecca is opening to your network (token-gated).")
+    print("\nAlpecca is opening to your network (trusted-device gated).")
     print(f"  On this computer          : {local}")
-    print(f"  On your phone (same WiFi) : {phone}")
-    print(f"  Access token              : {ACCESS_TOKEN}")
+    print(f"  LAN address (no sign-in)  : {phone}")
+    print("  Remote trusted-device enrollment requires HTTPS; LAN HTTP is not offered.")
+    print("  Credentials are never placed in URLs.")
 
     if "--tunnel" in sys.argv[1:]:
         print("  Cloudflare tunnel will open after the local server is ready.")
     else:
-        print("  For a link that works ANYWHERE: python scripts/share.py --tunnel")
+        print("  For the secure phone link: python scripts/share.py --tunnel")
     print()
 
-    existing = instance_mod.existing_server_url(PORT, token=ACCESS_TOKEN)
+    existing = instance_mod.existing_server_url(PORT)
     if existing:
         print(f"Alpecca is already awake at {existing}; reusing the same mind instance.")
         if "--tunnel" in sys.argv[1:]:
@@ -115,7 +116,7 @@ def main() -> None:
     if "--tunnel" in sys.argv[1:]:
         threading.Thread(
             target=start_tunnel_when_ready,
-            args=(PORT, ACCESS_TOKEN),
+            args=(PORT,),
             daemon=True,
         ).start()
 

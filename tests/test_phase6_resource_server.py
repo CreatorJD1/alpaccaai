@@ -169,6 +169,11 @@ def test_routines_use_routine_category_and_leave_deferred_rows_unrecorded(
 
     monkeypatch.setattr(server, "_optional_bounded_thread", completed_optional)
     monkeypatch.setattr(
+        server.mind,
+        "reserve_initiative",
+        lambda **_kwargs: {"allowed": True, "decision": "allow"},
+    )
+    monkeypatch.setattr(
         server.cognition_mod, "record_observation", lambda value: observations.append(value)
     )
 

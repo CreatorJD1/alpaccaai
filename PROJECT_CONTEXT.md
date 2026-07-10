@@ -3,6 +3,27 @@
 This is the canonical project context for coding agents working on Alpecca.
 Read this before `AGENTS.md`, `CLAUDE.md`, `HANDOFF.md`, or implementation files.
 
+## Current Implementation Checkpoint (2026-07-10)
+
+This checkpoint supersedes older route, access, and phase-status language
+retained elsewhere for historical context.
+
+- `/house-hq` now serves the **Void Prototype**, with a native categorized
+  **Alpecca Systems** center and an orthographic view.
+- The former internal House HQ page is archived at
+  `web/archive/house_hq_internal_legacy.html` and is no longer routed.
+- Loopback access uses trusted-device bootstrap; remote access requires HTTPS
+  creator trust. Remote sessions then use the protected Secure, HttpOnly
+  trusted-device session path; plain LAN HTTP cannot enroll a creator device.
+- Master Plan Phase 4 baseline is complete: commitment execution is
+  creator-only, scope-bound, and limited to read-only `self_status`, with
+  receipt-backed closure and replay protection.
+- Master Plan Phase 5 baseline is complete: proactive speech, living ticks, and
+  routines share one per-scope initiative budget; ignored outreach backs off;
+  one proactive event uses one delivery surface; and eligible cue evidence
+  changes response strategy without claiming a literal feeling change.
+- Phase 6 Mindpage and resource coordination is the active next slice.
+
 ## Identity
 
 - User-facing name: **Alpecca**.
@@ -13,7 +34,10 @@ Read this before `AGENTS.md`, `CLAUDE.md`, `HANDOFF.md`, or implementation files
 
 ## Application Surfaces
 
-- **House HQ** is the main embodied interactive scaffold and primary 3D state interface.
+- **House HQ** is the main embodied interactive scaffold and primary 3D state
+  interface. Its `/house-hq` route serves the Void Prototype and its native
+  categorized Alpecca Systems center; the archived internal legacy page is not
+  part of routing.
 - **Alpecca virtual app** is the secondary app surface for classic panels, chat, profile, voice, state, memory, journal, and tools.
 - **Mindscape** is the soul/continuity/sustainability layer, intended as cloud/mobile fallback if a local device dies.
 - These are one coherent Alpecca system, not separate products.
@@ -28,6 +52,8 @@ observe -> interpret -> retrieve memory -> update self-state -> choose intent ->
 
 Important current priorities:
 
+- Complete Phase 6 Mindpage/resource reliability without widening Phase 4
+  execution or bypassing the Phase 5 initiative boundary.
 - Natural replies through the live backend, not event echoes or copied user text.
 - Stable local model path uses the currently approved Ollama model from `ALPECCA_MODEL`; do not revive retired legacy model paths.
 - Voice should use her personality and modulation system, with Kokoro `af_heart` as the intended voice profile.

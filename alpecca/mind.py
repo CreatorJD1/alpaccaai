@@ -19,6 +19,7 @@ from __future__ import annotations
 import random
 import json
 import re
+import threading
 import time
 
 from config import (
@@ -1017,6 +1018,7 @@ class CoreMind:
         # Phase 5 adds a second, per-scope pacing boundary at delivery time.
         # It is pure/in-memory and is never consulted by direct chat replies.
         self._initiative_budget = initiative_mod.InitiativeBudget()
+        self._initiative_lock = threading.Lock()
         self._last_initiative_decision: dict | None = None
         # When the person last said something -- idle chatter waits for quiet.
         # Starts at "now" so she doesn't pounce the moment the server boots.
@@ -1664,14 +1666,17 @@ class CoreMind:
             reason = "unknown_or_invalid_cue"
         else:
             reason = "no_grounded_cue"
+        operational_states = [
+            str(event["decision"]["evidence"]["observable_state"])
+            for event in eligible
+        ]
         return {
             "eligible": bool(eligible),
             "state_changed": False,
+            "strategy_changed": bool(operational_states),
             "reason": reason,
-            "operational_states": [
-                str(event["decision"]["evidence"]["observable_state"])
-                for event in eligible
-            ],
+            "operational_states": operational_states,
+            "response_strategy": "; ".join(operational_states)[:420],
             "events": events,
             "ignored_kinds": ignored_kinds[:7],
             "provenance": {
@@ -1767,6 +1772,7 @@ class CoreMind:
         affect_metadata = self._phase5_affect_metadata(
             cue_envelope, turn, observed_at=cue_observed_at,
         )
+        response_strategy = str(affect_metadata.get("response_strategy") or "")
         if not STREAM_CHAT:
             on_token = None
         speaker = turn.principal
@@ -1927,6 +1933,7 @@ class CoreMind:
             image_seen=image_desc or "", abilities=abilities,
             who=who_prompt, inner="", core=core_block,
             current_message=user_msg, compact=True,
+            response_strategy=response_strategy,
         )
         history_window = history[-HISTORY_MESSAGES:]
         fitted = mindpage_mod.fit_context(
@@ -1967,6 +1974,7 @@ class CoreMind:
             who=people_mod.who_prompt(speaker), inner=inner,
             core=core_block, current_message=user_msg, compact=True,
             working_memory=working_memory, paged_memory=paged_block,
+            response_strategy=response_strategy,
         )
         prompt_history, exact_ledger = mindpage_mod.fit_request(
             system_prompt, user_msg, fitted["history"], tools=tool_schema,
@@ -1997,6 +2005,7 @@ class CoreMind:
             current_message=user_msg, compact=True,
             working_memory=mindpage_mod.pressure_prompt(self._last_mindpage),
             paged_memory=paged_block,
+            response_strategy=response_strategy,
         )
         prompt_history, final_ledger = mindpage_mod.fit_request(
             system_prompt, user_msg, prompt_history, tools=tool_schema,
@@ -2765,7 +2774,23 @@ class CoreMind:
         ))
         return result
 
-    def execute_approved_step(self, proposal_id: int, approved_by_user: bool = False) -> dict:
+    def execute_approved_step(
+        self,
+        proposal_id: int,
+        approved_by_user: bool = False,
+        *,
+        turn: turn_context_mod.TurnContext | None = None,
+    ) -> dict:
+        """Compatibility execution for an accepted legacy planner proposal.
+
+        Stage 4's durable commitment route is the primary executor. This older
+        proposal path is restricted to the same read-only self-status tool and
+        requires a fresh creator Workshop turn so contextless calls fail closed.
+        """
+        if turn is None or turn.principal != "creator" or turn.surface != "workshop":
+            raise PermissionError("planner execution requires a creator Workshop turn")
+        if not turn.allow_work():
+            raise PermissionError("planner execution turn is cancelled")
         row = cognition_mod.get_action_proposal(proposal_id)
         if row is None:
             raise KeyError(proposal_id)
@@ -2787,7 +2812,16 @@ class CoreMind:
             args = {}
         if tool not in planner_mod.ALLOWED_PLAN_TOOLS:
             raise ValueError(f"planner tool is not allowed: {tool}")
-        result_text = self.toolkit.execute(tool, args)
+        if tool != "self_status":
+            raise PermissionError(
+                "legacy planner execution is limited to read-only self_status; "
+                "use payload-backed commitments for future tools"
+            )
+        result_text = self.toolkit.execute(tool, args, turn=turn)
+        failed = str(result_text).lower().startswith((
+            "error:", "tool failed:", "unknown tool:",
+            "innate tools are currently disabled",
+        ))
         evaluation = cognition_mod.record_proposal_evaluation(cognition_mod.ProposalEvaluation(
             proposal_id=int(proposal_id),
             phase="result",
@@ -2795,13 +2829,17 @@ class CoreMind:
             evidence=f"Executed approved planner tool: {tool}",
             test=f"Run {tool} with stored planner args after user approval.",
             outcome=str(result_text)[:1000],
-            score=1.0 if not str(result_text).startswith("error") else 0.0,
+            score=0.0 if failed else 1.0,
             supports_status="accepted",
         ))
         updated = cognition_mod.update_action_proposal(
             proposal_id,
             status="accepted",
-            result=f"Executed approved planner step via {tool}: {str(result_text)[:700]}",
+            result=(
+                f"Approved planner step failed via {tool}: {str(result_text)[:700]}"
+                if failed
+                else f"Executed approved planner step via {tool}: {str(result_text)[:700]}"
+            ),
             approved_by_user=True,
         )
         return {
@@ -2810,6 +2848,7 @@ class CoreMind:
                 "tool": tool,
                 "args": args,
                 "result": str(result_text),
+                "status": "failed" if failed else "succeeded",
                 "evaluation": evaluation,
             },
         }
@@ -3025,6 +3064,194 @@ class CoreMind:
                 return random.choice(seeds)
         return None
 
+    @staticmethod
+    def _initiative_decision_payload(
+        decision: initiative_mod.InitiativeDecision,
+        *,
+        event_kind: str,
+        evidence_key: str,
+    ) -> dict:
+        return {
+            "allowed": decision.allowed,
+            "decision": decision.decision,
+            "reason": decision.reason,
+            "scope": decision.scope,
+            "event_kind": event_kind,
+            "evidence_key": evidence_key,
+            "dedupe_key": decision.dedupe_key,
+            "relevance": decision.relevance,
+            "decided_at": decision.decided_at,
+            "retry_at": decision.retry_at,
+            "retry_after": decision.retry_after,
+            "window_used": decision.window_used,
+            "window_cap": decision.window_cap,
+            "ignored_streak": decision.ignored_streak,
+        }
+
+    def reserve_initiative(
+        self,
+        *,
+        event_kind: str,
+        evidence_key: str,
+        scope_key: str,
+        relevance: float,
+        user_active: bool = False,
+        outreach: bool = True,
+    ) -> dict:
+        """Reserve one autonomous event through the shared per-scope budget.
+
+        This is the single Phase 5 gateway for proactive speech, living-loop
+        work, and scheduled routines. Direct replies never call it.
+        """
+        clean_kind = re.sub(r"[^a-z0-9_-]+", "-", str(event_kind or "").lower())
+        clean_kind = clean_kind.strip("-")[:48]
+        clean_evidence = " ".join(str(evidence_key or "").split())[:200]
+        if not clean_kind:
+            raise ValueError("event_kind is required")
+        if not clean_evidence:
+            raise ValueError("evidence_key is required")
+        dedupe_key = f"{clean_kind}:{clean_evidence.casefold()}"[:256]
+        with self._initiative_lock:
+            decision = self._initiative_budget.decide(
+                scope=scope_key,
+                relevance=relevance,
+                dedupe_key=dedupe_key,
+                user_active=user_active,
+                outreach=outreach,
+            )
+            payload = self._initiative_decision_payload(
+                decision,
+                event_kind=clean_kind,
+                evidence_key=clean_evidence,
+            )
+            self._last_initiative_decision = payload
+        return dict(payload)
+
+    def note_initiative_user_activity(self, scope_key: str) -> dict:
+        """Yield autonomous work to an explicit user turn in this scope."""
+        with self._initiative_lock:
+            self._initiative_budget.note_user_activity(scope_key)
+            return dict(self._initiative_budget.snapshot(scope_key))
+
+    def initiative_snapshot(self, scope_key: str) -> dict:
+        """Return bounded diagnostics for the shared initiative budget."""
+        with self._initiative_lock:
+            return dict(self._initiative_budget.snapshot(scope_key))
+
+    def mark_initiative_ignored(self, scope_key: str, dedupe_key: str) -> bool:
+        """Record a delivered outreach as unanswered after its response window."""
+        with self._initiative_lock:
+            return self._initiative_budget.mark_ignored(
+                scope=scope_key,
+                dedupe_key=dedupe_key,
+            )
+
+    def clear_initiative_outreach(self, scope_key: str, dedupe_key: str) -> bool:
+        """Release an outreach reservation that did not reach a person."""
+        with self._initiative_lock:
+            return self._initiative_budget.clear_pending_outreach(
+                scope=scope_key,
+                dedupe_key=dedupe_key,
+            )
+
+    def _compose_volunteer_reserved(
+        self,
+        reason: str,
+        *,
+        history_scope: str,
+        turn: turn_context_mod.TurnContext | None,
+    ) -> str:
+        """Generate after the caller has reserved the initiative slot."""
+        if not self.llm.online:
+            return f"(quietly) I just wanted to say -- {reason}."
+        self_report = self.introspect()
+        system_prompt = prompts.build_system_prompt(
+            self.state, [], "", self_narration=self_report.narrate()
+        ) + ("\n\nNo one has said anything to you. You're speaking up on your own. "
+             f"What prompted you: {reason}. Say one or two short natural sentences "
+             "-- gentle, curious, no preamble, and don't mention that you were "
+             "prompted by anything.")
+        return self.llm.generate(
+            system_prompt,
+            "(say it in your own words)",
+            tier="fast",
+        )
+
+    def record_proactive_delivery(
+        self,
+        reply: str,
+        *,
+        scope: str = "shared",
+        turn: turn_context_mod.TurnContext | None = None,
+    ) -> None:
+        """Persist proactive speech only after a delivery surface accepted it."""
+        text = str(reply or "").strip()
+        if not text:
+            return
+        history_scope = turn.scope_key if turn is not None else scope
+        history = (
+            self._get_history(turn=turn)
+            if turn is not None
+            else self._get_history(history_scope)
+        )
+        history.append({"role": "assistant", "content": text})
+        if turn is not None:
+            turn_context_mod.save_history(turn, history)
+
+    def compose_volunteer_event(
+        self,
+        reason: str,
+        *,
+        scope: str = "shared",
+        turn: turn_context_mod.TurnContext | None = None,
+    ) -> dict:
+        """Return proactive text together with this invocation's budget result."""
+        history_scope = turn.scope_key if turn is not None else scope
+        reason_key = " ".join(str(reason or "").split())
+        initiative = None
+        if reason_key:
+            initiative = self.reserve_initiative(
+                event_kind="volunteer",
+                evidence_key=reason_key,
+                scope_key=history_scope,
+                relevance=1.0,
+                user_active=False,
+                outreach=True,
+            )
+            if not initiative["allowed"]:
+                return {
+                    "text": "",
+                    "status": "deferred",
+                    "initiative": initiative,
+                }
+        else:
+            # No grounded candidate means no Phase 5 budget event. Preserve the
+            # legacy compose behavior for compatibility with direct callers.
+            self._last_initiative_decision = None
+        try:
+            text = self._compose_volunteer_reserved(
+                reason,
+                history_scope=history_scope,
+                turn=turn,
+            )
+        except Exception:
+            if initiative:
+                self.clear_initiative_outreach(
+                    str(initiative["scope"]),
+                    str(initiative["dedupe_key"]),
+                )
+            raise
+        if not text and initiative:
+            self.clear_initiative_outreach(
+                str(initiative["scope"]),
+                str(initiative["dedupe_key"]),
+            )
+        return {
+            "text": text,
+            "status": "generated",
+            "initiative": initiative,
+        }
+
     def compose_volunteer(
         self,
         reason: str,
@@ -3037,55 +3264,18 @@ class CoreMind:
         reserved before any model call; a defer returns no outgoing text.
         Offline, she speaks the reason plainly rather than through the canned
         echo voice."""
-        history_scope = turn.scope_key if turn is not None else scope
-        reason_key = " ".join(str(reason or "").split())
-        if reason_key:
-            decision = self._initiative_budget.decide(
-                scope=history_scope,
-                relevance=1.0,
-                dedupe_key=f"volunteer:{reason_key.casefold()}"[:256],
-                user_active=False,
-                outreach=True,
-            )
-            self._last_initiative_decision = {
-                "decision": decision.decision,
-                "reason": decision.reason,
-                "scope": decision.scope,
-                "dedupe_key": decision.dedupe_key,
-                "relevance": decision.relevance,
-                "decided_at": decision.decided_at,
-                "retry_at": decision.retry_at,
-                "retry_after": decision.retry_after,
-                "window_used": decision.window_used,
-                "window_cap": decision.window_cap,
-                "ignored_streak": decision.ignored_streak,
-            }
-            if not decision.allowed:
-                return ""
-        else:
-            # No grounded candidate means no Phase 5 budget event. Preserve the
-            # legacy compose behavior for compatibility with direct callers.
-            self._last_initiative_decision = None
-        if not self.llm.online:
-            return f"(quietly) I just wanted to say -- {reason}."
-        self_report = self.introspect()
-        system_prompt = prompts.build_system_prompt(
-            self.state, [], "", self_narration=self_report.narrate()
-        ) + ("\n\nNo one has said anything to you. You're speaking up on your own. "
-             f"What prompted you: {reason}. Say one or two short natural sentences "
-             "-- gentle, curious, no preamble, and don't mention that you were "
-             "prompted by anything.")
-        reply = self.llm.generate(system_prompt, "(say it in your own words)",
-                                  tier="fast")
-        history = (
-            self._get_history(turn=turn)
-            if turn is not None
-            else self._get_history(history_scope)
+        event = self.compose_volunteer_event(
+            reason,
+            scope=scope,
+            turn=turn,
         )
-        history.append({"role": "assistant", "content": reply})
-        if turn is not None:
-            turn_context_mod.save_history(turn, history)
-        return reply
+        text = str(event["text"])
+        if text:
+            # Compatibility callers treat compose as the delivery boundary.
+            # Server paths use compose_volunteer_event and persist only after
+            # their transport confirms delivery.
+            self.record_proactive_delivery(text, scope=scope, turn=turn)
+        return text
 
     # --- The fourth directive, running: idle reflection ---------------------
 
@@ -3331,7 +3521,8 @@ class CoreMind:
         }
 
     def living_world_tick(self, reason: str = "background",
-                          systems: dict | None = None) -> dict:
+                          systems: dict | None = None, *,
+                          initiative_scope: str = "") -> dict:
         """A bounded autonomous world/role learning step.
 
         This is the bridge between her embodied House HQ and her inner loop. It
@@ -3340,6 +3531,25 @@ class CoreMind:
         question she should carry next, and one safe proposal if that question
         points at a missing capability.
         """
+        if initiative_scope:
+            initiative = self.reserve_initiative(
+                event_kind="living",
+                evidence_key=f"{reason}:{self._location}",
+                scope_key=initiative_scope,
+                relevance=0.75,
+                user_active=False,
+                outreach=False,
+            )
+            if not initiative["allowed"]:
+                return {
+                    "ok": True,
+                    "status": "deferred",
+                    "deferred": True,
+                    "phase": "initiative_budget",
+                    "reason": reason,
+                    "initiative": initiative,
+                }
+
         room = home_mod.room(self._location)
         room_name = room.name if room else self._location.title()
         room_purpose = room.purpose if room else "unknown purpose"
@@ -3551,7 +3761,8 @@ class CoreMind:
         line = (
             f"I am in House HQ's {room_name}. Current role: {creator_name or 'creator'}. "
             f"I activated {activation.get('label', system_id)}. "
-            f"My next question is: {question} Next I will {next_action['action']}."
+            f"My next question is: {question} A possible next step is to "
+            f"{next_action['action']}."
         )
         return {
             "ok": True,
@@ -3969,7 +4180,7 @@ class CoreMind:
                     ))
         return plan
 
-    def idle_self_direct(self) -> dict | None:
+    def idle_self_direct(self, *, initiative_scope: str = "") -> dict | None:
         """One self-directed act on a quiet tick, **chosen by her Soul** -- this is
         what finally makes the autonomy layer *run as one self*. The master agent
         arbitrates her seven subagents by the Good Person Principle into a single
@@ -3981,6 +4192,25 @@ class CoreMind:
         life; the cheap, pure acts (forming a want, drawing a lesson about herself,
         a self-improvement step) need no model and run even offline. The cadence
         gate (reflection_due) is applied by the caller."""
+        if initiative_scope:
+            initiative = self.reserve_initiative(
+                event_kind="recursive",
+                evidence_key=f"idle-self-direct:{self._location}",
+                scope_key=initiative_scope,
+                relevance=0.72,
+                user_active=False,
+                outreach=False,
+            )
+            if not initiative["allowed"]:
+                return {
+                    "ok": True,
+                    "status": "deferred",
+                    "deferred": True,
+                    "phase": "initiative_budget",
+                    "initiative": initiative,
+                    "note": None,
+                }
+
         cognition_mod.set_intent(cognition_mod.IntentState(
             "self-reviewing",
             "A quiet tick let Alpecca review herself.",

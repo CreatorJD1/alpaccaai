@@ -1,6 +1,30 @@
 # Alpecca — Handoff (updated 2026-07-10)
 
-## Active Claude Code Handoff: Master Phase 4 onward
+## Current Active Handoff: Phase 6 Mindpage And Resource Coordination
+
+This checkpoint supersedes the older active-scope and phase-status language
+retained below as historical implementation evidence.
+
+- `/house-hq` now serves the **Void Prototype**, including a native categorized
+  **Alpecca Systems** center and an orthographic view.
+- The old `web/home.html` implementation is archived at
+  `web/archive/house_hq_internal_legacy.html` and is no longer routed.
+- Loopback access uses trusted-device bootstrap; remote access requires HTTPS
+  creator trust. Remote trust establishes a protected Secure, HttpOnly session;
+  plain LAN HTTP cannot enroll a creator device.
+- Master Plan Phase 4 baseline is complete. The only commitment execution slice
+  is creator-only, scope-bound, read-only `self_status`; successful closure is
+  receipt-backed and replay-protected. Startup closes interrupted runs without
+  rerunning, and the unscoped legacy proposal executor is retired.
+- Master Plan Phase 5 baseline is complete. Proactive speech, living ticks, and
+  routines share one per-scope relevance/cooldown/dedupe budget; unanswered
+  outreach feeds backoff; one proactive event chooses one delivery surface; and
+  eligible cue evidence changes the response strategy with traceable provenance.
+- Master Plan Phase 6 Mindpage and resource coordination is the active next
+  slice. Keep broader tools and action classes outside the Phase 4 baseline until
+  separately approved and gated.
+
+## Superseded Claude Code Handoff: Master Phase 4 onward (historical)
 
 ### User direction and entry point
 

@@ -22,10 +22,10 @@ in keeping with the rest of the codebase. The process-spawning parts degrade
 gracefully: no cloudflared on PATH, or a tunnel that never prints a URL, returns
 ``None`` rather than crashing.
 
-PRIVACY: a quick-tunnel URL is random per run and the link is only as private as
-the server's ``ALPECCA_ACCESS_TOKEN``. With a blank token (the private-local
-default) anyone holding the URL can reach her -- so treat the URL as a secret and
-set a token before sharing it. This mirrors the warning in ``scripts/share.py``.
+PRIVACY: a quick-tunnel URL is random per run, but possession of the URL does
+not authorize a browser. Remote devices must complete creator enrollment and
+then use the server's signed HttpOnly trusted-device cookie. Treat the URL as
+private anyway and stop tunnels when they are no longer needed.
 """
 from __future__ import annotations
 
@@ -133,7 +133,8 @@ def write_house_hq_live_url(shell_url: str, backend_url: str, *, home: Path = HO
         record = {}
     record["liveBackendUrl"] = backend_url.rstrip("/")
     record["houseHqLiveUrl"] = live_url
-    record["tokenSharedWithHouse"] = bool(config.ACCESS_TOKEN)
+    record["tokenSharedWithHouse"] = False
+    record["authorizationMode"] = "trusted_device"
     try:
         r2_record.write_text(json.dumps(record, indent=2), encoding="utf-8")
     except Exception:
@@ -173,7 +174,7 @@ def _urlopen_status(url: str, timeout: float) -> int:
     what proves the tunnel is live. So we catch ``HTTPError`` and hand back its
     code; only true connection failures (``URLError`` without a code: dead tunnel,
     DNS, refused) propagate, to be caught by :func:`health_check` as unhealthy.
-    Without this, a token-gated 401 would look dead and break tunnel reuse.
+    Without this, an authorization-gated 401 would look dead and break tunnel reuse.
     """
     req = urllib.request.Request(url, method="GET", headers={"User-Agent": "alpecca-preview"})
     try:
@@ -188,7 +189,7 @@ def health_check(url: str, *, route: str = "/system/doctor", timeout: float = 12
     """Is the public URL actually serving the app?
 
     "Reachable" means the tunnel forwarded our request and the server answered.
-    A token-gated server replies ``401`` -- that still proves the link is live, so
+    An authorization-gated server replies ``401`` -- that still proves the link is live, so
     any HTTP status below ``500`` counts as healthy (mirrors ``app.py``'s
     ``_wait_until_up``, which treats even a 401 as "it's up"). Connection errors
     (dead tunnel, wrong URL) raise and are caught as unhealthy.
@@ -386,11 +387,8 @@ def _cli(argv: list[str]) -> int:
         if arg == "--port" and i + 1 < len(argv):
             port = int(argv[i + 1])
 
-    # Safe-by-default: opening a fresh public tunnel with no token would create a
-    # new unauthenticated exposure of her (and possibly this machine's files), so
-    # refuse it unless the person explicitly accepts the risk with --insecure.
-    # Reusing a tunnel that is already up creates no new exposure, so it proceeds
-    # with a loud warning instead of a refusal.
+    # Authorization is server-owned and independent of URL query values. Keep
+    # this compatibility gate so older callers retain the same CLI behavior.
     gated = link_is_gated()
     if not gated:
         print(_INSECURE_WARNING, file=sys.stderr)

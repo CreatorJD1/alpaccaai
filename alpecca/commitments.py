@@ -136,6 +136,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
                               'succeeded', 'failed', 'cancelled')
                 ),
                 evidence_json TEXT NOT NULL,
+                payload_json  TEXT,
                 receipt_json  TEXT
             );
 
@@ -173,6 +174,12 @@ def init_db(db_path: Path = DB_PATH) -> None:
             END;
             """
         )
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(commitments)").fetchall()
+        }
+        if "payload_json" not in columns:
+            conn.execute("ALTER TABLE commitments ADD COLUMN payload_json TEXT")
 
 
 def _receipt_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -198,6 +205,7 @@ def _commitment_dict(
         "action": str(row["action"]),
         "state": str(row["state"]),
         "evidence": _load_payload(row["evidence_json"], name="evidence") or {},
+        "payload": _load_payload(row["payload_json"], name="payload"),
         "receipt": _load_payload(row["receipt_json"], name="receipt"),
         "receipts": [_receipt_dict(item) for item in receipt_rows],
     }
@@ -208,12 +216,14 @@ def create_commitment(
     *,
     scope: str,
     evidence: Mapping[str, Any] | None = None,
+    payload: Mapping[str, Any] | None = None,
     db_path: Path = DB_PATH,
 ) -> dict[str, Any]:
     """Store a new proposed commitment and its initial ledger entry."""
     clean_scope = _scope(scope)
     clean_action = _action(action)
     evidence_json = _dump_payload(evidence or {}, name="evidence") or "{}"
+    payload_json = _dump_payload(payload, name="payload")
     init_db(db_path)
     now = time.time()
     with connect(db_path) as conn:
@@ -222,10 +232,10 @@ def create_commitment(
             """
             INSERT INTO commitments
                 (created_at, updated_at, scope, action, state,
-                 evidence_json, receipt_json)
-            VALUES (?, ?, ?, ?, 'proposed', ?, NULL)
+                 evidence_json, payload_json, receipt_json)
+            VALUES (?, ?, ?, ?, 'proposed', ?, ?, NULL)
             """,
-            (now, now, clean_scope, clean_action, evidence_json),
+            (now, now, clean_scope, clean_action, evidence_json, payload_json),
         )
         commitment_id = int(cursor.lastrowid)
         conn.execute(
@@ -383,3 +393,67 @@ def list_commitments(
         for item_id in ids
     ]
     return [record for record in records if record is not None]
+
+
+def recover_running_commitments(
+    *,
+    scope: str,
+    reason: str = "server restarted before execution receipt was written",
+    db_path: Path = DB_PATH,
+) -> list[dict[str, Any]]:
+    """Close executions abandoned by a previous process without rerunning them.
+
+    Call this only during startup, before the server accepts execution requests.
+    The compare-and-swap update makes repeated startup recovery idempotent.
+    """
+    clean_scope = _scope(scope)
+    clean_reason = " ".join(str(reason or "").split())[:500]
+    if not clean_reason:
+        clean_reason = "execution was interrupted before a terminal receipt"
+    evidence_json = _dump_payload(
+        {"source": "startup_recovery", "reason": clean_reason},
+        name="evidence",
+    )
+    receipt_json = _dump_payload(
+        {
+            "status": CANCELLED,
+            "error": clean_reason,
+            "recovered": True,
+        },
+        name="receipt",
+        required=True,
+    )
+    init_db(db_path)
+    now = time.time()
+    recovered_ids: list[int] = []
+    with connect(db_path) as conn:
+        conn.execute("PRAGMA foreign_keys=ON")
+        rows = conn.execute(
+            "SELECT id FROM commitments WHERE scope=? AND state='running' "
+            "ORDER BY id ASC",
+            (clean_scope,),
+        ).fetchall()
+        for row in rows:
+            commitment_id = int(row["id"])
+            cursor = conn.execute(
+                "UPDATE commitments SET state='cancelled', updated_at=?, receipt_json=? "
+                "WHERE id=? AND scope=? AND state='running'",
+                (now, receipt_json, commitment_id, clean_scope),
+            )
+            if cursor.rowcount != 1:
+                continue
+            conn.execute(
+                """
+                INSERT INTO commitment_receipts
+                    (commitment_id, created_at, from_state, to_state,
+                     evidence_json, receipt_json)
+                VALUES (?, ?, 'running', 'cancelled', ?, ?)
+                """,
+                (commitment_id, now, evidence_json, receipt_json),
+            )
+            recovered_ids.append(commitment_id)
+    recovered = [
+        get_commitment(item_id, scope=clean_scope, db_path=db_path)
+        for item_id in recovered_ids
+    ]
+    return [record for record in recovered if record is not None]

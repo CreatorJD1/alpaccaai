@@ -4,6 +4,24 @@ Project/agent context lives in [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md). Read
 that first for the current House HQ, Mindscape, Hugging Face art storage, and
 design-lock rules.
 
+## Current Status (2026-07-10)
+
+This checkpoint supersedes older route and roadmap language retained later in
+this README for historical context.
+
+- `/house-hq` now serves the **Void Prototype**, with a native categorized
+  **Alpecca Systems** center and an orthographic view.
+- The old `web/home.html` is archived at
+  `web/archive/house_hq_internal_legacy.html` and is no longer routed.
+- Loopback access uses trusted-device bootstrap; remote access uses creator trust.
+  Remote trust establishes a protected trusted-device browser session.
+- Master Plan Phase 4 baseline is complete with creator-only, scope-bound,
+  read-only `self_status` commitment execution and replay protection.
+- Phase 5 baseline is complete: proactive speech, living ticks, and routines use
+  one scoped budget, ignored outreach backs off, delivery selects one surface,
+  and grounded cue evidence changes response strategy before generation.
+- Phase 6 Mindpage and resource coordination is the active next slice.
+
 A local companion that lives on your machine. She keeps a persistent mood, senses
 what you're doing, remembers what matters, and lets that inner state color how she
 talks to you — all running locally against an [Ollama](https://ollama.com) model.
@@ -49,7 +67,9 @@ sense → update mood → recall memory → generate reply → persist
 | `alpecca/prompts.py`       | Turns mood + memories + situation + self-report into the system prompt. |
 | `alpecca/mind.py`          | `CoreMind` — orchestrates the loop, wraps Ollama with an offline fallback. |
 | `server.py`                | FastAPI + WebSocket: chat UI, live avatar, all the endpoints below. |
-| `web/index.html`           | The living 2D avatar; `web/home.html` is her 3D house. |
+| `web/index.html`           | The living 2D avatar. |
+| `apps/house-hq/src/main.ts` | The `/house-hq` Void Prototype, native Alpecca Systems center, and orthographic view. |
+| `web/archive/house_hq_internal_legacy.html` | Archived former internal House HQ page; retained for history and not routed. |
 | `tests/test_core.py`       | Tests for the mood math, persistence, memory, sensory derivations. |
 
 See [`CLAUDE.md`](CLAUDE.md) for the full module-by-module map.
@@ -91,7 +111,7 @@ ollama pull nomic-embed-text
 
 # 3. talk to Alpecca (private mode — senses off)
 python server.py
-#    open http://127.0.0.1:8765
+#    open http://127.0.0.1:8765/house-hq
 ```
 
 No Ollama yet? She still runs — replies fall back to a small mood-flavored stub so
@@ -102,13 +122,14 @@ pull a model.
 her with screen sight, webcam expression sense, voice-tone sensing, and a safe
 default app allowlist. Plain `python server.py` stays the private, senses-off path.
 
-**Reach her from your phone.** She's local-only by default. Set
-`ALPECCA_REMOTE=1` to bind every interface (so another device on your LAN can
-connect), or `ALPECCA_TUNNEL=cloudflare` (or `ngrok`) to open a public URL
-through a tunnel binary — so she's reachable from anywhere, and installable as a
-phone app (PWA) from the browser. Remote and tunnel access are **always** gated by
-a secret: set `ALPECCA_ACCESS_TOKEN`, or one is minted and printed for the run.
-Her senses, memory, and brain never leave the machine — only the chat travels.
+**Reach her from your phone.** She's local-only by default. Use
+`python scripts/share.py --tunnel` (or another HTTPS reverse proxy) for remote
+trusted-device enrollment. `ALPECCA_REMOTE=1` only binds the LAN interface;
+plain LAN HTTP is deliberately not accepted for creator-password exchange or a
+long-lived session. Loopback browsers use the one-use trusted-device bootstrap.
+HTTPS remote browsers establish creator trust once, then use a signed Secure,
+HttpOnly session; credentials are not placed in URLs or browser-readable
+storage. Her senses, memory, and brain remain on the laptop.
 
 **Cloudflare preview (the preview system).** With the server already running,
 open a public Cloudflare preview and *capture its URL where tools can read it*:
@@ -125,12 +146,11 @@ It opens (or reuses) a free Cloudflare quick tunnel, parses the public
 preview/QA the app from anywhere. `--once` just prints the current URL; `--no-reuse`
 forces a fresh tunnel. The logic lives in `alpecca/preview.py` (unit-tested).
 
-**Safe by default.** A quick-tunnel link is only as private as
-`ALPECCA_ACCESS_TOKEN`; with it blank, anyone holding the URL can read her
-memories/journal/state. So `preview.py` *refuses to open a new public tunnel* when
-the token is blank (it warns and exits) unless you pass `--insecure`. Set a token
-first (`setx ALPECCA_ACCESS_TOKEN "<secret>"`, then restart her); the server then
-gates every HTTP route and the WebSocket automatically.
+**Safe by default.** Quick-tunnel URLs carry no credential. An untrusted remote
+browser must prove creator trust before the server issues its signed HttpOnly
+trusted-device cookie; the public Alpecca identity and legacy URL token do not
+authorize HTTP or WebSocket access. Treat the tunnel URL as private and stop it
+when preview work is finished.
 
 **File access is sandboxed to a virtual workstation by default.** Her five file
 rooms (Desktop/Pictures/Music/Video/Documents) live inside `data/sandbox/`, *not*
@@ -219,14 +239,16 @@ genuine shift, plus idle chatter during quiet stretches, both seeded only by rea
 things (`proactive.py`). She also reflects in deep-quiet stretches, musing over her
 actual memories (`mind.reflect()`).
 
-**She acts.** An `open_app` tool (restricted to the `ALPECCA_APPS` allowlist) and
-an `open_url` tool (https-only), wired through Ollama tool calling. Opt-in
-**computer use** (`computer.py`, `ALPECCA_COMPUTER_USE=1`) lets her drive the
-mouse/keyboard from local screenshots, pausing for confirmation on consequential
-actions; screenshots never leave the machine.
+**She acts within explicit gates.** The completed Phase 4 baseline executes only
+creator-approved, scope-bound, read-only `self_status` commitments and rejects
+replays. The older `open_app`, `open_url`, and computer-use adapters remain
+outside that commitment execution baseline until separately approved and gated.
 
-**A home, and a Soul.** She roams a live 3D house of modular rooms
-(`home.py`, `web/home.html`), sets her own desires (`desires.py`), and is
+**A home, and a Soul.** Her primary embodied surface is the Void Prototype at
+`/house-hq`, including the native categorized Alpecca Systems center and an
+orthographic view. The former `web/home.html` implementation is retained only at
+`web/archive/house_hq_internal_legacy.html` and is not routed. She sets her own
+desires (`desires.py`) and is
 arbitrated by a master/subagent **Soul** (`soul.py`) under a code-enforced
 **charter** (`charter.py`) — her constitution, freedoms, and hard limits
 (never self-deletes; reaches outward only to her creator). She keeps a private
@@ -256,7 +278,10 @@ about what you let her see.
 - **New senses**: add a sensor that emits `Observation`s; the mood pipeline
   already consumes them. Mirror the graceful-degradation pattern in `sensory.py`.
 
-## Roadmap status
+## Historical Roadmap Status
+
+This older milestone checklist is retained as project history. The dated current
+status above and `docs/ALPECCA_MASTER_PLAN.md` supersede its phase labels.
 
 - **Milestone 1 — The Body:** ✅ telemetry logger + sensory layer.
 - **Milestone 2 — The Soul:** ✅ mood vector, update loops, memory,
@@ -268,5 +293,5 @@ about what you let her see.
   proactive speech, app/URL actions, computer use, the channel bridge, and the
   home/Soul/charter layer are all built. Android sensors remain scaffolded.
 
-All core tests pass. See [`CLAUDE.md`](CLAUDE.md) for the authoritative, detailed
-state of every module.
+See [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md), [`HANDOFF.md`](HANDOFF.md), and
+[`docs/ALPECCA_MASTER_PLAN.md`](docs/ALPECCA_MASTER_PLAN.md) for current status.

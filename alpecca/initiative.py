@@ -19,6 +19,7 @@ DecisionReason = Literal[
     "user_active",
     "activity_quiet_period",
     "low_relevance",
+    "awaiting_response",
     "duplicate",
     "cooldown",
     "window_cap",
@@ -227,7 +228,7 @@ class InitiativeBudget:
         relevance: float,
         dedupe_key: str,
         user_active: bool = False,
-        outreach: bool = True,
+        outreach: bool = False,
     ) -> InitiativeDecision:
         """Decide and reserve one candidate, or return a grounded defer reason.
 
@@ -282,6 +283,17 @@ class InitiativeBudget:
             return self._decision(
                 allowed=False,
                 reason="low_relevance",
+                scope=clean_scope,
+                dedupe_key=clean_key,
+                relevance=clean_relevance,
+                now=now,
+                state=state,
+            )
+
+        if outreach and state.pending_outreach_key is not None:
+            return self._decision(
+                allowed=False,
+                reason="awaiting_response",
                 scope=clean_scope,
                 dedupe_key=clean_key,
                 relevance=clean_relevance,
@@ -375,6 +387,16 @@ class InitiativeBudget:
         state.pending_outreach_key = None
         state.ignored_streak += 1
         state.last_ignored_at = now
+        return True
+
+    def clear_pending_outreach(self, *, scope: str, dedupe_key: str) -> bool:
+        """Release a reserved outreach that was never delivered."""
+        clean_scope = self._scope(scope)
+        clean_key = self._dedupe_key(dedupe_key)
+        state = self._scopes.get(clean_scope)
+        if state is None or state.pending_outreach_key != clean_key:
+            return False
+        state.pending_outreach_key = None
         return True
 
     def snapshot(self, scope: str) -> dict[str, object]:

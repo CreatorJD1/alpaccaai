@@ -123,7 +123,10 @@ _URGENCY = _patterns(
 )
 
 _DISTRESS = _patterns(
-    (r"\b(?:help me|i need help|please help)\b", 0.88),
+    # Generic assistance language remains a detected but low-confidence cue;
+    # it becomes a support posture only when stronger distress evidence also
+    # appears in the same message.
+    (r"\b(?:help me|i need help|please help)\b", 0.55),
     (r"\b(?:i(?:'m| am)\s+(?:scared|afraid|overwhelmed|panicking|unsafe)|i feel unsafe)\b", 0.96),
     (r"\b(?:emergency|in danger|can't breathe|cannot breathe|having a panic attack)\b", 0.99),
     (r"\b(?:i can't cope|i cannot cope|i'm not okay|i am not okay)\b", 0.93),

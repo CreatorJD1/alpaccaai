@@ -98,9 +98,15 @@ def _turn(scope: str = "guest-phase5") -> turn_context.TurnContext:
 
 
 def test_chat_returns_bounded_operational_affect_with_cue_provenance(monkeypatch):
+    prompts = []
+
+    def generate(system_prompt, *_args, **_kwargs):
+        prompts.append(system_prompt)
+        return "I will keep this response concise and grounded."
+
     mind, _mind_mod = _core_mind(
         monkeypatch,
-        lambda *_args, **_kwargs: "I will keep this response concise and grounded.",
+        generate,
     )
     active_turn = _turn()
 
@@ -112,6 +118,7 @@ def test_chat_returns_bounded_operational_affect_with_cue_provenance(monkeypatch
     metadata = result["affect_evidence"]
     assert metadata["eligible"] is True
     assert metadata["state_changed"] is False
+    assert metadata["strategy_changed"] is True
     assert metadata["reason"] == "eligible_evidence"
     assert metadata["provenance"]["source"] == "cue_parser"
     assert metadata["provenance"]["turn_id"] == active_turn.turn_id
@@ -125,6 +132,12 @@ def test_chat_returns_bounded_operational_affect_with_cue_provenance(monkeypatch
     assert distress["decision"]["evidence"]["confidence"] >= 0.9
     assert distress["cue_evidence"]
     assert all(len(item) <= 120 for item in distress["cue_evidence"])
+    assert "calm, support-focused response strategy" in metadata["response_strategy"]
+    assert any(
+        "Response strategy from current, confidence-gated message cues" in prompt
+        and "calm, support-focused response strategy" in prompt
+        for prompt in prompts
+    )
     rendered = str(metadata).lower()
     assert "i feel" not in rendered
     assert "conscious" not in rendered
@@ -142,6 +155,8 @@ def test_weak_and_unknown_cues_are_metadata_only_noops(monkeypatch):
 
     assert weak_result["eligible"] is False
     assert weak_result["state_changed"] is False
+    assert weak_result["strategy_changed"] is False
+    assert weak_result["response_strategy"] == ""
     assert weak_result["reason"] == "no_eligible_evidence"
     assert weak_result["operational_states"] == []
     assert weak_result["events"][0]["decision"]["reason"] == "weak_evidence"
@@ -228,7 +243,7 @@ def test_proactive_compose_uses_independent_scope_budgets(monkeypatch):
     assert first == "A bounded proactive line."
     assert duplicate == ""
     assert duplicate_metadata["decision"] == "defer"
-    assert duplicate_metadata["reason"] == "duplicate"
+    assert duplicate_metadata["reason"] == "awaiting_response"
     assert other_scope == "A bounded proactive line."
     assert mind._last_initiative_decision["decision"] == "allow"
     assert mind._last_initiative_decision["scope"] == "scope-b"

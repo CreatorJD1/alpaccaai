@@ -3,23 +3,23 @@ opens her home, and tucks her in.
 
 This is deliberately the dumbest possible companion to START_HERE.bat: it never
 tries to BE her, it just knows where she lives (the repo root), whether she's
-awake (her /system/status endpoint answers), and how to reach her front door
-(her token, read straight from config.py so the links always match what the
-server minted). Everything here is Python stdlib only -- tkinter, urllib,
+awake (her public /healthz endpoint answers), and how to reach her front door
+(a one-use loopback bootstrap establishes the trusted browser session).
+Everything here is Python stdlib only -- tkinter, urllib,
 subprocess -- so the launcher runs on any plain Python 3 and freezes cleanly
 into a single .exe with PyInstaller (see ../build_exe.bat).
 
 Design rules this file lives by:
   * NEVER crash her way out of an action. Every button lands in try/except and
     reports into the little status bar instead of a traceback dialog.
-  * NEVER touch her server code or her token handling -- we only *read* the
-    token via `from config import ACCESS_TOKEN`, the same secret the server
-    itself loads, so ?token= links keep working across restarts.
+  * NEVER put an authorization value in a URL or browser-readable store. The
+    running server mints a one-use local bootstrap URL for each launch.
   * The background poller may not raise, ever. A dead poll just means the dot
     goes grey; it must not take the window down with it.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -69,20 +69,15 @@ def find_repo_root() -> Path | None:
 
 REPO_ROOT = find_repo_root()
 
-# --- Her token and port ------------------------------------------------------
-# We import her real config so the launcher presents the exact same secret the
-# server expects. config.py keeps one stable token in data/access_token.txt,
-# so links from here survive her restarts. If the import fails for any reason
-# (moved folder, broken venv, whatever) we degrade gracefully: empty token,
-# default port -- the status poll and localhost links still mostly work.
-TOKEN = ""
+# --- Her port ---------------------------------------------------------------
+# The launcher needs only the configured local port. Authorization stays in the
+# running server and the browser's HttpOnly trusted-device cookie.
 PORT = 8765
 if REPO_ROOT is not None:
     try:
         sys.path.insert(0, str(REPO_ROOT))
-        from config import ACCESS_TOKEN, PORT as _PORT  # noqa: E402
+        from config import PORT as _PORT  # noqa: E402
 
-        TOKEN = ACCESS_TOKEN or ""
         PORT = int(_PORT)
     except Exception:
         # She might not even be installed properly yet; the launcher should
@@ -92,12 +87,24 @@ if REPO_ROOT is not None:
 BASE = f"http://127.0.0.1:{PORT}"
 
 
-def _tok(url: str) -> str:
-    """Append her ?token= to a URL (skipped cleanly if we never got one)."""
-    if not TOKEN:
-        return url
-    sep = "&" if "?" in url else "?"
-    return f"{url}{sep}token={urllib.parse.quote(TOKEN)}"
+def _protected_url(path: str) -> str:
+    """Ask the live local server for a one-use browser bootstrap URL."""
+    target = path if path.startswith("/") else "/" + path
+    request = urllib.request.Request(
+        f"{BASE}/auth/bootstrap/request?next={urllib.parse.quote(target, safe='/')}",
+        data=b"",
+        method="POST",
+        headers={"Accept": "application/json", "User-Agent": "alpecca-launcher"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            payload = json.loads(response.read(4096).decode("utf-8"))
+        url = str(payload.get("url") or "")
+        return url if url.startswith(BASE + "/auth/bootstrap?") else BASE + target
+    except Exception:
+        # Direct navigation lands on the creator-password enrollment page when
+        # this browser has not been trusted yet.
+        return BASE + target
 
 
 # --- The window ---------------------------------------------------------------
@@ -197,8 +204,6 @@ class Launcher:
     def _initial_bar_text(self) -> str:
         if REPO_ROOT is None:
             return "Couldn't find her home (no server.py above this folder)."
-        if not TOKEN:
-            return f"Home: {REPO_ROOT}  (no token read -- links may be gated)"
         return f"Home: {REPO_ROOT}"
 
     def say(self, msg: str) -> None:
@@ -210,9 +215,9 @@ class Launcher:
 
     # -- heartbeat ------------------------------------------------------------
     def _poll_forever(self) -> None:
-        """Ask her /system/status every 5s. This loop is allowed to fail every
+        """Ask her /healthz every 5s. This loop is allowed to fail every
         single time forever; it just means the dot stays grey."""
-        url = _tok(f"{BASE}/system/status")
+        url = f"{BASE}/healthz"
         while True:
             awake = False
             try:
@@ -271,9 +276,9 @@ class Launcher:
             self.say(f"Wake failed: {exc}")
 
     def open_home(self) -> None:
-        """Her House HQ front page, token included so the door just opens."""
+        """Her House HQ front page through a one-use local browser bootstrap."""
         try:
-            webbrowser.open(_tok(f"{BASE}/"))
+            webbrowser.open(_protected_url("/"))
             self.say("Opening her home in the browser.")
         except Exception as exc:
             self.say(f"Couldn't open her home: {exc}")
@@ -281,7 +286,7 @@ class Launcher:
     def open_app(self) -> None:
         """The Alpecca virtual app -- her secondary surface."""
         try:
-            webbrowser.open(_tok(f"{BASE}/app"))
+            webbrowser.open(_protected_url("/app"))
             self.say("Opening the app site.")
         except Exception as exc:
             self.say(f"Couldn't open the app: {exc}")
@@ -310,7 +315,7 @@ class Launcher:
         """Open her Discord invite page -- the server renders the actual
         invite link there."""
         try:
-            webbrowser.open(_tok(f"{BASE}/app/discord/invite"))
+            webbrowser.open(_protected_url("/app/discord/invite"))
             self.say("Opening her Discord invite page.")
         except Exception as exc:
             self.say(f"Couldn't open the invite page: {exc}")

@@ -26,7 +26,7 @@ import uuid
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
@@ -63,6 +63,8 @@ from alpecca import auth as auth_mod
 from alpecca import capabilities as capabilities_mod
 from alpecca import resource_coordinator as resource_coordinator_mod
 from alpecca import turn_context as turn_context_mod
+from alpecca import commitments as commitments_mod
+from alpecca import commitment_executor as commitment_executor_mod
 
 ROOT_DIR = Path(__file__).parent
 WEB_DIR = ROOT_DIR / "web"
@@ -383,10 +385,77 @@ async def _send_ws_json(socket: WebSocket, payload: dict, *,
 
 
 async def _broadcast(payload: dict,
-                     turn: turn_context_mod.TurnContext | None = None) -> None:
-    """Best-effort fan-out, optionally fenced to one active turn and epoch."""
+                     turn: turn_context_mod.TurnContext | None = None) -> int:
+    """Best-effort fan-out; return the number of current portals reached."""
+    delivered = 0
     for client in list(ws_clients):
-        await _send_ws_json(client, payload, turn=turn)
+        if await _send_ws_json(client, payload, turn=turn):
+            delivered += 1
+    return delivered
+
+
+def _schedule_ignored_outreach(initiative: dict | None) -> bool:
+    """Arm backoff only after verified delivery and a real response window."""
+    if not isinstance(initiative, dict) or not initiative.get("allowed"):
+        return False
+    scope = str(initiative.get("scope") or "")
+    dedupe_key = str(initiative.get("dedupe_key") or "")
+    if not scope or not dedupe_key:
+        return False
+
+    async def observe_response_window() -> None:
+        await asyncio.sleep(INITIATIVE_RESPONSE_WINDOW_SECONDS)
+        await asyncio.to_thread(
+            mind.mark_initiative_ignored,
+            scope,
+            dedupe_key,
+        )
+
+    task = asyncio.create_task(observe_response_window())
+    _initiative_outcome_tasks.add(task)
+    task.add_done_callback(_initiative_outcome_tasks.discard)
+    return True
+
+
+async def _deliver_proactive_once(text: str, initiative: dict | None = None) -> dict:
+    """Deliver one proactive event to exactly one currently reachable surface."""
+    if ws_clients:
+        delivered = await _broadcast({
+            "type": "proactive", "reply": text,
+            "mood": mind.state.mood_label(),
+            "state": mind.state.as_dict(),
+            "appearance": mind.current_appearance().as_dict(),
+        })
+        if delivered:
+            _schedule_ignored_outreach(initiative)
+            return {"surface": "portal", "delivered": True, "count": delivered}
+
+    from alpecca import openclaw_bridge
+    result = await _bounded_thread(
+        "openclaw_deliver",
+        openclaw_bridge.try_deliver,
+        text,
+        timeout=BACKGROUND_DELIVERY_TIMEOUT,
+    )
+    delivered = bool(isinstance(result, dict) and result.get("ok") is True)
+    queued = bool(isinstance(result, dict) and result.get("queued") is True)
+    if delivered:
+        _schedule_ignored_outreach(initiative)
+    elif isinstance(initiative, dict):
+        scope = str(initiative.get("scope") or "")
+        dedupe_key = str(initiative.get("dedupe_key") or "")
+        if scope and dedupe_key:
+            await asyncio.to_thread(
+                mind.clear_initiative_outreach,
+                scope,
+                dedupe_key,
+            )
+    return {
+        "surface": "channel",
+        "delivered": delivered,
+        "queued": queued,
+        "result": result,
+    }
 
 # ``mind_lock`` only protects the short observation snapshot.  Turn commit
 # barriers fence writes after generation; no LLM call runs under this lock.
@@ -396,6 +465,11 @@ active_tts_requests = 0
 last_chat_turn_started = 0.0
 CHAT_PRIORITY_QUIET_SECONDS = 12.0
 _optional_work_coordinator = resource_coordinator_mod.ResourceCoordinator()
+INITIATIVE_RESPONSE_WINDOW_SECONDS = max(
+    30.0,
+    float(os.environ.get("ALPECCA_INITIATIVE_RESPONSE_WINDOW", "120")),
+)
+_initiative_outcome_tasks: set[asyncio.Task] = set()
 # Must OUTLAST the LLM's own request bound (ALPECCA_OLLAMA_TIMEOUT), or the UI
 # gives up on turns the brain would have finished: her qwen3.5:9b takes ~25s
 # warm and ~40s on a cold load, and the old hardcoded 30s here served the
@@ -629,7 +703,8 @@ async def _locked_ws_chat_turn(turn: turn_context_mod.TurnContext,
                                user_text: str, image_desc: str | None = None,
                                situation_hint: str = "",
                                reply_tier: str = "reason",
-                               on_token=None) -> dict:
+                               on_token=None,
+                               activity_recorded: bool = False) -> dict:
     # Keep sensor state coherent, but never hold this state lock across a model
     # call. A synchronous worker is serialized below until it finishes even if
     # its caller has already timed out.
@@ -638,6 +713,8 @@ async def _locked_ws_chat_turn(turn: turn_context_mod.TurnContext,
         mind.perceive(obs)
     if not turn.allow_work():
         return {"cancelled": True, "turn": turn.audit_metadata()}
+    if not activity_recorded:
+        mind.note_initiative_user_activity(turn.scope_key)
     situation = situation_hint or obs.window_title or ""
     kwargs = {"on_token": on_token} if on_token is not None else {}
     result = await asyncio.to_thread(
@@ -666,6 +743,7 @@ async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = No
                                      situation_hint: str = "",
                                      reply_tier: str = "reason",
                                      on_token=None,
+                                     activity_recorded: bool = False,
                                      turn: turn_context_mod.TurnContext | None = None) -> dict:
     global active_chat_turns, last_chat_turn_started
     turn = turn or turn_context_mod.TurnContext.create(
@@ -683,6 +761,7 @@ async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = No
             situation_hint=situation_hint,
             reply_tier=reply_tier,
             on_token=on_token,
+            activity_recorded=activity_recorded,
         )
     )
     try:
@@ -1082,39 +1161,112 @@ def _mindscape_import_snapshot(snapshot: dict) -> dict:
 async def _run_routine(row: dict) -> dict:
     kind = str(row.get("kind") or "")
     name = str(row.get("name") or kind)
+    if kind not in routines_mod.KINDS:
+        return {
+            "ok": False,
+            "status": "error",
+            "kind": kind,
+            "result": {"error": f"unknown routine kind: {kind}"},
+        }
+    proactive_turn = _proactive_turn_context()
+    evidence_key = f"{row.get('id', 'unknown')}:{routines_mod.run_key()}:{kind}"
+
+    def budgeted_call(fn, *args):
+        initiative = mind.reserve_initiative(
+            event_kind="routine",
+            evidence_key=evidence_key,
+            scope_key=proactive_turn.scope_key,
+            relevance=0.7,
+            user_active=False,
+            outreach=False,
+        )
+        if not initiative["allowed"]:
+            return {
+                "status": "deferred",
+                "reason": "initiative_budget",
+                "initiative": initiative,
+            }
+        return {
+            "status": "completed",
+            "initiative": initiative,
+            "value": fn(*args),
+        }
+
+    def morning_call():
+        event = mind.compose_volunteer_event(
+            "scheduled morning greeting",
+            turn=proactive_turn,
+        )
+        if event.get("status") == "deferred":
+            return {
+                "status": "deferred",
+                "reason": "initiative_budget",
+                "initiative": event.get("initiative"),
+            }
+        return {
+            "status": "completed",
+            "initiative": event.get("initiative"),
+            "value": event.get("text", ""),
+        }
+
     if kind == "daily_recap":
         result = await _optional_bounded_thread(
-            "routine", "routine_daily_recap", mind.write_session_recap, timeout=20.0
+            "routine", "routine_daily_recap", budgeted_call,
+            mind.write_session_recap, timeout=20.0,
         )
     elif kind == "consolidate_observations":
         result = await _optional_bounded_thread(
-            "routine", "routine_consolidate", mind.consolidate_observations, 16, timeout=12.0
+            "routine", "routine_consolidate", budgeted_call,
+            mind.consolidate_observations, 16, timeout=12.0,
         )
     elif kind == "embed_backfill":
         result = await _optional_bounded_thread(
-            "routine", "routine_embed_backfill", memory_store.backfill_embeddings, timeout=10.0
+            "routine", "routine_embed_backfill", budgeted_call,
+            memory_store.backfill_embeddings, timeout=10.0,
         )
     elif kind == "vacuum":
         result = await _optional_bounded_thread(
-            "routine", "routine_vacuum", mindpage_mod.vacuum, timeout=20.0
+            "routine", "routine_vacuum", budgeted_call,
+            mindpage_mod.vacuum, timeout=20.0,
         )
     elif kind == "morning_greeting":
         result = await _optional_bounded_thread(
             "routine",
             "routine_morning_greeting",
-            mind.compose_volunteer,
-            "scheduled morning greeting",
+            morning_call,
             timeout=BACKGROUND_VOLUNTEER_TIMEOUT,
         )
-    else:
-        result = {"error": f"unknown routine kind: {kind}"}
     if _optional_work_deferred(result):
         return {
             "ok": True,
             "status": "deferred",
             "kind": kind,
             "result": result,
+            "initiative": (
+                result.get("initiative") if isinstance(result, dict) else None
+            ),
         }
+    initiative = None
+    if isinstance(result, dict) and result.get("status") == "completed":
+        initiative = result.get("initiative")
+        result = result.get("value")
+    if kind == "morning_greeting":
+        delivery = await _deliver_proactive_once(str(result or ""), initiative)
+        if delivery.get("delivered"):
+            await asyncio.to_thread(
+                mind.record_proactive_delivery,
+                str(result or ""),
+                turn=proactive_turn,
+            )
+        elif not delivery.get("queued"):
+            return {
+                "ok": True,
+                "status": "deferred",
+                "kind": kind,
+                "reason": "delivery_unavailable",
+                "initiative": initiative,
+                "delivery": delivery,
+            }
     cognition_mod.record_observation(cognition_mod.CognitionObservation(
         source="routine",
         room=getattr(mind, "_location", ""),
@@ -1128,6 +1280,7 @@ async def _run_routine(row: dict) -> dict:
         "status": "ok",
         "kind": kind,
         "result": result,
+        "initiative": initiative,
     }
 
 
@@ -1140,6 +1293,30 @@ async def lifespan(app: FastAPI):
     tender while you ground through an error, or settled while you were away.
     We keep a reference to the task so it isn't silently garbage-collected.
     """
+    try:
+        recovered = await asyncio.to_thread(
+            commitments_mod.recover_running_commitments,
+            scope=CREATOR_COMMITMENT_SCOPE,
+        )
+        if recovered:
+            cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                source="commitment_recovery",
+                content=(
+                    f"Closed {len(recovered)} interrupted commitment execution(s) "
+                    "without rerunning their tools."
+                ),
+                confidence=1.0,
+                privacy_class="local",
+                metadata={
+                    "commitment_ids": [int(row["id"]) for row in recovered[:20]],
+                    "terminal_state": commitments_mod.CANCELLED,
+                },
+            ))
+    except Exception:
+        # Startup recovery is retried on the next process start. It never runs
+        # a tool and must not prevent the local companion from opening.
+        pass
+
     try:
         await asyncio.to_thread(
             capabilities_mod.record_snapshot,
@@ -1224,10 +1401,12 @@ async def lifespan(app: FastAPI):
                     # self-improve, or recursive self-question) -- slow, entirely
                     # hers, and chat must never queue behind it. Its note (if any)
                     # goes to the activity ticker so you can watch her stir.
+                    reflection_turn = _proactive_turn_context()
                     res = await _optional_bounded_thread(
                         "reflection",
                         "idle_self_direct",
                         mind.idle_self_direct,
+                        initiative_scope=reflection_turn.scope_key,
                         timeout=BACKGROUND_REFLECT_TIMEOUT,
                     )
                     if res and res.get("note"):
@@ -1236,7 +1415,7 @@ async def lifespan(app: FastAPI):
                     # of her own accord (charter: supervised entertainment). Rare
                     # so she doesn't keep popping windows.
                     import random as _rnd
-                    if _rnd.random() < 0.05:
+                    if res and not res.get("deferred") and _rnd.random() < 0.05:
                         played = await _bounded_thread(
                             "entertain",
                             mind.entertain,
@@ -1245,14 +1424,16 @@ async def lifespan(app: FastAPI):
                         if played and played.get("note"):
                             await _broadcast({"type": "activity", "text": played["note"]})
                 if living_due:
+                    living_turn = _proactive_turn_context()
                     living = await _bounded_thread(
                         "living_world_tick",
                         mind.living_world_tick,
                         "background",
                         _living_systems_context(False),
+                        initiative_scope=living_turn.scope_key,
                         timeout=BACKGROUND_LIVING_TIMEOUT,
                     )
-                    if living:
+                    if living and not living.get("deferred"):
                         _remember_living_result(living, counted=True)
                     if living and (living.get("activated_system") or {}).get("warmup_requested"):
                         warm = await _warm_alpecca_voice(timeout=6.0)
@@ -1273,33 +1454,31 @@ async def lifespan(app: FastAPI):
                         # Compose outside the lock -- the LLM call can take
                         # seconds and chat shouldn't stall behind her musing.
                         proactive_turn = _proactive_turn_context()
-                        text = await _bounded_thread(
+                        event = await _bounded_thread(
                             "compose_volunteer",
-                            mind.compose_volunteer,
+                            mind.compose_volunteer_event,
                             reason,
                             turn=proactive_turn,
                             timeout=BACKGROUND_VOLUNTEER_TIMEOUT,
                         )
+                        text = str((event or {}).get("text") or "")
                         if text:
-                            await _broadcast({
-                                "type": "proactive", "reply": text,
-                                "mood": mind.state.mood_label(),
-                                "state": mind.state.as_dict(),
-                                "appearance": mind.current_appearance().as_dict(),
-                            })
-                            # And reach her person on their channel if she has one.
-                            await _bounded_thread(
-                                "openclaw_deliver",
-                                openclaw_bridge.try_deliver,
+                            delivery = await _deliver_proactive_once(
                                 text,
-                                timeout=BACKGROUND_DELIVERY_TIMEOUT,
+                                (event or {}).get("initiative"),
                             )
+                            if delivery.get("delivered"):
+                                await asyncio.to_thread(
+                                    mind.record_proactive_delivery,
+                                    text,
+                                    turn=proactive_turn,
+                                )
                 # Retry any outbound messages a transient channel hiccup dropped,
                 # so her words actually reach the person. Cheap when the queue's
                 # empty (no subprocess), and off-thread so chat never stalls.
                 try:
                     from alpecca import openclaw_bridge as _ocb
-                    if _ocb.pending_count():
+                    if not ws_clients and _ocb.pending_count():
                         await _bounded_thread(
                             "openclaw_flush",
                             _ocb.flush,
@@ -1348,10 +1527,10 @@ async def lifespan(app: FastAPI):
                         result = await _run_routine(row)
                         if result.get("status") != "deferred":
                             routines_mod.mark_ran(int(row["id"]))
-                        await _broadcast({
-                            "type": "activity",
-                            "text": f"routine '{row.get('name')}' ran: {result.get('status', 'ok')}",
-                        })
+                            await _broadcast({
+                                "type": "activity",
+                                "text": f"routine '{row.get('name')}' ran: {result.get('status', 'ok')}",
+                            })
                 now = _time.time()
                 if (AutomationCfg.WATCH_DIRS
                         and now - last_watch >= max(10.0, float(AutomationCfg.WATCH_POLL_SECONDS or 60.0))):
@@ -1390,6 +1569,12 @@ async def lifespan(app: FastAPI):
         task.cancel()
         mindscape_task.cancel()
         automation_task.cancel()
+        outcome_tasks = list(_initiative_outcome_tasks)
+        for outcome_task in outcome_tasks:
+            outcome_task.cancel()
+        _initiative_outcome_tasks.clear()
+        if outcome_tasks:
+            await asyncio.gather(*outcome_tasks, return_exceptions=True)
         # Leave one grounded "where we left off" memory before she sleeps, so the
         # next session can pick up the thread instead of starting cold. Best-effort
         # and off the hot path -- a failure here must never block a clean shutdown.
@@ -1435,29 +1620,71 @@ app = FastAPI(title="Alpecca", lifespan=lifespan)
 from starlette.responses import JSONResponse as _JSON
 
 _AUTH_SECRET = auth_mod.load_or_create_authorization_secret(HOME)
-_AUTHORITY = auth_mod.SessionAuthority(_AUTH_SECRET)
+_CREATOR_PASSWORD = auth_mod.load_creator_password()
+_TRUSTED_DEVICE_DAYS = max(
+    1,
+    min(365, int(os.environ.get("ALPECCA_TRUSTED_DEVICE_DAYS", "180"))),
+)
+_AUTHORITY = auth_mod.SessionAuthority(
+    _AUTH_SECRET,
+    session_ttl_s=_TRUSTED_DEVICE_DAYS * 24 * 60 * 60,
+    creator_password=_CREATOR_PASSWORD,
+)
 _PUBLIC_AUTH_PATHS = frozenset({
     "/healthz",
     "/auth/status",
     "/auth/bootstrap",
     "/auth/bootstrap/exchange",
+    "/auth/bootstrap/request",
+    "/auth/password",
 })
 _SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
-_ACCESS_HTML = """<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
-<title>Alpecca</title>
-<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#070b14;color:#cfe0ff;font-family:system-ui,sans-serif">
-<main style="background:rgba(8,14,26,.7);padding:28px 26px;border-radius:14px;border:1px solid #1d2a47;text-align:center;max-width:340px">
-  <div style="font-size:20px;font-weight:650;margin-bottom:6px">Alpecca</div>
-  <div style="color:#8aa0c6;font-size:13px;margin-bottom:16px">A local authorization session has not been established.</div>
-  <button onclick="location.reload()" style="margin-top:4px;width:100%;padding:10px;border:0;border-radius:9px;background:#7fd9ff;color:#06121c;font-weight:600;cursor:pointer">Reload</button>
-</main></body>"""
+def _access_html(
+    next_path: str = "/",
+    error: str = "",
+    *,
+    allow_password: bool = True,
+) -> str:
+    safe_next = html.escape(_safe_local_path(next_path), quote=True)
+    error_html = (
+        f'<div role="alert" style="color:#ffb8b8;font-size:13px;margin-bottom:12px">'
+        f'{html.escape(error)}</div>'
+        if error else ""
+    )
+    configured = _AUTHORITY.password_configured and allow_password
+    form = f"""
+  <form method="post" action="/auth/password" style="display:grid;gap:10px">
+    <input type="hidden" name="next" value="{safe_next}">
+    <label for="creator-password" style="text-align:left;color:#a9bad8;font-size:12px">Creator password</label>
+    <input id="creator-password" name="password" type="password" required autocomplete="current-password"
+      style="box-sizing:border-box;width:100%;padding:11px;border:1px solid #31415f;border-radius:6px;background:#0b1322;color:#eef6ff;font:inherit">
+    <button type="submit" style="margin-top:4px;width:100%;padding:10px;border:0;border-radius:6px;background:#7fd9ff;color:#06121c;font-weight:650;cursor:pointer">Open Alpecca</button>
+  </form>""" if configured else ""
+    unavailable = "" if configured else (
+        '<div style="color:#ffcf8f;font-size:13px">Remote creator sign-in requires '
+        'an HTTPS address.</div>'
+        if not allow_password else
+        '<div style="color:#ffcf8f;font-size:13px">The creator password is not configured. '
+        'Open Alpecca from the local launcher or configure the protected Windows credential.</div>'
+    )
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>Alpecca sign in</title></head>
+<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#070b14;color:#cfe0ff;font-family:system-ui,sans-serif">
+<main style="box-sizing:border-box;width:min(360px,calc(100vw - 32px));background:#0b1220;padding:28px 26px;border-radius:8px;border:1px solid #263653">
+  <div style="font-size:22px;font-weight:700;margin-bottom:6px">Alpecca</div>
+  <div style="color:#8aa0c6;font-size:13px;margin-bottom:18px">Validate this device once as CreatorJD. The password is checked locally and never placed in the URL or browser storage; afterward this browser is trusted.</div>
+  {error_html}{form}{unavailable}
+</main></body></html>"""
 
 _CORS_ALLOWED_HOSTS = {
     "localhost",
     "127.0.0.1",
     "::1",
 }
+
+CREATOR_COMMITMENT_SCOPE = "creator-personal"
 _EXPLICIT_CORS_ORIGINS = frozenset(
     value.strip().rstrip("/")
     for value in os.environ.get("ALPECCA_CORS_ORIGINS", "").split(",")
@@ -1580,11 +1807,18 @@ def issue_local_bootstrap_url(path: str = "/") -> str:
 
 
 def _cookie_origin_allowed(request: Request, origin: str) -> bool:
-    normalized = _allowed_cors_origin(origin)
+    normalized = _normalized_origin(origin)
     if not normalized:
         return False
-    request_origin = f"{request.url.scheme}://{request.url.netloc}".rstrip("/")
-    return normalized == request_origin or normalized in _EXPLICIT_CORS_ORIGINS
+    request_origin = _normalized_origin(
+        f"{request.url.scheme}://{request.url.netloc}"
+    )
+    if normalized == request_origin:
+        return True
+    return (
+        normalized in _EXPLICIT_CORS_ORIGINS
+        and bool(_allowed_cors_origin(normalized))
+    )
 
 
 @app.middleware("http")
@@ -1612,8 +1846,45 @@ async def _auth_gate(request: Request, call_next):
             method=request.method,
             remote_addr=client_host,
         )
+        if (
+            request.method == "GET"
+            and "text/html" in request.headers.get("accept", "")
+            and auth_mod.is_loopback_address(client_host)
+        ):
+            # The laptop itself is an explicitly trusted device. Redirect into
+            # the existing one-use POST bootstrap exchange so this middleware
+            # never mints cookies and Jason never pastes a password or token.
+            trusted = auth_mod.AuthDecision(
+                True,
+                "local_trusted_device",
+                "loopback_browser_enrolled",
+                principal="creator",
+                remote_scope="loopback",
+            )
+            _record_auth_decision(
+                "local_device_trust",
+                trusted,
+                path=request.url.path,
+                method=request.method,
+                remote_addr=client_host,
+            )
+            return _with_cors(RedirectResponse(
+                issue_local_bootstrap_url(request.url.path),
+                status_code=303,
+                headers={"Cache-Control": "no-store"},
+            ), origin)
         if request.method == "GET" and "text/html" in request.headers.get("accept", ""):
-            return _with_cors(HTMLResponse(_ACCESS_HTML, status_code=401), origin)
+            return _with_cors(
+                HTMLResponse(
+                    _access_html(
+                        request.url.path,
+                        allow_password=request.url.scheme == "https",
+                    ),
+                    status_code=401,
+                    headers={"Cache-Control": "no-store"},
+                ),
+                origin,
+            )
         return _with_cors(
             _JSON({"detail": "authorization required"}, status_code=401),
             origin,
@@ -1651,6 +1922,16 @@ def auth_status() -> dict:
     return {
         "authorization": "required",
         "bootstrap": "loopback_only",
+        "creator_password": {
+            "configured": _AUTHORITY.password_configured,
+            "stored_in_browser": False,
+        },
+        "trusted_device": {
+            "days": _TRUSTED_DEVICE_DAYS,
+            "cookie_http_only": True,
+            "cookie_same_site": "strict",
+            "remote_requires_https": True,
+        },
         "public_identity_authorizes": False,
         "session_cookie": {
             "http_only": True,
@@ -1723,7 +2004,103 @@ def request_auth_bootstrap(request: Request) -> dict:
     client_host = request.client.host if request.client else ""
     if not auth_mod.is_loopback_address(client_host):
         raise HTTPException(status_code=403, detail="loopback required")
-    return {"url": issue_local_bootstrap_url("/")}
+    return {
+        "url": issue_local_bootstrap_url(
+            _safe_local_path(request.query_params.get("next"))
+        )
+    }
+
+
+@app.post("/auth/password")
+async def auth_password_exchange(request: Request) -> Response:
+    """Exchange the protected creator password for an HttpOnly session."""
+    client_host = request.client.host if request.client else ""
+    if (
+        not auth_mod.is_loopback_address(client_host)
+        and request.url.scheme != "https"
+    ):
+        decision = auth_mod.AuthDecision(
+            False, "password", "https_required", remote_scope="remote"
+        )
+        _record_auth_decision(
+            "password_exchange",
+            decision,
+            path=request.url.path,
+            method=request.method,
+            remote_addr=client_host,
+        )
+        return _JSON(
+            {"detail": "remote creator sign-in requires HTTPS"},
+            status_code=426,
+            headers={"Cache-Control": "no-store", "Upgrade": "TLS/1.2"},
+        )
+    origin = request.headers.get("origin", "")
+    if origin and not _cookie_origin_allowed(request, origin):
+        decision = auth_mod.AuthDecision(
+            False, "password", "origin_required", remote_scope="unknown"
+        )
+        _record_auth_decision(
+            "password_exchange",
+            decision,
+            path=request.url.path,
+            method=request.method,
+            remote_addr=client_host,
+        )
+        return _JSON(
+            {"detail": "same-origin password sign-in required"},
+            status_code=403,
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        raw = await request.body()
+    except Exception:
+        raw = b""
+    if len(raw) > 4096:
+        return _JSON(
+            {"detail": "password form is too large"},
+            status_code=400,
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        form = parse_qs(raw.decode("utf-8"), keep_blank_values=True)
+    except (UnicodeError, ValueError):
+        form = {}
+    password = str((form.get("password") or [""])[0])
+    next_path = _safe_local_path(str((form.get("next") or ["/"])[0]))
+    decision, cookie = _AUTHORITY.exchange_password(
+        password,
+        client_host,
+        secure=request.url.scheme == "https",
+    )
+    _record_auth_decision(
+        "password_exchange",
+        decision,
+        path=request.url.path,
+        method=request.method,
+        remote_addr=client_host,
+    )
+    if not decision.allowed or cookie is None:
+        status_code = 429 if decision.reason == "rate_limited" else 401
+        headers = {"Cache-Control": "no-store"}
+        if status_code == 429:
+            headers["Retry-After"] = str(auth_mod.PASSWORD_WINDOW_SECONDS)
+        return HTMLResponse(
+            _access_html(
+                next_path,
+                "Too many attempts; wait one minute."
+                if status_code == 429
+                else "That creator password was not accepted.",
+            ),
+            status_code=status_code,
+            headers=headers,
+        )
+    response = RedirectResponse(
+        next_path,
+        status_code=303,
+        headers={"Cache-Control": "no-store"},
+    )
+    response.set_cookie(cookie.name, cookie.value, **cookie.set_cookie_kwargs())
+    return response
 
 
 @app.get("/security/capabilities")
@@ -1732,20 +2109,16 @@ def security_capabilities() -> dict:
 
 
 @app.get("/")
-def index() -> HTMLResponse:
-    """The primary Alpecca app shell: her live home, rooms, senses, panels,
-    profile, and chat.
-
-    The old terminal/chat surface remains available at /classic, and the 3D
-    House HQ remains available at /house-hq.
-    """
-    return HTMLResponse((WEB_DIR / "home.html").read_text(encoding="utf-8"))
+def index() -> RedirectResponse:
+    """The Void Prototype is Alpecca's single primary embodied surface."""
+    return RedirectResponse("/house-hq", status_code=307)
 
 
 @app.get("/classic")
 def classic() -> HTMLResponse:
     """The original full-featured chat page (voice push-to-talk, image attach,
-    avatar state machine). Kept available while the super app folds these in."""
+    avatar state machine). Kept as a focused compatibility surface alongside
+    the unified Void Prototype."""
     return HTMLResponse((WEB_DIR / "index.html").read_text(encoding="utf-8"))
 
 
@@ -1757,17 +2130,16 @@ def studio_page() -> HTMLResponse:
 
 
 @app.get("/home")
-def home_page() -> HTMLResponse:
-    """Her home -- the live 3D house of rooms she roams of her own accord. The
-    page is a pure renderer; where she is comes from /home/state."""
-    return HTMLResponse((WEB_DIR / "home.html").read_text(encoding="utf-8"))
+def home_page() -> RedirectResponse:
+    """Compatibility route for bookmarks made before the Void consolidation."""
+    return RedirectResponse("/house-hq", status_code=307)
 
 
 # --- /app: her private "get her on every device" page --------------------------
 # One page that hands Jason every way to carry her along: the Windows launcher,
-# install-as-app on Android/iPhone (with a QR of her own address + token so a
-# phone joins in one scan), a Discord invite, and the share/tunnel recipes.
-# Nothing here weakens the lock -- the same _auth_gate token middleware covers
+# install-as-app on Android/iPhone (with a credential-free QR that opens device
+# enrollment), a Discord invite, and the share/tunnel recipes.
+# Nothing here weakens the lock -- the same trusted-device middleware covers
 # these routes like every other page, so /app is exactly as private as she is.
 
 # The desktop launcher another workspace authors. We only READ these paths at
@@ -2041,7 +2413,158 @@ def growth() -> dict:
     d["proposals"] = proposal_state["proposals"]
     d["evaluations"] = proposal_state.get("evaluations", [])
     d["safety_policy"] = proposal_state["safety_policy"]
+    d["commitments"] = commitments_mod.list_commitments(
+        scope=CREATOR_COMMITMENT_SCOPE,
+        limit=25,
+    )
+    d["executable_tools"] = sorted(commitment_executor_mod.ALLOWED_TOOLS)
     return d
+
+
+def _require_creator_request(req: Request) -> auth_mod.AuthDecision:
+    decision = getattr(req.state, "authorization", None)
+    if not isinstance(decision, auth_mod.AuthDecision) or not decision.allowed:
+        raise HTTPException(status_code=401, detail="authorization required")
+    if decision.principal != "creator":
+        raise HTTPException(status_code=403, detail="creator authorization required")
+    return decision
+
+
+@app.get("/commitments")
+def commitment_list(req: Request, state: str | None = None, limit: int = 50) -> dict:
+    """List CreatorJD's durable action commitments and their receipts."""
+    _require_creator_request(req)
+    try:
+        rows = commitments_mod.list_commitments(
+            scope=CREATOR_COMMITMENT_SCOPE,
+            state=state,
+            limit=max(1, min(100, int(limit))),
+        )
+    except commitments_mod.CommitmentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "commitments": rows,
+        "executable_tools": sorted(commitment_executor_mod.ALLOWED_TOOLS),
+    }
+
+
+@app.post("/commitments")
+async def commitment_create(req: Request) -> dict:
+    """Create one allowlisted, payload-backed Workshop commitment.
+
+    Stage 4 deliberately exposes only the read-only self-status operation. The
+    server owns its wording and payload; arbitrary prose cannot become code.
+    """
+    decision = _require_creator_request(req)
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    tool = str(body.get("tool") or commitment_executor_mod.SELF_STATUS_TOOL)
+    args = body.get("args") or {}
+    try:
+        payload = commitment_executor_mod.build_payload(tool, args)
+        existing = commitments_mod.list_commitments(
+            scope=CREATOR_COMMITMENT_SCOPE,
+            limit=50,
+        )
+        for item in existing:
+            if (
+                item.get("state") not in commitments_mod.TERMINAL_STATES
+                and item.get("payload") == payload
+            ):
+                return {"created": False, "commitment": item}
+        created = commitments_mod.create_commitment(
+            "Check my current scoped self status",
+            scope=CREATOR_COMMITMENT_SCOPE,
+            evidence={
+                "source": "creator_workshop",
+                "principal": decision.principal,
+                "authorization": decision.mechanism,
+            },
+            payload=payload,
+        )
+    except commitments_mod.CommitmentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except commitment_executor_mod.CommitmentExecutionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"created": True, "commitment": created}
+
+
+@app.post("/commitments/{commitment_id}/approve")
+def commitment_approve(commitment_id: int, req: Request) -> dict:
+    """Apply CreatorJD's explicit approval without running the action."""
+    decision = _require_creator_request(req)
+    current = commitments_mod.get_commitment(
+        commitment_id,
+        scope=CREATOR_COMMITMENT_SCOPE,
+    )
+    if current is None:
+        raise HTTPException(status_code=404, detail="commitment not found")
+    if current.get("state") == commitments_mod.APPROVED:
+        return {"approved": False, "commitment": current}
+    if current.get("state") != commitments_mod.PROPOSED:
+        raise HTTPException(status_code=409, detail="only a proposed commitment can be approved")
+    try:
+        updated = commitments_mod.transition_commitment(
+            commitment_id,
+            commitments_mod.APPROVED,
+            scope=CREATOR_COMMITMENT_SCOPE,
+            evidence={
+                "source": "creator_workshop",
+                "principal": decision.principal,
+                "authorization": decision.mechanism,
+            },
+        )
+    except commitments_mod.IllegalTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"approved": True, "commitment": updated}
+
+
+@app.post("/commitments/{commitment_id}/execute")
+async def commitment_execute(commitment_id: int, req: Request) -> dict:
+    """Run one approved, payload-backed commitment from a fresh Workshop turn."""
+    _require_creator_request(req)
+    turn = turn_context_mod.TurnContext.create(
+        _server_conversation_id("creator", "workshop"),
+        principal="creator",
+        surface="workshop",
+        privacy_scope=CREATOR_COMMITMENT_SCOPE,
+        portal_epoch=f"workshop-{uuid.uuid4().hex[:12]}",
+        timeout_s=30,
+    )
+    try:
+        result = await asyncio.to_thread(
+            commitment_executor_mod.execute_approved_commitment,
+            commitment_id,
+            toolkit=mind.toolkit,
+            turn=turn,
+        )
+    except commitments_mod.CommitmentNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except commitments_mod.IllegalTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except (commitments_mod.CommitmentError, commitment_executor_mod.CommitmentExecutionError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    cognition_mod.record_observation(cognition_mod.CognitionObservation(
+        source="commitment_execution",
+        room="workshop",
+        content=(
+            f"Commitment {commitment_id} finished with "
+            f"{result['execution']['status']}."
+        ),
+        confidence=1.0,
+        privacy_class="local",
+        metadata={
+            "commitment_id": int(commitment_id),
+            "tool": result["execution"]["tool"],
+            "status": result["execution"]["status"],
+            "turn_id": turn.turn_id,
+        },
+    ))
+    return result
 
 
 @app.get("/soul")
@@ -2700,11 +3223,30 @@ async def cognition_world_tick(req: Request) -> dict:
     except Exception:
         body = {}
     reason = str(body.get("reason") or "manual").strip()[:80] or "manual"
-    async with mind_lock:
-        result = mind.living_world_tick(
-            reason=reason,
-            systems=_living_systems_context(False),
+    quiet = body.get("quiet") is True
+    initiative_scope = _proactive_turn_context().scope_key if quiet else ""
+    call_args = (reason, _living_systems_context(False))
+    if quiet:
+        result = await _bounded_thread(
+            "cognition_world_tick",
+            mind.living_world_tick,
+            *call_args,
+            initiative_scope=initiative_scope,
+            timeout=BACKGROUND_LIVING_TIMEOUT,
         )
+    else:
+        # Manual ticks are explicit user actions, not optional background work.
+        # Await their worker instead of returning a false timeout while it keeps
+        # mutating state off-thread.
+        result = await asyncio.to_thread(
+            mind.living_world_tick,
+            *call_args,
+            initiative_scope="",
+        )
+    if result is None:
+        raise HTTPException(status_code=503, detail="living loop timed out")
+    if result.get("deferred"):
+        return result
     if (result.get("activated_system") or {}).get("warmup_requested"):
         result["activated_system"]["warmup"] = await _warm_alpecca_voice(timeout=8.0)
     _remember_living_result(result, counted=True)
@@ -2763,12 +3305,18 @@ async def cognition_proposal_update(proposal_id: int, req: Request) -> dict:
     result = (body.get("result") or "").strip()
     approved = bool(body.get("approved_by_user"))
     execute = bool(body.get("execute"))
+    if execute:
+        _require_creator_request(req)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "legacy proposal execution is retired; create, approve, and "
+                "execute a payload-backed commitment"
+            ),
+        )
     try:
         async with mind_lock:
             updated = mind.update_proposal(proposal_id, status, result, approved)
-            if execute:
-                executed = mind.execute_approved_step(proposal_id, approved_by_user=approved)
-                return {**executed, "updated": updated}
             return updated
     except KeyError:
         raise HTTPException(status_code=404, detail="proposal not found")
@@ -3280,7 +3828,10 @@ def web_asset(path: str) -> FileResponse:
     """Serve vendored front-end assets (PIXI etc.) from web/, traversal-safe.
     Vendoring keeps the avatar renderer working with no internet -- the
     local-first line: nothing she needs should depend on a CDN."""
-    safe = (WEB_DIR / path).resolve()
+    normalized = str(path or "").replace("\\", "/").lstrip("/")
+    if normalized == "archive" or normalized.startswith("archive/"):
+        raise HTTPException(status_code=404, detail="not found")
+    safe = (WEB_DIR / normalized).resolve()
     try:
         safe.relative_to(WEB_DIR.resolve())
     except ValueError:
@@ -3303,7 +3854,7 @@ def _safe_house_file(root: Path, path: str) -> Path:
 
 @app.get("/house-hq")
 def house_hq_page() -> FileResponse:
-    """Serve the unified 3D AI Office HQ app from the same Alpecca source tree."""
+    """Serve the unified Void Prototype and its native systems center."""
     return FileResponse(_safe_house_file(HOUSE_HQ_DIST, "index.html"))
 
 
@@ -3734,6 +4285,22 @@ async def channel_inbound(req: Request) -> dict:
     situation_hint = (payload.get("situation") or payload.get("context") or "").strip()
     room = (payload.get("room") or payload.get("location") or "").strip()
     image_desc = (payload.get("image_desc") or "").strip() or None
+    decision = getattr(req.state, "authorization", None)
+    principal = getattr(decision, "principal", "guest") or "guest"
+    route_surface = (
+        "house-hq" if req.url.path == "/channel/house-hq" else "channel"
+    )
+    turn = turn_context_mod.TurnContext.create(
+        _server_conversation_id(
+            principal,
+            route_surface,
+            ephemeral_seed=uuid.uuid4().hex,
+        ),
+        principal=principal,
+        surface=route_surface,
+        portal_epoch=f"local-{route_surface}",
+    )
+    mind.note_initiative_user_activity(turn.scope_key)
     # A surface (e.g. Discord) can hand us a raw image; run it through the same
     # vision + self-recognition path the app uses, so she actually sees it.
     image_data = payload.get("image") or ""
@@ -3769,26 +4336,12 @@ async def channel_inbound(req: Request) -> dict:
     if room:
         situation_hint = f"{situation_hint} (room: {room})"
 
-    decision = getattr(req.state, "authorization", None)
-    principal = getattr(decision, "principal", "guest") or "guest"
-    route_surface = (
-        "house-hq" if req.url.path == "/channel/house-hq" else "channel"
-    )
-    turn = turn_context_mod.TurnContext.create(
-        _server_conversation_id(
-            principal,
-            route_surface,
-            ephemeral_seed=uuid.uuid4().hex,
-        ),
-        principal=principal,
-        surface=route_surface,
-        portal_epoch=f"local-{route_surface}",
-    )
     result = await _ws_chat_turn_with_timeout(
         text,
         image_desc=image_desc,
         situation_hint=situation_hint,
         reply_tier=_house_chat_reply_tier(text),
+        activity_recorded=True,
         turn=turn,
     )
     reply = result.get("reply", "")
@@ -3928,6 +4481,19 @@ async def ws(socket: WebSocket) -> None:
                 _mindscape_request_event_sync("ws_background_observation")
                 continue
 
+            # A real user frame owns this scope immediately. Record activity
+            # before image/vision work so autonomous jobs yield during a slow
+            # attachment analysis rather than starting in the gap.
+            active_turn = turn_context_mod.TurnContext.create(
+                conversation_id,
+                principal=decision.principal,
+                surface=route_surface,
+                portal_epoch=portal_epoch,
+            )
+            if not _begin_ws_portal_turn(socket, active_turn):
+                return
+            mind.note_initiative_user_activity(active_turn.scope_key)
+
             # If an image rode along, let her actually look at it first. The
             # vision call can take seconds, so it happens before we take the
             # mind lock. An unreadable image yields an honest "couldn't see".
@@ -3962,14 +4528,6 @@ async def ws(socket: WebSocket) -> None:
             on_token = None
             pump_task = None
             token_q: asyncio.Queue | None = None
-            active_turn = turn_context_mod.TurnContext.create(
-                conversation_id,
-                principal=decision.principal,
-                surface=route_surface,
-                portal_epoch=portal_epoch,
-            )
-            if not _begin_ws_portal_turn(socket, active_turn):
-                return
             if wants_stream:
                 # Live draft: tokens flow out as she writes; the final vetted
                 # reply frame below stays authoritative and replaces the draft.
@@ -3997,6 +4555,7 @@ async def ws(socket: WebSocket) -> None:
                 situation_hint=context,
                 reply_tier=_house_chat_reply_tier(user_text),
                 on_token=on_token,
+                activity_recorded=True,
                 turn=active_turn,
             )
             if pump_task is not None and token_q is not None:

@@ -85,14 +85,14 @@ CHANNEL_MIN_INTERVAL = float(os.environ.get("ALPECCA_DISCORD_MIN_INTERVAL", "1.5
 # sometimes, and with a long per-channel cooldown that backs off further whenever
 # a chime-in goes unanswered -- so it reads as a person occasionally joining, not
 # a bot reacting to everything.
-PROACTIVE_ENABLED = os.environ.get("ALPECCA_DISCORD_PROACTIVE", "1") not in ("", "0", "false", "False")
+PROACTIVE_ENABLED = os.environ.get("ALPECCA_DISCORD_PROACTIVE", "0") not in ("", "0", "false", "False")
 PROACTIVE_COOLDOWN = float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_COOLDOWN", "480"))
 PROACTIVE_CHANCE = float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_CHANCE", "0.3"))
 PROACTIVE_MIN_LEN = int(os.environ.get("ALPECCA_DISCORD_PROACTIVE_MIN_LEN", "40"))
 # Recursive self-continuation: when the room goes quiet after SHE spoke, she may
 # continue her own train of thought a little deeper -- bounded, paced, and it
 # yields the instant any human speaks, so it never becomes a monologue/spam.
-RECURSIVE_ENABLED = os.environ.get("ALPECCA_DISCORD_RECURSIVE", "1") not in ("", "0", "false", "False")
+RECURSIVE_ENABLED = os.environ.get("ALPECCA_DISCORD_RECURSIVE", "0") not in ("", "0", "false", "False")
 RECURSIVE_MAX = int(os.environ.get("ALPECCA_DISCORD_RECURSIVE_MAX", "2"))       # self-steps before waiting for a human
 RECURSIVE_DELAY = float(os.environ.get("ALPECCA_DISCORD_RECURSIVE_DELAY", "75"))  # quiet seconds before she continues
 RECURSIVE_SWEEP = float(os.environ.get("ALPECCA_DISCORD_RECURSIVE_SWEEP", "20"))  # how often the loop checks
@@ -100,12 +100,12 @@ DEBUG = os.environ.get("ALPECCA_DISCORD_DEBUG", "1") not in ("", "0", "false", "
 # Contextual participation: she reads the recent channel conversation and may
 # speak WITHOUT being mentioned -- but she decides per message whether she has
 # something worth adding (she can choose "(pass)"), throttled so it isn't spam.
-PARTICIPATE = os.environ.get("ALPECCA_DISCORD_PARTICIPATE", "1") not in ("", "0", "false", "False")
+PARTICIPATE = os.environ.get("ALPECCA_DISCORD_PARTICIPATE", "0") not in ("", "0", "false", "False")
 PARTICIPATE_COOLDOWN = float(os.environ.get("ALPECCA_DISCORD_PARTICIPATE_COOLDOWN", "45"))  # min secs between unprompted weigh-ins
 CONTEXT_MESSAGES = int(os.environ.get("ALPECCA_DISCORD_CONTEXT", "8"))                        # recent msgs given as context
 # Voice chat: she can join a voice channel (on request) and SPEAK her replies with
 # her real TTS voice. Bots stream audio (supported); video/camera is not possible.
-VOICE_ENABLED = os.environ.get("ALPECCA_DISCORD_VOICE", "1") not in ("", "0", "false", "False")
+VOICE_ENABLED = os.environ.get("ALPECCA_DISCORD_VOICE", "0") not in ("", "0", "false", "False")
 
 
 def _is_reply_to_me(message: "discord.Message", client: "discord.Client") -> bool:

@@ -138,7 +138,8 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
                         image_seen: str = "", abilities: str = "",
                         who: str = "", inner: str = "", core: str = "",
                         current_message: str = "", compact: bool = False,
-                        working_memory: str = "", paged_memory: str = "") -> str:
+                        working_memory: str = "", paged_memory: str = "",
+                        response_strategy: str = "") -> str:
     """Assemble the full system prompt for one turn.
 
     `self_narration` is Alpecca's grounded introspective read of itself (from
@@ -151,6 +152,8 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
     `abilities` describes any actions she's been granted (actions.py).
     `working_memory` is deterministic runtime telemetry, never imagined state.
     `paged_memory` contains labeled summaries/excerpts faulted from local storage.
+    `response_strategy` is short-lived operational guidance derived from current
+    cue evidence. It is not an assertion about Alpecca's subjective state.
     """
     if compact:
         parts = [
@@ -241,6 +244,16 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
         parts += ["", "Current turn evidence. Treat this as the live request you "
                   "are answering now; do not override it with old room events or "
                   "memories:\n- Current message: " + current_message.strip()]
+
+    if response_strategy:
+        strategy_text = (
+            _compact_text(response_strategy, 420) if compact else response_strategy
+        )
+        parts += [
+            "",
+            "Response strategy from current, confidence-gated message cues "
+            "(operational guidance, not a claim about feelings): " + strategy_text,
+        ]
 
     if situation:
         parts += ["", f"What you can sense the person doing right now: {situation}."]

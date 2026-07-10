@@ -10,6 +10,27 @@ Discord audit, CreatorJD contact audit, and V4 embodiment audit.
 `PROJECT_CONTEXT.md` and `HANDOFF.md` remain canonical for active implementation.
 This document is the current architecture and sequencing authority.
 
+## Current Implementation Checkpoint (2026-07-10)
+
+This checkpoint supersedes older route, access, and phase-status language
+retained in the implementation sequence as historical planning context.
+
+- `/house-hq` now serves the **Void Prototype**, with a native categorized
+  **Alpecca Systems** center and an orthographic view.
+- The old `web/home.html` is archived at
+  `web/archive/house_hq_internal_legacy.html` and is no longer routed.
+- Loopback access uses trusted-device bootstrap; remote access requires HTTPS
+  creator trust. Remote trust establishes a protected Secure, HttpOnly session;
+  plain LAN HTTP cannot enroll a creator device.
+- Phase 4 baseline is complete with creator-only, scope-bound, read-only
+  `self_status` commitment execution, receipt-backed closure, and replay
+  protection. Broader action classes remain outside this baseline.
+- Phase 5 baseline is complete: proactive speech, living ticks, and routines
+  share one per-scope initiative budget; ignored outreach backs off; proactive
+  delivery selects one surface; and eligible cue evidence changes response
+  strategy with traceable provenance.
+- Phase 6 Mindpage and resource coordination is the active next slice.
+
 ## Truth Baseline
 
 ### Compute lanes
@@ -49,6 +70,7 @@ They are not fixed Alpecca hardware.
 | Status | Meaning |
 |---|---|
 | DONE | Wired into the live path, tested, runtime-smoked, documented, and not blocked by a known security defect |
+| BASELINE COMPLETE | The named minimum safe slice is wired and tested; broader phase expansion remains explicitly gated |
 | PARTIAL | Useful code exists, but integration, safety, tests, reliability, or fidelity is incomplete |
 | BLOCKED | Reachable or proposed behavior is unsafe and must remain disabled until its gate passes |
 | NOT STARTED | No production implementation exists |
@@ -61,22 +83,22 @@ They are not fixed Alpecca hardware.
 
 | Feature | Status | Honest current state |
 |---|---|---|
-| FastAPI, WebSocket, runtime status | PARTIAL | Runs, but auth, turn isolation, and cancellation barriers are incomplete |
+| FastAPI, WebSocket, runtime status | PARTIAL | Runs with protected authorization, immutable scoped turns, and cancellation/commit barriers; broader release hardening remains |
 | Ollama model routing and offline fallback | PARTIAL | Local paths work; private-data cloud classification is incomplete |
 | SQLite state, memory, journal, proposals | PARTIAL | Functional; concurrency, backup, and transaction hardening remain |
-| Remote auth and tunnels | BLOCKED | Committed root token plus an HTML authentication bypass |
-| Singleton and active-portal ownership | NOT STARTED | No OS mutex, boot identity, portal lease, or fencing epoch |
+| Remote auth and tunnels | PARTIAL | Loopback uses trusted-device bootstrap; remote browsers establish creator trust and then use protected trusted-device sessions |
+| Singleton and active-portal ownership | DONE | The process singleton and active portal epoch/fencing baseline are implemented |
 
 ### Tier 2: Cognition and agency
 
 | Feature | Status | Honest current state |
 |---|---|---|
 | Soul seven-subagent arbitration | DONE | Implemented without adding or bypassing subagents |
-| CoreMind response loop | PARTIAL | Real state/memory/tools; global speaker/history can leak across surfaces |
+| CoreMind response loop | PARTIAL | Real state/memory/tools now run through immutable scoped turn context; broader cognition work remains |
 | Constrained choice points | DONE | Living question, same-rank Soul tie-break, proactive judge with fallback |
-| Tool registry and planner | PARTIAL | Bounded tools exist; guest capability and approval identity are not code-secure |
-| Structured cue envelope | NOT STARTED | Corrections, confirmations, urgency, and unresolved actions are not first-class state |
-| Commitment and action receipt ledger | NOT STARTED | Promises are not durably tied to execution, evidence, failure, or cancellation |
+| Tool registry and planner | PARTIAL | Bounded tools exist; commitment execution currently allows only creator-scoped read-only `self_status` |
+| Structured cue envelope | DONE | Corrections, confirmations, references, urgency, distress, questions, and action intent are first-class state |
+| Commitment and action receipt ledger | BASELINE COMPLETE | Durable scoped commitments execute read-only `self_status` once, close from receipts, and reject replay |
 
 ### Tier 3: Memory and Mindpage
 
@@ -84,7 +106,7 @@ They are not fixed Alpecca hardware.
 |---|---|---|
 | Keyword/FTS recall and embedding backfill | PARTIAL | Bounded and useful; semantic scoring can accept unrelated memories |
 | Mindpage Layer A | PARTIAL | Request ledger, write-before-delete paging, tiers, and page faults work; fixed-prompt overflow and buried-content indexing remain |
-| Conversation/privacy partitioning | BLOCKED | App, guest, Discord, and creator short-term context share global state |
+| Conversation/privacy partitioning | DONE | Creator app and House HQ turns are scope-partitioned; future guest/Discord subjects remain capability-denied until their later gates |
 | Resource pressure sensing | PARTIAL | Context pressure is grounded; whole-machine sensing draft is not wired |
 | Approved pagefile broker | BLOCKED | Draft math, caps, approval proof, live recheck, and verification are unsafe |
 | llama.cpp KV slot persistence | PARKED | Downloaded experiment, not integrated |
@@ -93,18 +115,18 @@ They are not fixed Alpecca hardware.
 
 | Feature | Status | Honest current state |
 |---|---|---|
-| Proactive/living behavior | PARTIAL | Cooldowns exist, but living/Discord/recursive paths do not share one budget |
+| Proactive/living behavior | BASELINE COMPLETE | Living ticks, proactive speech, and routines share one scoped budget; ignored outreach backs off and each proactive event selects one delivery surface |
 | Routines and watchers | PARTIAL | Empty/off by default; routine deletion and unified scheduling remain |
 | Background work coordination | PARTIAL | Timeouts do not cancel worker threads; optional jobs can overlap |
 | Recursive self-improvement | PARTIAL | DB-backed tunables/lessons exist; several effective knobs are not consumed and trial evaluation is weak |
-| External action approvals | BLOCKED | Caller booleans and a global computer confirmation event are not identity-bound approvals |
+| External action approvals | BLOCKED | Creator-only scoped approval works for read-only `self_status`; external or mutating action classes remain blocked |
 | MCP federation | PARKED | Largest external surface; no current companion-value need |
 
 ### Tier 5: Experience, embodiment, and periphery
 
 | Feature | Status | Honest current state |
 |---|---|---|
-| House HQ and virtual app | PARTIAL | Main surfaces work; active-portal ownership and responsive QA remain |
+| House HQ and virtual app | PARTIAL | `/house-hq` serves the Void Prototype with a native categorized Alpecca Systems center and orthographic view; the old internal page is archived and unrouted |
 | V4 VRM body and physics | PARTIAL | Loads with 74 spring joints; scale, sole grounding, collider use, and motion QA remain |
 | Facial expression and gesture control | PARTIAL | Expressions can latch; VRMAs loop; one-shot scheduler is declared but unfinished |
 | TTS voice stack | PARTIAL | Kokoro/F5 routes exist; cross-surface queueing and resource coordination remain |
@@ -119,15 +141,15 @@ They are not fixed Alpecca hardware.
 |---|---|---|
 | Hugging Face art/runtime assets | PARTIAL | Correct storage lane; provider availability and publish QA remain operational concerns |
 | ZeroGPU / Google notebook compute | PARTIAL | Optional adapters exist; allocations are ephemeral and privacy policy is incomplete |
-| Cloudflare R2 shell | BLOCKED | Current bundle must be rebuilt after token rotation and secret removal |
+| Cloudflare R2 shell | BLOCKED | The shell still needs a release rebuild and protected-auth QA; Alpecca art remains excluded |
 | Mindscape continuity | BLOCKED | Worker can fail open, browser auth is incomplete, restore lacks signed transactional gates |
 | Design lock and canonical docs | DONE | Locked Alpecca design and current source hierarchy exist |
-| Creator identity and secret lifecycle | BLOCKED | No authoritative principal, scoped sessions, or secure secret lifecycle |
+| Creator identity and secret lifecycle | PARTIAL | Server-derived creator identity, loopback bootstrap, and remote creator-trust sessions exist; broader pairing and lifecycle hardening remain |
 
 ## Critical Path
 
-The plan is deliberately security-first because later autonomy would magnify the
-current identity and remote-control defects.
+The plan remains security-first because later autonomy would magnify the
+remaining identity-lifecycle and remote-control risks.
 
 ```mermaid
 flowchart LR
@@ -166,16 +188,19 @@ local hardware is 24 GB DDR5-4800 / RTX 3050 4 GB; cloud allocations are labeled
 ephemeral; old 34 GB/H100 local-host claims are superseded; the encrypted
 database/V4/VRoid baseline passed capture-time restore and independent verification.
 
-### Phase 1: Emergency security containment - BLOCKED
+### Phase 1: Emergency security containment - PARTIAL
 
-Disable public tunnels and computer control. Do not revoke or rotate credentials:
-Jason explicitly prohibited that action on 2026-07-10. Preserve the existing
-Alpecca identity value. Treat it as public and stop accepting it as bearer
-authorization. Create a separate authorization secret in Windows Credential
-Manager or deployment secrets, rebuild the shell, and remove only actual
-authorization secrets from source/localStorage/generated bundles. Fix HTML GET
-self-authentication, add secret scanning, and stop logging message content or
-external IDs by default.
+The authorization baseline now separates Alpecca's preserved public identity
+from server authorization. Loopback browsers use trusted-device bootstrap;
+remote browsers must establish creator trust before receiving a protected
+trusted-device session. The pre-implementation HTML self-authentication path and
+public-identity-as-bearer model are superseded. Computer control remains behind
+its separate scope and approval gates.
+
+Remaining containment work preserves the original target: do not revoke or
+rotate the public Alpecca identity; keep actual authorization secrets out of
+source, localStorage, URLs, and generated bundles; complete release secret scans
+and safe logging checks before broader exposure.
 
 Exit gate: anonymous HTTP/WS clients receive no credential and execute no
 protected route; source and built assets contain no authorization secret; the
@@ -183,12 +208,13 @@ preserved public Alpecca identity value grants no privilege; the public shell is
 republished from a clean bundle; computer control remains unavailable without a
 scoped grant.
 
-### Phase 2: Creator identity, singleton, and active portal - NOT STARTED
+### Phase 2: Creator identity, singleton, and active portal - BASELINE COMPLETE (2026-07-10)
 
-Create a server-derived `Principal`, local bootstrap plus device/passkey pairing,
-short-lived HttpOnly/Secure sessions, CSRF/Origin checks, bridge service
-credentials, a Windows named mutex, signed health identity, and an atomic active
-portal lease `{surface, session, epoch, expires}`.
+The baseline has a server-derived creator principal, loopback trusted-device
+bootstrap, remote creator-trust enrollment, protected HttpOnly sessions,
+CSRF/Origin checks, a process singleton, and one active WebSocket portal epoch
+that fences its predecessor. Broader device/passkey pairing and bridge-service
+identity remain future hardening and do not block the completed baseline.
 
 Exit gate: a second CoreMind process exits or attaches; exactly one portal can
 write; caller-supplied names cannot become CreatorJD; stale epochs are rejected;
@@ -210,7 +236,7 @@ conversation ids, v1 history promotion, and distinct House HQ server routes are
 covered by the Phase 3 focused test suites. Future Discord identities remain
 ephemeral and capability-denied until Phase 10 provides signed bridge subjects.
 
-### Phase 4: Cue, commitment, and action closure - PARTIAL
+### Phase 4: Cue, commitment, and action closure - BASELINE COMPLETE (2026-07-10)
 
 Derive a structured cue envelope for correction, confirmation, reference,
 urgency, distress, question, and action intent. Add durable commitments and tool
@@ -221,26 +247,38 @@ Exit gate: "yes, do it" resumes the intended pending action; every "I did" links
 to evidence; every "I will" has a durable commitment or is rewritten as a
 proposal/inability; commitments survive restarts.
 
-Current evidence: cue parsing, scoped durable commitment states, confirmation
+Baseline evidence: cue parsing, scoped durable commitment states, confirmation
 resolution, receipt-gated completion wording, and restart persistence exist.
-Safe execution is still missing: prose commitments have no validated tool
-payload, and the old planner executor does not yet provide trustworthy success
-receipts. Phase 4 next adds one creator-only, scope-bound, read-only execution
-slice before any broader action is enabled.
+The validated executor accepts only creator-approved, scope-bound, read-only
+`self_status` commitments, records the execution receipt, and rejects replay.
+Startup recovery closes an interrupted `running` record as `cancelled` without
+rerunning its tool, and the unscoped legacy proposal execution route is retired.
+Broader tools, mutation, and external action classes remain outside the Phase 4
+baseline and require separate approval and gating.
 
-### Phase 5: Unified initiative and grounded affect - PARTIAL
+### Phase 5: Unified initiative and grounded affect - BASELINE COMPLETE (2026-07-10)
 
-Centralize living-loop, proactive chat, Discord participation, routines, and
-recursive follow-ups behind one per-scope relevance/cooldown/dedupe budget. Feed
-structured cues into affect before generation. Add evidence source, confidence,
-and timestamp to affect changes. Replace literal inner-life claims with grounded
-operational wording.
+Living ticks, proactive chat, and scheduled routines now reserve through one
+per-scope relevance/cooldown/dedupe budget. Explicit user activity starts a quiet
+period, unanswered outreach increases backoff, deferred work stops before side
+effects, and proactive delivery selects the active portal or the external channel,
+never both. Discord participation remains excluded until Phase 10.
+
+Structured cues are confidence- and time-gated before generation. Eligible
+distress evidence injects a calm support strategy with source, confidence, and
+timestamp provenance while emotional `state_changed` remains false; weak or
+unknown cues are metadata-only no-ops.
 
 Exit gate: unchanged evidence causes no duplicate outward event; ignored outreach
 backs off; each event is delivered once; explicit distress changes care strategy
 with traceable evidence; uncertainty is never presented as fact.
 
-### Phase 6: Mindpage and resource coordinator - PARTIAL
+Exit evidence: focused fake-clock and server integration tests cover cross-kind
+cooldown, scope isolation, dedupe, quiet periods, ignored backoff, pre-side-effect
+deferral, single-surface delivery, and prompt-visible grounded distress strategy.
+Discord proactive participation, recursion, and voice default off until Phase 10.
+
+### Phase 6: Mindpage and resource coordinator - PARTIAL (ACTIVE NEXT SLICE)
 
 Correct semantic similarity thresholds, index bounded searchable terms from
 compressed page content, refuse or explicitly compact unshrinkable overflow, and
@@ -381,9 +419,9 @@ or permission to schedule a model outside the laptop envelope.
 
 | Area | Required proof before DONE |
 |---|---|
-| Security | Anonymous HTTP/WS denial, cookie/CSRF/Origin checks, token-free source/bundles, secret scan |
+| Security | Anonymous HTTP/WS denial, cookie/CSRF/Origin checks, authorization-secret-free source/bundles, secret scan |
 | Identity/presence | Competing process, simultaneous portal claim, stale epoch, explicit handoff, creator spoof tests |
-| AI core | Concurrent actor isolation, timeout no-late-commit, cue parse, commitment receipt, restart recovery |
+| AI core | Concurrent actor isolation, timeout no-late-commit, cue parse, creator/scope enforcement, read-only `self_status` receipt, replay rejection, restart recovery |
 | Initiative/affect | Fake-clock budgets, dedupe, ignored backoff, evidence provenance, no consciousness claims |
 | Memory/Mindpage | Semantic negatives, buried detail recall, overflow refusal, page commit failure, tier maintenance |
 | Pagefile | Arithmetic, cap/floor, stale/replay, UAC helper, live recheck, post-write readback; elevated test only with approval |

@@ -21,12 +21,16 @@ from typing import Any
 
 AUTH_ENV_NAME = "ALPECCA_AUTH_SECRET"
 CREDENTIAL_TARGET = "Alpecca/ServerAuthorization"
+CREATOR_PASSWORD_ENV_NAME = "ALPECCA_CREATOR_PASSWORD"
+CREATOR_PASSWORD_CREDENTIAL_TARGET = "Alpecca/CreatorPassword"
 AUTHORIZATION_HEADER = "X-Alpecca-Authorization"
 SESSION_COOKIE_NAME = "alpecca_authorization"
 
 _SESSION_VERSION = 1
 _MAX_BOOTSTRAP_CODES = 32
 _MAX_CREDENTIAL_CHARS = 4096
+_MAX_PASSWORD_ATTEMPTS = 5
+PASSWORD_WINDOW_SECONDS = 60
 _PROCESS_SECRET: str | None = None
 _PROCESS_SECRET_LOCK = threading.Lock()
 
@@ -126,6 +130,74 @@ def _load_or_create_windows_credential() -> str:
     except Exception as exc:
         raise RuntimeError("Could not store the authorization credential.") from exc
     return _decode_credential_blob(credential.get("CredentialBlob"))
+
+
+def _read_windows_credential(target: str) -> str | None:
+    """Read one generic Windows credential without creating or changing it."""
+    try:
+        import win32cred
+    except ImportError as exc:
+        raise RuntimeError(
+            "Windows Credential Manager support requires pywin32."
+        ) from exc
+    try:
+        credential = win32cred.CredRead(
+            target, win32cred.CRED_TYPE_GENERIC, 0
+        )
+    except Exception as exc:
+        if _credential_error_code(exc) in {2, 1168}:
+            return None
+        raise RuntimeError("Could not read the creator password credential.") from exc
+    return _decode_credential_blob(credential.get("CredentialBlob"))
+
+
+def set_windows_creator_password(password: str) -> None:
+    """Store the creator login password in Windows Credential Manager.
+
+    This never changes the separate server authorization secret, so existing
+    bearer credentials are not revoked. Callers must obtain the password from
+    an interactive prompt or deployment secret, never from source control.
+    """
+    value = str(password or "")
+    if len(value) < 8 or len(value) > 256:
+        raise ValueError("creator password must contain 8 to 256 characters")
+    if any(ord(char) < 32 for char in value):
+        raise ValueError("creator password contains control characters")
+    try:
+        import win32cred
+    except ImportError as exc:
+        raise RuntimeError(
+            "Windows Credential Manager support requires pywin32."
+        ) from exc
+    try:
+        win32cred.CredWrite(
+            {
+                "Type": win32cred.CRED_TYPE_GENERIC,
+                "TargetName": CREATOR_PASSWORD_CREDENTIAL_TARGET,
+                "CredentialBlob": value,
+                "Persist": win32cred.CRED_PERSIST_LOCAL_MACHINE,
+                "UserName": "CreatorJD",
+                "Comment": "Alpecca creator login password",
+            },
+            0,
+        )
+    except Exception as exc:
+        raise RuntimeError("Could not store the creator password credential.") from exc
+
+
+def load_creator_password(
+    environ: Mapping[str, str] | None = None,
+) -> str | None:
+    """Load the optional creator login password from a protected provider."""
+    env = os.environ if environ is None else environ
+    if CREATOR_PASSWORD_ENV_NAME in env:
+        supplied = env[CREATOR_PASSWORD_ENV_NAME]
+        if not isinstance(supplied, str) or not supplied:
+            raise ValueError(f"{CREATOR_PASSWORD_ENV_NAME} must not be empty.")
+        return supplied
+    if os.name == "nt" and not _test_environment(env):
+        return _read_windows_credential(CREATOR_PASSWORD_CREDENTIAL_TARGET)
+    return None
 
 
 def load_or_create_authorization_secret(
@@ -279,6 +351,7 @@ class SessionAuthority:
         secret: str,
         session_ttl_s: int = 28800,
         bootstrap_ttl_s: int = 60,
+        creator_password: str | None = None,
     ) -> None:
         if not isinstance(secret, str) or not secret.strip():
             raise ValueError("Authorization secret must not be empty.")
@@ -288,8 +361,14 @@ class SessionAuthority:
         self.session_ttl_s = int(session_ttl_s)
         self.bootstrap_ttl_s = int(bootstrap_ttl_s)
         self._bearer_digest = self._digest(b"bearer", self._secret)
+        self._creator_password_digest = (
+            self._digest(b"creator-password-v1", creator_password.encode("utf-8"))
+            if creator_password else None
+        )
         self._bootstrap: OrderedDict[bytes, _BootstrapRecord] = OrderedDict()
         self._bootstrap_lock = threading.RLock()
+        self._password_failures: OrderedDict[str, list[int]] = OrderedDict()
+        self._password_lock = threading.RLock()
 
     @staticmethod
     def _now(now: float | int | None = None) -> int:
@@ -469,6 +548,77 @@ class SessionAuthority:
             return AuthDecision(False, "bearer", "rejected")
         return AuthDecision(True, "bearer", "accepted", principal="creator")
 
+    @property
+    def password_configured(self) -> bool:
+        return self._creator_password_digest is not None
+
+    @staticmethod
+    def _password_remote_key(remote_addr: str | tuple[Any, ...] | None) -> str:
+        if isinstance(remote_addr, tuple):
+            remote_addr = remote_addr[0] if remote_addr else ""
+        return str(remote_addr or "unknown")[:160]
+
+    def validate_password(
+        self,
+        password: str,
+        remote_addr: str | tuple[Any, ...] | None,
+        *,
+        now: float | int | None = None,
+    ) -> AuthDecision:
+        """Validate the creator password with bounded per-peer throttling."""
+        scope = self._remote_scope(remote_addr)
+        if self._creator_password_digest is None:
+            return AuthDecision(
+                False, "password", "not_configured", remote_scope=scope
+            )
+        if not isinstance(password, str) or not password or len(password) > 256:
+            return AuthDecision(False, "password", "malformed", remote_scope=scope)
+        current = self._now(now)
+        remote_key = self._password_remote_key(remote_addr)
+        with self._password_lock:
+            attempts = [
+                ts for ts in self._password_failures.get(remote_key, [])
+                if current - ts < PASSWORD_WINDOW_SECONDS
+            ]
+            if len(attempts) >= _MAX_PASSWORD_ATTEMPTS:
+                self._password_failures[remote_key] = attempts
+                return AuthDecision(
+                    False, "password", "rate_limited", remote_scope=scope
+                )
+        candidate = self._digest(
+            b"creator-password-v1", password.encode("utf-8")
+        )
+        if not hmac.compare_digest(candidate, self._creator_password_digest):
+            with self._password_lock:
+                attempts.append(current)
+                self._password_failures[remote_key] = attempts
+                while len(self._password_failures) > 256:
+                    self._password_failures.popitem(last=False)
+            return AuthDecision(False, "password", "rejected", remote_scope=scope)
+        with self._password_lock:
+            self._password_failures.pop(remote_key, None)
+        return AuthDecision(
+            True, "password", "accepted", principal="creator",
+            remote_scope=scope,
+        )
+
+    def exchange_password(
+        self,
+        password: str,
+        remote_addr: str | tuple[Any, ...] | None,
+        *,
+        secure: bool = True,
+        now: float | int | None = None,
+    ) -> tuple[AuthDecision, SessionCookie | None]:
+        """Validate a password and mint the same bounded HttpOnly session."""
+        current = self._now(now)
+        decision = self.validate_password(
+            password, remote_addr, now=current
+        )
+        if not decision.allowed:
+            return decision, None
+        return decision, self.issue_session_cookie(secure=secure, now=current)
+
     def validate_session_cookie(
         self,
         value: str,
@@ -570,10 +720,15 @@ __all__ = [
     "AUTH_ENV_NAME",
     "AUTHORIZATION_HEADER",
     "CREDENTIAL_TARGET",
+    "CREATOR_PASSWORD_CREDENTIAL_TARGET",
+    "CREATOR_PASSWORD_ENV_NAME",
+    "PASSWORD_WINDOW_SECONDS",
     "SESSION_COOKIE_NAME",
     "AuthDecision",
     "SessionAuthority",
     "SessionCookie",
     "is_loopback_address",
+    "load_creator_password",
     "load_or_create_authorization_secret",
+    "set_windows_creator_password",
 ]

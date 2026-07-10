@@ -1,3 +1,59 @@
+# Alpecca House HQ Passdown
+
+Date: 2026-07-10
+
+## Current Runtime Checkpoint
+
+This checkpoint supersedes the route, surface, and authorization language in
+the historical 2026-06-25 passdown retained below.
+
+- `/house-hq` serves the **Void Prototype**, Alpecca's primary embodied House HQ
+  surface, with the orthographic view available in the same runtime.
+- The categorized **Alpecca Systems** center is native to the Void Prototype.
+  Keep system status and controls inside that center instead of restoring a
+  separate internal dashboard.
+- Loopback browsers use one-use trusted-device bootstrap. Remote browsers use
+  HTTPS creator-trust enrollment and then a signed HttpOnly trusted-device
+  session. Credentials do not belong in URLs or browser-readable storage.
+- The former internal House HQ page is archived at
+  `web/archive/house_hq_internal_legacy.html`. It is historical evidence only
+  and is no longer routed.
+
+## Current Objective
+
+Continue the Void Prototype as the single House HQ runtime: improve Alpecca's
+embodied animation and spatial fit, preserve her locked source-art quality, and
+keep operational surfaces consolidated in the native Alpecca Systems center.
+Do not revive or route the archived internal House HQ.
+
+## Current Project Location
+
+Repository:
+
+`C:\Users\Jason\Documents\GitHub\alpaccaai`
+
+House HQ workspace and main runtime:
+
+`apps/house-hq` and `apps/house-hq/src/main.ts`
+
+Primary served route:
+
+`http://127.0.0.1:8765/house-hq`
+
+Current commands:
+
+```powershell
+npm.cmd run house:dev
+npm.cmd run house:build
+python server.py
+```
+
+## Historical Passdown (2026-06-25)
+
+The original passdown follows unchanged so its implementation notes, QA hooks,
+and animation history remain available. Its old route, token, workspace, and
+"current" labels are superseded by the checkpoint above.
+
 # AI Office HQ Passdown
 
 Date: 2026-06-25
@@ -207,4 +263,3 @@ Minimum browser smoke checklist:
 3. Add more deliberate contextual use of crouch/kneel/point/pickup without making them loop.
 4. Add lightweight room-based reflection/occlusion checks around furniture feet to make the house feel more grounded.
 5. Profile draw calls after each visual addition; keep the scene responsive.
-

@@ -5,10 +5,10 @@ A tiny dark-themed desktop remote for Alpecca -- one window with a status dot
 share her to the phone, open her Discord invite, and put her to sleep.
 
 It is stdlib-only (tkinter + urllib + subprocess), so it needs no pip installs
-to run from source, and it never touches her server code. It reads her access
-token and port straight from the repo's `config.py`, so every link it opens
-carries the same `?token=` the server expects -- the browser gets the auth
-cookie on first visit and the door just opens.
+to run from source. It reads only the configured port. For protected pages it
+asks the live loopback server for a one-use bootstrap URL; no token or password
+is placed in a URL. The resulting HttpOnly cookie trusts that laptop browser
+for future playtests.
 
 ## How it finds her
 
@@ -35,12 +35,12 @@ Requires the same Python 3 the repo already uses (3.12). No extra packages.
 | --- | --- |
 | Wake her | Runs the repo's `START_HERE.bat` in a new console (does nothing but flash the status if she's already awake) |
 | Put her to sleep | Finds the PID listening on her port via `netstat -ano` and `taskkill /F /T`s it, after a yes/no confirm |
-| Open her home | Opens `http://127.0.0.1:<port>/?token=...` |
-| App site | Opens `/app?token=...` |
+| Open her home | Opens the home through a one-use local bootstrap |
+| App site | Opens `/app` through a one-use local bootstrap |
 | Phone access | Runs `python scripts\share.py` in a new console (tunnel + QR) |
-| Invite to Discord | Opens `/app/discord/invite?token=...` |
+| Invite to Discord | Opens `/app/discord/invite` through a local bootstrap |
 
-The status dot polls `/system/status` every 5 seconds: green means she is
+The status dot polls public `/healthz` every 5 seconds: green means she is
 awake, grey means asleep. The poll can fail forever without hurting anything.
 
 ## Build the .exe

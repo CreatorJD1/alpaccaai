@@ -4,8 +4,30 @@ Last updated: **2026-07-10**
 
 Use this as the short active status pointer.
 
+This dated checkpoint explicitly supersedes older route, access, and phase
+labels retained in historical plans and handoffs.
+
 ## Current Runtime and Capability State
 
+- `/house-hq` now serves the **Void Prototype**, with a native categorized
+  **Alpecca Systems** center and an orthographic view.
+- The old `web/home.html` is archived at
+  `web/archive/house_hq_internal_legacy.html` and is no longer routed.
+- Loopback access uses trusted-device bootstrap; remote access requires HTTPS
+  creator trust. Remote trust establishes a protected Secure, HttpOnly session;
+  plain LAN HTTP cannot enroll a creator device.
+- Master Plan Phase 4 baseline is complete. Commitment execution is
+  creator-only, scope-bound, and limited to read-only `self_status`; closure is
+  receipt-backed and replay-protected. Interrupted `running` records close as
+  `cancelled` on startup without rerunning, and legacy proposal execution is
+  retired.
+- Master Plan Phase 5 baseline is complete. Proactive speech, living ticks, and
+  routines share one per-scope initiative budget; ignored outreach backs off;
+  proactive delivery selects one surface; and confidence-gated cue evidence
+  changes response strategy before generation without asserting a feeling.
+- Master Plan Phase 6 Mindpage and resource coordination is the active next slice.
+- Discord proactive participation, recursion, and voice remain default-off until
+  the Phase 10 identity, scope, and rate-limit gates pass.
 - `ALPECCA_TOOL_MODE` is `smart` and `ALPECCA_INNATE_TOOLS=1` in this branch.
 - Chat tool-calling is now gated and observable through tool schemas + `CognitionObservation`.
 - Embedding backfill now runs in background on idle drift ticks.
@@ -23,29 +45,26 @@ Use this as the short active status pointer.
   creator history survives reconnect/restart, portal epochs only fence stale
   transports, House HQ and the app have server-owned surface routes, and
   timeout/cancelled turns cannot commit late replies or tool writes.
-- Master Plan Phase 4 is partial. Cue parsing, scoped commitments,
-  confirmations, state transitions, and receipt-gated completion language are
-  present; approved commitments still need a validated, scope-bound execution
-  payload and trustworthy tool receipt before the phase can be called done.
 - The memory path for live chat remains keyword-first (`embed_fn=None`), now with
   bounded FTS5 lexical retrieval and background semantic backfill support.
-- No default behavior changes were made to art pipelines, House HQ animation
-  architecture, or model replacement.
+- No broader action tool is enabled by the Phase 4 baseline; expanding beyond
+  read-only `self_status` requires a separately approved and gated slice.
 
 ## Security And Architecture State
 
 A July 9 adversarial audit found that several older diagrams marked features as
 done too early. The protected local boundary, creator principal, process
 singleton, active portal fencing, and scoped turn transactions now exist. The
-following higher-risk features remain held:
+following higher-risk features remain held or bounded:
 
-- Public tunnels and live computer control are security-blocked.
+- Remote entry is creator-trust gated; live computer control remains held behind
+  its separate security and approval gates.
 - The current Alpecca value is intentionally preserved as part of her public
   identity. It appears in House HQ source and generated bundles, so it must not
   be accepted as proof of authorization. Server authorization now uses the
   separate protected secret/session path and ignores the public identity value.
-- Action execution is not enabled merely because a commitment or Workshop item
-  was approved; Phase 4 must produce a validated payload and successful receipt.
+- Commitment approval can execute only the validated read-only `self_status`
+  payload in the current creator scope. Replays and broader tools are rejected.
 - Future Discord/guest identities remain ephemeral and capability-denied until
   signed bridge subjects and allowlists exist.
 - Discord text/media and Mindscape exist as partial adapters, not secure
@@ -67,4 +86,5 @@ ZeroGPU runtimes only, and those allocations are ephemeral and provider-dependen
 
 Stale or superseded source docs were archived under
 `docs/archive/2026-07-08/` to preserve evidence without treating them as current
-behavior.
+behavior. The former internal House HQ page follows the same rule at
+`web/archive/house_hq_internal_legacy.html`: it is preserved but not routed.
