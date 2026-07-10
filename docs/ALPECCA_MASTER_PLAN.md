@@ -38,9 +38,11 @@ retained in the implementation sequence as historical planning context.
   backfill is idle-scheduled through the optional `backfill` coordinator at a
   300-second default interval. It remains silent and defers under chat, TTS,
   or other optional-work contention without losing its due state. Live-chat
-  semantic recall remains disabled by default.
-- The next Phase 6 sequence is hard context-overflow refusal/re-measurement,
-  then cooperative optional-worker cancellation.
+  semantic recall remains disabled by default. Phase 6C refuses a fixed prompt
+  overflow before model, tool, streaming, history, or memory work begins and
+  returns an honest structured response; anti-repetition retries remeasure their
+  expanded prompt and are skipped when they no longer fit.
+- The next Phase 6 slice is cooperative optional-worker cancellation.
 
 ## Truth Baseline
 
@@ -301,8 +303,11 @@ semantic recall remains disabled by default.
 Legacy content-index backfill is now idle-scheduled through the optional
 `backfill` coordinator at a 300-second default interval. It remains silent and
 defers under chat, TTS, or other optional-work contention without losing its
-due state. Next, add hard context-overflow refusal/re-measurement, followed by
-cooperative optional-worker cancellation or backend deadlines.
+due state. Phase 6C now refuses a fixed request overflow before model, tool,
+streaming, history, memory, or commitment work begins, returning an honest
+structured response instead of a truncated request. Anti-repetition retries
+remeasure their expanded prompt and are skipped when they no longer fit. Next,
+add cooperative optional-worker cancellation or backend deadlines.
 Continue separating context pressure from RAM, commit, VRAM, CPU, disk, battery,
 and thermal signals. Treat 8K as the initial measurement baseline, then test
 Qwen 3.5 9B at 16K, 24K, 32K, and 48K with one request/model, Flash Attention,

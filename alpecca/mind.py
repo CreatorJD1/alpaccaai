@@ -1745,6 +1745,105 @@ class CoreMind:
             "model_use": {"backend": "cancelled", "fallback": True},
         }
 
+    def _record_mindpage_ledger(self, ledger: dict) -> dict:
+        """Publish one measured request ledger without inventing telemetry."""
+        snapshot = mindpage_mod.pressure_snapshot(ledger=ledger)
+        for key in ("request_sent", "retry_audits", "retry_skipped"):
+            if key in ledger:
+                value = ledger[key]
+                if key == "retry_audits":
+                    value = [dict(item) for item in value if isinstance(item, dict)][-2:]
+                snapshot[key] = value
+        self._last_mindpage = snapshot
+        return snapshot
+
+    def _context_refusal_result(
+        self,
+        turn: turn_context_mod.TurnContext,
+        final_ledger: dict,
+        *,
+        self_report: introspection.SelfReport,
+        cue_envelope,
+        affect_metadata: dict,
+        implicit_turn: bool,
+    ) -> dict:
+        """Return an honest no-op when the exact request cannot fit safely."""
+        if not turn.begin_commit():
+            return self._cancelled_turn_result(turn)
+
+        final_ledger["request_sent"] = False
+        self._record_mindpage_ledger(final_ledger)
+        context_refusal = {
+            "reason": "fixed_overflow",
+            "overflow_tokens": int(final_ledger.get("overflow_tokens") or 0),
+            "num_ctx": int(final_ledger.get("num_ctx") or 0),
+        }
+        reply = (
+            "I could not safely run this turn because its required prompt exceeds "
+            "my configured context window. I did not send a request, run tools, "
+            "or add this message to conversation memory. Please split it into a "
+            "shorter message or adjust the context setting before retrying."
+        )
+        pressure_bundle = self._phase6_pressure_bundle()
+        turn.finish_commit()
+        turn_metadata = turn.audit_metadata()
+        return {
+            "reply": reply,
+            "spoken_reply": speech_mod.spoken_performance_text(reply, self.state),
+            "speech_cues": speech_mod.speech_cues(self.state),
+            "mood": self.state.mood_label(),
+            "state": self.state.as_dict(),
+            "location": self._location,
+            "moved": False,
+            "memories_used": [],
+            "memory_evidence": [],
+            "mindpage": self.mindpage_state(),
+            "memory_pressure": (
+                pressure_bundle["metadata"] if pressure_bundle is not None else None
+            ),
+            "self_reflection": self_report.narrate(),
+            "appearance": self._appearance.as_dict(),
+            "llm_online": self.llm.online,
+            "model_use": {
+                "backend": "context_refusal",
+                "fallback": False,
+                "request_sent": False,
+                "turn": turn_metadata,
+            },
+            "chat_turn_id": None,
+            "intent": cognition_mod.current_intent(),
+            "turn": turn_metadata,
+            "cues": cue_envelope.as_dict(),
+            "affect_evidence": affect_metadata,
+            "commitment": {
+                "created": False,
+                "approved": False,
+                "source": "none",
+                "id": None,
+                "state": "none",
+                "scope": "",
+                "action": "",
+                "claim": None,
+                "claims": [],
+                "language_rewritten": False,
+                "error": "",
+            },
+            "confirmation": {
+                "authenticated": not implicit_turn,
+                "detected": cue_envelope.confirmation.detected,
+                "outcome": "context-refusal",
+                "scope": turn.memory_scope if not implicit_turn else "",
+                "commitment_id": None,
+                "candidate_ids": [],
+                "action": "",
+                "approved": False,
+                "state": "none",
+                "truncated": False,
+                "error": "",
+            },
+            "context_refusal": context_refusal,
+        }
+
     def chat(self, user_msg: str, situation: str = "",
              image_desc: str | None = None,
              reply_tier: str = "reason",
@@ -2021,7 +2120,17 @@ class CoreMind:
         final_ledger["unsummarized_eviction_backlog"] = final_ledger[
             "dropped_history_messages"
         ]
-        self._last_mindpage = mindpage_mod.pressure_snapshot(ledger=final_ledger)
+        if not final_ledger.get("context_fits", True):
+            return self._context_refusal_result(
+                turn,
+                final_ledger,
+                self_report=self_report,
+                cue_envelope=cue_envelope,
+                affect_metadata=affect_metadata,
+                implicit_turn=implicit_turn,
+            )
+        self._record_mindpage_ledger(final_ledger)
+        request_ledger = final_ledger
         cognition_mod.set_intent(cognition_mod.IntentState(
             "replying",
             "Alpecca is composing a reply from memory, state, and context.",
@@ -2053,6 +2162,7 @@ class CoreMind:
         # back, and bounded so it can't spin.
         if tool_schema is None and not self.llm.last_call().get("fallback"):
             tries = 0
+            retry_audits: list[dict] = []
             while tries < 2 and self._too_repetitive(reply):
                 tries += 1
                 fresh_prompt = system_prompt + (
@@ -2060,6 +2170,35 @@ class CoreMind:
                     "reads as a looping bot. Say it again with a genuinely different "
                     "opening, different words, and a fresh angle; do not reuse your "
                     "earlier phrasing.")
+                retry_history, retry_ledger = mindpage_mod.fit_request(
+                    fresh_prompt, user_msg, prompt_history, tools=None,
+                )
+                retry_audit = {
+                    "attempt": tries,
+                    "request_sent": bool(retry_ledger.get("context_fits", False)),
+                    "context_fits": bool(retry_ledger.get("context_fits", False)),
+                    "fit_status": str(retry_ledger.get("fit_status") or "")[:32],
+                    "num_ctx": int(retry_ledger.get("num_ctx") or 0),
+                    "overflow_tokens": int(retry_ledger.get("overflow_tokens") or 0),
+                    "fixed_overflow_tokens": int(
+                        retry_ledger.get("fixed_overflow_tokens") or 0
+                    ),
+                }
+                retry_audits = (retry_audits + [retry_audit])[-2:]
+                if not retry_ledger.get("context_fits", True):
+                    retry_audit["skipped"] = "fixed_overflow"
+                    request_ledger["request_sent"] = True
+                    request_ledger["retry_audits"] = retry_audits
+                    request_ledger["retry_skipped"] = "fixed_overflow"
+                    # The retry was never sent, so preserve the preceding actual
+                    # request ledger and attach only its bounded measurement.
+                    self._record_mindpage_ledger(request_ledger)
+                    break
+                prompt_history = retry_history
+                retry_ledger["request_sent"] = True
+                retry_ledger["retry_audits"] = retry_audits
+                request_ledger = retry_ledger
+                self._record_mindpage_ledger(request_ledger)
                 reply = self.llm.generate(fresh_prompt, user_msg,
                                           prompt_history,
                                           tier=reply_tier)

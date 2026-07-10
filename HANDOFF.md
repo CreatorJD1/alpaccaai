@@ -29,9 +29,12 @@ retained below as historical implementation evidence.
   content-index backfill is now idle-scheduled through the optional `backfill`
   coordinator at a 300-second default interval. It remains silent and defers
   under chat, TTS, or other optional-work contention without losing its due
-  state. Live-chat semantic recall remains disabled by default.
-- The next Phase 6 sequence is hard context-overflow refusal/re-measurement,
-  then cooperative optional-worker cancellation. Keep
+  state. Phase 6C refuses a fixed prompt overflow before it reaches the model,
+  tools, streaming, history, or memory, and returns an honest structured
+  response instead. Anti-repetition retries remeasure their expanded prompt and
+  are skipped when it no longer fits. Live-chat semantic recall remains disabled
+  by default.
+- The next Phase 6 slice is cooperative optional-worker cancellation. Keep
   broader tools and action classes outside the Phase 4 baseline until separately
   approved and gated.
 
@@ -107,9 +110,12 @@ remains disabled by default.
 Legacy content-index backfill is now idle-scheduled through the optional
 `backfill` coordinator at a 300-second default interval. It stays silent and
 defers under chat, TTS, or other optional-work contention without losing its
-due state. Next, add hard overflow refusal/re-measurement, then cooperative
-cancellation for the single-flight optional-work coordinator so work cannot
-overlap destructively with chat/TTS.
+due state. Phase 6C now refuses a fixed request overflow before model, tool,
+streaming, history, memory, or commitment work begins, returning an honest
+structured response instead of a truncated request. Anti-repetition retries
+remeasure their expanded prompt and are skipped when they no longer fit. Next,
+add cooperative cancellation for the single-flight optional-work coordinator so
+work cannot overlap destructively with chat/TTS.
 Keep 8K as the initial measured context. Only promote Qwen 3.5 9B context after
 real 16K/24K/32K/48K measurements stay below 90 percent commit, retain 2 GiB
 physical-RAM headroom, and avoid sustained SSD paging. The 38,000 MiB pagefile

@@ -34,9 +34,11 @@ labels retained in historical plans and handoffs.
   backfill is idle-scheduled through the optional `backfill` coordinator at a
   300-second default interval. It stays silent and defers under chat, TTS, or
   other optional-work contention without losing its due state. Live-chat
-  semantic recall remains disabled by default.
-- The next Phase 6 sequence is hard context-overflow refusal/re-measurement,
-  then cooperative optional-worker cancellation.
+  semantic recall remains disabled by default. Phase 6C refuses a fixed prompt
+  overflow before model, tool, streaming, history, or memory work begins and
+  returns an honest structured response; anti-repetition retries remeasure their
+  expanded prompt and are skipped when they no longer fit.
+- The next Phase 6 slice is cooperative optional-worker cancellation.
 - Discord proactive participation, recursion, and voice remain default-off until
   the Phase 10 identity, scope, and rate-limit gates pass.
 - `ALPECCA_TOOL_MODE` is `smart` and `ALPECCA_INNATE_TOOLS=1` in this branch.
