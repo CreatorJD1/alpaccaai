@@ -1868,19 +1868,20 @@ def test_cognition_route_executes_only_user_approved_planner_step():
         payload=payload,
     ))
     client = TestClient(server.app)
+    auth_headers = {server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET}
     try:
         denied = client.post(f"/cognition/proposals/{proposal_id}", json={
             "status": "accepted",
             "approved_by_user": False,
             "execute": True,
-        })
+        }, headers=auth_headers)
         assert denied.status_code == 403
 
         accepted = client.post(f"/cognition/proposals/{proposal_id}", json={
             "status": "accepted",
             "approved_by_user": True,
             "execute": True,
-        })
+        }, headers=auth_headers)
         assert accepted.status_code == 200
         data = accepted.json()
         assert data["execution"]["tool"] == "self_status"
@@ -1939,6 +1940,7 @@ def test_routines_routes_create_and_toggle():
     import sqlite3
 
     client = TestClient(server.app)
+    headers = {server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET}
     routine_id = None
     try:
         r = client.post("/routines", json={
@@ -1947,17 +1949,17 @@ def test_routines_routes_create_and_toggle():
             "weekday": -1,
             "kind": "embed_backfill",
             "enabled": True,
-        })
+        }, headers=headers)
         assert r.status_code == 200
         routine = r.json()["routine"]
         routine_id = int(routine["id"])
         assert routine["kind"] == "embed_backfill"
 
-        off = client.post(f"/routines/{routine_id}", json={"enabled": False})
+        off = client.post(f"/routines/{routine_id}", json={"enabled": False}, headers=headers)
         assert off.status_code == 200
         assert off.json()["routine"]["enabled"] == 0
 
-        listed = client.get("/routines")
+        listed = client.get("/routines", headers=headers)
         assert listed.status_code == 200
         assert "embed_backfill" in listed.json()["kinds"]
     finally:
@@ -1972,6 +1974,7 @@ def test_routines_delete_route_removes_routine():
     import sqlite3
 
     client = TestClient(server.app)
+    headers = {server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET}
     routine_id = None
     try:
         r = client.post("/routines", json={
@@ -1980,20 +1983,20 @@ def test_routines_delete_route_removes_routine():
             "weekday": -1,
             "kind": "embed_backfill",
             "enabled": True,
-        })
+        }, headers=headers)
         assert r.status_code == 200
         routine_id = int(r.json()["routine"]["id"])
 
-        gone = client.post(f"/routines/{routine_id}/delete")
+        gone = client.post(f"/routines/{routine_id}/delete", headers=headers)
         assert gone.status_code == 200
         assert gone.json()["deleted"] == routine_id
         assert routine_id not in [int(row["id"]) for row in gone.json()["routines"]]
 
-        listed = client.get("/routines")
+        listed = client.get("/routines", headers=headers)
         assert listed.status_code == 200
         assert routine_id not in [int(row["id"]) for row in listed.json()["routines"]]
 
-        missing = client.post(f"/routines/{routine_id}/delete")
+        missing = client.post(f"/routines/{routine_id}/delete", headers=headers)
         assert missing.status_code == 404
         routine_id = None
     finally:
@@ -2017,6 +2020,7 @@ def test_routines_vacuum_kind_dispatches_mindpage_vacuum(monkeypatch):
     monkeypatch.setattr(server.mindpage_mod, "vacuum", fake_vacuum)
 
     client = TestClient(server.app)
+    headers = {server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET}
     routine_id = None
     try:
         r = client.post("/routines", json={
@@ -2025,7 +2029,7 @@ def test_routines_vacuum_kind_dispatches_mindpage_vacuum(monkeypatch):
             "weekday": -1,
             "kind": "vacuum",
             "enabled": True,
-        })
+        }, headers=headers)
         assert r.status_code == 200
         routine = r.json()["routine"]
         routine_id = int(routine["id"])
@@ -2048,7 +2052,10 @@ def test_cognition_proposal_handoff_route_reports_markdown_packet():
     import server
 
     client = TestClient(server.app)
-    r = client.get(f"/cognition/proposals/handoff?limit=2&token={config.ACCESS_TOKEN}")
+    r = client.get(
+        "/cognition/proposals/handoff?limit=2",
+        headers={server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET},
+    )
     assert r.status_code == 200
     d = r.json()
     assert d["format"] == "markdown"
@@ -2064,13 +2071,13 @@ def test_cognition_room_review_records_grounded_loop():
     import time
     client = TestClient(server.app)
     question = f"What should Library inspect next {time.time_ns()}?"
-    r = client.post(f"/cognition/rooms/library/review?token={config.ACCESS_TOKEN}", json={
+    r = client.post("/cognition/rooms/library/review", json={
         "room_name": "Library",
         "purpose": "Memory and journal review",
         "status": "online",
         "last_seen": "Recent memory shelves were reviewed.",
         "question": question,
-    })
+    }, headers={server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET})
     assert r.status_code == 200
     d = r.json()
     assert d["ok"] is True
@@ -5797,7 +5804,7 @@ def test_bootstrap_exchange_sets_one_use_signed_session_cookie():
     exchange_query = urlencode({
         "code": params["code"][0],
         "next": params["next"][0],
-    })
+    }, headers={server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET})
     client = TestClient(server.app, client=("127.0.0.1", 50000))
     response = client.post(
         f"/auth/bootstrap/exchange?{exchange_query}",
