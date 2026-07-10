@@ -32,11 +32,17 @@ retained below as historical implementation evidence.
   state. Phase 6C refuses a fixed prompt overflow before it reaches the model,
   tools, streaming, history, or memory, and returns an honest structured
   response instead. Anti-repetition retries remeasure their expanded prompt and
-  are skipped when it no longer fits. Live-chat semantic recall remains disabled
-  by default.
-- The next Phase 6 slice is cooperative optional-worker cancellation. Keep
-  broader tools and action classes outside the Phase 4 baseline until separately
-  approved and gated.
+  are skipped when it no longer fits. Phase 6D adds cooperative cancellation for
+  embedding backfill, Mindpage content-index backfill, and routine embedding
+  backfill: foreground chat or TTS cancels their leases, and workers stop at
+  safe boundaries. `cancelled` and `cancel_requested` runs do not claim
+  completion, advance scheduling, or broadcast maintenance activity. LLM calls,
+  TTS synthesis, reflection, and SQLite `VACUUM` are not force-cancelled.
+  Live-chat semantic recall remains disabled by default.
+- Phase 6 remains partial: next add bounded host-resource telemetry and a
+  context-tier measurement harness. Do not make a direct pagefile mutation as
+  part of this work. Keep broader tools and action classes outside the Phase 4
+  baseline until separately approved and gated.
 
 ## Superseded Claude Code Handoff: Master Phase 4 onward (historical)
 
@@ -113,9 +119,14 @@ defers under chat, TTS, or other optional-work contention without losing its
 due state. Phase 6C now refuses a fixed request overflow before model, tool,
 streaming, history, memory, or commitment work begins, returning an honest
 structured response instead of a truncated request. Anti-repetition retries
-remeasure their expanded prompt and are skipped when they no longer fit. Next,
-add cooperative cancellation for the single-flight optional-work coordinator so
-work cannot overlap destructively with chat/TTS.
+remeasure their expanded prompt and are skipped when they no longer fit. Phase
+6D adds cooperative cancellation for embedding backfill, Mindpage content-index
+backfill, and routine embedding backfill. Foreground chat or TTS cancels their
+leases; workers stop only at safe boundaries; and `cancelled` or
+`cancel_requested` work is not recorded as completed, scheduled as successful,
+or broadcast. Active LLM calls, TTS synthesis, reflection, and SQLite `VACUUM`
+remain non-force-cancellable. Next, add bounded host-resource telemetry and a
+context-tier measurement harness; do not mutate the pagefile in Phase 6.
 Keep 8K as the initial measured context. Only promote Qwen 3.5 9B context after
 real 16K/24K/32K/48K measurements stay below 90 percent commit, retain 2 GiB
 physical-RAM headroom, and avoid sustained SSD paging. The 38,000 MiB pagefile

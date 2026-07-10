@@ -37,8 +37,15 @@ labels retained in historical plans and handoffs.
   semantic recall remains disabled by default. Phase 6C refuses a fixed prompt
   overflow before model, tool, streaming, history, or memory work begins and
   returns an honest structured response; anti-repetition retries remeasure their
-  expanded prompt and are skipped when they no longer fit.
-- The next Phase 6 slice is cooperative optional-worker cancellation.
+  expanded prompt and are skipped when they no longer fit. Phase 6D adds
+  cooperative cancellation for embedding backfill, Mindpage content-index
+  backfill, and routine embedding backfill. Chat or TTS foreground work cancels
+  their leases; safe-boundary stops return `cancelled` or `cancel_requested`
+  without claiming completion, advancing schedules, or broadcasting activity.
+  Active LLM calls, TTS synthesis, reflection, and SQLite `VACUUM` are not
+  force-cancelled.
+- Phase 6 remains partial. The next slice is bounded host-resource telemetry
+  and a context-tier measurement harness, not direct pagefile mutation.
 - Discord proactive participation, recursion, and voice remain default-off until
   the Phase 10 identity, scope, and rate-limit gates pass.
 - `ALPECCA_TOOL_MODE` is `smart` and `ALPECCA_INNATE_TOOLS=1` in this branch.

@@ -458,7 +458,8 @@ def recall(query: str, top_k: int = MEMORY_TOP_K, db_path: Path = DB_PATH,
 
 
 def backfill_embeddings(batch: int = 16, db_path: Path = DB_PATH,
-                       embed_fn: Optional[Embedder] = default_embed) -> dict[str, int]:
+                       embed_fn: Optional[Embedder] = default_embed,
+                       cancel_event=None) -> dict[str, int | bool]:
     """Populate `embedding` for memories where it is NULL.
 
     This is intentionally idempotent: rows with existing embeddings are never
@@ -467,23 +468,47 @@ def backfill_embeddings(batch: int = 16, db_path: Path = DB_PATH,
     writes.
 
     Returns summary counters to support background observability and scheduling.
+    When a cooperative ``cancel_event`` is set, returns the counters accumulated
+    so far plus ``cancelled: True``. A non-cancelled call retains its original
+    four-counter result shape.
     """
+    def cancelled() -> bool:
+        return bool(cancel_event is not None and cancel_event.is_set())
+
+    scanned = 0
+    updated = 0
+    skipped = 0
+    errors = 0
+
+    def summary(*, was_cancelled: bool = False) -> dict[str, int | bool]:
+        result: dict[str, int | bool] = {
+            "scanned": scanned,
+            "updated": updated,
+            "skipped": skipped,
+            "errors": errors,
+        }
+        if was_cancelled:
+            result["cancelled"] = True
+        return result
+
+    if cancelled():
+        return summary(was_cancelled=True)
     if not embed_fn:
-        return {"scanned": 0, "updated": 0, "skipped": 0, "errors": 0}
+        return summary()
     try:
         batch = int(batch)
     except (TypeError, ValueError):
         batch = 16
     if batch < 1:
         batch = 1
-    scanned = 0
-    updated = 0
-    skipped = 0
-    errors = 0
-
     # Probe default embedder once to avoid a full walk when Ollama is offline.
-    if embed_fn is default_embed and default_embed("alpecca memory backfill probe") is None:
-        return {"scanned": 0, "updated": 0, "skipped": 0, "errors": 0}
+    if embed_fn is default_embed:
+        if default_embed("alpecca memory backfill probe") is None:
+            if cancelled():
+                return summary(was_cancelled=True)
+            return summary()
+        if cancelled():
+            return summary(was_cancelled=True)
 
     with _connect(db_path) as conn:
         # Read candidates in a short transaction. Embedding calls happen after
@@ -495,6 +520,8 @@ def backfill_embeddings(batch: int = 16, db_path: Path = DB_PATH,
     scanned = len(rows)
     pending = []
     for row in rows:
+        if cancelled():
+            return summary(was_cancelled=True)
         content = (row["content"] or "").strip()
         if not content:
             skipped += 1
@@ -502,8 +529,12 @@ def backfill_embeddings(batch: int = 16, db_path: Path = DB_PATH,
         try:
             vec = embed_fn(content)
         except Exception:
+            if cancelled():
+                return summary(was_cancelled=True)
             errors += 1
             break
+        if cancelled():
+            return summary(was_cancelled=True)
         if vec is None:
             skipped += 1
             continue
@@ -511,6 +542,8 @@ def backfill_embeddings(batch: int = 16, db_path: Path = DB_PATH,
     if pending:
         with _connect(db_path) as conn:
             for encoded, memory_id in pending:
+                if cancelled():
+                    return summary(was_cancelled=True)
                 try:
                     conn.execute(
                         "UPDATE memories SET embedding=? WHERE id=? AND embedding IS NULL",
@@ -518,13 +551,10 @@ def backfill_embeddings(batch: int = 16, db_path: Path = DB_PATH,
                     )
                     updated += int(conn.execute("SELECT changes() AS n").fetchone()["n"] or 0)
                 except Exception:
+                    if cancelled():
+                        return summary(was_cancelled=True)
                     errors += 1
-    return {
-        "scanned": scanned,
-        "updated": updated,
-        "skipped": skipped,
-        "errors": errors,
-    }
+    return summary()
 
 
 def _is_near_duplicate(a: dict, b: dict) -> bool:

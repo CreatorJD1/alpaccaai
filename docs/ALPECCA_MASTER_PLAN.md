@@ -41,8 +41,15 @@ retained in the implementation sequence as historical planning context.
   semantic recall remains disabled by default. Phase 6C refuses a fixed prompt
   overflow before model, tool, streaming, history, or memory work begins and
   returns an honest structured response; anti-repetition retries remeasure their
-  expanded prompt and are skipped when they no longer fit.
-- The next Phase 6 slice is cooperative optional-worker cancellation.
+  expanded prompt and are skipped when they no longer fit. Phase 6D adds
+  cooperative cancellation for embedding backfill, Mindpage content-index
+  backfill, and routine embedding backfill. Chat or TTS foreground work cancels
+  their leases; safe-boundary stops return `cancelled` or `cancel_requested`
+  without claiming completion, advancing schedules, or broadcasting activity.
+  Active LLM calls, TTS synthesis, reflection, and SQLite `VACUUM` are not
+  force-cancelled.
+- Phase 6 remains partial. The next slice is bounded host-resource telemetry
+  and a context-tier measurement harness, not direct pagefile mutation.
 
 ## Truth Baseline
 
@@ -118,7 +125,7 @@ They are not fixed Alpecca hardware.
 | Feature | Status | Honest current state |
 |---|---|---|
 | Keyword/FTS recall and embedding backfill | PARTIAL | Bounded and useful; Phase 6A rejects orthogonal and negative semantic matches, while live-chat semantic recall remains disabled by default |
-| Mindpage Layer A | PARTIAL | Request ledger, write-before-delete paging, tiers, page faults, and bounded sidecar content-term indexing work; content-only search does not inflate transcript blobs. Legacy index backfill is idle-scheduled; fixed-prompt overflow refusal and cooperative cancellation remain |
+| Mindpage Layer A | PARTIAL | Request ledger, write-before-delete paging, tiers, page faults, bounded sidecar content-term indexing, fixed-prompt overflow refusal, and cooperative maintenance cancellation work. Legacy index backfill is idle-scheduled; LLM calls, TTS synthesis, reflection, and VACUUM are not force-cancelled |
 | Conversation/privacy partitioning | DONE | Creator app and House HQ turns are scope-partitioned; future guest/Discord subjects remain capability-denied until their later gates |
 | Resource pressure sensing | PARTIAL | Context pressure is grounded; whole-machine sensing draft is not wired |
 | Approved pagefile broker | BLOCKED | Draft math, caps, approval proof, live recheck, and verification are unsafe |
@@ -306,8 +313,14 @@ defers under chat, TTS, or other optional-work contention without losing its
 due state. Phase 6C now refuses a fixed request overflow before model, tool,
 streaming, history, memory, or commitment work begins, returning an honest
 structured response instead of a truncated request. Anti-repetition retries
-remeasure their expanded prompt and are skipped when they no longer fit. Next,
-add cooperative optional-worker cancellation or backend deadlines.
+remeasure their expanded prompt and are skipped when they no longer fit. Phase
+6D adds cooperative cancellation for embedding backfill, Mindpage content-index
+backfill, and routine embedding backfill. Foreground chat or TTS cancels their
+leases; workers stop only at safe boundaries; and `cancelled` or
+`cancel_requested` work is not recorded as completed, scheduled as successful,
+or broadcast. Active LLM calls, TTS synthesis, reflection, and SQLite `VACUUM`
+remain non-force-cancellable. Next, add bounded host-resource telemetry and a
+context-tier measurement harness; do not mutate the pagefile in Phase 6.
 Continue separating context pressure from RAM, commit, VRAM, CPU, disk, battery,
 and thermal signals. Treat 8K as the initial measurement baseline, then test
 Qwen 3.5 9B at 16K, 24K, 32K, and 48K with one request/model, Flash Attention,

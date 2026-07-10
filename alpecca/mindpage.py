@@ -617,22 +617,35 @@ def _backfill_content_index_rows(conn, batch: int, now: float) -> list[sqlite3.R
     return rows
 
 
-def backfill_content_index(batch: int = 8, *, db_path: Path = DB_PATH) -> dict:
+def backfill_content_index(batch: int = 8, *, db_path: Path = DB_PATH,
+                           cancel_event=None) -> dict:
     """Backfill missing or stale derived content indexes in a small idempotent batch."""
     result = {"scanned": 0, "indexed": 0, "errors": 0, "pending": 0}
+    if cancel_event is not None and cancel_event.is_set():
+        result["cancelled"] = True
+        return result
     if not MINDPAGE:
         return result
     ensure_schema(db_path)
+    if cancel_event is not None and cancel_event.is_set():
+        result["cancelled"] = True
+        return result
     bounded_batch = max(1, min(CONTENT_INDEX_BATCH_LIMIT, int(batch)))
     now = time.time()
     with _connect(db_path) as conn:
         candidates = _backfill_content_index_rows(conn, bounded_batch, now)
     for row in candidates:
+        if cancel_event is not None and cancel_event.is_set():
+            result["cancelled"] = True
+            break
         result["scanned"] += 1
         blob = row["content_blob"]
         digest = _content_blob_digest(blob)
         if str(row["status"] or "") == "indexed" and str(row["blob_digest"] or "") == digest:
             continue
+        if cancel_event is not None and cancel_event.is_set():
+            result["cancelled"] = True
+            break
         try:
             if _index_page_content(int(row["id"]), blob, db_path=db_path):
                 result["indexed"] += 1

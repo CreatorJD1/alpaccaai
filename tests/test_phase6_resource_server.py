@@ -105,9 +105,14 @@ def test_timeout_keeps_optional_lease_until_worker_exits(monkeypatch, optional_w
     monkeypatch.setattr(server, "_bounded_thread", timed_out_bounded)
 
     async def exercise() -> dict:
-        assert await server._optional_bounded_thread(
+        timed_out = await server._optional_bounded_thread(
             "reflection", "reflect", work, timeout=0.2
-        ) is None
+        )
+        assert timed_out == {
+            "status": "cancel_requested",
+            "category": "reflection",
+            "reason": "timeout",
+        }
         active = optional_work.active()
         assert active is not None and active.cancelled is True
         deferred = await server._optional_bounded_thread(
@@ -129,6 +134,107 @@ def test_timeout_keeps_optional_lease_until_worker_exits(monkeypatch, optional_w
         "cancel",
         "rejected",
     ]
+
+
+def test_chat_start_immediately_requests_cancellation_of_active_optional_work(
+    monkeypatch, optional_work
+):
+    held = optional_work.start("backfill")
+    assert held.lease is not None
+    observed: list[bool] = []
+
+    async def fake_chat(*_args, **_kwargs):
+        observed.append(held.lease.cancelled)
+        return {"text": "ready"}
+
+    monkeypatch.setattr(server, "_locked_ws_chat_turn", fake_chat)
+
+    result = asyncio.run(server._ws_chat_turn_with_timeout("hello"))
+
+    assert result == {"text": "ready"}
+    assert observed == [True]
+    assert server.active_chat_turns == 0
+    assert [item.event for item in optional_work.telemetry()] == ["start", "cancel"]
+
+
+def test_cooperative_optional_work_receives_and_reports_its_cancel_event(
+    monkeypatch, optional_work
+):
+    received: list[threading.Event] = []
+
+    async def immediate_bounded(_label, fn, *args, **kwargs):
+        kwargs.pop("timeout", None)
+        return fn(*args, **kwargs)
+
+    def worker(*, cancel_event):
+        received.append(cancel_event)
+        optional_work.set_foreground(chat_active=True, tts_active=False)
+        assert cancel_event.is_set()
+        return {"scanned": 1, "cancelled": True}
+
+    monkeypatch.setattr(server, "_bounded_thread", immediate_bounded)
+    result = asyncio.run(server._optional_bounded_thread(
+        "backfill", "cooperative_backfill", worker, cooperative=True,
+    ))
+
+    assert len(received) == 1
+    assert received[0].is_set() is True
+    assert result == {
+        "scanned": 1,
+        "cancelled": True,
+        "status": "cancelled",
+        "category": "backfill",
+        "reason": "worker-observed",
+    }
+    assert optional_work.active() is None
+
+
+def test_cancelled_maintenance_and_routines_are_not_recorded_as_completed(
+    monkeypatch, optional_work, mindpage_backfill_status
+):
+    observations: list[object] = []
+    marked: list[int] = []
+    broadcasts: list[dict] = []
+
+    async def cancelled_optional(category, _label, _fn, *args, **kwargs):
+        return {
+            "status": "cancelled",
+            "category": category,
+            "reason": "worker-observed",
+        }
+
+    async def cancelled_routine(_row):
+        return {"status": "cancel_requested", "kind": "embed_backfill"}
+
+    async def capture_broadcast(event):
+        broadcasts.append(event)
+        return 1
+
+    monkeypatch.setattr(server, "_optional_bounded_thread", cancelled_optional)
+    monkeypatch.setattr(
+        server.cognition_mod, "record_observation", lambda value: observations.append(value)
+    )
+    monkeypatch.setattr(server.routines_mod, "due", lambda: [{
+        "id": 71,
+        "name": "Cancelled embedding backfill",
+        "kind": "embed_backfill",
+    }])
+    monkeypatch.setattr(server.routines_mod, "mark_ran", lambda row_id: marked.append(row_id))
+    monkeypatch.setattr(server, "_broadcast", capture_broadcast)
+    monkeypatch.setattr(server.AutomationCfg, "ROUTINES", True)
+
+    routine = asyncio.run(server._run_routine({"id": 70, "kind": "embed_backfill"}))
+    maintenance = asyncio.run(server._maintain_mindpage_content_index(now=1_000.0))
+    monkeypatch.setattr(server, "_run_routine", cancelled_routine)
+    asyncio.run(server._run_due_routines_once())
+
+    assert routine["status"] == "cancelled"
+    assert observations == []
+    assert maintenance["status"] == "cancelled"
+    assert mindpage_backfill_status["last_mindpage_content_index_backfill_at"] == 0.0
+    assert mindpage_backfill_status["last_mindpage_content_index_backfill_run"] == {}
+    assert marked == []
+    assert broadcasts == []
 
 
 def test_tts_route_defers_optional_work_while_synthesis_is_active(
@@ -171,11 +277,11 @@ def test_tts_route_defers_optional_work_while_synthesis_is_active(
 def test_routines_use_routine_category_and_leave_deferred_rows_unrecorded(
     monkeypatch, optional_work
 ):
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, dict]] = []
     observations: list[object] = []
 
     async def completed_optional(category, label, _fn, *args, **kwargs):
-        calls.append((category, label))
+        calls.append((category, label, kwargs))
         return {"updated": 2}
 
     monkeypatch.setattr(server, "_optional_bounded_thread", completed_optional)
@@ -191,18 +297,22 @@ def test_routines_use_routine_category_and_leave_deferred_rows_unrecorded(
     result = asyncio.run(server._run_routine({"id": 7, "kind": "embed_backfill"}))
 
     assert result["status"] == "ok"
-    assert calls == [("routine", "routine_embed_backfill")]
+    assert calls == [(
+        "routine",
+        "routine_embed_backfill",
+        {"timeout": 10.0, "cooperative": True},
+    )]
     assert len(observations) == 1
 
     async def deferred_optional(category, label, _fn, *args, **kwargs):
-        calls.append((category, label))
+        calls.append((category, label, kwargs))
         return {"status": "deferred", "reason": "chat-active", "category": category}
 
     monkeypatch.setattr(server, "_optional_bounded_thread", deferred_optional)
     deferred = asyncio.run(server._run_routine({"id": 8, "kind": "daily_recap"}))
 
     assert deferred["status"] == "deferred"
-    assert calls[-1] == ("routine", "routine_daily_recap")
+    assert calls[-1][:2] == ("routine", "routine_daily_recap")
     assert len(observations) == 1
 
 
@@ -250,7 +360,7 @@ def test_mindpage_content_index_backfill_runs_when_due_and_records_status(
             "mindpage_content_index_backfill",
             server.mindpage_mod.backfill_content_index,
             (),
-            {"batch": 8, "timeout": 10.0},
+            {"batch": 8, "timeout": 10.0, "cooperative": True},
         )
     ]
     assert mindpage_backfill_status["last_mindpage_content_index_backfill_at"] == 1_000.0

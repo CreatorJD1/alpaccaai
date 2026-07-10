@@ -765,6 +765,7 @@ async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = No
         surface="direct",
     )
     active_chat_turns += 1
+    _sync_optional_work_foreground()
     last_chat_turn_started = _time.time()
     worker = asyncio.create_task(
         _locked_ws_chat_turn(
@@ -787,6 +788,8 @@ async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = No
         return _ws_chat_timeout_result(user_text, turn=turn)
     finally:
         active_chat_turns = max(0, active_chat_turns - 1)
+        # Keep the short quiet grace period authoritative after the turn ends.
+        _sync_optional_work_foreground()
 
 
 async def _pump_reply_tokens(socket: WebSocket, q: "asyncio.Queue",
@@ -811,6 +814,14 @@ async def _pump_reply_tokens(socket: WebSocket, q: "asyncio.Queue",
 
 def _player_chat_priority_active() -> bool:
     return active_chat_turns > 0 or (_time.time() - last_chat_turn_started) < CHAT_PRIORITY_QUIET_SECONDS
+
+
+def _sync_optional_work_foreground() -> None:
+    """Reflect current chat/TTS pressure into the optional-work coordinator."""
+    _optional_work_coordinator.set_foreground(
+        chat_active=_player_chat_priority_active(),
+        tts_active=active_tts_requests > 0,
+    )
 
 
 def _optional_work_telemetry() -> dict:
@@ -838,6 +849,38 @@ def _optional_work_telemetry() -> dict:
 
 def _optional_work_deferred(result: object) -> bool:
     return isinstance(result, dict) and result.get("status") == "deferred"
+
+
+def _optional_work_noncompletion(result: object) -> bool:
+    """Whether optional work must not advance a schedule or emit completion UI."""
+    return (
+        isinstance(result, dict)
+        and result.get("status") in {"deferred", "cancelled", "cancel_requested"}
+    )
+
+
+def _worker_reported_cancellation(result: object) -> bool:
+    """Recognize the compact result shape used by cooperative maintenance work."""
+    return isinstance(result, dict) and (
+        result.get("cancelled") is True or result.get("status") == "cancelled"
+    )
+
+
+def _optional_cancellation_result(
+    status: str,
+    lease: resource_coordinator_mod.OptionalWorkLease,
+    *,
+    reason: str,
+    result: object = None,
+) -> dict:
+    """Keep cancellation explicit without discarding bounded worker counters."""
+    payload = dict(result) if isinstance(result, dict) else {}
+    payload.update({
+        "status": status,
+        "category": lease.category,
+        "reason": reason,
+    })
+    return payload
 
 
 async def _release_optional_work_when_settled(
@@ -874,14 +917,12 @@ async def _optional_bounded_thread(
     fn,
     *args,
     timeout: float = 5.0,
+    cooperative: bool = False,
     **kwargs,
 ):
     """Run optional work through one lease while retaining bounded-thread behavior."""
     coordinator = _optional_work_coordinator
-    coordinator.set_foreground(
-        chat_active=_player_chat_priority_active(),
-        tts_active=active_tts_requests > 0,
-    )
+    _sync_optional_work_foreground()
     decision = coordinator.start(category)
     if not decision.accepted or decision.lease is None:
         return {
@@ -895,6 +936,9 @@ async def _optional_bounded_thread(
 
     def guarded():
         try:
+            if cooperative:
+                call_kwargs = {**kwargs, "cancel_event": lease.cancellation_event}
+                return fn(*args, **call_kwargs)
             return fn(*args, **kwargs)
         finally:
             settled.set()
@@ -906,14 +950,39 @@ async def _optional_bounded_thread(
         raise
 
     if settled.is_set():
+        worker_cancelled = cooperative and _worker_reported_cancellation(result)
+        if worker_cancelled and not lease.cancelled:
+            # A safe worker only reports this after observing its injected event.
+            coordinator.cancel(lease, "worker-cancelled")
+        cancellation_requested = lease.cancelled
         coordinator.finish(lease)
+        if worker_cancelled:
+            return _optional_cancellation_result(
+                "cancelled",
+                lease,
+                reason="worker-observed",
+                result=result,
+            )
+        if cancellation_requested:
+            return _optional_cancellation_result(
+                "cancel_requested",
+                lease,
+                reason="foreground",
+                result=result,
+            )
     else:
         # `_bounded_thread` has already recorded its timeout and returned None.
         # Its native thread still runs, so retain the single-flight slot until it
         # reaches a safe natural exit.
+        foreground_cancelled = lease.cancelled
         coordinator.cancel(lease, "timeout")
         asyncio.create_task(
             _release_optional_work_when_settled(coordinator, lease, settled)
+        )
+        return _optional_cancellation_result(
+            "cancel_requested",
+            lease,
+            reason="foreground" if foreground_cancelled else "timeout",
         )
     return result
 
@@ -956,11 +1025,12 @@ async def _maintain_mindpage_content_index(*, now: float | None = None):
             mindpage_mod.backfill_content_index,
             batch=8,
             timeout=10.0,
+            cooperative=True,
         )
     except Exception as exc:
         result = {"status": "error", "error": type(exc).__name__}
 
-    if _optional_work_deferred(result):
+    if _optional_work_noncompletion(result):
         # A refused lease is not a run: leave the due timestamp untouched so it
         # is retried promptly once chat, TTS, or another optional job releases.
         return result
@@ -1238,7 +1308,7 @@ async def _run_routine(row: dict) -> dict:
     proactive_turn = _proactive_turn_context()
     evidence_key = f"{row.get('id', 'unknown')}:{routines_mod.run_key()}:{kind}"
 
-    def budgeted_call(fn, *args):
+    def budgeted_call(fn, *args, **kwargs):
         initiative = mind.reserve_initiative(
             event_kind="routine",
             evidence_key=evidence_key,
@@ -1253,11 +1323,24 @@ async def _run_routine(row: dict) -> dict:
                 "reason": "initiative_budget",
                 "initiative": initiative,
             }
+        value = fn(*args, **kwargs)
+        if _worker_reported_cancellation(value):
+            return {
+                "status": "cancelled",
+                "initiative": initiative,
+                "value": value,
+            }
         return {
             "status": "completed",
             "initiative": initiative,
-            "value": fn(*args),
+            "value": value,
         }
+
+    def embed_backfill_call(*, cancel_event=None):
+        """Relay the coordinator lease into the one cancellable routine worker."""
+        if cancel_event is not None and cancel_event.is_set():
+            return {"cancelled": True}
+        return budgeted_call(memory_store.backfill_embeddings, cancel_event=cancel_event)
 
     def morning_call():
         event = mind.compose_volunteer_event(
@@ -1288,8 +1371,8 @@ async def _run_routine(row: dict) -> dict:
         )
     elif kind == "embed_backfill":
         result = await _optional_bounded_thread(
-            "routine", "routine_embed_backfill", budgeted_call,
-            memory_store.backfill_embeddings, timeout=10.0,
+            "routine", "routine_embed_backfill", embed_backfill_call,
+            timeout=10.0, cooperative=True,
         )
     elif kind == "vacuum":
         result = await _optional_bounded_thread(
@@ -1303,10 +1386,10 @@ async def _run_routine(row: dict) -> dict:
             morning_call,
             timeout=BACKGROUND_VOLUNTEER_TIMEOUT,
         )
-    if _optional_work_deferred(result):
+    if _optional_work_noncompletion(result):
         return {
             "ok": True,
-            "status": "deferred",
+            "status": str(result.get("status") or "deferred"),
             "kind": kind,
             "result": result,
             "initiative": (
@@ -1349,6 +1432,21 @@ async def _run_routine(row: dict) -> dict:
         "result": result,
         "initiative": initiative,
     }
+
+
+async def _run_due_routines_once() -> None:
+    """Advance only routines that actually reached a terminal completion."""
+    if not AutomationCfg.ROUTINES:
+        return
+    for row in routines_mod.due():
+        result = await _run_routine(row)
+        if _optional_work_noncompletion(result):
+            continue
+        routines_mod.mark_ran(int(row["id"]))
+        await _broadcast({
+            "type": "activity",
+            "text": f"routine '{row.get('name')}' ran: {result.get('status', 'ok')}",
+        })
 
 
 @asynccontextmanager
@@ -1446,10 +1544,11 @@ async def lifespan(app: FastAPI):
                         "memory_backfill",
                         memory_store.backfill_embeddings,
                         timeout=8.0,
+                        cooperative=True,
                     )
-                    if not _optional_work_deferred(backfill):
+                    if not _optional_work_noncompletion(backfill):
                         _background_autonomy_status["last_backfill_at"] = now
-                    if isinstance(backfill, dict) and not _optional_work_deferred(backfill):
+                    if isinstance(backfill, dict) and not _optional_work_noncompletion(backfill):
                         _background_autonomy_status["last_backfill_run"] = backfill
                         if int(backfill.get("updated") or 0) > 0:
                             await _broadcast({
@@ -1593,15 +1692,7 @@ async def lifespan(app: FastAPI):
         while True:
             await asyncio.sleep(max(10.0, float(AutomationCfg.ROUTINE_POLL_SECONDS or 60.0)))
             try:
-                if AutomationCfg.ROUTINES:
-                    for row in routines_mod.due():
-                        result = await _run_routine(row)
-                        if result.get("status") != "deferred":
-                            routines_mod.mark_ran(int(row["id"]))
-                            await _broadcast({
-                                "type": "activity",
-                                "text": f"routine '{row.get('name')}' ran: {result.get('status', 'ok')}",
-                            })
+                await _run_due_routines_once()
                 now = _time.time()
                 if (AutomationCfg.WATCH_DIRS
                         and now - last_watch >= max(10.0, float(AutomationCfg.WATCH_POLL_SECONDS or 60.0))):
@@ -4223,9 +4314,7 @@ async def tts(req: Request):
     speech_cues = speech_mod.speech_cues(synth_state)
     global active_tts_requests
     active_tts_requests += 1
-    _optional_work_coordinator.set_foreground(
-        chat_active=_player_chat_priority_active(), tts_active=True
-    )
+    _sync_optional_work_foreground()
     try:
         try:
             result = await asyncio.wait_for(
@@ -4244,10 +4333,7 @@ async def tts(req: Request):
             )
     finally:
         active_tts_requests = max(0, active_tts_requests - 1)
-        _optional_work_coordinator.set_foreground(
-            chat_active=_player_chat_priority_active(),
-            tts_active=active_tts_requests > 0,
-        )
+        _sync_optional_work_foreground()
     if not result:
         headers = {"X-Alpecca-TTS-Status": "fallback"}
         if getattr(tts_mod, "_last_error", ""):
