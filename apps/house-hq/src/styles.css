@@ -218,7 +218,7 @@ canvas:active {
   font-weight: 760;
   line-height: 1.3;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 3;
 }
 
 .memory-pressure {
@@ -349,6 +349,166 @@ canvas:active {
 }
 
 body.alpecca-chat-open .source-panel {
+  display: none;
+}
+
+.hud-chips {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  display: none;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: calc(100vw - 132px);
+}
+
+.hud-chips button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 7px 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  color: var(--alpecca-ui-text);
+  background: var(--alpecca-ui-bg);
+  border: 1px solid var(--alpecca-ui-border);
+  backdrop-filter: blur(12px);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 850;
+  pointer-events: auto;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.hud-chips .chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #8eeeff;
+  box-shadow: 0 0 10px rgba(142, 238, 255, 0.72);
+}
+
+#chipLoop[data-tone="think"] .chip-dot {
+  background: #f0bd59;
+  box-shadow: 0 0 10px rgba(240, 189, 89, 0.68);
+}
+
+#chipLoop[data-tone="observe"] .chip-dot {
+  background: #9f8cff;
+  box-shadow: 0 0 10px rgba(159, 140, 255, 0.68);
+}
+
+#chipLoop[data-tone="create"] .chip-dot {
+  background: #d86a8d;
+  box-shadow: 0 0 10px rgba(216, 106, 141, 0.68);
+}
+
+#chipLoop span {
+  max-width: 34vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#chipPressureBar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 0;
+  height: 3px;
+  background: #8eeeff;
+  transition: width 220ms ease, background-color 220ms ease;
+}
+
+#chipLoop[data-pressure="medium"] #chipPressureBar {
+  background: #f0bd59;
+}
+
+#chipLoop[data-pressure="high"] #chipPressureBar {
+  background: #ff7e9e;
+}
+
+.source-chip {
+  position: absolute;
+  right: 18px;
+  bottom: 246px;
+  width: 48px;
+  height: 48px;
+  display: none;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 999px;
+  color: #8eeeff;
+  background: var(--alpecca-ui-bg);
+  border: 1px solid var(--alpecca-ui-border);
+  backdrop-filter: blur(12px);
+  font: inherit;
+  font-size: 0.56rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  pointer-events: auto;
+  cursor: pointer;
+  touch-action: manipulation;
+  z-index: 9;
+}
+
+.source-chip span {
+  max-width: 44px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-chip[data-status="offline"] {
+  color: #ffb8b8;
+}
+
+.source-chip[data-status="token"] {
+  color: #ffc477;
+}
+
+body.hud-minimal .hud-chips {
+  display: flex;
+}
+
+body.hud-minimal .source-chip {
+  display: grid;
+}
+
+body.hud-minimal .topbar,
+body.hud-minimal .room-panel,
+body.hud-minimal .activity-pill,
+body.hud-minimal .living-state,
+body.hud-minimal .source-panel {
+  display: none;
+}
+
+body.hud-minimal .topbar.hud-expanded {
+  display: flex;
+  top: 64px;
+}
+
+body.hud-minimal .room-panel.hud-expanded {
+  display: grid;
+  top: 64px;
+}
+
+body.hud-minimal .living-state.hud-expanded {
+  display: grid;
+  top: 64px;
+  pointer-events: auto;
+}
+
+body.hud-minimal .source-panel.hud-expanded {
+  display: grid;
+}
+
+body.alpecca-chat-open .hud-chips,
+body.alpecca-chat-open .source-chip {
   display: none;
 }
 
@@ -1367,6 +1527,27 @@ body.alpecca-chat-open #touchInteract {
 
   body.alpecca-chat-open .living-state {
     display: none;
+  }
+
+  .menu button {
+    min-height: 44px;
+  }
+
+  .hud-chips {
+    top: 12px;
+    left: 12px;
+    max-width: calc(100vw - 120px);
+  }
+
+  .source-chip {
+    right: 12px;
+    bottom: 112px;
+  }
+
+  body.hud-minimal .topbar.hud-expanded,
+  body.hud-minimal .room-panel.hud-expanded,
+  body.hud-minimal .living-state.hud-expanded {
+    top: 58px;
   }
 }
 

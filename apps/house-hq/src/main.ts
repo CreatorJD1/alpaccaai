@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import "./styles.css";
+import { createVrmEmbodiment, type VrmEmbodiment } from "./vrmEmbodiment";
 
 type AlpeccaRuntimeProbe = {
   ready: boolean;
@@ -787,6 +788,7 @@ type AlpeccaAppMemory = {
   identityReflections: number;
   clarityFeedbacks: number;
   visualCalmMode: boolean;
+  hudMode: "auto" | "minimal" | "full";
   pendingReturn: boolean;
   lastPath: string;
   note: string;
@@ -885,6 +887,13 @@ hud.innerHTML = `
     <div class="objective">Initializing prototype environment</div>
     <div class="counter"><span id="found">0</span>/5</div>
   </div>
+  <div id="hudChips" class="hud-chips">
+    <button id="chipMission" type="button" data-expands="topbar" aria-expanded="false">0/5</button>
+    <button id="chipRoom" type="button" data-expands="roomPanel" aria-expanded="false">Entry Hall</button>
+    <button id="chipLoop" type="button" data-expands="livingState" aria-expanded="false" data-tone="idle">
+      <i class="chip-dot" aria-hidden="true"></i><span id="chipLoopText">Loop</span><b id="chipPressureBar" aria-hidden="true"></b>
+    </button>
+  </div>
   <div id="roomPanel" class="room-panel">
     <span id="roomName">Entry Hall</span>
     <small id="roomPurpose">Move through the house to inspect each workspace.</small>
@@ -919,6 +928,7 @@ hud.innerHTML = `
     </div>
     <button id="openAlpeccaSource" class="source-open" type="button">Open Alpecca App</button>
   </div>
+  <button id="sourceChip" class="source-chip" type="button" data-expands="sourcePanel" aria-expanded="false" aria-label="Alpecca status"><span id="sourceChipMood">offline</span></button>
   <form id="alpeccaChat" class="alpecca-chat hidden" autocomplete="off">
     <div class="chat-status">
       <div class="chat-profile">
@@ -1033,6 +1043,9 @@ hud.innerHTML = `
     <span id="alpeccaAiStatus">Alpecca AI: Offline</span>
     <span id="alpeccaSpriteStatus">Alpecca sprites: Loading</span>
     <button id="calmModeToggle" type="button">Calm mode: On</button>
+    <button id="hudModeToggle" type="button">HUD: Auto</button>
+    <button id="embodimentToggle" type="button">Body: 2D sprite</button>
+    <span id="embodimentStatus" class="master-plan-status">3D body: experimental, not loaded</span>
     <button id="profileQaToggle" type="button">Profile QA</button>
     <div id="profileQaPanel" class="qa-panel hidden">
       <button type="button" data-profile-mode="listening">Listen</button>
@@ -1137,6 +1150,18 @@ const alpeccaCoreApp = hud.querySelector<HTMLDivElement>("#alpeccaCoreApp")!;
 const alpeccaCoreFrame = hud.querySelector<HTMLIFrameElement>("#alpeccaCoreFrame")!;
 const alpeccaCoreAppStatus = hud.querySelector<HTMLElement>("#alpeccaCoreAppStatus")!;
 const alpeccaCoreAppNotice = hud.querySelector<HTMLDivElement>("#alpeccaCoreAppNotice")!;
+const hudChipsEl = hud.querySelector<HTMLDivElement>("#hudChips")!;
+const chipMission = hud.querySelector<HTMLButtonElement>("#chipMission")!;
+const chipRoom = hud.querySelector<HTMLButtonElement>("#chipRoom")!;
+const chipLoop = hud.querySelector<HTMLButtonElement>("#chipLoop")!;
+const chipLoopText = hud.querySelector<HTMLSpanElement>("#chipLoopText")!;
+const chipPressureBar = hud.querySelector<HTMLElement>("#chipPressureBar")!;
+const sourceChip = hud.querySelector<HTMLButtonElement>("#sourceChip")!;
+const sourceChipMood = hud.querySelector<HTMLSpanElement>("#sourceChipMood")!;
+const hudModeToggle = hud.querySelector<HTMLButtonElement>("#hudModeToggle")!;
+const embodimentToggle = hud.querySelector<HTMLButtonElement>("#embodimentToggle")!;
+const embodimentStatus = hud.querySelector<HTMLSpanElement>("#embodimentStatus")!;
+const topbarEl = hud.querySelector<HTMLDivElement>(".topbar")!;
 
 function environmentModeFromUrl(): EnvironmentMode {
   try {
@@ -1537,6 +1562,164 @@ if (document.body) document.body.dataset.alpeccaArtBase = alpeccaArtBaseUrl || "
 function alpeccaAssetUrl(path: string) {
   const cleanPath = path.replace(/^\/+/, "");
   return alpeccaArtBaseUrl ? `${alpeccaArtBaseUrl}/${cleanPath}` : `/${cleanPath}`;
+}
+
+// --- Embodiment: 2D sprite (default, always the fallback) vs experimental 3D VRM body.
+const alpeccaEmbodimentStorageKey = "alpeccaEmbodiment";
+type AlpeccaEmbodimentPreference = "sprite" | "vrm";
+type AlpeccaEmbodimentRuntimeState = "sprite" | "loading" | "vrm" | "failed";
+let alpeccaEmbodimentState: AlpeccaEmbodimentRuntimeState = "sprite";
+let alpeccaVrmEmbodiment: VrmEmbodiment | null = null;
+let alpeccaVrmStatusDetail = "";
+let alpeccaVrmConfirmArmedAt = 0;
+
+function configuredAlpeccaEmbodiment(): AlpeccaEmbodimentPreference {
+  const fromUrl = urlParamValue(["embodiment", "body"]).toLowerCase();
+  if (fromUrl === "vrm" || fromUrl === "3d") {
+    localStorage.setItem(alpeccaEmbodimentStorageKey, "vrm");
+    return "vrm";
+  }
+  if (fromUrl === "sprite" || fromUrl === "2d") {
+    localStorage.setItem(alpeccaEmbodimentStorageKey, "sprite");
+    return "sprite";
+  }
+  return localStorage.getItem(alpeccaEmbodimentStorageKey) === "vrm" ? "vrm" : "sprite";
+}
+
+function isAlpeccaVrm3D() {
+  return alpeccaEmbodimentState === "vrm";
+}
+
+function setAlpeccaSpriteVisualsVisible(visible: boolean) {
+  const layers = [
+    alpecca.sprite,
+    alpecca.depthProxy,
+    alpecca.silhouette,
+    alpecca.transitionGhost,
+    alpecca.glitchRed,
+    alpecca.glitchCyan,
+    alpecca.glitchScanline,
+    alpecca.headLook,
+    alpecca.mouth,
+    alpecca.heightRuler,
+    alpecca.leftFootShadow,
+    alpecca.rightFootShadow,
+  ];
+  for (const layer of layers) if (layer) layer.visible = visible;
+}
+
+function alpeccaEmotionDims() {
+  return {
+    love: Number(alpeccaAiState.love) || 0,
+    compassion: Number(alpeccaAiState.compassion) || 0,
+    fear: Number(alpeccaAiState.fear) || 0,
+    energy: Number(alpeccaAiState.energy) || 0,
+  };
+}
+
+function ensureAlpeccaVrmEmbodiment(): VrmEmbodiment {
+  if (alpeccaVrmEmbodiment) return alpeccaVrmEmbodiment;
+  alpeccaVrmEmbodiment = createVrmEmbodiment({
+    parent: alpecca.group,
+    targetHeight: alpeccaStandingVisibleHeight * alpeccaStandingPresentationScale,
+    groundClearance: alpeccaGroundClearance,
+    manifestUrl: () => alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/vrm/manifest`),
+    modelUrl: (file: string) => alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/vrm/model/${encodeURIComponent(file)}`),
+    onStatus: (status, detail, progress) => {
+      alpeccaVrmStatusDetail =
+        status === "loading"
+          ? `Loading 3D body… ${typeof progress === "number" ? `${Math.round(progress * 100)}%` : "fetching"}`
+          : detail || "";
+      updateCoreStatusLabels();
+    },
+  });
+  return alpeccaVrmEmbodiment;
+}
+
+async function activateAlpeccaVrm() {
+  if (alpeccaEmbodimentState === "loading" || isAlpeccaVrm3D()) return;
+  if (!alpeccaAiBaseUrl) {
+    alpeccaVrmStatusDetail = "3D body needs a live backend URL";
+    updateCoreStatusLabels();
+    return;
+  }
+  alpeccaEmbodimentState = "loading";
+  updateCoreStatusLabels();
+  const ok = await ensureAlpeccaVrmEmbodiment().activate().catch(() => false);
+  if (ok) {
+    alpeccaEmbodimentState = "vrm";
+    localStorage.setItem(alpeccaEmbodimentStorageKey, "vrm");
+    setAlpeccaSpriteVisualsVisible(false);
+    alpeccaVrmEmbodiment?.setMood(alpeccaAiMood, alpeccaEmotionDims());
+    alpeccaVrmEmbodiment?.setSpriteState(alpecca.state, alpecca.moving, isAlpeccaTalking());
+    appendAlpeccaLog("System", "Alpecca switched to her experimental 3D body.");
+  } else {
+    // Failure never strands her: the sprite pipeline stayed warm the whole time.
+    alpeccaEmbodimentState = "failed";
+    localStorage.setItem(alpeccaEmbodimentStorageKey, "sprite");
+    setAlpeccaSpriteVisualsVisible(true);
+    if (!alpeccaVrmStatusDetail) alpeccaVrmStatusDetail = "3D body failed to load; staying 2D";
+  }
+  updateCoreStatusLabels();
+}
+
+function deactivateAlpeccaVrm() {
+  alpeccaVrmEmbodiment?.deactivate();
+  alpeccaEmbodimentState = "sprite";
+  localStorage.setItem(alpeccaEmbodimentStorageKey, "sprite");
+  setAlpeccaSpriteVisualsVisible(true);
+  alpeccaVrmStatusDetail = "";
+  updateCoreStatusLabels();
+}
+
+function updateAlpeccaEmbodiment(dt: number) {
+  if (!isAlpeccaVrm3D() || !alpeccaVrmEmbodiment) return;
+  const engaged = isAlpeccaTalking() || alpecca.attentionTimer > 0 || !alpeccaChat.classList.contains("hidden");
+  alpeccaVrmEmbodiment.update(dt, camera, engaged);
+}
+
+// --- HUD density: minimal chip HUD vs the full card stack.
+function resolvedHudMode(): "minimal" | "full" {
+  if (alpeccaAppMemory.hudMode === "minimal") return "minimal";
+  if (alpeccaAppMemory.hudMode === "full") return "full";
+  return window.innerWidth <= 900 || window.matchMedia("(pointer: coarse)").matches ? "minimal" : "full";
+}
+
+function applyHudMode() {
+  const minimal = resolvedHudMode() === "minimal";
+  document.body.classList.toggle("hud-minimal", minimal);
+  if (!minimal) collapseHudCards();
+}
+
+const hudExpandableCards: Record<string, () => HTMLElement> = {
+  topbar: () => topbarEl,
+  roomPanel: () => roomPanel,
+  livingState: () => alpeccaLivingStateEl,
+  sourcePanel: () => alpeccaSourcePanel,
+};
+let hudExpandedCard = "";
+let hudExpandCollapseTimer: ReturnType<typeof setTimeout> | null = null;
+
+function collapseHudCards() {
+  hudExpandedCard = "";
+  if (hudExpandCollapseTimer) {
+    clearTimeout(hudExpandCollapseTimer);
+    hudExpandCollapseTimer = null;
+  }
+  for (const getter of Object.values(hudExpandableCards)) getter().classList.remove("hud-expanded");
+  for (const chip of [chipMission, chipRoom, chipLoop, sourceChip]) chip.setAttribute("aria-expanded", "false");
+}
+
+function toggleHudCard(target: string, chip: HTMLButtonElement) {
+  const wasOpen = hudExpandedCard === target;
+  collapseHudCards();
+  if (wasOpen) return;
+  const card = hudExpandableCards[target]?.();
+  if (!card) return;
+  hudExpandedCard = target;
+  card.classList.add("hud-expanded");
+  chip.setAttribute("aria-expanded", "true");
+  hudExpandCollapseTimer = setTimeout(collapseHudCards, 8000);
 }
 
 function defaultAlpeccaHttpBaseUrl() {
@@ -2938,6 +3121,8 @@ function setAlpeccaIntent(intent: AlpeccaIntent, target = "") {
 function setAlpeccaActivity(text: string, tone: "idle" | "observe" | "think" | "move" | "create" = "idle", holdSeconds = 4) {
   alpeccaActivityEl.textContent = text;
   alpeccaActivityEl.dataset.tone = tone;
+  chipLoop.dataset.tone = tone;
+  chipLoop.title = text;
   document.body.dataset.alpeccaActivity = text;
   alpeccaActivityHoldUntil = performance.now() + holdSeconds * 1000;
 }
@@ -2975,6 +3160,7 @@ function setAlpeccaLivingState(loop?: AlpeccaAiMessage["living_loop"], fallbackT
   } else if (systemSummary) {
     alpeccaLivingQuestionEl.textContent = [questionLine || systemSummary, questionLine ? systemSummary : "", creatorSeen].filter(Boolean).join(" ");
   }
+  chipLoopText.textContent = intentName;
   alpeccaLivingStateEl.dataset.intent = intentName;
   alpeccaLivingStateEl.dataset.system = loop?.activated_system?.id || "";
   alpeccaLivingStateEl.dataset.nextAction = loop?.next_action?.action || "";
@@ -3100,6 +3286,18 @@ function updateCoreStatusLabels() {
     ? `${alpeccaAiModelUse.backend || ""} ${alpeccaAiModelUse.used_tier || ""}: ${alpeccaAiModelUse.model}`
     : "";
   calmModeToggle.textContent = `Calm mode: ${alpeccaAppMemory.visualCalmMode ? "On" : "Off"}`;
+  hudModeToggle.textContent = `HUD: ${alpeccaAppMemory.hudMode === "auto" ? "Auto" : alpeccaAppMemory.hudMode === "minimal" ? "Minimal" : "Full"}`;
+  embodimentToggle.textContent =
+    alpeccaEmbodimentState === "vrm"
+      ? "Body: 3D model"
+      : alpeccaEmbodimentState === "loading"
+        ? "Body: loading 3D…"
+        : "Body: 2D sprite";
+  embodimentStatus.textContent =
+    alpeccaVrmStatusDetail ||
+    (alpeccaEmbodimentState === "vrm"
+      ? "3D body active (experimental); tap to return to 2D"
+      : "3D body: experimental, tap to load her VRM");
 }
 
 function updateDefaultAlpeccaActivity() {
@@ -3170,6 +3368,7 @@ function updateEnvironmentModeUi() {
   counter.textContent = "";
   foundEl.textContent = String(activatedRooms);
   counter.append(foundEl, `/${activeRoomTotal()}`);
+  chipMission.textContent = `${activatedRooms}/${activeRoomTotal()}`;
 }
 
 function updateRoomPanel(force = false) {
@@ -3178,6 +3377,7 @@ function updateRoomPanel(force = false) {
 
   currentRoomId = room.id;
   roomPanelTimer = 0.2;
+  chipRoom.textContent = room.name;
   roomNameEl.textContent = room.name;
   roomPurposeEl.textContent = room.purpose;
   const active = roomIsActive(room);
@@ -3317,6 +3517,7 @@ function loadAlpeccaAppMemory(): AlpeccaAppMemory {
       identityReflections: Math.max(0, Math.floor(parsed.identityReflections ?? 0)),
       clarityFeedbacks: Math.max(0, Math.floor(parsed.clarityFeedbacks ?? 0)),
       visualCalmMode: parsed.visualCalmMode !== false,
+      hudMode: parsed.hudMode === "minimal" || parsed.hudMode === "full" ? parsed.hudMode : "auto",
       pendingReturn: Boolean(parsed.pendingReturn),
       lastPath: typeof parsed.lastPath === "string" ? parsed.lastPath : "/",
       note: typeof parsed.note === "string" ? parsed.note : "No central app crossings recorded yet.",
@@ -3348,6 +3549,7 @@ function loadAlpeccaAppMemory(): AlpeccaAppMemory {
       identityReflections: 0,
       clarityFeedbacks: 0,
       visualCalmMode: true,
+      hudMode: "auto",
       pendingReturn: false,
       lastPath: "/",
       note: "No central app crossings recorded yet.",
@@ -3583,6 +3785,8 @@ function visibleAlpeccaEmotionState() {
 
 function updateAlpeccaMoodPanel() {
   alpeccaMoodReadout.textContent = alpeccaAiStatus === "live" ? alpeccaAiMood : alpeccaAiStatus === "token" ? "reconnect" : "offline";
+  sourceChipMood.textContent = alpeccaMoodReadout.textContent;
+  sourceChip.dataset.status = alpeccaAiStatus;
   const visibleState = visibleAlpeccaEmotionState();
   const keysToShow: Array<[string, string]> = [
     ["love", "Love"],
@@ -3656,6 +3860,8 @@ function setAlpeccaMindpageState(state: AlpeccaMindpageState | null | undefined)
     alpeccaMemoryPressureLabel.textContent = "Unavailable";
     alpeccaMemoryPressureBar.style.width = "0%";
     alpeccaMemoryPressureEl.title = "Working-memory telemetry is unavailable";
+    chipLoop.dataset.pressure = "unavailable";
+    chipPressureBar.style.width = "0%";
     return;
   }
   const fill = THREE.MathUtils.clamp(state.context_fill, 0, 1);
@@ -3667,6 +3873,8 @@ function setAlpeccaMindpageState(state: AlpeccaMindpageState | null | undefined)
   alpeccaMemoryPressureEl.dataset.pressure = pressure;
   alpeccaMemoryPressureLabel.textContent = `${band} ${percent}%`;
   alpeccaMemoryPressureBar.style.width = `${percent}%`;
+  chipLoop.dataset.pressure = pressure;
+  chipPressureBar.style.width = `${percent}%`;
   alpeccaMemoryPressureEl.title = `Measured request pressure: ${percent}%. ${pages} compressed page${pages === 1 ? "" : "s"}; ${backlog} excluded message${backlog === 1 ? "" : "s"}.`;
 }
 
@@ -3795,6 +4003,7 @@ function handleAlpeccaAiMessage(raw: string) {
     alpeccaAiState = message.state;
     updateAlpeccaMoodPanel();
     pulseAlpeccaSourceDashboard("", 1.4);
+    alpeccaVrmEmbodiment?.setMood(alpeccaAiMood, alpeccaEmotionDims());
   }
 
   if (message.type === "state") {
@@ -8921,6 +9130,9 @@ function setAlpeccaAnimation(name: AlpeccaAnimationName, force = false, allowRar
   applyAlpeccaVisualTransform(0, true);
   setAlpeccaSourcePlate(sourcePlateForAlpeccaState(name));
   applyAlpeccaFrame(animation);
+  if (alpeccaVrmEmbodiment && isAlpeccaVrm3D()) {
+    alpeccaVrmEmbodiment.setSpriteState(name, alpecca.moving, isAlpeccaTalking());
+  }
 }
 
 function targetAlpeccaBodyLean() {
@@ -9020,6 +9232,11 @@ function dampAngle(from: number, to: number, lambda: number, dt: number) {
 
 function applyAlpeccaBillboardYaw(dt = 0, snap = false) {
   alpeccaLastViewMatrix = computeAlpeccaViewMatrix();
+  if (isAlpeccaVrm3D()) {
+    // The 3D body faces by group rotation (groundYaw); billboard skew would twist it.
+    alpecca.billboardYaw = snap ? 0 : dampAngle(alpecca.billboardYaw, 0, 8, dt);
+    return;
+  }
   const toCameraX = camera.position.x - alpecca.group.position.x;
   const toCameraZ = camera.position.z - alpecca.group.position.z;
   if (Math.abs(toCameraX) + Math.abs(toCameraZ) < 0.001) return;
@@ -9635,6 +9852,12 @@ function addAlpeccaHeadLook() {
 
 function updateAlpeccaHeadLook(distanceToPlayer: number, playerEngaged: boolean, dt: number) {
   if (!alpecca.headLook || !alpecca.headLookMaterial) return;
+  if (isAlpeccaVrm3D()) {
+    // The VRM drives gaze (lookAt) and visemes itself; the sprite overlays stay hidden.
+    alpecca.headLook.visible = false;
+    if (alpecca.mouth) alpecca.mouth.visible = false;
+    return;
+  }
   const talking = isAlpeccaTalking();
   const now = performance.now();
   const awareness = THREE.MathUtils.clamp(1 - distanceToPlayer / 5.2, 0, 1);
@@ -11059,6 +11282,7 @@ async function createAlpecca() {
     alpecca.ready = true;
     publishAlpeccaRuntimeProbe();
     consumeManualStepHash();
+    if (configuredAlpeccaEmbodiment() === "vrm") void activateAlpeccaVrm();
   } catch (error) {
     console.warn("Alpecca sprite assets failed to load. Using fallback NPC.", error);
     createAlpeccaFallback();
@@ -11632,6 +11856,7 @@ function stepGameFrame(dt: number) {
   updateAlpeccaWalkQaCycle(dt);
   updateAlpeccaVoiceEmotion(dt);
   updateAlpecca(dt);
+  updateAlpeccaEmbodiment(dt);
   updateAlpeccaActivityMarkers(dt);
   updateAlpeccaRoomDevices(dt);
   updateAlpeccaDoorAwareness(dt);
@@ -11960,6 +12185,7 @@ if (isPrototypeMode()) {
 }
 addFurnitureOcclusion();
 initializeAlpeccaAccommodationQa();
+applyHudMode();
 void createAlpecca();
 showMessage(isPrototypeMode() ? "Click to enter the Alpecca prototype void" : "Click to enter the AI office HQ", 8);
 connectAlpeccaAi();
@@ -11971,6 +12197,7 @@ window.addEventListener("resize", () => {
   camera.updateProjectionMatrix();
   renderer.setPixelRatio(targetRenderPixelRatio());
   renderer.setSize(window.innerWidth, window.innerHeight);
+  applyHudMode();
 });
 
 document.addEventListener("keydown", handleKeyDown);
@@ -12163,6 +12390,61 @@ calmModeToggle.addEventListener("click", (event) => {
   saveAlpeccaAppMemory();
   updateCoreStatusLabels();
   appendAlpeccaLog("System", `Calm mode ${alpeccaAppMemory.visualCalmMode ? "enabled" : "disabled"}`);
+});
+
+hudModeToggle.addEventListener("click", (event) => {
+  event.stopPropagation();
+  alpeccaAppMemory.hudMode =
+    alpeccaAppMemory.hudMode === "auto" ? "minimal" : alpeccaAppMemory.hudMode === "minimal" ? "full" : "auto";
+  saveAlpeccaAppMemory();
+  applyHudMode();
+  updateCoreStatusLabels();
+  appendAlpeccaLog("System", `HUD mode: ${alpeccaAppMemory.hudMode}`);
+});
+
+embodimentToggle.addEventListener("click", (event) => {
+  event.stopPropagation();
+  if (alpeccaEmbodimentState === "loading") return;
+  if (isAlpeccaVrm3D()) {
+    deactivateAlpeccaVrm();
+    appendAlpeccaLog("System", "Alpecca returned to her 2D sprite body.");
+    return;
+  }
+  const coarse = window.matchMedia("(pointer: coarse)").matches;
+  if (coarse && performance.now() - alpeccaVrmConfirmArmedAt > 6000) {
+    alpeccaVrmConfirmArmedAt = performance.now();
+    alpeccaVrmStatusDetail = "Experimental: ~17 MB download, heavy on phones — tap again to confirm";
+    updateCoreStatusLabels();
+    return;
+  }
+  void activateAlpeccaVrm();
+});
+
+hudChipsEl.addEventListener("pointerdown", (event) => {
+  event.stopPropagation();
+});
+
+hudChipsEl.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const chip = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-expands]");
+  if (!chip?.dataset.expands) return;
+  toggleHudCard(chip.dataset.expands, chip);
+});
+
+sourceChip.addEventListener("pointerdown", (event) => {
+  event.stopPropagation();
+});
+
+sourceChip.addEventListener("click", (event) => {
+  event.stopPropagation();
+  toggleHudCard("sourcePanel", sourceChip);
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (!hudExpandedCard) return;
+  const target = event.target as HTMLElement | null;
+  if (target?.closest(".hud-expanded, .hud-chips, .source-chip")) return;
+  collapseHudCards();
 });
 
 profileQaToggle.addEventListener("click", (event) => {

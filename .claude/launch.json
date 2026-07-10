@@ -12,6 +12,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "apps/vcs/frontend", "start"],
       "port": 3200
+    },
+    {
+      "name": "house-hq",
+      "runtimeExecutable": "npm.cmd",
+      "runtimeArgs": ["run", "house:dev"],
+      "port": 5173
     }
   ]
 }

@@ -10,6 +10,7 @@
     "polish:alpecca-walks": "python scripts/polish_gpt3d_walk_sprites.py"
   },
   "dependencies": {
+    "@pixiv/three-vrm": "3.4.1",
     "three": "^0.179.1",
     "vite": "^8.0.16"
   },

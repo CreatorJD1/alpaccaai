@@ -2773,7 +2773,7 @@ def test_house_living_question_hud_is_readable_and_system_colored():
     css = (root / "apps" / "house-hq" / "src" / "styles.css").read_text(encoding="utf-8")
     assert "width: min(440px, calc(100vw - 36px));" in css
     assert ".living-state small" in css
-    assert "-webkit-line-clamp: 4;" in css
+    assert "-webkit-line-clamp: 3;" in css
     assert '.living-state[data-system="memory"] span' in css
     assert '.living-state[data-system="voice"] span' in css
 
