@@ -20,9 +20,14 @@ retained below as historical implementation evidence.
   routines share one per-scope relevance/cooldown/dedupe budget; unanswered
   outreach feeds backoff; one proactive event chooses one delivery surface; and
   eligible cue evidence changes the response strategy with traceable provenance.
-- Master Plan Phase 6 Mindpage and resource coordination is the active next
-  slice. Keep broader tools and action classes outside the Phase 4 baseline until
-  separately approved and gated.
+- Master Plan Phase 6 Mindpage and resource coordination remains partial and
+  active. Phase 6A now rejects orthogonal and negative semantic matches, with
+  focused recall tests covering the abstention boundary; live-chat semantic
+  recall remains disabled by default.
+- The next bounded Phase 6 slice is buried-content Mindpage indexing with an
+  idempotent backfill, followed by hard overflow refusal and cooperative
+  optional-worker cancellation. Keep broader tools and action classes outside
+  the Phase 4 baseline until separately approved and gated.
 
 ## Superseded Claude Code Handoff: Master Phase 4 onward (historical)
 
@@ -87,9 +92,12 @@ LLM processes or inject verbose hidden reasoning into prompts.
 
 ### Phase 6: Mindpage and resource coordinator
 
-Finish Mindpage/resource reliability: semantic-negative tests, buried-content
-indexing, hard refusal/compaction of unshrinkable requests, and one
-single-flight optional-work coordinator that cannot overlap with chat/TTS.
+Phase 6A semantic-negative/orthogonal recall abstention is implemented and
+covered by focused tests; live-chat semantic recall remains disabled by default.
+Continue with bounded buried-content indexing/backfill, then hard
+refusal/compaction of unshrinkable requests, then cooperative cancellation for
+the single-flight optional-work coordinator so work cannot overlap destructively
+with chat/TTS.
 Keep 8K as the initial measured context. Only promote Qwen 3.5 9B context after
 real 16K/24K/32K/48K measurements stay below 90 percent commit, retain 2 GiB
 physical-RAM headroom, and avoid sustained SSD paging. The 38,000 MiB pagefile

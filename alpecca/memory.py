@@ -61,16 +61,29 @@ def _similarity(a: list[str], b: list[str]) -> float:
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
-    """Cosine similarity of two vectors, mapped from [-1,1] into [0,1] so it
-    blends cleanly with the salience/recency terms in recall()."""
+    """Return positive cosine evidence in [0, 1], or zero for invalid input.
+
+    Orthogonal and negatively aligned vectors are not evidence of relevance,
+    so they must not receive the positive offset used by a [-1, 1] mapping.
+    """
     if not a or not b or len(a) != len(b):
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    if na == 0 or nb == 0:
+    try:
+        av = [float(value) for value in a]
+        bv = [float(value) for value in b]
+    except (TypeError, ValueError, OverflowError):
         return 0.0
-    return max(0.0, min(1.0, (dot / (na * nb) + 1.0) / 2.0))
+    if not all(math.isfinite(value) for value in (*av, *bv)):
+        return 0.0
+    dot = sum(x * y for x, y in zip(av, bv))
+    na = math.sqrt(sum(x * x for x in av))
+    nb = math.sqrt(sum(y * y for y in bv))
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    cosine = dot / (na * nb)
+    if not math.isfinite(cosine):
+        return 0.0
+    return max(0.0, min(1.0, cosine))
 
 
 def _decode_vector(value) -> list[float] | None:
@@ -87,6 +100,11 @@ def _decode_vector(value) -> list[float] | None:
         return vector
     except (TypeError, ValueError, json.JSONDecodeError):
         return None
+
+
+def _has_direction(vector: list[float] | None) -> bool:
+    """Whether a decoded embedding can supply a meaningful cosine direction."""
+    return bool(vector) and any(value != 0.0 for value in vector)
 
 
 def _decode_tokens(value) -> list[str]:
@@ -384,7 +402,7 @@ def recall(query: str, top_k: int = MEMORY_TOP_K, db_path: Path = DB_PATH,
     and degrades gracefully when it isn't.
     """
     q_tokens = _tokenize(query)
-    q_vec = embed_fn(query) if embed_fn else None
+    q_vec = _decode_vector(embed_fn(query)) if embed_fn else None
     q_exact = query.strip().lower()
     now = time.time()
     scored = []
@@ -410,7 +428,9 @@ def recall(query: str, top_k: int = MEMORY_TOP_K, db_path: Path = DB_PATH,
     for r in rows:
         m_vec = _decode_vector(r["embedding"])
         valid_semantic_pair = (
-            q_vec is not None and m_vec is not None and len(q_vec) == len(m_vec)
+            q_vec is not None and m_vec is not None
+            and len(q_vec) == len(m_vec)
+            and _has_direction(q_vec) and _has_direction(m_vec)
         )
         if valid_semantic_pair:
             sim = _cosine(q_vec, m_vec)

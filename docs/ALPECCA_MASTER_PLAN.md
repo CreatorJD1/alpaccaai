@@ -29,7 +29,11 @@ retained in the implementation sequence as historical planning context.
   share one per-scope initiative budget; ignored outreach backs off; proactive
   delivery selects one surface; and eligible cue evidence changes response
   strategy with traceable provenance.
-- Phase 6 Mindpage and resource coordination is the active next slice.
+- Phase 6 Mindpage and resource coordination remains partial and active. Phase
+  6A semantic-negative/orthogonal recall abstention is implemented and covered
+  by focused tests; live-chat semantic recall remains disabled by default.
+- The next bounded slice is buried-content Mindpage indexing/backfill, followed
+  by hard overflow refusal and cooperative optional-worker cancellation.
 
 ## Truth Baseline
 
@@ -104,7 +108,7 @@ They are not fixed Alpecca hardware.
 
 | Feature | Status | Honest current state |
 |---|---|---|
-| Keyword/FTS recall and embedding backfill | PARTIAL | Bounded and useful; semantic scoring can accept unrelated memories |
+| Keyword/FTS recall and embedding backfill | PARTIAL | Bounded and useful; Phase 6A rejects orthogonal and negative semantic matches, while live-chat semantic recall remains disabled by default |
 | Mindpage Layer A | PARTIAL | Request ledger, write-before-delete paging, tiers, and page faults work; fixed-prompt overflow and buried-content indexing remain |
 | Conversation/privacy partitioning | DONE | Creator app and House HQ turns are scope-partitioned; future guest/Discord subjects remain capability-denied until their later gates |
 | Resource pressure sensing | PARTIAL | Context pressure is grounded; whole-machine sensing draft is not wired |
@@ -280,14 +284,18 @@ Discord proactive participation, recursion, and voice default off until Phase 10
 
 ### Phase 6: Mindpage and resource coordinator - PARTIAL (ACTIVE NEXT SLICE)
 
-Correct semantic similarity thresholds, index bounded searchable terms from
-compressed page content, refuse or explicitly compact unshrinkable overflow, and
-separate context pressure from RAM, commit, VRAM, CPU, disk, battery, and thermal
-signals. Add one single-flight optional-work coordinator with real cancellation
-or backend deadlines. Treat 8K as the initial measurement baseline, then test
-Qwen 3.5 9B at 16K, 24K, 32K, and 48K with one request/model, Flash Attention,
-and q8 KV cache. The 38,000 MiB pagefile supplies Windows commit reserve for
-CPU-backed model/KV pages; it does not extend the GPU's 4 GB VRAM.
+Phase 6A is implemented: semantic scoring rejects orthogonal and negative vector
+matches, and focused tests cover the abstention boundary. Live-chat semantic
+recall remains disabled by default.
+
+Next, index bounded searchable terms from compressed page content and backfill
+existing pages idempotently. Then refuse or explicitly compact unshrinkable
+overflow, followed by cooperative optional-worker cancellation or backend
+deadlines. Continue separating context pressure from RAM, commit, VRAM, CPU,
+disk, battery, and thermal signals. Treat 8K as the initial measurement baseline,
+then test Qwen 3.5 9B at 16K, 24K, 32K, and 48K with one request/model, Flash
+Attention, and q8 KV cache. The 38,000 MiB pagefile supplies Windows commit
+reserve for CPU-backed model/KV pages; it does not extend the GPU's 4 GB VRAM.
 
 Exit gate: orthogonal memories are rejected; buried page facts are retrievable;
 no request exceeds the configured context estimate; optional reflection/backfill

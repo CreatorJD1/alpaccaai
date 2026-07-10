@@ -25,7 +25,13 @@ labels retained in historical plans and handoffs.
   routines share one per-scope initiative budget; ignored outreach backs off;
   proactive delivery selects one surface; and confidence-gated cue evidence
   changes response strategy before generation without asserting a feeling.
-- Master Plan Phase 6 Mindpage and resource coordination is the active next slice.
+- Master Plan Phase 6 Mindpage and resource coordination remains partial and
+  active. Phase 6A semantic-negative/orthogonal recall abstention is implemented
+  and covered by focused tests; live-chat semantic recall remains disabled by
+  default.
+- The next bounded Phase 6 slice is buried-content Mindpage indexing with an
+  idempotent backfill, followed by hard overflow refusal and cooperative
+  optional-worker cancellation.
 - Discord proactive participation, recursion, and voice remain default-off until
   the Phase 10 identity, scope, and rate-limit gates pass.
 - `ALPECCA_TOOL_MODE` is `smart` and `ALPECCA_INNATE_TOOLS=1` in this branch.
@@ -47,6 +53,8 @@ labels retained in historical plans and handoffs.
   timeout/cancelled turns cannot commit late replies or tool writes.
 - The memory path for live chat remains keyword-first (`embed_fn=None`), now with
   bounded FTS5 lexical retrieval and background semantic backfill support.
+  Semantic scoring clamps orthogonal and negative vector matches to zero instead
+  of admitting unrelated memories.
 - No broader action tool is enabled by the Phase 4 baseline; expanding beyond
   read-only `self_status` requires a separately approved and gated slice.
 
