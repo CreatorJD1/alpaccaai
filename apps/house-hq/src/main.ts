@@ -1030,6 +1030,7 @@ hud.innerHTML = `
   <div id="environmentTransition" class="environment-transition" aria-hidden="true"></div>
   <div id="menu" class="menu hidden">
     <strong>Alpecca Void</strong>
+    <span class="master-plan-status">House HQ: internal view of her mind</span>
     <span id="environmentModeLabel">Environment: Prototype</span>
     <span id="masterPlanStageLabel" class="master-plan-status">Master plan: Stage 2 runtime matrix</span>
     <span id="alpeccaAssetModeLabel" class="master-plan-status">Art assets: Local fallback</span>
@@ -3353,20 +3354,20 @@ function activeRoomTotal() {
 }
 
 function activeEnvironmentLabel() {
-  return isPrototypeMode() ? "Alpecca Void" : "Office HQ (internal)";
+  return isPrototypeMode() ? "Alpecca Void" : "AI Office HQ";
 }
 
 function activeEnvironmentObjective() {
   if (isPrototypeMode()) return "Alpecca's void: her main embodied space - presence, senses, and clean sight lines.";
-  return "Internal Office HQ interface: bring all five rooms online.";
+  return "AI Office HQ - a working place in her void: bring all five rooms online.";
 }
 
 function updateEnvironmentModeUi() {
-  environmentModeLabel.textContent = `Environment: ${isPrototypeMode() ? "Alpecca Void (main)" : "Office HQ (internal)"}`;
+  environmentModeLabel.textContent = `Environment: ${isPrototypeMode() ? "Alpecca Void (core)" : "AI Office HQ (in the void)"}`;
   masterPlanStageLabel.textContent = "Master plan: Stage 2 runtime matrix, Stage 3/4 art pending";
   alpeccaAssetModeLabel.textContent = `Art assets: ${alpeccaArtAssetMode === "huggingface-runtime" ? "Hugging Face runtime" : "Local fallback"}`;
   alpeccaAssetModeLabel.dataset.status = alpeccaArtAssetMode === "huggingface-runtime" ? "live" : "offline";
-  environmentModeToggle.textContent = isPrototypeMode() ? "Open Office HQ (internal)" : "Return to the Void (main)";
+  environmentModeToggle.textContent = isPrototypeMode() ? "Visit the AI Office HQ" : "Return to the void core";
   objectiveEl.textContent = activeEnvironmentObjective();
   const counter = foundEl.parentElement!;
   counter.textContent = "";
@@ -3434,7 +3435,7 @@ function alpeccaSurfaceContextSnapshot() {
     content:
       `House presence: Alpecca is embodied in ${environment}. ` +
       `The player is in ${playerRoom.name}; Alpecca is near ${alpeccaRoom.name}. ` +
-      `Active surface: House HQ ${isPrototypeMode() ? "prototype void" : "office"} view. ` +
+      `Active surface: House HQ, the internal view of Alpecca's mind (${isPrototypeMode() ? "void core" : "AI Office HQ"}). ` +
       `Visible panels: ${activePanels.join(", ") || "none"}. ` +
       `Current target: ${alpecca.perceptionTarget || "none"}. ` +
       `Progress ${activatedRooms}/${activeRoomTotal()} systems online.`,
@@ -12177,7 +12178,7 @@ function switchEnvironmentMode() {
   environmentTransition.dataset.mode = nextMode;
   environmentTransition.classList.add("active");
   setMenuOpen(false);
-  showMessage(nextMode === "hq" ? "Opening the internal Office HQ interface..." : "Returning to her void...", 1.2);
+  showMessage(nextMode === "hq" ? "Traveling to the AI Office HQ..." : "Returning to the void core...", 1.2);
   window.setTimeout(() => {
     const url = new URL(window.location.href);
     url.searchParams.set("environment", nextMode);
@@ -12200,7 +12201,7 @@ addFurnitureOcclusion();
 initializeAlpeccaAccommodationQa();
 applyHudMode();
 void createAlpecca();
-showMessage(isPrototypeMode() ? "Click to enter Alpecca's void" : "Click to enter the internal Office HQ interface", 8);
+showMessage(isPrototypeMode() ? "Click to enter Alpecca's void" : "Click to enter the AI Office HQ, a place in her void", 8);
 connectAlpeccaAi();
 
 renderer.setAnimationLoop(animate);

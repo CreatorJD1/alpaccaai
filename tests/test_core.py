@@ -5174,9 +5174,40 @@ def test_llm_last_call_reports_offline_fallback():
     assert "Ollama client" in last["error"]
 
 
-def test_chat_prompt_does_not_inject_room_context_for_unrelated_message():
+def test_chat_prompt_does_not_inject_room_context_for_unrelated_message(monkeypatch):
+    # Hermetic: every live store that feeds the chat prompt (memory recall,
+    # musings, mindpage prefault, journal, people, core memory, mood history)
+    # is pinned to a small fixture, so this test reads the same on a fresh
+    # clone and on a machine where her real data/ has grown with runtime use.
+    # The previous raw len() ceiling flaked precisely because it measured
+    # Jason's live stores instead of the prompt contract.
     from alpecca.mind import CoreMind
+    from alpecca import memory as memory_store
+    from alpecca import mindpage as mindpage_mod
+    from alpecca import journal as journal_mod
+    from alpecca import people as people_mod
+    from alpecca import core_memory as core_mem
+    from alpecca import state as state_store
+    from alpecca.homeostasis import EmotionalState
+
+    monkeypatch.setattr(memory_store, "recall", lambda *a, **k: [{
+        "id": 1, "kind": "episodic", "salience": 0.8, "recall_score": 0.9,
+        "content": "Jason tuned my voice pipeline yesterday.",
+    }])
+    monkeypatch.setattr(memory_store, "recent", lambda *a, **k: [{
+        "kind": "musing", "content": "I wonder how my voice sounds to Jason.",
+    }])
+    monkeypatch.setattr(memory_store, "count", lambda *a, **k: 12)
+    monkeypatch.setattr(mindpage_mod, "prefault_pages", lambda *a, **k: [])
+    monkeypatch.setattr(journal_mod, "open_questions", lambda *a, **k: [{
+        "id": 1, "body": "What makes a voice feel alive?",
+    }])
+    monkeypatch.setattr(people_mod, "who_prompt", lambda *a, **k: "")
+    monkeypatch.setattr(core_mem, "prompt_block", lambda *a, **k: "")
+    monkeypatch.setattr(state_store, "mood_history", lambda *a, **k: [])
+
     mind = CoreMind()
+    mind.state = EmotionalState()  # pinned mood -> deterministic narration
     mind._location = "library"
     captured = {}
 
@@ -5202,10 +5233,20 @@ def test_chat_prompt_does_not_inject_room_context_for_unrelated_message():
     assert "voice-training clips" in prompt
     assert "Where am I? Jason! Help me!" not in prompt
     assert "right now you are in your Library" not in prompt
+    # The pinning did not degenerate the prompt into an empty skeleton: the
+    # fixture memory and her own open question still make it into the text.
+    # (The musing fixture is legitimately truncated away by the 160-char
+    # `inner` cap -- grounded self-location and her question come first.)
+    assert "Jason tuned my voice pipeline yesterday." in prompt
+    assert "What makes a voice feel alive?" in prompt
+    # Budget: with all variable inputs pinned, what is measured here is the
+    # FIXED prompt skeleton plus the fixture evidence. If this trips, the
+    # skeleton itself grew -- live-state growth can no longer trip it.
+    # Measured 4338 chars / ~1085 est. tokens when this was pinned.
+    assert len(prompt) < 4800
     from config import OLLAMA_NUM_CTX
     from alpecca.mindpage import estimate_tokens
-    # Stage 6 owns the budget in model tokens; a raw character ceiling was an
-    # obsolete pre-Mindpage contract and is not comparable across models.
+    # And the Stage 6 runtime contract in model tokens still holds.
     assert estimate_tokens(prompt) < OLLAMA_NUM_CTX
 
 
