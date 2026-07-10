@@ -76,20 +76,35 @@ const TALK_EMOTIONS: Record<string, string> = {
 // VCS's approved ALPECCA_MOOD_VRMA table (VRMViewer.jsx) with two changes:
 // wave plays "Hello" here (a player greeting), not "Goodbye", and point plays
 // the new "PeaceSign". Locomotion (walk/run/jump) is intentionally absent --
-// no such .vrma exists, the procedural cycles carry it.
+// no such .vrma exists, the procedural cycles carry it. Also absent by
+// design: talking (procedural sway + visemes only -- a looping LookAround
+// read as her ignoring you mid-sentence) and idle/idle_soft (the procedural
+// sway is the resting base; IDLE_FLAVOR_VRMA one-shots decorate it).
 const CLIP_VRMA: Record<string, string> = {
   sleep: "Sleepy",
   cry: "Sad",
   thinking: "Thinking",
-  idle_soft: "Relax",
   cheer: "Clapping",
   wave: "Hello",
   dance: "Jump",
-  idle: "LookAround",
   sit: "Relax",
-  talking: "LookAround",
   point: "PeaceSign",
 };
+
+// Idle flourishes: while she rests on the procedural idle base, one of these
+// plays as a single one-shot every IDLE_FLOURISH_MIN..MAX seconds -- never
+// the same one twice in a row -- then crossfades back to the procedural
+// base. That randomized rotation is what keeps her from reading as a looping
+// animatronic.
+const IDLE_FLAVOR_VRMA = ["LookAround", "Thinking", "Relax"];
+const IDLE_FLOURISH_MIN = 8;
+const IDLE_FLOURISH_MAX = 20;
+const nextFlourishDelay = (): number =>
+  IDLE_FLOURISH_MIN + Math.random() * (IDLE_FLOURISH_MAX - IDLE_FLOURISH_MIN);
+
+// How a .vrma action is scheduled: rest poses loop forever, idle flourishes
+// play once, mood performances get at most two passes then settle.
+type PlayMode = "loop" | "once" | "twice";
 
 // vrmAnimations.js CLIP_EXPRESSIONS: each clip's facial profile, layered
 // atLeast (max) over the mood-lerped weights every frame. A "blink" entry
@@ -196,6 +211,41 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   const vrmaLoading = new Set<string>();
   const vrmaFailed = new Set<string>();   // never refetched; procedural covers them
   const fading: THREE.AnimationAction[] = [];
+
+  // Anti-animatronic scheduling: a finished one-shot/twice performance must not
+  // immediately replay (finishedForClip gates it until the state changes), and
+  // idle gets randomized flourish one-shots instead of a permanent loop.
+  let finishedForClip: string | null = null;
+  let flourishName: string | null = null;
+  let lastFlourish = "";
+  let flourishIn = nextFlourishDelay();
+
+  // How each mapped .vrma is scheduled: rest poses hold forever; greetings and
+  // points play once; mood performances get two passes then settle back to the
+  // procedural base until the state or mood changes.
+  const VRMA_MODE: Record<string, PlayMode> = {
+    sleep: "loop", sit: "loop",
+    wave: "once", point: "once",
+    cheer: "twice", dance: "twice", cry: "twice", thinking: "twice",
+  };
+
+  function pickFlourish(): string {
+    const pool = IDLE_FLAVOR_VRMA.filter((n) => n !== lastFlourish);
+    const chosen = pool[Math.floor(Math.random() * pool.length)] ?? IDLE_FLAVOR_VRMA[0]!;
+    lastFlourish = chosen;
+    return chosen;
+  }
+
+  function onActionFinished(e: { action: THREE.AnimationAction }): void {
+    if (e.action !== currentAction) return;
+    if (flourishName && currentVrmaName === flourishName) {
+      flourishName = null;
+      flourishIn = nextFlourishDelay();
+    } else {
+      finishedForClip = clipName;
+    }
+    stopVrma();   // clampWhenFinished held the last frame; fade back to procedural
+  }
 
   const bone = (n: VRMHumanBoneName): THREE.Object3D | null =>
     vrm ? vrm.humanoid.getNormalizedBoneNode(n) : null;
@@ -426,6 +476,19 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       setExpr(k, next);
     }
   }
+  // Mood lerp + clip profile can stack (happy from the mood AND the clip);
+  // past a combined 1.0 the face reads uncanny. Scale the emotions back
+  // proportionally and keep "relaxed" (half-lidded eyes) below 0.6.
+  function capEmotions(): void {
+    const em = vrm?.expressionManager;
+    if (!em) return;
+    const names = ["happy", "sad", "surprised", "angry"];
+    const sum = names.reduce((s, n) => s + (em.getValue(n) ?? 0), 0);
+    if (sum > 1) for (const n of names) em.setValue(n, (em.getValue(n) ?? 0) / sum);
+    const relaxed = em.getValue("relaxed");
+    if (relaxed != null && relaxed > 0.6) em.setValue("relaxed", 0.6);
+  }
+
   function autoBlink(t: number): void {
     const cyc = 4.5, local = t % cyc;
     let v = 0;
@@ -474,8 +537,13 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
         const anim = anims?.[0];
         if (!anim) { vrmaFailed.add(name); return; }
         // createVRMAnimationClip retargets to THIS vrm instance (VRM 0.x too),
-        // so mixer-driven frames need no manual axisFlip.
-        vrmaClips.set(name, lib.createVRMAnimationClip(anim, forVrm));
+        // so mixer-driven frames need no manual axisFlip. Every VRoid .vrma
+        // carries a hips TRANSLATION track that would pin/displace her root
+        // and fight the house's own roaming -- keep rotations only; position
+        // belongs to the house (root motion) and the grounding clamp.
+        const clip = lib.createVRMAnimationClip(anim, forVrm);
+        clip.tracks = clip.tracks.filter((t) => t.name.endsWith(".quaternion"));
+        vrmaClips.set(name, clip);
       })
       .catch(() => {
         vrmaLoading.delete(name);
@@ -483,9 +551,12 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       });
   }
 
-  function playVrma(name: string, clip: THREE.AnimationClip): void {
+  function playVrma(name: string, clip: THREE.AnimationClip, mode: PlayMode = "loop"): void {
     if (!vrm) return;
-    if (!mixer) mixer = new THREE.AnimationMixer(vrm.scene);
+    if (!mixer) {
+      mixer = new THREE.AnimationMixer(vrm.scene);
+      mixer.addEventListener("finished", onActionFinished as never);
+    }
     const next = mixer.clipAction(clip);
     const revived = fading.indexOf(next);
     if (revived >= 0) fading.splice(revived, 1);   // wanted again mid-fade-out
@@ -493,6 +564,9 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     next.enabled = true;
     next.setEffectiveTimeScale(1);
     next.setEffectiveWeight(1);
+    if (mode === "loop") next.setLoop(THREE.LoopRepeat, Infinity);
+    else next.setLoop(THREE.LoopRepeat, mode === "twice" ? 2 : 1);
+    next.clampWhenFinished = true;   // hold the last frame; the fade-out blends it away
     next.play();
     const prev = currentAction;
     if (prev && prev !== next) { prev.crossFadeTo(next, VRMA_FADE, false); fading.push(prev); }
@@ -769,23 +843,51 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       if (status !== "active" || !vrm || !wrapper || !wrapper.visible) return;
       elapsed += dt;
       const next = resolveClip();
-      if (next !== clipName) { clipName = next; clipTime = 0; }   // fresh cycle
+      if (next !== clipName) {
+        clipName = next;
+        clipTime = 0;              // fresh cycle
+        finishedForClip = null;    // a new state may perform again
+        if (flourishName) { flourishName = null; flourishIn = nextFlourishDelay(); }
+      }
       clipTime += dt;
 
       // Real .vrma motion when its clip is ready; procedural otherwise.
       // Locomotion is always procedural -- no walking/running .vrma exists,
       // the ported cycles carry it -- and while moving any playing action
-      // fades out underneath the cycle.
+      // fades out underneath the cycle. Idle rests on the procedural base and
+      // earns a randomized one-shot flourish every so often; finished one-shot
+      // and twice performances settle back to procedural until the state
+      // changes instead of looping like an animatronic.
       let vrmaDriven = false;
-      const wantVrma: string | null = spriteMoving ? null : CLIP_VRMA[clipName] ?? null;
+      let wantVrma: string | null = null;
+      let wantMode: PlayMode = "loop";
+      if (!spriteMoving) {
+        const mapped = CLIP_VRMA[clipName] ?? null;
+        if (mapped && finishedForClip !== clipName) {
+          wantVrma = mapped;
+          wantMode = VRMA_MODE[clipName] ?? "once";
+        } else if (!mapped && (clipName === "idle" || clipName === "idle_soft")) {
+          if (!flourishName) {
+            flourishIn -= dt;
+            if (flourishIn <= 0) flourishName = pickFlourish();
+          }
+          if (flourishName) {
+            wantVrma = flourishName;
+            wantMode = "once";
+          }
+        }
+      }
       if (wantVrma && deps.animationUrl && !vrmaFailed.has(wantVrma)) {
         const clip = vrmaClips.get(wantVrma);
         if (clip) {
-          if (currentVrmaName !== wantVrma) playVrma(wantVrma, clip);
+          if (currentVrmaName !== wantVrma) playVrma(wantVrma, clip, wantMode);
           vrmaDriven = true;
         } else {
           requestVrma(wantVrma);   // procedural carries this frame while it fetches
         }
+      } else if (wantVrma && vrmaFailed.has(wantVrma) && flourishName === wantVrma) {
+        flourishName = null;       // unfetchable flourish: reschedule, stay procedural
+        flourishIn = nextFlourishDelay();
       }
       if (!vrmaDriven) stopVrma();
 
@@ -815,6 +917,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       // weights; a clip that holds the eyes closed suppresses the auto-blink.
       applyClipExpressions(clipName, clipTime);
       if (!clipHoldsEyesClosed(clipName)) autoBlink(elapsed);
+      capEmotions();   // stacked layers must never exceed a natural face
 
       // Senses: she looks at you when engaged, or simply when you come near
       // (mirrors the sprite's head-look awareness, in world units).
