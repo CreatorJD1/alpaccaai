@@ -67,6 +67,14 @@ MAX_DISCORD_CHARS = 2000
 # How long she stays "in conversation" in a channel after being addressed, so
 # follow-ups don't need a re-mention (natural back-and-forth).
 ENGAGE_WINDOW = float(os.environ.get("ALPECCA_DISCORD_ENGAGE_WINDOW", "90"))
+
+# Readable attachment kinds she can be handed (text extraction runs backend-side
+# with its own caps). Anything else is ignored, same as before.
+READABLE_FILE_EXTS = (
+    ".txt", ".md", ".py", ".js", ".ts", ".json", ".csv", ".log",
+    ".html", ".css", ".yml", ".yaml", ".toml", ".ini", ".pdf",
+)
+MAX_FILE_BYTES = int(os.environ.get("ALPECCA_DISCORD_MAX_FILE_BYTES", "2000000"))
 # Minimum seconds between her messages in one channel (anti-flood safety).
 CHANNEL_MIN_INTERVAL = float(os.environ.get("ALPECCA_DISCORD_MIN_INTERVAL", "1.5"))
 # Natural, unprompted chime-in ("butting in"): only on relevant openings, only
@@ -106,12 +114,15 @@ def _is_reply_to_me(message: "discord.Message", client: "discord.Client") -> boo
 
 def _ask_alpecca(text: str, sender: str, channel: str,
                  speaker: str = "guest",
-                 context: str = "", room: str = "", image: str = "") -> str:
+                 context: str = "", room: str = "", image: str = "",
+                 file_name: str = "", file_data: str = "") -> str:
     """Forward one message to her mind via /channel/inbound; return her reply.
 
     `image` (optional) is a data-URL of an attached picture; the backend runs it
-    through her vision + self-recognition. Blocking (urllib); callers run it off
-    the event loop via asyncio.to_thread.
+    through her vision + self-recognition. `file_name`/`file_data` (optional)
+    carry a readable attachment (base64) so she can read shared files; the
+    backend extracts bounded text from it. Blocking (urllib); callers run it
+    off the event loop via asyncio.to_thread.
     """
     body_obj = {
         "text": text,
@@ -124,6 +135,9 @@ def _ask_alpecca(text: str, sender: str, channel: str,
     }
     if image:
         body_obj["image"] = image
+    if file_name and file_data:
+        body_obj["file_name"] = file_name
+        body_obj["file_data"] = file_data
     body = json.dumps(body_obj).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if ACCESS_TOKEN:
@@ -385,10 +399,35 @@ def build_client() -> discord.Client:
                 print(f"[discord] image read failed: {type(exc).__name__}: {exc}",
                       file=sys.stderr)
 
-        if not text and not image_dataurl:
+        # Forward a readable document too (text/code/pdf) so she can read files
+        # people share -- text extraction + hard caps live on the backend.
+        file_name = ""
+        file_b64 = ""
+        doc = next(
+            (a for a in message.attachments
+             if not (a.content_type or "").startswith("image/")
+             and ((a.content_type or "").split(";")[0].strip() in ("text/plain", "application/json", "application/pdf")
+                  or (a.content_type or "").startswith("text/")
+                  or a.filename.lower().endswith(READABLE_FILE_EXTS))),
+            None,
+        )
+        if doc is not None:
+            try:
+                raw = await doc.read()
+                if len(raw) <= MAX_FILE_BYTES:
+                    file_name = doc.filename
+                    file_b64 = base64.b64encode(raw).decode()
+                else:
+                    print(f"[discord] file too large to read: {doc.filename} ({len(raw)} bytes)",
+                          file=sys.stderr)
+            except Exception as exc:
+                print(f"[discord] file read failed: {type(exc).__name__}: {exc}",
+                      file=sys.stderr)
+
+        if not text and not image_dataurl and not file_b64:
             return
         if not text:
-            text = "(they shared an image with you)"
+            text = f"(they shared a file with you: {file_name})" if file_b64 else "(they shared an image with you)"
 
         try:
             async with message.channel.typing():
@@ -402,6 +441,8 @@ def build_client() -> discord.Client:
                     context=context,
                     room="discord",
                     image=image_dataurl,
+                    file_name=file_name,
+                    file_data=file_b64,
                 )
         except Exception as exc:
             print(f"[discord] backend error: {type(exc).__name__}: {exc}", file=sys.stderr)

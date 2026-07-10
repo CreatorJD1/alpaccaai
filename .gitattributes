@@ -3,3 +3,4 @@
 
 # PDFs are binary even when their streams look like ASCII (reportlab ASCII85).
 *.pdf binary
+*.vrma binary

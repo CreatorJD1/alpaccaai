@@ -1625,6 +1625,7 @@ function ensureAlpeccaVrmEmbodiment(): VrmEmbodiment {
     groundClearance: alpeccaGroundClearance,
     manifestUrl: () => alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/vrm/manifest`),
     modelUrl: (file: string) => alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/vrm/model/${encodeURIComponent(file)}`),
+    animationUrl: (file: string) => alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/assets/vrma/${encodeURIComponent(file)}`),
     onStatus: (status, detail, progress) => {
       alpeccaVrmStatusDetail =
         status === "loading"
@@ -1675,7 +1676,11 @@ function deactivateAlpeccaVrm() {
 function updateAlpeccaEmbodiment(dt: number) {
   if (!isAlpeccaVrm3D() || !alpeccaVrmEmbodiment) return;
   const engaged = isAlpeccaTalking() || alpecca.attentionTimer > 0 || !alpeccaChat.classList.contains("hidden");
-  alpeccaVrmEmbodiment.update(dt, camera, engaged);
+  const distanceToPlayer = Math.hypot(
+    camera.position.x - alpecca.group.position.x,
+    camera.position.z - alpecca.group.position.z,
+  );
+  alpeccaVrmEmbodiment.update(dt, camera, engaged, distanceToPlayer);
 }
 
 // --- HUD density: minimal chip HUD vs the full card stack.
@@ -11743,6 +11748,19 @@ function movePlayer(dt: number) {
   if (!collides(nextX, camera.position.z)) camera.position.x = nextX;
   if (!collides(camera.position.x, nextZ)) camera.position.z = nextZ;
   constrainPlayerToHouse();
+  if (isAlpeccaVrm3D() && alpecca.ready) {
+    // Her 3D body is solid: push the player out of her body cylinder, respecting walls.
+    const bodyDx = camera.position.x - alpecca.group.position.x;
+    const bodyDz = camera.position.z - alpecca.group.position.z;
+    const bodyDistance = Math.hypot(bodyDx, bodyDz);
+    if (bodyDistance > 0.0001 && bodyDistance < alpeccaCylinderBodyRadius) {
+      const push = alpeccaCylinderBodyRadius - bodyDistance;
+      const pushX = camera.position.x + (bodyDx / bodyDistance) * push;
+      const pushZ = camera.position.z + (bodyDz / bodyDistance) * push;
+      if (!collides(pushX, camera.position.z)) camera.position.x = pushX;
+      if (!collides(camera.position.x, pushZ)) camera.position.z = pushZ;
+    }
+  }
 
   const moving = input.lengthSq() > 0;
   player.bob += moving ? dt * speed * 5.5 : dt * 2;

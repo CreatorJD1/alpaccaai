@@ -6288,6 +6288,30 @@ def test_launcher_zip_downloads_or_admits_it_is_missing():
         assert "launcher" in json.dumps(r.json()).lower()
 
 
+def test_channel_file_text_extraction_is_bounded_and_safe():
+    import base64 as b64mod
+
+    import server
+
+    # Plain text decodes and stays bounded at the excerpt cap.
+    long_text = "line of shared file content\n" * 5000
+    data = b64mod.b64encode(long_text.encode()).decode()
+    out = server._extract_channel_file_text("notes.txt", data)
+    assert out.startswith("line of shared file content")
+    assert len(out) <= 8000
+
+    # Garbage base64 never raises; it just yields nothing readable.
+    assert server._extract_channel_file_text("notes.txt", "!!!not-base64!!!") == ""
+
+    # A .pdf-named payload that is not a real PDF degrades to empty, not an error.
+    junk = b64mod.b64encode(b"not a pdf at all").decode()
+    assert server._extract_channel_file_text("doc.pdf", junk) == ""
+
+    # Oversized payloads are refused outright.
+    big = b64mod.b64encode(b"x" * 2_000_001).decode()
+    assert server._extract_channel_file_text("big.txt", big) == ""
+
+
 if __name__ == "__main__":
     import traceback
     passed = failed = 0
