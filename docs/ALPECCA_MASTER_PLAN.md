@@ -48,8 +48,20 @@ retained in the implementation sequence as historical planning context.
   without claiming completion, advancing schedules, or broadcasting activity.
   Active LLM calls, TTS synthesis, reflection, and SQLite `VACUUM` are not
   force-cancelled.
-- Phase 6 remains partial. The next slice is bounded host-resource telemetry
-  and a context-tier measurement harness, not direct pagefile mutation.
+- Phase 6E adds a read-only `HostResourceSampler`, exposed through
+  `GET /system/resources`. Its machine-level host-pressure assessment is
+  advisory-only and distinct from Mindpage's per-request context pressure; it
+  does not defer work, change active context, or mutate pagefile, registry,
+  application configuration, or system settings.
+- `scripts\measure_context_tier.py` is a one-tier evidence harness. It defaults
+  to a no-request dry run at 8,192; a real request requires explicit
+  `--execute --tier N`, and `--all` is rejected. Only 8,192, 16,384, 24,576,
+  32,768, and 49,152 are allowed. Reports require manual review and never
+  automatically promote a tier or change model/application configuration,
+  pagefile, or system settings. No real model tier was run in this checkpoint.
+- Phase 6 remains partial. Next, use advisory host pressure only to defer
+  optional work, with later grounded Soul wiring; no pagefile mutation is
+  authorized. See `docs/CONTEXT_TIER_MEASUREMENT.md` for the Phase 6E contract.
 
 ## Truth Baseline
 
@@ -127,7 +139,7 @@ They are not fixed Alpecca hardware.
 | Keyword/FTS recall and embedding backfill | PARTIAL | Bounded and useful; Phase 6A rejects orthogonal and negative semantic matches, while live-chat semantic recall remains disabled by default |
 | Mindpage Layer A | PARTIAL | Request ledger, write-before-delete paging, tiers, page faults, bounded sidecar content-term indexing, fixed-prompt overflow refusal, and cooperative maintenance cancellation work. Legacy index backfill is idle-scheduled; LLM calls, TTS synthesis, reflection, and VACUUM are not force-cancelled |
 | Conversation/privacy partitioning | DONE | Creator app and House HQ turns are scope-partitioned; future guest/Discord subjects remain capability-denied until their later gates |
-| Resource pressure sensing | PARTIAL | Context pressure is grounded; whole-machine sensing draft is not wired |
+| Resource pressure sensing | PARTIAL | Read-only `HostResourceSampler` exposes host evidence through `GET /system/resources`; its advisory host pressure is separate from Mindpage and is not yet wired to optional-work deferral or Soul |
 | Approved pagefile broker | BLOCKED | Draft math, caps, approval proof, live recheck, and verification are unsafe |
 | llama.cpp KV slot persistence | PARKED | Downloaded experiment, not integrated |
 
@@ -319,13 +331,29 @@ backfill, and routine embedding backfill. Foreground chat or TTS cancels their
 leases; workers stop only at safe boundaries; and `cancelled` or
 `cancel_requested` work is not recorded as completed, scheduled as successful,
 or broadcast. Active LLM calls, TTS synthesis, reflection, and SQLite `VACUUM`
-remain non-force-cancellable. Next, add bounded host-resource telemetry and a
-context-tier measurement harness; do not mutate the pagefile in Phase 6.
-Continue separating context pressure from RAM, commit, VRAM, CPU, disk, battery,
-and thermal signals. Treat 8K as the initial measurement baseline, then test
-Qwen 3.5 9B at 16K, 24K, 32K, and 48K with one request/model, Flash Attention,
-and q8 KV cache. The 38,000 MiB pagefile supplies Windows commit reserve for
-CPU-backed model/KV pages; it does not extend the GPU's 4 GB VRAM.
+remain non-force-cancellable.
+
+Phase 6E supplies read-only machine telemetry through `HostResourceSampler` and
+`GET /system/resources`. It is explicitly separate from Mindpage context
+pressure: host pressure is an advisory-only assessment of observed CPU, RAM,
+commit, VRAM, disk, battery, and thermal signals, with unavailable probes kept
+unknown. It neither defers work nor changes active context or any configuration,
+pagefile, registry, or other system setting.
+
+`scripts\measure_context_tier.py` records evidence for one allowed tier at a
+time. Its default is a no-request dry run at 8,192. A real local request is
+permitted only with `--execute --tier N`; `--all` is rejected. Allowed tiers are
+8,192, 16,384, 24,576, 32,768, and 49,152. The harness makes no automatic
+promotion or configuration/system change, and every report requires manual
+review before any later decision. No real model tier was run in this checkpoint.
+
+Phase 6 remains **PARTIAL**. Next, consume host-pressure advice only to defer
+optional work, then consider later grounded Soul wiring. Continue separating
+context pressure from RAM, commit, VRAM, CPU, disk, battery, and thermal
+signals. 8K is the first candidate measurement baseline; 16K, 24K, 32K, and 48K
+remain separate, manual Qwen 3.5 9B evidence reviews. No pagefile mutation is
+authorized in Phase 6. The 38,000 MiB pagefile supplies Windows commit reserve
+for CPU-backed model/KV pages; it does not extend the GPU's 4 GB VRAM.
 
 Exit gate: orthogonal memories are rejected; buried page facts are retrievable;
 no request exceeds the configured context estimate; optional reflection/backfill

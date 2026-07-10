@@ -5,7 +5,9 @@ import asyncio
 import threading
 
 import pytest
+from fastapi.testclient import TestClient
 
+from alpecca import host_resources
 from alpecca.resource_coordinator import ResourceCoordinator
 import server
 
@@ -29,6 +31,114 @@ def mindpage_backfill_status(monkeypatch):
     })
     monkeypatch.setattr(server, "_background_autonomy_status", status)
     return status
+
+
+def _cached_host_resource_sampler():
+    calls = {name: 0 for name in ("cpu", "performance", "battery", "disk", "gpu")}
+
+    def probe(name, value):
+        def read():
+            calls[name] += 1
+            return value
+
+        return read
+
+    sampler = host_resources.HostResourceSampler(
+        cache_ttl_seconds=60.0,
+        _cpu_probe=probe("cpu", {"cpu_percent": 24.0}),
+        _performance_probe=probe("performance", {
+            "ram_total_bytes": 16 * 1024**3,
+            "ram_available_bytes": 8 * 1024**3,
+            "commit_used_bytes": 20 * 1024**3,
+            "commit_limit_bytes": 32 * 1024**3,
+        }),
+        _battery_probe=probe("battery", None),
+        _disk_probe=probe("disk", {
+            "disk_free_bytes": 400 * 1024**3,
+            "disk_total_bytes": 512 * 1024**3,
+        }),
+        _gpu_probe=probe("gpu", None),
+        _is_windows=False,
+    )
+    return sampler, calls
+
+
+def _protected_headers():
+    return {server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET}
+
+
+def test_resources_endpoint_and_runtime_share_a_cached_snapshot(monkeypatch):
+    sampler, calls = _cached_host_resource_sampler()
+    force_values: list[bool] = []
+    original_snapshot = sampler.snapshot
+
+    def snapshot(force: bool = False):
+        force_values.append(force)
+        return original_snapshot(force=force)
+
+    monkeypatch.setattr(sampler, "snapshot", snapshot)
+    monkeypatch.setattr(server, "_host_resource_sampler", sampler)
+
+    client = TestClient(server.app)
+    first_response = client.get("/system/resources", headers=_protected_headers())
+    second_response = client.get("/system/resources", headers=_protected_headers())
+    runtime = server._runtime_status(check_models=False)
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    first = first_response.json()
+    second = second_response.json()
+    assert {
+        "state", "timestamp", "age", "raw", "headroom", "assessment", "pagefile", "advisory",
+    } <= first.keys()
+    assert second["timestamp"] == first["timestamp"]
+    assert runtime["host_resources"]["timestamp"] == first["timestamp"]
+    assert force_values == [False, False, False]
+    assert calls == {"cpu": 1, "performance": 1, "battery": 1, "disk": 1, "gpu": 1}
+
+
+def test_chat_turn_does_not_sample_host_resources(monkeypatch):
+    class UnexpectedSampler:
+        def __init__(self):
+            self.calls: list[bool] = []
+
+        def snapshot(self, force: bool = False):
+            self.calls.append(force)
+            raise AssertionError("chat turns must not refresh host resources")
+
+    sampler = UnexpectedSampler()
+
+    async def fake_chat(*_args, **_kwargs):
+        return {"text": "ready"}
+
+    monkeypatch.setattr(server, "_host_resource_sampler", sampler)
+    monkeypatch.setattr(server, "_locked_ws_chat_turn", fake_chat)
+    monkeypatch.setattr(server, "active_chat_turns", 0)
+    monkeypatch.setattr(server, "last_chat_turn_started", 0.0)
+
+    assert asyncio.run(server._ws_chat_turn_with_timeout("hello")) == {"text": "ready"}
+    assert sampler.calls == []
+
+
+def test_host_resource_reads_leave_optional_work_coordination_unchanged(
+    monkeypatch, optional_work
+):
+    sampler, _calls = _cached_host_resource_sampler()
+    monkeypatch.setattr(server, "_host_resource_sampler", sampler)
+    held = optional_work.start("reflection")
+    assert held.lease is not None
+    before = server._optional_work_telemetry()
+
+    try:
+        endpoint_snapshot = server.system_resources()
+        runtime = server._runtime_status(check_models=False)
+        after = server._optional_work_telemetry()
+
+        assert endpoint_snapshot["timestamp"] == runtime["host_resources"]["timestamp"]
+        assert after == before
+        assert [item.event for item in optional_work.telemetry()] == ["start"]
+    finally:
+        optional_work.finish(held.lease)
 
 
 def test_optional_work_skips_overlap_and_defers_for_chat_or_tts(

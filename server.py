@@ -61,6 +61,7 @@ from alpecca import routines as routines_mod
 from alpecca import watchers as watchers_mod
 from alpecca import auth as auth_mod
 from alpecca import capabilities as capabilities_mod
+from alpecca import host_resources as host_resources_mod
 from alpecca import resource_coordinator as resource_coordinator_mod
 from alpecca import turn_context as turn_context_mod
 from alpecca import commitments as commitments_mod
@@ -237,6 +238,7 @@ def _runtime_status(check_models: bool = True) -> dict:
         ollama=ollama,
     )
     status["optional_work"] = _optional_work_telemetry()
+    status["host_resources"] = _host_resource_sampler.snapshot()
     return status
 
 
@@ -464,6 +466,7 @@ active_chat_turns = 0
 active_tts_requests = 0
 last_chat_turn_started = 0.0
 CHAT_PRIORITY_QUIET_SECONDS = 12.0
+_host_resource_sampler = host_resources_mod.HostResourceSampler()
 _optional_work_coordinator = resource_coordinator_mod.ResourceCoordinator()
 INITIATIVE_RESPONSE_WINDOW_SECONDS = max(
     30.0,
@@ -3054,6 +3057,12 @@ def system_status() -> dict:
     she is in full, degraded, or offline mode.
     """
     return _runtime_status(check_models=True)
+
+
+@app.get("/system/resources")
+def system_resources() -> dict:
+    """Return the read-only host snapshot from the shared sampler cache."""
+    return _host_resource_sampler.snapshot()
 
 
 @app.get("/system/doctor")

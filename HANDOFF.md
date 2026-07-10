@@ -39,10 +39,23 @@ retained below as historical implementation evidence.
   completion, advance scheduling, or broadcast maintenance activity. LLM calls,
   TTS synthesis, reflection, and SQLite `VACUUM` are not force-cancelled.
   Live-chat semantic recall remains disabled by default.
-- Phase 6 remains partial: next add bounded host-resource telemetry and a
-  context-tier measurement harness. Do not make a direct pagefile mutation as
-  part of this work. Keep broader tools and action classes outside the Phase 4
-  baseline until separately approved and gated.
+- Phase 6E adds a read-only `HostResourceSampler` and `GET /system/resources`.
+  The shared snapshot reports host evidence and an advisory-only host-pressure
+  assessment. This machine-level signal is distinct from Mindpage's per-request
+  context pressure; it does not yet defer work, change context, alter
+  configuration, or modify the pagefile/system.
+- `scripts\measure_context_tier.py` is an evidence-only, one-tier harness. It
+  dry-runs at 8,192 by default; a real request is allowed only with explicit
+  `--execute --tier N`, and `--all` is rejected. Allowed tiers are 8,192,
+  16,384, 24,576, 32,768, and 49,152. It never automatically promotes a tier or
+  changes model/application configuration, pagefile, registry, other system
+  settings, or files. Every result requires manual review. No real model tier
+  was run in this checkpoint.
+- Phase 6 remains partial. Next, consume advisory host pressure only to defer
+  optional work, then consider later grounded Soul wiring. Do not make a direct
+  pagefile mutation as part of this work. Keep broader tools and action classes
+  outside the Phase 4 baseline until separately approved and gated. See
+  `docs/CONTEXT_TIER_MEASUREMENT.md` for the Phase 6E boundary.
 
 ## Superseded Claude Code Handoff: Master Phase 4 onward (historical)
 

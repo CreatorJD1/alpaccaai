@@ -44,8 +44,20 @@ labels retained in historical plans and handoffs.
   without claiming completion, advancing schedules, or broadcasting activity.
   Active LLM calls, TTS synthesis, reflection, and SQLite `VACUUM` are not
   force-cancelled.
-- Phase 6 remains partial. The next slice is bounded host-resource telemetry
-  and a context-tier measurement harness, not direct pagefile mutation.
+- Phase 6E now provides a read-only `HostResourceSampler`, exposed through
+  `GET /system/resources`. Its machine-level host-pressure assessment is
+  advisory-only and remains distinct from Mindpage's per-request context
+  pressure. It has no pagefile, registry, configuration, or other system
+  mutation path.
+- `scripts\measure_context_tier.py` is a one-tier evidence harness: its default
+  is a no-request dry run at 8,192, while a live request requires explicit
+  `--execute --tier N`. Only 8,192, 16,384, 24,576, 32,768, and 49,152 are
+  accepted; `--all` is rejected. Results require manual review and can never
+  automatically promote a tier or change model/application configuration,
+  pagefile, or system settings. No real model tier was run in this checkpoint.
+- Phase 6 remains partial. Next, use advisory host pressure only to defer
+  optional work, with later grounded Soul wiring; no pagefile mutation is
+  authorized. See `docs/CONTEXT_TIER_MEASUREMENT.md` for the Phase 6E contract.
 - Discord proactive participation, recursion, and voice remain default-off until
   the Phase 10 identity, scope, and rate-limit gates pass.
 - `ALPECCA_TOOL_MODE` is `smart` and `ALPECCA_INNATE_TOOLS=1` in this branch.
@@ -108,6 +120,8 @@ ZeroGPU runtimes only, and those allocations are ephemeral and provider-dependen
 
 - `docs/AGENTIC_ASSESSMENT.md` is the current systems audit and stage-0 snapshot.
 - `docs/MINDPAGE.md` is the Layer A+ target design and constraints.
+- `docs/CONTEXT_TIER_MEASUREMENT.md` records the Phase 6E host-telemetry and
+  context-tier measurement boundary.
 
 ## Archival Policy
 
