@@ -35,7 +35,7 @@ export interface VrmEmbodiment {
   setMood(label: string, dims: { love?: number; compassion?: number; fear?: number; energy?: number }): void;
   setSpriteState(name: string, moving: boolean, talking: boolean): void;
   update(dt: number, camera: THREE.Camera, engaged: boolean, distanceToPlayer?: number): void;
-  debug(): { groundBase: number; groundOffset: number; lowestSoleY: number | null };
+  debug(): { groundBase: number; groundOffset: number; lowestSoleY: number | null; springJoints: number; springColliders: number };
 }
 
 type MoodDims = { love: number; compassion: number; fear: number; energy: number };
@@ -826,8 +826,15 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       groundFeet(dt);   // after vrm.update: clamp the posed soles to the floor
     },
 
-    debug(): { groundBase: number; groundOffset: number; lowestSoleY: number | null } {
-      return { groundBase, groundOffset, lowestSoleY: lowestSole() };
+    debug(): { groundBase: number; groundOffset: number; lowestSoleY: number | null; springJoints: number; springColliders: number } {
+      const springs = (vrm as unknown as { springBoneManager?: { joints?: Set<unknown>; colliders?: unknown[] } } | null)?.springBoneManager;
+      return {
+        groundBase,
+        groundOffset,
+        lowestSoleY: lowestSole(),
+        springJoints: springs?.joints ? (springs.joints as Set<unknown>).size ?? 0 : 0,
+        springColliders: Array.isArray(springs?.colliders) ? springs.colliders.length : 0,
+      };
     },
   };
 }
