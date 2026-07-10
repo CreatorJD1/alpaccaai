@@ -1,9 +1,9 @@
-"""Wake Alpecca with all her senses on.
+"""Wake Alpecca with conservative local capability defaults.
 
 `python server.py` starts her in her most private configuration: text chat
-only, every ambient sense off. This launcher is the other mode -- the owner
-saying "yes, all of it": screen sight, webcam expression sense, mic voice
-tone, proactive speech, reflection, and a starter set of safe desktop actions.
+only, every ambient sense off. This launcher adds the supporting local services
+without treating launch as consent for screen, webcam, microphone, computer, or
+application control. Opt into those capabilities with their ALPECCA_* variables.
 
 Everything is set via the same ALPECCA_* environment variables documented in
 config.py, and anything you've already set in your environment wins -- this
@@ -18,27 +18,25 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
+import urllib.error
 import urllib.request
+import webbrowser
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# Senses on (owner's explicit opt-in by running this script).
-os.environ.setdefault("ALPECCA_SIGHT", "1")   # periodic screen glimpses
-os.environ.setdefault("ALPECCA_FACE", "1")    # webcam expression sense
-os.environ.setdefault("ALPECCA_VOICE", "1")   # mic voice-tone sense
-
-# A starter allowlist of harmless Windows built-ins so her desktop hands work
-# out of the box. Add your own apps here or via ALPECCA_APPS in your env.
-os.environ.setdefault(
-    "ALPECCA_APPS",
-    "notepad=notepad.exe;calculator=calc.exe;paint=mspaint.exe;files=explorer.exe",
-)
+# Risky capabilities stay off unless the caller explicitly opted in.
+os.environ.setdefault("ALPECCA_COMPUTER_USE", "0")
+os.environ.setdefault("ALPECCA_SIGHT", "0")   # periodic screen glimpses
+os.environ.setdefault("ALPECCA_FACE", "0")    # webcam expression sense
+os.environ.setdefault("ALPECCA_VOICE", "0")   # mic voice-tone sense
+os.environ.setdefault("ALPECCA_APPS", "")     # explicit app allowlist only
 
 # Import AFTER the env is set -- config.py reads these at import time.
 import uvicorn                                    # noqa: E402
-from config import HOST, PORT, ACCESS_TOKEN       # noqa: E402
+from config import HOST, PORT                     # noqa: E402
 from config import F5_WORKER_ENABLED, F5_WORKER_HOST, F5_WORKER_PORT  # noqa: E402
 from alpecca import instance as instance_mod      # noqa: E402
 
@@ -159,8 +157,6 @@ def _ollama_watchdog() -> None:
     60s; if it's gone, respawn `ollama serve` detached and let the next
     check confirm. Never raises -- a watchdog that can crash the app it
     guards would be worse than none."""
-    import threading
-
     def _loop() -> None:
         while True:
             time.sleep(60)
@@ -182,12 +178,60 @@ def _ollama_watchdog() -> None:
     threading.Thread(target=_loop, daemon=True, name="OllamaWatchdog").start()
 
 
-existing = instance_mod.existing_server_url(PORT, token=ACCESS_TOKEN)
+def _local_server_up(timeout: float = 0.5) -> bool:
+    """Return whether this process's loopback server is answering."""
+    try:
+        urllib.request.urlopen(
+            f"http://127.0.0.1:{PORT}/system/doctor", timeout=timeout
+        )
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
+
+
+def _issue_local_bootstrap_url(server_module, path: str = "/",
+                               timeout: float = 5.0) -> str | None:
+    """Bounded wait for the server-owned one-time local bootstrap API."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() <= deadline:
+        issue = getattr(server_module, "issue_local_bootstrap_url", None)
+        if callable(issue):
+            try:
+                url = issue(path)
+            except Exception:
+                url = None
+            if isinstance(url, str) and url.strip():
+                return url.strip()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.05, remaining))
+    return None
+
+
+def _open_local_app_when_ready(server_module, timeout: float = 25.0) -> None:
+    """Wait for startup, mint one bootstrap, and hand it directly to the OS."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() <= deadline:
+        if _local_server_up():
+            break
+        time.sleep(0.1)
+    else:
+        print("Alpecca's local server did not become ready; no window was opened.")
+        return
+    url = _issue_local_bootstrap_url(server_module)
+    if not url:
+        print("Alpecca could not issue a local bootstrap; no window was opened.")
+        return
+    webbrowser.open(url)
+
+
+existing = instance_mod.existing_server_url(PORT)
 if existing:
     print(f"Alpecca is already awake at {existing}; reusing the same mind instance.")
-    print("Open the existing app instead of starting a second server:")
-    suffix = f"?token={ACCESS_TOKEN}" if ACCESS_TOKEN else ""
-    print(f"  {existing}/{suffix}")
+    print("Use the already-open authenticated surface; no second server was started.")
     raise SystemExit(0)
 
 _backup_soul()
@@ -196,8 +240,15 @@ _start_discord_bridge()
 _ollama_watchdog()
 
 from server import app, mind                      # noqa: E402
+import server as server_mod                       # noqa: E402
 
 if __name__ == "__main__":
-    print(f"Alpecca is waking up (full senses) at http://{HOST}:{PORT}")
+    print(f"Alpecca is waking up (safe capability defaults) at http://{HOST}:{PORT}")
     print(f"  LLM online: {mind.llm.online}")
+    threading.Thread(
+        target=_open_local_app_when_ready,
+        args=(server_mod,),
+        daemon=True,
+        name="LocalBootstrap",
+    ).start()
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning")

@@ -44,7 +44,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from config import ACCESS_TOKEN, HOST, PORT, PUBLIC_URL
+from alpecca.auth import AUTHORIZATION_HEADER, load_or_create_authorization_secret
+from config import HOME, HOST, PORT, PUBLIC_URL
+
+
+_AUTHORIZATION_SECRET = load_or_create_authorization_secret(HOME)
 
 def _resolve_backend_url() -> str:
     """Prefer explicit backend override, then shared public URL, then local host."""
@@ -139,9 +143,10 @@ def _ask_alpecca(text: str, sender: str, channel: str,
         body_obj["file_name"] = file_name
         body_obj["file_data"] = file_data
     body = json.dumps(body_obj).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
-    if ACCESS_TOKEN:
-        headers["X-Alpecca-Token"] = ACCESS_TOKEN
+    headers = {
+        "Content-Type": "application/json",
+        AUTHORIZATION_HEADER: _AUTHORIZATION_SECRET,
+    }
     req = urllib.request.Request(
         f"{BACKEND_URL}/channel/inbound",
         data=body,
@@ -176,9 +181,10 @@ def _synth_voice_wav(text: str) -> "bytes | None":
     Blocking (urllib); callers run it off the event loop via asyncio.to_thread.
     """
     body = json.dumps({"text": text}).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
-    if ACCESS_TOKEN:
-        headers["X-Alpecca-Token"] = ACCESS_TOKEN
+    headers = {
+        "Content-Type": "application/json",
+        AUTHORIZATION_HEADER: _AUTHORIZATION_SECRET,
+    }
     req = urllib.request.Request(f"{BACKEND_URL}/tts", data=body, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=INBOUND_TIMEOUT) as resp:

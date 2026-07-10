@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import html
 import io
 import json
 import os
@@ -23,13 +24,13 @@ import sys
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 import uvicorn
 
-from config import (HOST, PORT, DEEP_BACKEND, OLLAMA_HOST,
+from config import (HOME, HOST, PORT, DEEP_BACKEND, OLLAMA_HOST,
                     COLAB_URL, COLAB_MODEL, COLAB_API_KEY,
                     MINDSCAPE_ENABLED, MINDSCAPE_CLOUD_URL, MINDSCAPE_TOKEN,
                     MINDSCAPE_SYNC_TIMEOUT, MINDSCAPE_AUTO_SYNC_INTERVAL,
@@ -56,6 +57,8 @@ from alpecca import cognition as cognition_mod
 from alpecca import instance as instance_mod
 from alpecca import routines as routines_mod
 from alpecca import watchers as watchers_mod
+from alpecca import auth as auth_mod
+from alpecca import capabilities as capabilities_mod
 
 ROOT_DIR = Path(__file__).parent
 WEB_DIR = ROOT_DIR / "web"
@@ -831,6 +834,17 @@ async def lifespan(app: FastAPI):
     tender while you ground through an error, or settled while you were away.
     We keep a reference to the task so it isn't silently garbage-collected.
     """
+    try:
+        await asyncio.to_thread(
+            capabilities_mod.record_snapshot,
+            source="server_start",
+        )
+    except Exception:
+        # Capability reporting is evidence, not a startup dependency. The
+        # public snapshot route still reports the code-owned state if the DB is
+        # temporarily unavailable.
+        pass
+
     def drift_tick():
         mind.see(screen_sight.latest)
         mind.perceive(_observe())
@@ -1101,48 +1115,68 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Alpecca", lifespan=lifespan)
 
 
-# --- Remote-access auth ------------------------------------------------------
-# The Alpecca app has one stable local access token in data/access_token.txt.
-# Browser navigations automatically receive that token as a long-lived cookie so
-# the House HQ and the normal app behave like one shared system. API calls,
-# WebSockets, and static shells can still send it as ?token= or X-Alpecca-Token.
-from config import ACCESS_TOKEN as _TOKEN
+# --- Authorization -----------------------------------------------------------
+# Alpecca's public identity and server authorization are deliberately separate.
+# The authorization secret is protected by Windows Credential Manager (or an
+# explicit deployment secret), never placed in source, URLs, localStorage, or a
+# browser-readable cookie.
 from starlette.responses import JSONResponse as _JSON
+
+_AUTH_SECRET = auth_mod.load_or_create_authorization_secret(HOME)
+_AUTHORITY = auth_mod.SessionAuthority(_AUTH_SECRET)
+_PUBLIC_AUTH_PATHS = frozenset({
+    "/healthz",
+    "/auth/status",
+    "/auth/bootstrap",
+    "/auth/bootstrap/exchange",
+})
+_SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 _ACCESS_HTML = """<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Alpecca</title>
 <body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#070b14;color:#cfe0ff;font-family:system-ui,sans-serif">
 <main style="background:rgba(8,14,26,.7);padding:28px 26px;border-radius:14px;border:1px solid #1d2a47;text-align:center;max-width:340px">
   <div style="font-size:20px;font-weight:650;margin-bottom:6px">Alpecca</div>
-  <div style="color:#8aa0c6;font-size:13px;margin-bottom:16px">Her shared app identity is initializing.</div>
+  <div style="color:#8aa0c6;font-size:13px;margin-bottom:16px">A local authorization session has not been established.</div>
   <button onclick="location.reload()" style="margin-top:4px;width:100%;padding:10px;border:0;border-radius:9px;background:#7fd9ff;color:#06121c;font-weight:600;cursor:pointer">Reload</button>
 </main></body>"""
 
-_CORS_ALLOWED_HOST_SUFFIXES = (
-    ".r2.dev",
-    ".cloudflarestorage.com",
-    ".pages.dev",
-    ".trycloudflare.com",
-)
 _CORS_ALLOWED_HOSTS = {
     "localhost",
     "127.0.0.1",
     "::1",
 }
+_EXPLICIT_CORS_ORIGINS = frozenset(
+    value.strip().rstrip("/")
+    for value in os.environ.get("ALPECCA_CORS_ORIGINS", "").split(",")
+    if value.strip()
+)
 
 
-def _allowed_cors_origin(origin: str) -> str:
+def _normalized_origin(origin: str) -> str:
     if not origin:
         return ""
     try:
         parsed = urlparse(origin)
     except Exception:
         return ""
-    if parsed.scheme not in {"http", "https"}:
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         return ""
+    if parsed.username or parsed.password or parsed.path not in {"", "/"}:
+        return ""
+    if parsed.params or parsed.query or parsed.fragment:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+
+
+def _allowed_cors_origin(origin: str) -> str:
+    normalized = _normalized_origin(origin)
+    if not normalized:
+        return ""
+    parsed = urlparse(normalized)
     host = (parsed.hostname or "").lower()
-    if host in _CORS_ALLOWED_HOSTS or any(host.endswith(suffix) for suffix in _CORS_ALLOWED_HOST_SUFFIXES):
-        return origin
+    if host in _CORS_ALLOWED_HOSTS or normalized in _EXPLICIT_CORS_ORIGINS:
+        return normalized
     return ""
 
 
@@ -1153,7 +1187,9 @@ def _with_cors(resp: Response, origin: str) -> Response:
     resp.headers["Access-Control-Allow-Origin"] = allowed
     resp.headers["Access-Control-Allow-Credentials"] = "true"
     resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Alpecca-Token"
+    resp.headers["Access-Control-Allow-Headers"] = (
+        "Content-Type, X-Alpecca-Authorization, X-Alpecca-Identity"
+    )
     resp.headers["Access-Control-Expose-Headers"] = (
         "X-Alpecca-TTS-Engine, X-Alpecca-TTS-Status, X-Alpecca-TTS-Error, "
         "X-Alpecca-TTS-Exact-Text, X-Alpecca-Voice, X-Alpecca-Voice-Profile, "
@@ -1176,61 +1212,211 @@ def _header_text(value: str, limit: int = 240) -> str:
     return text.encode("latin-1", "ignore").decode("latin-1")
 
 
-def _token_ok(query, headers, cookies, client_host: str = "") -> bool:
-    """Whether a request carries the right token. With no token configured the
-    gate is open (private local use)."""
-    if client_host == "testclient":
-        return True
-    if not _TOKEN:
-        return True
-    tok = (query.get("token") or headers.get("X-Alpecca-Token")
-           or cookies.get("alpecca_token"))
-    if not tok:
-        try:
-            from urllib.parse import parse_qs, urlparse
-            referer = headers.get("referer") or headers.get("referrer") or ""
-            tok = (parse_qs(urlparse(referer).query).get("token") or [""])[0]
-        except Exception:
-            tok = ""
-    return tok == _TOKEN
+def _record_auth_decision(
+    event: str,
+    decision: auth_mod.AuthDecision,
+    *,
+    path: str,
+    method: str,
+    remote_addr: str,
+) -> None:
+    """Persist a secret-free authorization decision without request values."""
+    try:
+        metadata = decision.as_audit_metadata()
+        metadata.update({
+            "event": str(event or "authorization")[:48],
+            "path": str(path or "/")[:160],
+            "method": str(method or "")[:12],
+            "remote_scope": (
+                "loopback" if auth_mod.is_loopback_address(remote_addr) else "remote"
+            ),
+        })
+        cognition_mod.record_observation(cognition_mod.CognitionObservation(
+            source="authorization_audit",
+            content=(
+                f"Authorization {metadata['event']} for {metadata['method']} "
+                f"{metadata['path']}: {'allowed' if decision.allowed else 'denied'}."
+            ),
+            confidence=1.0,
+            privacy_class="local",
+            metadata=metadata,
+        ))
+    except Exception:
+        pass
 
 
-def _set_alpecca_token_cookie(resp: Response, request: Request, tok: str) -> None:
-    iframe_embed = request.query_params.get("embed") == "1"
-    cross_site_cookie = iframe_embed and request.url.scheme == "https"
-    resp.set_cookie(
-        "alpecca_token",
-        tok,
-        max_age=60 * 60 * 24 * 365 * 5,
-        samesite="none" if cross_site_cookie else "lax",
-        secure=cross_site_cookie,
+def _safe_local_path(value: str | None) -> str:
+    candidate = str(value or "/").strip()
+    if not candidate.startswith("/") or candidate.startswith("//"):
+        return "/"
+    parsed = urlparse(candidate)
+    if parsed.scheme or parsed.netloc:
+        return "/"
+    # Bootstrap credentials never survive the redirect, and arbitrary query
+    # values are not carried through this security boundary.
+    return (parsed.path or "/")[:1024]
+
+
+def issue_local_bootstrap_url(path: str = "/") -> str:
+    """Mint a short-lived one-use URL for a launcher on this same machine."""
+    code = _AUTHORITY.issue_bootstrap_code("127.0.0.1")
+    next_path = _safe_local_path(path)
+    return (
+        f"http://127.0.0.1:{PORT}/auth/bootstrap"
+        f"?code={quote(code, safe='')}&next={quote(next_path, safe='')}"
     )
+
+
+def _cookie_origin_allowed(request: Request, origin: str) -> bool:
+    normalized = _allowed_cors_origin(origin)
+    if not normalized:
+        return False
+    request_origin = f"{request.url.scheme}://{request.url.netloc}".rstrip("/")
+    return normalized == request_origin or normalized in _EXPLICIT_CORS_ORIGINS
 
 
 @app.middleware("http")
 async def _auth_gate(request: Request, call_next):
     origin = request.headers.get("origin", "")
     if request.method == "OPTIONS":
+        if origin and not _allowed_cors_origin(origin):
+            return _JSON({"detail": "origin not allowed"}, status_code=403)
         return _with_cors(Response(status_code=204), origin)
+
+    if request.url.path in _PUBLIC_AUTH_PATHS:
+        return _with_cors(await call_next(request), origin)
+
     client_host = request.client.host if request.client else ""
-    if not _token_ok(request.query_params, request.headers, request.cookies, client_host):
-        # This is Jason's local Alpecca instance: direct app/House navigations
-        # should seed the shared cookie instead of making him paste the token.
-        if _TOKEN and request.method == "GET" and "text/html" in request.headers.get("accept", ""):
-            resp = await call_next(request)
-            _set_alpecca_token_cookie(resp, request, _TOKEN)
-            return _with_cors(resp, origin)
-        # Browser navigations get a reload hint; API calls get a compact 401.
+    decision = _AUTHORITY.authorize_request(
+        headers=request.headers,
+        cookies=request.cookies,
+        query=request.query_params,
+    )
+    if not decision.allowed:
+        _record_auth_decision(
+            "request",
+            decision,
+            path=request.url.path,
+            method=request.method,
+            remote_addr=client_host,
+        )
         if request.method == "GET" and "text/html" in request.headers.get("accept", ""):
             return _with_cors(HTMLResponse(_ACCESS_HTML, status_code=401), origin)
-        return _with_cors(_JSON({"detail": "shared app identity required"}, status_code=401), origin)
-    resp = await call_next(request)
-    # A valid ?token= visit drops a cookie so later fetches + the WebSocket carry
-    # it automatically, without the token living in every URL.
-    tok = request.query_params.get("token")
-    if _TOKEN and tok == _TOKEN:
-        _set_alpecca_token_cookie(resp, request, tok)
-    return _with_cors(resp, origin)
+        return _with_cors(
+            _JSON({"detail": "authorization required"}, status_code=401),
+            origin,
+        )
+
+    if (
+        decision.mechanism == "session_cookie"
+        and request.method not in _SAFE_HTTP_METHODS
+        and not _cookie_origin_allowed(request, origin)
+    ):
+        denied = auth_mod.AuthDecision(
+            False,
+            "session_cookie",
+            "origin_required",
+            principal=decision.principal,
+        )
+        _record_auth_decision(
+            "csrf_origin",
+            denied,
+            path=request.url.path,
+            method=request.method,
+            remote_addr=client_host,
+        )
+        return _with_cors(
+            _JSON({"detail": "same-origin request required"}, status_code=403),
+            origin,
+        )
+
+    request.state.authorization = decision
+    return _with_cors(await call_next(request), origin)
+
+
+@app.get("/auth/status")
+def auth_status() -> dict:
+    return {
+        "authorization": "required",
+        "bootstrap": "loopback_only",
+        "public_identity_authorizes": False,
+        "session_cookie": {
+            "http_only": True,
+            "same_site": "strict",
+        },
+    }
+
+
+@app.get("/healthz")
+def healthz() -> dict:
+    """Stable, intentionally sparse identity for local process probes."""
+    return {"service": "alpecca", "version": 1}
+
+
+@app.get("/auth/bootstrap")
+def auth_bootstrap_landing(request: Request) -> Response:
+    """Turn a launcher navigation into an explicit POST-only exchange."""
+    code = html.escape(request.query_params.get("code", ""), quote=True)
+    next_path = html.escape(
+        _safe_local_path(request.query_params.get("next")),
+        quote=True,
+    )
+    page = f"""<!doctype html><meta charset="utf-8">
+<meta name="referrer" content="no-referrer"><title>Opening Alpecca</title>
+<form id="bootstrap" method="post" action="/auth/bootstrap/exchange?code={code}&amp;next={next_path}"></form>
+<script>document.getElementById('bootstrap').submit()</script>
+<noscript><button form="bootstrap" type="submit">Open Alpecca</button></noscript>"""
+    return HTMLResponse(
+        page,
+        headers={
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.post("/auth/bootstrap/exchange")
+def auth_bootstrap_exchange(request: Request) -> Response:
+    client_host = request.client.host if request.client else ""
+    decision, cookie = _AUTHORITY.exchange_bootstrap_code(
+        request.query_params.get("code", ""),
+        client_host,
+        secure=request.url.scheme == "https",
+    )
+    _record_auth_decision(
+        "bootstrap_exchange",
+        decision,
+        path=request.url.path,
+        method=request.method,
+        remote_addr=client_host,
+    )
+    if not decision.allowed or cookie is None:
+        return _JSON(
+            {"detail": "invalid or expired local bootstrap"},
+            status_code=401,
+            headers={"Cache-Control": "no-store"},
+        )
+    response = RedirectResponse(
+        _safe_local_path(request.query_params.get("next")),
+        status_code=303,
+        headers={"Cache-Control": "no-store"},
+    )
+    response.set_cookie(cookie.name, cookie.value, **cookie.set_cookie_kwargs())
+    return response
+
+
+@app.post("/auth/bootstrap/request")
+def request_auth_bootstrap(request: Request) -> dict:
+    client_host = request.client.host if request.client else ""
+    if not auth_mod.is_loopback_address(client_host):
+        raise HTTPException(status_code=403, detail="loopback required")
+    return {"url": issue_local_bootstrap_url("/")}
+
+
+@app.get("/security/capabilities")
+def security_capabilities() -> dict:
+    return capabilities_mod.public_snapshot()
 
 
 @app.get("/")
@@ -3316,10 +3502,31 @@ def _decode_image(data_url: str) -> bytes | None:
 
 @app.websocket("/ws")
 async def ws(socket: WebSocket) -> None:
-    # Remote access is token-gated here too -- the handshake carries the cookie
-    # set on the first ?token= visit (or you can pass ?token= on the ws URL).
     client_host = socket.client.host if socket.client else ""
-    if not _token_ok(socket.query_params, socket.headers, socket.cookies, client_host):
+    decision = _AUTHORITY.authorize_request(
+        headers=socket.headers,
+        cookies=socket.cookies,
+        query=socket.query_params,
+    )
+    if decision.allowed and decision.mechanism == "session_cookie":
+        origin = _normalized_origin(socket.headers.get("origin", ""))
+        expected_scheme = "https" if socket.url.scheme == "wss" else "http"
+        expected = f"{expected_scheme}://{socket.url.netloc}".rstrip("/")
+        if origin != expected and origin not in _EXPLICIT_CORS_ORIGINS:
+            decision = auth_mod.AuthDecision(
+                False,
+                "session_cookie",
+                "origin_required",
+                principal=decision.principal,
+            )
+    if not decision.allowed:
+        _record_auth_decision(
+            "websocket_handshake",
+            decision,
+            path="/ws",
+            method="WEBSOCKET",
+            remote_addr=client_host,
+        )
         await socket.close(code=1008)    # policy violation
         return
     await socket.accept()
@@ -3445,15 +3652,15 @@ async def ws(socket: WebSocket) -> None:
 
 
 if __name__ == "__main__":
-    from config import BIND_HOST, REMOTE_ACCESS, ACCESS_TOKEN
-    if instance_mod.existing_server_url(PORT, token=ACCESS_TOKEN):
+    from config import BIND_HOST, REMOTE_ACCESS
+    if instance_mod.existing_server_url(PORT):
         print(f"Alpecca is already awake at http://127.0.0.1:{PORT}/")
         print("Reusing the existing mind instance; not starting a second server.")
         sys.exit(0)
-    if REMOTE_ACCESS and not ACCESS_TOKEN:
-        print("WARNING: remote access is ON (ALPECCA_REMOTE=1) but no "
-              "shared app identity is configured.")
     print(f"Alpecca is waking up at http://{HOST}:{PORT}"
           + ("  (remote: binding 0.0.0.0)" if REMOTE_ACCESS else ""))
+    if REMOTE_ACCESS:
+        print("  Remote requests require protected authorization; local "
+              "bootstrap remains loopback-only.")
     print(f"  LLM online: {mind.llm.online}  (start Ollama for real replies)")
     uvicorn.run(app, host=BIND_HOST, port=PORT, log_level="warning")

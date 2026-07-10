@@ -6,8 +6,13 @@ REM ============================================================
 title Alpecca
 cd /d "%~dp0"
 
-REM --- shared settings (senses + cowork; model knobs used by the local brain) ---
-set ALPECCA_COMPUTER_USE=1
+REM --- safe capability defaults; set any of these to 1 before launch to opt in ---
+if not defined ALPECCA_COMPUTER_USE set "ALPECCA_COMPUTER_USE=0"
+if not defined ALPECCA_SIGHT set "ALPECCA_SIGHT=0"
+if not defined ALPECCA_FACE set "ALPECCA_FACE=0"
+if not defined ALPECCA_VOICE set "ALPECCA_VOICE=0"
+REM ALPECCA_APPS intentionally has no automatic allowlist. Set it explicitly
+REM before launch when Alpecca should be allowed to open named applications.
 REM Jason's architecture (2026-07-04): ONE always-warm cloud brain, local net.
 REM   chat + deep reflection + vision -> gemma4:cloud (his pick; ~2-4s replies)
 REM   fallback for ALL of it          -> qwen3.5:9b local (offline never silent)
@@ -92,9 +97,9 @@ start "Alpecca - mind" cmd /k python scripts\run_full.py
 REM --- her CPU figure, if her art is in place (cheap, safe alongside everything) ---
 if exist "data\avatar\her.psd" start "Alpecca - figure" cmd /k python scripts\run_rigger.py
 
-echo Opening her home...
-timeout /t 5 >nul
-start "" http://127.0.0.1:8765
+echo Her authenticated local window will open after the server is ready...
+REM scripts\run_full.py requests a one-time local bootstrap URL from the loaded
+REM server module. This launcher never puts credentials in a browser URL.
 
 echo.
 echo  =====================================================

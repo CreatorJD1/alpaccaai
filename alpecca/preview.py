@@ -218,13 +218,12 @@ def find_cloudflared() -> str | None:
 def link_is_gated(token: str | None = None) -> bool:
     """Whether a public link would actually be protected.
 
-    With a blank ``ALPECCA_ACCESS_TOKEN`` the server's auth gate is fully open
-    (``server.py`` ``_token_ok``: no token -> every request passes), so the random
-    subdomain is the *only* secret -- which is not access control. Read live from
-    ``config`` so a token set just before launch is honored.
+    Authorization is now owned by ``alpecca.auth`` and remains enabled even
+    when the legacy public identity value is blank. The argument remains for
+    caller compatibility; it is never inspected or placed in a URL.
     """
-    tok = config.ACCESS_TOKEN if token is None else token
-    return bool(tok)
+    del token
+    return True
 
 
 def with_access_token(url: str, token: str | None = None) -> str:
@@ -290,11 +289,10 @@ def named_tunnel_ready(home: Path = HOME) -> dict:
 
 _INSECURE_WARNING = (
     "\n" + "!" * 60 + "\n"
-    "  WARNING: this public link is UNAUTHENTICATED.\n"
-    "  ALPECCA_ACCESS_TOKEN is blank, so anyone with the URL can reach\n"
-    "  her memories, journal, live state -- and, if ALPECCA_FILES is on,\n"
-    "  enumerate this machine's files. Set a token before sharing:\n"
-    "      setx ALPECCA_ACCESS_TOKEN \"<a-long-secret>\"   (then restart her)\n"
+    "  WARNING: this link requires a protected Alpecca authorization session.\n"
+    "  The legacy public identity is not a bearer credential and is never\n"
+    "  placed in the URL. Use the local bootstrap or an explicit deployment\n"
+    "  authorization secret for a configured remote client.\n"
     + "!" * 60 + "\n"
 )
 

@@ -1069,7 +1069,6 @@ hud.innerHTML = `
     </div>
     <button id="stageQaToggle" type="button">Stage QA</button>
     <button id="cylinderQaToggle" type="button">Cylinder QA</button>
-    <input id="alpeccaToken" type="hidden" aria-hidden="true" />
     <label class="token-row">
       <span>Backend</span>
       <input id="alpeccaBackend" type="url" placeholder="live app URL" autocomplete="off" spellcheck="false" aria-label="Alpecca backend URL" />
@@ -1116,7 +1115,6 @@ const alpeccaSourceArtImage = hud.querySelector<HTMLDivElement>("#alpeccaSourceA
 const chatClose = hud.querySelector<HTMLButtonElement>("#chatClose")!;
 const alpeccaAiStatusEl = hud.querySelector<HTMLSpanElement>("#alpeccaAiStatus")!;
 const alpeccaSpriteStatusEl = hud.querySelector<HTMLSpanElement>("#alpeccaSpriteStatus")!;
-const alpeccaTokenInput = hud.querySelector<HTMLInputElement>("#alpeccaToken")!;
 const alpeccaBackendInput = hud.querySelector<HTMLInputElement>("#alpeccaBackend")!;
 const foundEl = hud.querySelector<HTMLSpanElement>("#found")!;
 const roomPanel = hud.querySelector<HTMLDivElement>("#roomPanel")!;
@@ -1178,20 +1176,20 @@ function isPrototypeMode() {
   return currentEnvironmentMode === "prototype";
 }
 
-function tokenFromUrl() {
-  try {
-    return new URL(window.location.href).searchParams.get("token")?.trim() || "";
-  } catch {
-    return "";
-  }
-}
+// Public identity metadata only. Backend authorization comes from an HttpOnly
+// session cookie and must never treat this stable value as a bearer credential.
+const alpeccaPublicIdentity = "wLbIoOwoOJHQR4QQ_goptIa2";
+const alpeccaLegacyAuthorizationQueryParams = ["token", "access_token", "alpeccaToken", "alpecca_token"] as const;
 
-const alpeccaBuiltInAccessToken = "wLbIoOwoOJHQR4QQ_goptIa2";
-const launchToken = tokenFromUrl();
-const storedAlpeccaToken = localStorage.getItem("alpeccaAccessToken") || "";
-const activeAlpeccaToken = launchToken || storedAlpeccaToken || alpeccaBuiltInAccessToken;
-if (activeAlpeccaToken) localStorage.setItem("alpeccaAccessToken", activeAlpeccaToken);
-alpeccaTokenInput.value = activeAlpeccaToken;
+try {
+  const launchUrl = new URL(window.location.href);
+  const hadLegacyAuthorization = alpeccaLegacyAuthorizationQueryParams.some((name) => launchUrl.searchParams.has(name));
+  for (const name of alpeccaLegacyAuthorizationQueryParams) launchUrl.searchParams.delete(name);
+  if (hadLegacyAuthorization) window.history.replaceState(window.history.state, "", launchUrl.toString());
+} catch {
+  // A malformed launch URL is handled by the normal backend URL fallback.
+}
+localStorage.removeItem("alpeccaAccessToken");
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color("#aebfc4");
@@ -1623,9 +1621,9 @@ function ensureAlpeccaVrmEmbodiment(): VrmEmbodiment {
     parent: alpecca.group,
     targetHeight: alpeccaStandingVisibleHeight * alpeccaStandingPresentationScale,
     groundClearance: alpeccaGroundClearance,
-    manifestUrl: () => alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/vrm/manifest`),
-    modelUrl: (file: string) => alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/vrm/model/${encodeURIComponent(file)}`),
-    animationUrl: (file: string) => alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/assets/vrma/${encodeURIComponent(file)}`),
+    manifestUrl: () => alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/vrm/manifest`),
+    modelUrl: (file: string) => alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/vrm/model/${encodeURIComponent(file)}`),
+    animationUrl: (file: string) => alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/assets/vrma/${encodeURIComponent(file)}`),
     onStatus: (status, detail, progress) => {
       alpeccaVrmStatusDetail =
         status === "loading"
@@ -3448,7 +3446,7 @@ function sendAlpeccaPresenceContext(force = false) {
   const snapshot = alpeccaSurfaceContextSnapshot();
   if (!force && snapshot.key === alpeccaLastPresenceContextKey) return;
   alpeccaLastPresenceContextKey = snapshot.key;
-  void fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/observe`), {
+  void alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/observe`), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -3638,7 +3636,7 @@ function writeAlpeccaSelfTrace(note: string) {
 function sendAlpeccaRecursiveMemory(text: string, waitForReply = true) {
   if (alpeccaAiStatus !== "live" || alpeccaAiAwaitingReply) return;
   alpeccaLiveAttentionTimer = Math.max(alpeccaLiveAttentionTimer, 1.6);
-  void fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/observe`), {
+  void alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/observe`), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -3658,7 +3656,7 @@ function sendAlpeccaRecursiveMemory(text: string, waitForReply = true) {
 async function recordBackendImprovementEvidence(layer: AlpeccaAgiLayer, point: AlpeccaExplorePoint, result: string, online: boolean) {
   if (alpeccaAiStatus === "offline") return;
   try {
-    const proposalResponse = await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/proposals`), {
+    const proposalResponse = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/proposals`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -3674,7 +3672,7 @@ async function recordBackendImprovementEvidence(layer: AlpeccaAgiLayer, point: A
     const proposalData = await proposalResponse.json();
     const proposalId = Number(proposalData?.proposal?.id || 0);
     if (!proposalId) return;
-    await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/proposals/${proposalId}/evaluations`), {
+    await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/proposals/${proposalId}/evaluations`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -3718,32 +3716,33 @@ function recordAlpeccaCentralAppReturn() {
   sendAlpeccaRecursiveMemory(alpeccaAppMemory.note, true);
 }
 
-function alpeccaToken() {
-  const token = alpeccaTokenInput.value.trim() || alpeccaBuiltInAccessToken;
-  if (token && localStorage.getItem("alpeccaAccessToken") !== token) {
-    localStorage.setItem("alpeccaAccessToken", token);
+function alpeccaUrlWithParams(url: string, extraParams: Record<string, string> = {}) {
+  if (!url) return "";
+  const parsed = new URL(url, window.location.href);
+  for (const name of alpeccaLegacyAuthorizationQueryParams) parsed.searchParams.delete(name);
+  for (const [key, value] of Object.entries(extraParams)) {
+    if (alpeccaLegacyAuthorizationQueryParams.some((name) => name === key)) continue;
+    if (value) parsed.searchParams.set(key, value);
   }
-  return token;
+  return parsed.toString();
 }
 
-function alpeccaUrlWithToken(url: string, extraParams: Record<string, string> = {}) {
-  if (!url) return "";
-  const token = alpeccaToken();
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(extraParams)) {
-    if (value) params.set(key, value);
-  }
-  if (token) params.set("token", token);
-  const query = params.toString();
-  if (!query) return url;
-  const joiner = url.includes("?") ? "&" : "?";
-  return `${url}${joiner}${query}`;
+function alpeccaBackendFetch(url: string, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  // Informational only. The backend must authorize the HttpOnly session cookie,
+  // never this public identity header.
+  headers.set("X-Alpecca-Identity", alpeccaPublicIdentity);
+  return fetch(url, {
+    ...init,
+    credentials: "include",
+    headers,
+  });
 }
 
 function alpeccaCoreAppUrl(path: string, embed = false) {
   if (!alpeccaAiBaseUrl) return "";
   const safePath = path.startsWith("/") ? path : `/${path}`;
-  return alpeccaUrlWithToken(`${alpeccaAiBaseUrl}${safePath}`, embed ? { embed: "1" } : {});
+  return alpeccaUrlWithParams(`${alpeccaAiBaseUrl}${safePath}`, embed ? { embed: "1" } : {});
 }
 
 function setAlpeccaCoreAppNotice(text: string) {
@@ -3891,8 +3890,7 @@ function scheduleAlpeccaAiRetry(delay = 5) {
 async function probeAlpeccaAiServer() {
   if (!alpeccaAiBaseUrl) return false;
   try {
-    await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/state`), {
-      mode: "no-cors",
+    await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/state`), {
       cache: "no-store",
     });
     return true;
@@ -3927,7 +3925,7 @@ function connectAlpeccaAi() {
     }
 
     try {
-      alpeccaSocket = new WebSocket(alpeccaUrlWithToken(alpeccaAiWsBaseUrl));
+      alpeccaSocket = new WebSocket(alpeccaUrlWithParams(alpeccaAiWsBaseUrl));
     } catch {
       setAlpeccaAiStatus("offline", "offline");
       scheduleAlpeccaAiRetry(5);
@@ -3956,8 +3954,8 @@ function connectAlpeccaAi() {
       alpeccaAiPendingPlayerRequestId = "";
       alpeccaAiLastPlayerMessage = "";
       if (event.code === 1008 || (!opened && alpeccaAiServerReachable)) {
-        setAlpeccaAiStatus("token", "token");
-        showMessage("Alpecca connection mismatch. Restart the backend so the shared app identity is loaded.", 5);
+        setAlpeccaAiStatus("token", "session");
+        showMessage("Alpecca needs an authorized backend session. Sign in through the live app, then reconnect.", 5);
       } else {
         setAlpeccaAiStatus("offline", "offline");
         scheduleAlpeccaAiRetry(5);
@@ -4213,18 +4211,14 @@ async function sendAlpeccaChat(text: string) {
     speaker: "guest",
     request_id: requestId,
   };
-  const inboundUrl = alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/channel/inbound`);
+  const inboundUrl = alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/channel/inbound`);
   if (alpeccaAiBaseUrl && inboundUrl) {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
-    const sharedToken = alpeccaToken();
-    if (sharedToken) {
-      headers["X-Alpecca-Token"] = sharedToken;
-    }
     try {
       const controller = new AbortController();
       const timeoutMs = ALPECCA_AI_CHANNEL_INBOUND_TIMEOUT_MS;
       const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-      const response = await fetch(inboundUrl, {
+      const response = await alpeccaBackendFetch(inboundUrl, {
         method: "POST",
         headers,
         body: JSON.stringify(inboundPrompt),
@@ -4254,15 +4248,15 @@ async function sendAlpeccaChat(text: string) {
   }
 
   if (alpeccaAiStatus === "token") {
-    const tokenLine = "Live Alpecca rejected the shared app identity. Restart the backend so House HQ and the main app use the same instance.";
+    const sessionLine = "Live Alpecca needs an authorized session. Open the backend app to sign in, then reconnect House HQ.";
     alpeccaAiAwaitingReply = false;
     alpeccaAiReplyStartedAt = 0;
     alpeccaAiSlowReplyNoticeShown = false;
     alpeccaAiPendingPlayerRequestId = "";
     alpeccaAiLastPlayerMessage = "";
-    appendAlpeccaLog("System", tokenLine);
-    showAlpeccaProfileLine(tokenLine, "listening");
-    showMessage("Alpecca app connection mismatch.", 4.5);
+    appendAlpeccaLog("System", sessionLine);
+    showAlpeccaProfileLine(sessionLine, "listening");
+    showMessage("Alpecca backend session required.", 4.5);
     return;
   }
 
@@ -4301,7 +4295,7 @@ async function askAlpeccaAboutCurrentRoom() {
   setAlpeccaActivity(`Alpecca is reading ${room.name}.`, "observe");
   showAlpeccaProfileLine(`Asking ${room.name}: ${question}`, "thinking", room.id === "entry" ? "home" : "");
   try {
-    const response = await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/rooms/${encodeURIComponent(room.id)}/review`), {
+    const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/rooms/${encodeURIComponent(room.id)}/review`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -4341,7 +4335,7 @@ async function runAlpeccaLivingLoop() {
   setAlpeccaActivity("Alpecca is activating her world-learning loop.", "observe", 4);
   showAlpeccaProfileLine("Listening to the room, checking creator context, and choosing one grounded question...", "thinking", "home");
   try {
-    const response = await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/world-tick`), {
+    const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/world-tick`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason: "house_hq_hot_tab", room: room.id }),
@@ -4388,7 +4382,7 @@ async function runAlpeccaQuietWorldTick(reason = "house_hq_autonomous_cadence") 
   const room = currentOfficeRoom();
   alpeccaWorldTickInFlight = true;
   try {
-    const response = await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/world-tick`), {
+    const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/world-tick`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason, room: room.id, quiet: true }),
@@ -4457,7 +4451,7 @@ async function pollAlpeccaAutonomyState() {
   if (alpeccaAutonomyPollInFlight || alpeccaAiStatus !== "live" || !alpeccaAiBaseUrl) return;
   alpeccaAutonomyPollInFlight = true;
   try {
-    const response = await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/autonomy-state`));
+    const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/autonomy-state`));
     if (!response.ok) throw new Error(`autonomy-state ${response.status}`);
     const data = (await response.json()) as AlpeccaAutonomyState;
     const key = [
@@ -4506,7 +4500,7 @@ async function reviewAlpeccaReplies() {
   setAlpeccaActivity("Alpecca is reviewing recent replies.", "think", 3.4);
   showAlpeccaProfileLine("Reviewing recent replies for grounding...", "thinking", "memory");
   try {
-    const response = await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/chat/review`), {
+    const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/chat/review`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ limit: 8 }),
@@ -4566,7 +4560,7 @@ async function runAlpeccaDoctorCheck() {
   setAlpeccaActivity("Alpecca is checking her core systems.", "think", 3.4);
   showAlpeccaProfileLine("Checking House HQ, app core, voice, model, and Mindscape...", "thinking", "home");
   try {
-    const response = await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/system/doctor`));
+    const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/system/doctor`));
     if (!response.ok) throw new Error(`doctor ${response.status}`);
     const data = await response.json();
     const line = summarizeDoctorReport(data);
@@ -4592,7 +4586,7 @@ async function runAlpeccaRuntimeSelfReview() {
   setAlpeccaActivity("Alpecca is reviewing her runtime and behavior evidence.", "think", 3.8);
   showAlpeccaProfileLine("Reviewing runtime health and behavior evidence...", "thinking", "self");
   try {
-    const response = await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/self-review`), {
+    const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/self-review`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     });
@@ -4600,7 +4594,7 @@ async function runAlpeccaRuntimeSelfReview() {
     const data = await response.json();
     let behaviorData: any = null;
     try {
-      const behaviorResponse = await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/behavior-review`), {
+      const behaviorResponse = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/behavior-review`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
@@ -4664,13 +4658,13 @@ async function inspectAlpeccaImprovementQueue() {
   setAlpeccaActivity("Alpecca is checking her improvement queue.", "think", 3.6);
   showAlpeccaProfileLine("Reviewing noticed issues, evidence, and next approvals...", "thinking", "studio");
   try {
-    const compactResponse = await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/proposals/compact`), {
+    const compactResponse = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/proposals/compact`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     });
     const response = compactResponse.ok
       ? compactResponse
-      : await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/proposals`));
+      : await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/proposals`));
     if (!response.ok) throw new Error(`proposal queue ${response.status}`);
     const data = await response.json();
     const line = summarizeAlpeccaImprovementQueue(data);
@@ -4833,7 +4827,7 @@ function renderWorkshopProposals(data: any) {
 
 async function loadAlpeccaWorkshop() {
   try {
-    const response = await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/proposals`));
+    const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/proposals`));
     if (!response.ok) throw new Error(`proposal queue ${response.status}`);
     const data = await response.json();
     renderWorkshopProposals(data);
@@ -4882,7 +4876,7 @@ async function workshopProposalDecision(proposalId: number, status: string) {
   workshopBusy = true;
   setWorkshopBusy(true);
   try {
-    const response = await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/proposals/${proposalId}`), {
+    const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/proposals/${proposalId}`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status, result, approved_by_user: approvedByUser }),
@@ -4923,7 +4917,7 @@ async function workshopCompact() {
   workshopBusy = true;
   setWorkshopBusy(true);
   try {
-    const response = await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/proposals/compact`), {
+    const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/proposals/compact`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     });
@@ -4949,7 +4943,7 @@ async function workshopExportHandoff() {
   setWorkshopBusy(true);
   workshopSummary.textContent = "Preparing handoff...";
   try {
-    const response = await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/proposals/handoff?limit=8`));
+    const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/proposals/handoff?limit=8`));
     if (!response.ok) throw new Error(`handoff ${response.status}`);
     const data = await response.json();
     const markdown = String(data?.markdown || "");
@@ -4981,9 +4975,9 @@ function alpeccaFeatureToolUrl(feature: AlpeccaSourceFeature, room: OfficeRoom) 
   if (feature.id === "memory") {
     const memory = environmentMemoryForRoom(room.id);
     const query = memory.lastQuestion || memory.lastSeen || `${room.name} ${room.purpose}`;
-    return alpeccaUrlWithToken(`${base}?q=${encodeURIComponent(query)}&limit=3`);
+    return alpeccaUrlWithParams(`${base}?q=${encodeURIComponent(query)}&limit=3`);
   }
-  return alpeccaUrlWithToken(base);
+  return alpeccaUrlWithParams(base);
 }
 
 function summarizeAlpeccaToolResult(feature: AlpeccaSourceFeature, data: any) {
@@ -5028,7 +5022,7 @@ async function runAlpeccaFeatureToolBridge(featureId: string, room: OfficeRoom, 
   if (!feature?.toolPath || alpeccaAiStatus !== "live") return null;
   if (!visible && alpeccaPlayerChatQuietTimer > 0) return null;
   try {
-    const response = await fetch(alpeccaFeatureToolUrl(feature, room));
+    const response = await alpeccaBackendFetch(alpeccaFeatureToolUrl(feature, room));
     if (!response.ok) throw new Error(`tool ${feature.id} ${response.status}`);
     const data = await response.json();
     const summary = summarizeAlpeccaToolResult(feature, data);
@@ -5039,7 +5033,7 @@ async function runAlpeccaFeatureToolBridge(featureId: string, room: OfficeRoom, 
       showAlpeccaProfileLine(summary, "thinking", feature.id);
       showMessage(summary, 4.4);
     }
-    void fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/observe`), {
+    void alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/observe`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -5091,7 +5085,7 @@ function runAlpeccaFeature(featureId: string) {
 
   if (alpeccaAiStatus === "live" && alpeccaSocket?.readyState === WebSocket.OPEN) {
     showMessage(`${feature.room}: recording ${feature.label.toLowerCase()} as house context.`, 3.2);
-    void fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/observe`), {
+    void alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/observe`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -5111,7 +5105,7 @@ function runAlpeccaFeature(featureId: string) {
   }
 
   if (alpeccaAiStatus === "token") {
-    showMessage("Alpecca source rejected the shared app identity. Restart the backend, then try this terminal again.", 5);
+    showMessage("Alpecca source needs an authorized backend session. Sign in, then try this terminal again.", 5);
     return;
   }
 
@@ -7509,7 +7503,7 @@ function recordAlpeccaPerception(label: string, roomId: string, source = "percep
   if (alpeccaAiStatus === "live" && alpeccaPlayerChatQuietTimer <= 0 && !alpeccaAiAwaitingReply && alpeccaPerceptionSendTimer <= 0) {
     alpeccaPerceptionSendTimer = 18;
     alpeccaLiveAttentionTimer = Math.max(alpeccaLiveAttentionTimer, 1.2);
-    void fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/cognition/observe`), {
+    void alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/observe`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -9370,7 +9364,7 @@ async function playAlpeccaVoice(text: string, preview = "") {
   try {
     const payload: { text: string; preview?: string; exact_text: boolean } = { text: clean, exact_text: true };
     if (preview) payload.preview = preview;
-    const response = await fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/tts`), {
+    const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/tts`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -12258,7 +12252,7 @@ alpeccaChat.addEventListener("click", (event) => {
       : "This is my current Alpecca voice, using my original voice modulation.";
     setAlpeccaProfileMode("talking", "voice");
     showAlpeccaProfileLine("Preparing Alpecca's original voice...", "thinking", "voice");
-    fetch(alpeccaUrlWithToken(`${alpeccaAiBaseUrl}/tts/warmup`), { method: "POST" })
+    alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/tts/warmup`), { method: "POST" })
       .catch(() => undefined)
       .finally(() => {
         showAlpeccaProfileLine("Playing Alpecca's current voice.", "talking", "voice");

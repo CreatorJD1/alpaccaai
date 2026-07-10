@@ -14,10 +14,9 @@ The same server keeps running underneath, so this is also how she's reached from
   - INTERNET (tunnel):  set ALPECCA_TUNNEL=cloudflare (or ngrok) -> a public URL
                         is opened through a tunnel binary.
 
-Remote and tunnel access are ALWAYS gated by a secret token. If you didn't set
-ALPECCA_ACCESS_TOKEN, Alpecca keeps one stable local token in data/access_token.txt
-and reuses it for future launches. Her senses, memory and brain never leave this
-machine -- only the chat travels.
+The native window asks the loaded server module for a one-time loopback bootstrap
+after startup. The launcher neither handles the protected authorization secret
+nor places it in URLs or browser-visible storage.
 
 Run:
     python app.py
@@ -32,45 +31,76 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-# Senses on by default -- launching the desktop app is the owner saying "yes,
-# all of it" (mirrors scripts/run_full.py). Anything already in your env wins,
-# and config.py reads every ALPECCA_* var at import time, so set these FIRST.
-os.environ.setdefault("ALPECCA_SIGHT", "1")    # periodic screen glimpses
-os.environ.setdefault("ALPECCA_FACE", "1")     # webcam expression sense
-os.environ.setdefault("ALPECCA_VOICE", "1")    # mic voice-tone sense
-os.environ.setdefault(
-    "ALPECCA_APPS",
-    "notepad=notepad.exe;calculator=calc.exe;paint=mspaint.exe;files=explorer.exe",
-)
+# Launch is not consent for ambient capture or device control. Explicit caller
+# values still win because config.py reads these variables after setdefault.
+os.environ.setdefault("ALPECCA_COMPUTER_USE", "0")
+os.environ.setdefault("ALPECCA_SIGHT", "0")    # periodic screen glimpses
+os.environ.setdefault("ALPECCA_FACE", "0")     # webcam expression sense
+os.environ.setdefault("ALPECCA_VOICE", "0")    # mic voice-tone sense
+os.environ.setdefault("ALPECCA_APPS", "")      # explicit app allowlist only
 
 import config  # noqa: E402  (after the env defaults above)
 from alpecca import instance as instance_mod  # noqa: E402
 from alpecca import preview as preview_mod  # noqa: E402
 
 _tunnel_proc = None
+_server_module = None
+_server_module_ready = threading.Event()
 
 
-def _ensure_token() -> None:
-    """Remote/tunnel launches must be behind Alpecca's persistent token. Must run
-    BEFORE server is imported, since server.py binds the token at import time."""
-    remote = config.REMOTE_ACCESS or config.TUNNEL not in ("", "off", "none")
-    if remote:
-        os.environ["ALPECCA_ACCESS_TOKEN"] = config.ACCESS_TOKEN
-        print("[app] remote access is on -- using Alpecca's persistent access token.")
+def _credential_free_url(url: str) -> str:
+    """Strip legacy credential parameters before displaying a public URL."""
+    parsed = urllib.parse.urlsplit(url)
+    query = [
+        (key, value)
+        for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        if key.casefold() not in {"token", "access_token", "authorization", "bootstrap"}
+    ]
+    return urllib.parse.urlunsplit(
+        parsed._replace(query=urllib.parse.urlencode(query))
+    )
 
 
 def _serve() -> None:
     """Run the FastAPI server in this thread (bound per config -- localhost when
     private, 0.0.0.0 when ALPECCA_REMOTE=1)."""
+    global _server_module
     import uvicorn
-    from server import app  # imported here so the token env is already set
-    uvicorn.run(app, host=config.BIND_HOST, port=config.PORT, log_level="warning")
+    import server as server_mod
+    _server_module = server_mod
+    _server_module_ready.set()
+    uvicorn.run(server_mod.app, host=config.BIND_HOST, port=config.PORT,
+                log_level="warning")
+
+
+def _issue_local_bootstrap_url(path: str = "/", timeout: float = 5.0) -> str | None:
+    """Bounded wait for the server module's one-time loopback bootstrap API."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() <= deadline:
+        server_mod = _server_module
+        if server_mod is not None:
+            issue = getattr(server_mod, "issue_local_bootstrap_url", None)
+            if callable(issue):
+                try:
+                    url = issue(path)
+                except Exception:
+                    url = None
+                if isinstance(url, str) and url.strip():
+                    return url.strip()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        _server_module_ready.wait(timeout=min(0.05, remaining))
+        if _server_module_ready.is_set():
+            time.sleep(min(0.05, remaining))
+    return None
 
 
 def _wait_until_up(url: str, timeout: float = 25.0) -> bool:
@@ -100,7 +130,7 @@ def _start_tunnel(kind: str, port: int) -> None:
                   "      python scripts\\preview.py", file=sys.stderr)
             return
         _tunnel_proc = proc
-        print(f"[app] Cloudflare preview: {preview_mod.with_access_token(url)}")
+        print(f"[app] Cloudflare preview: {_credential_free_url(url)}")
         print("[app] Reused the existing tunnel." if proc is None else "[app] Opened one tunnel to the existing Alpecca server.")
         return
     elif kind == "ngrok":
@@ -117,7 +147,7 @@ def _start_tunnel(kind: str, port: int) -> None:
             # Mirror the cloudflare path: persist the URL so tools can discover
             # it, and print the clean shareable link.
             preview_mod.write_state(url, port, provider="ngrok")
-            print(f"[app] ngrok preview: {preview_mod.with_access_token(url)}")
+            print(f"[app] ngrok preview: {_credential_free_url(url)}")
         else:
             print("[app] ngrok is running, but its public URL couldn't be read from "
                   "its inspection API -- check the ngrok window for the https link.",
@@ -152,19 +182,23 @@ def _ngrok_public_url(timeout: float = 15.0) -> str | None:
 
 
 def main() -> None:
-    _ensure_token()
     local_url = f"http://127.0.0.1:{config.PORT}/"
-    existing = instance_mod.existing_server_url(config.PORT, token=config.ACCESS_TOKEN)
+    existing = instance_mod.existing_server_url(config.PORT)
     if existing:
         print(f"[app] Alpecca is already awake at {existing}; reusing that mind.")
+        print("[app] Use the already-open authenticated surface.")
+        return
     else:
         threading.Thread(target=_serve, daemon=True).start()
         if not _wait_until_up(local_url):
             print("[app] the server didn't come up in time -- check the errors above.",
                   file=sys.stderr)
-    # The window authenticates itself with the token (when one is set) so the
-    # local webview isn't blocked by its own gate.
-    window_url = local_url + (f"?token={config.ACCESS_TOKEN}" if config.ACCESS_TOKEN else "")
+            return
+    window_url = _issue_local_bootstrap_url()
+    if not window_url:
+        print("[app] local bootstrap unavailable; no window was opened.",
+              file=sys.stderr)
+        return
 
     if config.TUNNEL not in ("", "off", "none"):
         _start_tunnel(config.TUNNEL, config.PORT)

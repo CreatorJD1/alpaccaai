@@ -2826,6 +2826,33 @@ def test_cognition_chat_review_route_creates_grounding_proposal():
     assert "grounding" in d["proposal"]["action"].lower()
 
 
+def _protected_auth_headers(server):
+    return {
+        server.auth_mod.AUTHORIZATION_HEADER: f"Bearer {server._AUTH_SECRET}",
+    }
+
+
+def test_ws_rejects_legacy_query_identity_and_accepts_protected_bearer():
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+    import config
+    import pytest
+    import server
+
+    client = TestClient(server.app)
+    with pytest.raises(WebSocketDisconnect) as denied:
+        with client.websocket_connect(
+            f"/ws?token={config.PUBLIC_IDENTITY}"
+        ):
+            pass
+    assert denied.value.code == 1008
+
+    with client.websocket_connect(
+        "/ws", headers=_protected_auth_headers(server)
+    ) as ws:
+        assert ws.receive_json()["type"] == "state"
+
+
 def test_ws_background_sources_record_observation_without_reply(monkeypatch):
     from fastapi.testclient import TestClient
     import server
@@ -2839,9 +2866,9 @@ def test_ws_background_sources_record_observation_without_reply(monkeypatch):
 
     monkeypatch.setattr(server.mind, "chat", fake_chat)
     marker = f"ws-background-marker-{time.time_ns()}"
-    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
-
-    with TestClient(server.app).websocket_connect(ws_path) as ws:
+    with TestClient(server.app).websocket_connect(
+        "/ws", headers=_protected_auth_headers(server)
+    ) as ws:
         first = ws.receive_json()
         assert first["type"] == "state"
         ws.send_json({
@@ -2885,9 +2912,9 @@ def test_ws_house_chat_source_remains_direct_reply(monkeypatch):
         }
 
     monkeypatch.setattr(server.mind, "chat", fake_chat)
-    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
-
-    with TestClient(server.app).websocket_connect(ws_path) as ws:
+    with TestClient(server.app).websocket_connect(
+        "/ws", headers=_protected_auth_headers(server)
+    ) as ws:
         first = ws.receive_json()
         assert first["type"] == "state"
         ws.send_json({
@@ -2930,10 +2957,11 @@ def test_ws_house_chat_context_reaches_mind(monkeypatch):
         }
 
     monkeypatch.setattr(server.mind, "chat", fake_chat)
-    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
     context = "Game context: player is in Observatory. Room purpose: media review."
 
-    with TestClient(server.app).websocket_connect(ws_path) as ws:
+    with TestClient(server.app).websocket_connect(
+        "/ws", headers=_protected_auth_headers(server)
+    ) as ws:
         first = ws.receive_json()
         assert first["type"] == "state"
         ws.send_json({
@@ -2975,9 +3003,9 @@ def test_ws_house_chat_timeout_still_returns_reply(monkeypatch):
 
     monkeypatch.setattr(server, "WS_CHAT_REPLY_TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr(server.mind, "chat", slow_chat)
-    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
-
-    with TestClient(server.app).websocket_connect(ws_path) as ws:
+    with TestClient(server.app).websocket_connect(
+        "/ws", headers=_protected_auth_headers(server)
+    ) as ws:
         first = ws.receive_json()
         assert first["type"] == "state"
         ws.send_json({
@@ -3017,9 +3045,9 @@ def test_ws_house_chat_echo_guard_replaces_repeated_reply(monkeypatch):
         }
 
     monkeypatch.setattr(server.mind, "chat", echo_chat)
-    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
-
-    with TestClient(server.app).websocket_connect(ws_path) as ws:
+    with TestClient(server.app).websocket_connect(
+        "/ws", headers=_protected_auth_headers(server)
+    ) as ws:
         first = ws.receive_json()
         assert first["type"] == "state"
         ws.send_json({
@@ -5618,18 +5646,42 @@ def test_preview_ensure_prefers_configured_stable_public_url():
         assert preview.read_state(home=home)["provider"] == "cloudflare-named"
 
 
-def test_instance_probe_treats_token_gate_as_existing_server():
+def test_instance_probe_uses_public_healthz_without_credentials(monkeypatch):
     seen = []
-    orig = instance.http_status
-    try:
-        def fake_status(url, timeout=1.0):
-            seen.append(url)
-            return 401
-        instance.http_status = fake_status
-        assert instance.existing_server_url(8765, token="secret") == "http://127.0.0.1:8765"
-        assert "?token=secret" in seen[0]
-    finally:
-        instance.http_status = orig
+
+    class HealthResponse:
+        status = 200
+
+        def __init__(self, url):
+            self._url = url
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def geturl(self):
+            return self._url
+
+        def read(self, limit):
+            assert limit == instance.MAX_HEALTHZ_BYTES + 1
+            return json.dumps({
+                "service": instance.HEALTHZ_SERVICE,
+                "version": instance.HEALTHZ_VERSION,
+            }).encode("utf-8")
+
+    def fake_urlopen(request, timeout=1.0):
+        del timeout
+        seen.append(request.full_url)
+        return HealthResponse(request.full_url)
+
+    monkeypatch.setattr(instance.urllib.request, "urlopen", fake_urlopen)
+    assert instance.existing_server_url(
+        8765, token="public-identity-must-not-enter-url"
+    ) == "http://127.0.0.1:8765"
+    assert seen == ["http://127.0.0.1:8765/healthz"]
+    assert all("token=" not in url for url in seen)
 
 
 def test_run_full_checks_existing_instance_before_importing_server():
@@ -5699,38 +5751,88 @@ def test_preview_default_opener_treats_4xx_as_reachable_not_dead():
     finally:
         urllib.request.urlopen = orig
 
-def test_preview_link_is_gated_tracks_access_token():
-    # A blank token means the public link is wide open; a non-blank one gates it.
-    assert preview.link_is_gated("") is False
-    assert preview.link_is_gated("a-real-secret") is True
+def test_preview_reports_protected_auth_without_public_identity_token():
+    import config
+
+    # Authorization is always backed by alpecca.auth, never by public identity.
+    assert preview.link_is_gated() is True
+    assert preview.link_is_gated("") is True
+    assert preview.link_is_gated(config.PUBLIC_IDENTITY) is True
 
 
-def test_preview_with_access_token_keeps_share_links_authenticated():
+def test_preview_share_links_strip_legacy_token_queries():
+    import config
+
     url = "https://abc-def.trycloudflare.com/house-hq?v=1"
-    out = preview.with_access_token(url, "stable-secret")
+    out = preview.with_access_token(url, config.PUBLIC_IDENTITY)
     assert out == "https://abc-def.trycloudflare.com/house-hq?v=1"
-    assert preview.with_access_token(url + "&token=old-secret", "new-secret").endswith("?v=1")
+    assert preview.with_access_token(
+        url + f"&token={config.PUBLIC_IDENTITY}", config.PUBLIC_IDENTITY
+    ).endswith("?v=1")
     assert preview.with_access_token(url, "") == url
+    assert config.PUBLIC_IDENTITY not in out
 
 
-def test_config_has_persistent_access_token_file():
+def test_config_preserves_public_identity_without_plaintext_auth_secret():
     root = Path(__file__).resolve().parent.parent
     text = (root / "config.py").read_text(encoding="utf-8")
-    assert "ACCESS_TOKEN_FILE = HOME / \"access_token.txt\"" in text
-    assert "def _load_or_create_access_token" in text
-    assert "secrets.token_urlsafe(24)" in text
-    assert "ACCESS_TOKEN = _load_or_create_access_token()" in text
+    auth_text = (root / "alpecca" / "auth.py").read_text(encoding="utf-8")
+    assert 'DEFAULT_PUBLIC_IDENTITY = "wLbIoOwoOJHQR4QQ_goptIa2"' in text
+    assert "ACCESS_TOKEN = PUBLIC_IDENTITY" in text
+    assert "ACCESS_TOKEN_FILE" not in text
+    assert "access_token.txt" not in text
+    assert "_load_or_create_access_token" not in text
+    assert "CREDENTIAL_TARGET" in auth_text
+    assert "win32cred" in auth_text
+    assert ".write_text(" not in auth_text
 
 
-def test_auth_cookie_and_prompt_are_persistent_and_route_preserving():
-    root = Path(__file__).resolve().parent.parent
-    server_text = (root / "server.py").read_text(encoding="utf-8")
-    assert "max_age=60 * 60 * 24 * 365 * 5" in server_text
-    assert "alpecca_token" in server_text
-    assert "location=location.pathname+'?token='" not in server_text
-    app_text = (root / "app.py").read_text(encoding="utf-8")
-    assert "secrets.token_urlsafe" not in app_text
-    assert "persistent access token" in app_text
+def test_bootstrap_exchange_sets_one_use_signed_session_cookie():
+    from fastapi.testclient import TestClient
+    from urllib.parse import parse_qs, urlencode, urlsplit
+    import server
+
+    target = urlsplit(server.issue_local_bootstrap_url("/app"))
+    params = parse_qs(target.query)
+    exchange_query = urlencode({
+        "code": params["code"][0],
+        "next": params["next"][0],
+    })
+    client = TestClient(server.app, client=("127.0.0.1", 50000))
+    response = client.post(
+        f"/auth/bootstrap/exchange?{exchange_query}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/app"
+    cookie_header = response.headers["set-cookie"]
+    assert server.auth_mod.SESSION_COOKIE_NAME in cookie_header
+    assert "HttpOnly" in cookie_header
+    assert "SameSite=strict" in cookie_header
+    session = client.cookies.get(server.auth_mod.SESSION_COOKIE_NAME)
+    assert server._AUTHORITY.validate_session_cookie(session).allowed is True
+    assert client.get("/app").status_code == 200
+
+    replay = client.post(
+        f"/auth/bootstrap/exchange?{exchange_query}",
+        follow_redirects=False,
+    )
+    assert replay.status_code == 401
+
+
+def test_healthz_is_public_sparse_and_does_not_authenticate_other_routes():
+    from fastapi.testclient import TestClient
+    import server
+
+    client = TestClient(server.app)
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.json() == {
+        "service": "alpecca",
+        "version": 1,
+    }
+    assert client.get("/state").status_code == 401
 
 
 # --- File-room sandbox (virtual workstation) ---------------------------------
@@ -5815,9 +5917,9 @@ def test_ws_streaming_sends_tokens_then_authoritative_reply(monkeypatch):
 
     monkeypatch.setattr(server.mind, "chat", fake_chat)
     monkeypatch.setattr(server, "STREAM_CHAT", True)
-    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
-
-    with TestClient(server.app).websocket_connect(ws_path) as ws:
+    with TestClient(server.app).websocket_connect(
+        "/ws", headers=_protected_auth_headers(server)
+    ) as ws:
         first = ws.receive_json()
         assert first["type"] == "state"
         assert first["features"]["stream_chat"] is True
@@ -5841,9 +5943,9 @@ def test_ws_without_stream_optin_keeps_single_frame_flow(monkeypatch):
         return {"reply": "plain as ever"}
 
     monkeypatch.setattr(server.mind, "chat", fake_chat)
-    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
-
-    with TestClient(server.app).websocket_connect(ws_path) as ws:
+    with TestClient(server.app).websocket_connect(
+        "/ws", headers=_protected_auth_headers(server)
+    ) as ws:
         ws.receive_json()                        # greeting
         ws.send_json({"text": "hi", "request_id": "r-2"})
         frame = ws.receive_json()
@@ -5864,9 +5966,9 @@ def test_ws_stream_kill_switch_silences_token_frames(monkeypatch):
 
     monkeypatch.setattr(server.mind, "chat", fake_chat)
     monkeypatch.setattr(server, "STREAM_CHAT", False)
-    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
-
-    with TestClient(server.app).websocket_connect(ws_path) as ws:
+    with TestClient(server.app).websocket_connect(
+        "/ws", headers=_protected_auth_headers(server)
+    ) as ws:
         first = ws.receive_json()
         assert first["features"]["stream_chat"] is False
         ws.send_json({"text": "hi", "stream": True, "request_id": "r-3"})
@@ -5890,9 +5992,9 @@ def test_ws_stream_timeout_still_leaves_socket_usable(monkeypatch):
     monkeypatch.setattr(server.mind, "chat", slow_chat)
     monkeypatch.setattr(server, "STREAM_CHAT", True)
     monkeypatch.setattr(server, "WS_CHAT_REPLY_TIMEOUT_SECONDS", 0.15)
-    ws_path = "/ws" + (f"?token={server._TOKEN}" if server._TOKEN else "")
-
-    with TestClient(server.app).websocket_connect(ws_path) as ws:
+    with TestClient(server.app).websocket_connect(
+        "/ws", headers=_protected_auth_headers(server)
+    ) as ws:
         ws.receive_json()
         ws.send_json({"text": "hi", "stream": True, "request_id": "r-4"})
         frames = []
@@ -6188,16 +6290,9 @@ def test_voice_warmup_skips_kokoro_when_backend_forces_other_engine(monkeypatch)
 # desktop launcher, checks whether the packaged exe is built, sees the LAN
 # address other devices should dial, and mints the Discord bot invite. These
 # tests pin the contract for those routes. Note that /app is protected by the
-# SAME token middleware every other page already goes through -- the routes
-# themselves add no auth code, and these tests deliberately treat the lock as
-# an outside observer would: one client shows up with the token, one without.
-
-def _app_token_query():
-    """The same ?token= handshake every page uses. One visit with the token is
-    what sets her auth cookie -- that IS the password lock. When ACCESS_TOKEN
-    is empty (pure local mode) the lock is off and the query stays empty."""
-    import config
-    return f"?token={config.ACCESS_TOKEN}" if config.ACCESS_TOKEN else ""
+# same authorization middleware as every other protected page. Public identity
+# is intentionally insufficient; callers use a protected bearer or a signed
+# session minted by the loopback-only bootstrap exchange.
 
 
 def test_app_site_serves_html_and_names_alpecca():
@@ -6205,31 +6300,28 @@ def test_app_site_serves_html_and_names_alpecca():
     import server
 
     client = TestClient(server.app)
-    r = client.get("/app" + _app_token_query())
+    r = client.get("/app", headers=_protected_auth_headers(server))
     assert r.status_code == 200
     assert "text/html" in r.headers.get("content-type", "")
     assert "Alpecca" in r.text
 
 
-def test_app_site_is_locked_without_token():
+def test_app_site_rejects_anonymous_and_public_identity_without_testclient_bypass():
     from fastapi.testclient import TestClient
     import config
     import server
 
-    if not config.ACCESS_TOKEN:
-        # Lock is off in this environment -- there is nothing to guard, and
-        # failing here would punish local-only setups. Bow out gracefully.
-        return
-    # Two facts about the auth gate's DOCUMENTED design (never change it):
-    # (1) the TestClient host is whitelisted so the suite runs tokenless --
-    # meaning NO TestClient request can exercise the lock; (2) real remote
-    # strangers are judged by _token_ok. So the honest test targets the
-    # guard primitive itself, as a real remote caller would hit it.
-    assert server._token_ok({}, {}, {}, client_host="203.0.113.7") is False
-    assert server._token_ok({"token": config.ACCESS_TOKEN}, {}, {},
-                            client_host="203.0.113.7") is True
-    assert server._token_ok({}, {"X-Alpecca-Token": config.ACCESS_TOKEN}, {},
-                            client_host="203.0.113.7") is True
+    client = TestClient(server.app)
+    assert client.get("/app").status_code == 401
+    assert client.get(
+        "/app", params={"token": config.PUBLIC_IDENTITY}
+    ).status_code == 401
+    assert client.get(
+        "/app", headers={"X-Alpecca-Token": config.PUBLIC_IDENTITY}
+    ).status_code == 401
+    assert client.get(
+        "/app", headers=_protected_auth_headers(server)
+    ).status_code == 200
 
 
 def test_app_meta_reports_suite_readiness():
@@ -6237,7 +6329,7 @@ def test_app_meta_reports_suite_readiness():
     import server
 
     client = TestClient(server.app)
-    r = client.get("/app/meta" + _app_token_query())
+    r = client.get("/app/meta", headers=_protected_auth_headers(server))
     assert r.status_code == 200
     d = r.json()
     # The hub page polls this to light up its status badges, so the shapes
@@ -6258,8 +6350,11 @@ def test_discord_invite_redirects_to_oauth_with_derived_client_id(monkeypatch):
     # and build the whole invite URL without asking Discord anything.
     monkeypatch.setenv("DISCORD_BOT_TOKEN", "MTUyMjMwNzE1NTI1NDgzNzI3OA.x.y")
     client = TestClient(server.app)
-    r = client.get("/app/discord/invite" + _app_token_query(),
-                   follow_redirects=False)
+    r = client.get(
+        "/app/discord/invite",
+        headers=_protected_auth_headers(server),
+        follow_redirects=False,
+    )
     assert r.status_code in (302, 307)
     location = r.headers.get("location", "")
     assert "discord.com/oauth2/authorize" in location
@@ -6274,7 +6369,10 @@ def test_launcher_zip_downloads_or_admits_it_is_missing():
     import server
 
     client = TestClient(server.app)
-    r = client.get("/app/download/launcher.zip" + _app_token_query())
+    r = client.get(
+        "/app/download/launcher.zip",
+        headers=_protected_auth_headers(server),
+    )
     # Two honest outcomes: the zip is real and opens cleanly, or the launcher
     # sources are not in this checkout yet and she says so with a 404 that
     # names the launcher -- never a 200 wrapping an empty or broken archive.

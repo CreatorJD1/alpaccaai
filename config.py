@@ -8,7 +8,6 @@ companion's temperament changes.
 from __future__ import annotations
 
 import os
-import secrets
 from pathlib import Path
 
 # --- Paths -----------------------------------------------------------------
@@ -22,7 +21,6 @@ DB_PATH = HOME / "alpecca.db"             # homeostasis state + memories
 TELEMETRY_LOG = HOME / "telemetry.jsonl"  # raw sensory stream
 AVATAR_DIR = HOME / "avatar"              # drop-in custom avatar clips (alpecca/avatar.py)
 CHARACTER_DIR = HOME / "character"        # her self-authored design studio (alpecca/studio.py)
-ACCESS_TOKEN_FILE = HOME / "access_token.txt"
 
 # One-time migration: she used to be misspelled "alpacca", and her whole
 # remembered life lives in that file. Carry it across to the corrected name so
@@ -533,50 +531,31 @@ PORT = int(os.environ.get("ALPECCA_SERVER_PORT", "8765"))
 # Alpecca can run as a real desktop app (`python app.py` -> a native pywebview
 # window) with this same server underneath. The window always talks to her over
 # localhost. REMOTE access -- another PC or your phone reaching her over the
-# network or the internet -- is opt-in and ALWAYS gated by a secret token, so
-# turning it on can never quietly expose her senses.
+# network or the internet -- is opt-in and uses the protected authorization
+# secret owned by alpecca.auth. Public identity metadata never grants access.
 #
 #   ALPECCA_REMOTE=1            bind the server to all interfaces (0.0.0.0) so
 #                              other devices can connect (off by default -> she
 #                              binds to localhost only and is unreachable).
-#   ALPECCA_ACCESS_TOKEN=...   the shared secret remote clients must present
-#                              (as ?token=, an X-Alpecca-Token header, or the
-#                              cookie set after a first ?token= visit). If unset,
-#                              Alpecca keeps one stable local token in
-#                              data/access_token.txt so remote links survive
-#                              restarts instead of minting a new per-run secret.
+#   ALPECCA_AUTH_SECRET=...     protected server authorization override. When it
+#                              is unset on Windows, the secret lives in Windows
+#                              Credential Manager rather than in this repo/data.
+#   ALPECCA_PUBLIC_IDENTITY=... optional public identity metadata. The legacy
+#                              ALPECCA_ACCESS_TOKEN name is accepted only as a
+#                              compatibility alias and has no authorization power.
 #   ALPECCA_TUNNEL=cloudflare|ngrok|off
 #                              open a public internet URL via a tunnel binary, so
 #                              she's reachable from anywhere -- still behind the
 #                              token. Off by default; needs the CLI on PATH.
 REMOTE_ACCESS = os.environ.get("ALPECCA_REMOTE", "0") not in ("", "0", "false", "False")
-def _load_or_create_access_token() -> str:
-    env_token = os.environ.get("ALPECCA_ACCESS_TOKEN", "").strip()
-    if env_token:
-        try:
-            ACCESS_TOKEN_FILE.write_text(env_token, encoding="utf-8")
-        except Exception:
-            pass
-        return env_token
-    try:
-        token = ACCESS_TOKEN_FILE.read_text(encoding="utf-8").strip()
-        if token:
-            os.environ["ALPECCA_ACCESS_TOKEN"] = token
-            return token
-    except Exception:
-        pass
-    token = secrets.token_urlsafe(24)
-    try:
-        ACCESS_TOKEN_FILE.write_text(token, encoding="utf-8")
-    except Exception:
-        pass
-    os.environ["ALPECCA_ACCESS_TOKEN"] = token
-    return token
-
-
-ACCESS_TOKEN = _load_or_create_access_token()
-if not COLAB_API_KEY:
-    COLAB_API_KEY = ACCESS_TOKEN
+DEFAULT_PUBLIC_IDENTITY = "wLbIoOwoOJHQR4QQ_goptIa2"
+PUBLIC_IDENTITY = os.environ.get(
+    "ALPECCA_PUBLIC_IDENTITY",
+    os.environ.get("ALPECCA_ACCESS_TOKEN", DEFAULT_PUBLIC_IDENTITY),
+).strip() or DEFAULT_PUBLIC_IDENTITY
+# Deprecated compatibility name. This is deliberately public identity data,
+# not a bearer secret; server authorization is handled only by alpecca.auth.
+ACCESS_TOKEN = PUBLIC_IDENTITY
 TUNNEL = os.environ.get("ALPECCA_TUNNEL", "off").lower()
 CLOUDFLARE_TUNNEL_NAME = os.environ.get("ALPECCA_CLOUDFLARE_TUNNEL", "alpecca")
 CLOUDFLARE_HOSTNAME = os.environ.get("ALPECCA_CLOUDFLARE_HOSTNAME", "").strip()
