@@ -1434,7 +1434,10 @@ def test_mindscape_sync_status_route_reports_auto_state():
     from fastapi.testclient import TestClient
     import server
     client = TestClient(server.app)
-    r = client.get("/mindscape/sync/status")
+    r = client.get(
+        "/mindscape/sync/status",
+        headers=_protected_auth_headers(server),
+    )
     assert r.status_code == 200
     d = r.json()
     assert "ready_for_auto_sync" in d
@@ -1450,7 +1453,10 @@ def test_mindscape_setup_route_reports_cloudflare_worker_steps():
     from fastapi.testclient import TestClient
     import server
     client = TestClient(server.app)
-    r = client.get("/mindscape/setup")
+    r = client.get(
+        "/mindscape/setup",
+        headers=_protected_auth_headers(server),
+    )
     assert r.status_code == 200
     d = r.json()
     assert "worker_dir" in d
@@ -1464,7 +1470,10 @@ def test_mindscape_setup_review_route_creates_improvement_proposal():
     from fastapi.testclient import TestClient
     import server
     client = TestClient(server.app)
-    r = client.post("/mindscape/setup/review")
+    r = client.post(
+        "/mindscape/setup/review",
+        headers=_protected_auth_headers(server),
+    )
     assert r.status_code == 200
     d = r.json()
     assert d["setup"]["status"]
@@ -1655,7 +1664,10 @@ def test_cognition_self_review_route_reports_runtime_gap_review():
     from fastapi.testclient import TestClient
     import server
     client = TestClient(server.app)
-    r = client.post("/cognition/self-review")
+    r = client.post(
+        "/cognition/self-review",
+        headers=_protected_auth_headers(server),
+    )
     assert r.status_code == 200
     d = r.json()
     assert "doctor" in d
@@ -1668,7 +1680,10 @@ def test_cognition_behavior_review_route_reports_evidence_backed_review():
     from fastapi.testclient import TestClient
     import server
     client = TestClient(server.app)
-    r = client.post("/cognition/behavior-review")
+    r = client.post(
+        "/cognition/behavior-review",
+        headers=_protected_auth_headers(server),
+    )
     assert r.status_code == 200
     d = r.json()
     assert "review" in d
@@ -1709,7 +1724,7 @@ def test_cognition_proposal_routes_create_and_evaluate():
             "approval": "ask_first",
             "risk": "low",
             "status": "testing",
-        })
+        }, headers=_protected_auth_headers(server))
         assert r.status_code == 200
         proposal = r.json()["proposal"]
         assert proposal["action"] == action
@@ -1720,7 +1735,7 @@ def test_cognition_proposal_routes_create_and_evaluate():
             "test": "attach evaluation",
             "outcome": "evaluation persisted",
             "score": 0.9,
-        })
+        }, headers=_protected_auth_headers(server))
         assert r.status_code == 200
         evaluations = r.json()["evaluations"]
         assert evaluations and evaluations[0]["outcome"] == "evaluation persisted"
@@ -1735,7 +1750,10 @@ def test_cognition_proposal_compact_route_reports_queue_cleanup():
     from fastapi.testclient import TestClient
     import server
     client = TestClient(server.app)
-    r = client.post("/cognition/proposals/compact")
+    r = client.post(
+        "/cognition/proposals/compact",
+        headers=_protected_auth_headers(server),
+    )
     assert r.status_code == 200
     d = r.json()
     assert "compact" in d
@@ -2498,11 +2516,13 @@ def test_house_hq_runtime_resolves_16_sector_matrix_keys_before_5_tier_fallback(
 
 def test_cognition_autonomy_state_exposes_backend_promptless_loop():
     from fastapi.testclient import TestClient
-    import config
     import server
 
     client = TestClient(server.app)
-    r = client.get(f"/cognition/autonomy-state?token={config.ACCESS_TOKEN}")
+    r = client.get(
+        "/cognition/autonomy-state",
+        headers=_protected_auth_headers(server),
+    )
     assert r.status_code == 200
     d = r.json()
     assert d["enabled"] is True
@@ -2518,13 +2538,17 @@ def test_cognition_autonomy_state_exposes_backend_promptless_loop():
 
 def test_cognition_world_tick_creates_recursive_world_question():
     from fastapi.testclient import TestClient
-    import config
     import server
     import time
 
     client = TestClient(server.app)
+    headers = _protected_auth_headers(server)
     marker = f"world-loop-{time.time_ns()}"
-    r = client.post(f"/cognition/world-tick?token={config.ACCESS_TOKEN}", json={"reason": marker})
+    r = client.post(
+        "/cognition/world-tick",
+        json={"reason": marker},
+        headers=headers,
+    )
     assert r.status_code == 200
     d = r.json()
     assert d["ok"] is True
@@ -2555,7 +2579,9 @@ def test_cognition_world_tick_creates_recursive_world_question():
     # Poll briefly instead of asserting the very first snapshot.
     autonomy = {}
     for _ in range(30):
-        autonomy = client.get(f"/cognition/autonomy-state?token={config.ACCESS_TOKEN}").json()
+        autonomy = client.get(
+            "/cognition/autonomy-state", headers=headers
+        ).json()
         if autonomy.get("last_living_reason") == marker:
             break
         time.sleep(0.1)
@@ -2568,7 +2594,7 @@ def test_cognition_world_tick_creates_recursive_world_question():
     assert autonomy["last_living_next_action"]["action"] == d["next_action"]["action"]
     assert autonomy["last_living_next_action"]["selection_reason"] == d["activation_selection"]["reason"]
     assert autonomy["last_living_engagement_proposal"]["action"] == d["engagement_proposal"]["action"]
-    state = client.get(f"/cognition/state?token={config.ACCESS_TOKEN}").json()
+    state = client.get("/cognition/state", headers=headers).json()
     assert state["recursive_engagement"]
     assert state["recursive_engagement"][0]["metric"] == "autonomous_recursive_engagement"
     assert state["recursive_engagement_scorecard"]["ok"] is True
@@ -2631,11 +2657,13 @@ def test_cognition_recursive_engagement_scorecard_uses_evidence_not_claims():
 
 def test_cognition_recursive_engagement_route_reports_scorecard():
     from fastapi.testclient import TestClient
-    import config
     import server
 
     client = TestClient(server.app)
-    r = client.get(f"/cognition/recursive-engagement?token={config.ACCESS_TOKEN}")
+    r = client.get(
+        "/cognition/recursive-engagement",
+        headers=_protected_auth_headers(server),
+    )
     assert r.status_code == 200
     d = r.json()
     assert d["schema"] == "alpecca.recursive_engagement_scorecard.v1"
@@ -2798,7 +2826,7 @@ def test_cognition_observe_route_records_and_can_consolidate():
         "confidence": 0.92,
         "novelty": 0.8,
         "remember_now": True,
-    })
+    }, headers=_protected_auth_headers(server))
     assert r.status_code == 200
     d = r.json()
     assert d["ok"] is True
@@ -2824,7 +2852,11 @@ def test_cognition_chat_review_route_creates_grounding_proposal():
         model_use={"fallback": True},
         memory_evidence=[],
     ), db_path=state_store.DB_PATH)
-    r = client.post("/cognition/chat/review", json={"limit": 4})
+    r = client.post(
+        "/cognition/chat/review",
+        json={"limit": 4},
+        headers=_protected_auth_headers(server),
+    )
     assert r.status_code == 200
     d = r.json()
     assert d["review"]["risk_count"] >= 1
@@ -2835,7 +2867,7 @@ def test_cognition_chat_review_route_creates_grounding_proposal():
 
 def _protected_auth_headers(server):
     return {
-        server.auth_mod.AUTHORIZATION_HEADER: f"Bearer {server._AUTH_SECRET}",
+        server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET,
     }
 
 
@@ -3109,7 +3141,11 @@ def test_memory_search_route_returns_scored_recall():
         embed_fn=None,
     )
     client = TestClient(server.app)
-    r = client.get("/memories/search", params={"q": marker, "limit": 3})
+    r = client.get(
+        "/memories/search",
+        params={"q": marker, "limit": 3},
+        headers=_protected_auth_headers(server),
+    )
     assert r.status_code == 200
     d = r.json()
     assert d["query"] == marker
@@ -3174,11 +3210,20 @@ def test_mindscape_restore_routes_accept_posted_snapshot():
         }],
         "proposals": [],
     }
-    r = client.post("/mindscape/restore/preview", json={"snapshot": snap})
+    headers = _protected_auth_headers(server)
+    r = client.post(
+        "/mindscape/restore/preview",
+        json={"snapshot": snap},
+        headers=headers,
+    )
     assert r.status_code == 200
     assert r.json()["preview"]["memory_count"] == 1
     assert r.json()["preview"]["chat_turn_count"] == 1
-    r = client.post("/mindscape/restore/import", json={"snapshot": snap})
+    r = client.post(
+        "/mindscape/restore/import",
+        json={"snapshot": snap},
+        headers=headers,
+    )
     assert r.status_code == 200
     assert r.json()["ok"] is True
     assert r.json()["imported"]["memories"] == 1
@@ -3187,7 +3232,11 @@ def test_mindscape_restore_routes_accept_posted_snapshot():
     turn = next(t for t in turns if unique_chat in t["user_text"])
     assert turn["reply"] == "I carried this through Mindscape."
     assert turn["model_use"]["backend"] == "mindscape-test"
-    r = client.post("/mindscape/restore/import", json={"snapshot": snap})
+    r = client.post(
+        "/mindscape/restore/import",
+        json={"snapshot": snap},
+        headers=headers,
+    )
     assert r.status_code == 200
     assert r.json()["status"] == "already_imported"
     assert r.json()["imported"]["memories"] == 0
@@ -5071,6 +5120,7 @@ def test_tool_calls_chain_across_bounded_rounds():
 
 def test_ollama_chat_uses_live_performance_options():
     from alpecca.mind import _LLM
+    import alpecca.mind as mind_mod
     from config import OLLAMA_KEEP_ALIVE, OLLAMA_NUM_CTX, OLLAMA_NUM_PREDICT
 
     captured = {}
@@ -5080,10 +5130,15 @@ def test_ollama_chat_uses_live_performance_options():
             captured.update(kwargs)
             return {"message": {"content": "awake"}}
 
-    llm = _LLM()
-    llm._backend = "ollama"
-    llm._client = FakeOllama()
-    out = llm.generate("overall: content", "hello")
+    old_cloud_model = mind_mod.CHAT_CLOUD_MODEL
+    mind_mod.CHAT_CLOUD_MODEL = ""
+    try:
+        llm = _LLM()
+        llm._backend = "ollama"
+        llm._client = FakeOllama()
+        out = llm.generate("overall: content", "hello")
+    finally:
+        mind_mod.CHAT_CLOUD_MODEL = old_cloud_model
 
     assert out == "awake"
     assert captured["model"] == llm.model_for("reason")
@@ -5147,7 +5202,11 @@ def test_chat_prompt_does_not_inject_room_context_for_unrelated_message():
     assert "voice-training clips" in prompt
     assert "Where am I? Jason! Help me!" not in prompt
     assert "right now you are in your Library" not in prompt
-    assert len(prompt) < 4800   # compact budget (raised for grounding + personality framing)
+    from config import OLLAMA_NUM_CTX
+    from alpecca.mindpage import estimate_tokens
+    # Stage 6 owns the budget in model tokens; a raw character ceiling was an
+    # obsolete pre-Mindpage contract and is not comparable across models.
+    assert estimate_tokens(prompt) < OLLAMA_NUM_CTX
 
 
 def test_casual_chat_does_not_offer_actuator_tools():
@@ -5804,10 +5863,11 @@ def test_bootstrap_exchange_sets_one_use_signed_session_cookie():
     exchange_query = urlencode({
         "code": params["code"][0],
         "next": params["next"][0],
-    }, headers={server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET})
+    })
     client = TestClient(server.app, client=("127.0.0.1", 50000))
     response = client.post(
         f"/auth/bootstrap/exchange?{exchange_query}",
+        headers={server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET},
         follow_redirects=False,
     )
 

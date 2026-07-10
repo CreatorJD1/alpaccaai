@@ -332,7 +332,7 @@ class _LLM:
         return OLLAMA_MODEL
 
     def _chat(self, messages: list[dict], tools: list[dict] | None = None,
-              model: str | None = None):
+              model: str | None = None, *, local_only: bool = False):
         """One Ollama chat call with thinking disabled.
 
         Qwen3 hybrids think out loud by default, which is great for math and
@@ -366,7 +366,11 @@ class _LLM:
         # hung call) falls straight through to the local model below, so the
         # cloud is a speedup, never a dependency. Fast-tier and explicit-model
         # calls skip this: cheap chatter isn't worth metered usage.
-        if CHAT_CLOUD_MODEL and kwargs["model"] == OLLAMA_MODEL:
+        # Tool calls stay on the local Ollama protocol. Hosted chat routing is
+        # plain-text only because tool schemas/round-trips are backend-specific
+        # and must remain observable and bounded on the local path.
+        if (CHAT_CLOUD_MODEL and not local_only and not tools
+                and kwargs["model"] == OLLAMA_MODEL):
             try:
                 ck = dict(kwargs)
                 ck["model"] = CHAT_CLOUD_MODEL
@@ -478,7 +482,7 @@ class _LLM:
                 return "".join(parts).strip()
             except TypeError:
                 # stream= unsupported by this client -- plain call instead.
-                resp = self._chat(messages, model=model)
+                resp = self._chat(messages, model=model, local_only=True)
                 return strip_think(resp["message"]["content"])
             except Exception as exc:
                 if emitted:
@@ -681,7 +685,7 @@ class _LLM:
             # shows immediately; the text returned here still flows through
             # every after-generation vet unchanged.
             if (on_token is not None and not tools
-                    and self._backend != "hf" and not CHAT_CLOUD_MODEL
+                    and self._backend != "hf"
                     and self._client is not None):
                 try:
                     text = self._chat_stream(messages, model=model,
@@ -698,7 +702,11 @@ class _LLM:
                 except Exception:
                     pass    # nothing was emitted -- plain call below is safe
             try:
-                resp = self._chat(messages, model=model)
+                resp = self._chat(
+                    messages,
+                    model=model,
+                    local_only=bool(on_token is not None or (CHAT_ZEROGPU and ZEROGPU_SPACE)),
+                )
                 used_tier = tier
                 # Hybrid chat may have answered from the cloud even though the
                 # local model was requested -- report what actually served.
