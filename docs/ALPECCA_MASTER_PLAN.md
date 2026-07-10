@@ -30,10 +30,15 @@ retained in the implementation sequence as historical planning context.
   delivery selects one surface; and eligible cue evidence changes response
   strategy with traceable provenance.
 - Phase 6 Mindpage and resource coordination remains partial and active. Phase
-  6A semantic-negative/orthogonal recall abstention is implemented and covered
-  by focused tests; live-chat semantic recall remains disabled by default.
-- The next bounded slice is buried-content Mindpage indexing/backfill, followed
-  by hard overflow refusal and cooperative optional-worker cancellation.
+  6A semantic-negative/orthogonal recall abstention and Phase 6B bounded
+  sidecar content-term indexing are implemented and covered by focused tests.
+  New pages index after durable commit; legacy pages support idempotent bounded
+  backfill; content-only search does not inflate transcript blobs; and stats
+  expose index coverage, errors, and capped pages. Live-chat semantic recall
+  remains disabled by default.
+- The next Phase 6 sequence is idle-scheduled legacy content-index backfill
+  under the optional-work coordinator, then hard context-overflow
+  refusal/re-measurement, then cooperative optional-worker cancellation.
 
 ## Truth Baseline
 
@@ -109,7 +114,7 @@ They are not fixed Alpecca hardware.
 | Feature | Status | Honest current state |
 |---|---|---|
 | Keyword/FTS recall and embedding backfill | PARTIAL | Bounded and useful; Phase 6A rejects orthogonal and negative semantic matches, while live-chat semantic recall remains disabled by default |
-| Mindpage Layer A | PARTIAL | Request ledger, write-before-delete paging, tiers, and page faults work; fixed-prompt overflow and buried-content indexing remain |
+| Mindpage Layer A | PARTIAL | Request ledger, write-before-delete paging, tiers, page faults, and bounded sidecar content-term indexing work; content-only search does not inflate transcript blobs. Idle-scheduled legacy backfill and fixed-prompt overflow handling remain |
 | Conversation/privacy partitioning | DONE | Creator app and House HQ turns are scope-partitioned; future guest/Discord subjects remain capability-denied until their later gates |
 | Resource pressure sensing | PARTIAL | Context pressure is grounded; whole-machine sensing draft is not wired |
 | Approved pagefile broker | BLOCKED | Draft math, caps, approval proof, live recheck, and verification are unsafe |
@@ -285,17 +290,20 @@ Discord proactive participation, recursion, and voice default off until Phase 10
 ### Phase 6: Mindpage and resource coordinator - PARTIAL (ACTIVE NEXT SLICE)
 
 Phase 6A is implemented: semantic scoring rejects orthogonal and negative vector
-matches, and focused tests cover the abstention boundary. Live-chat semantic
-recall remains disabled by default.
+matches. Phase 6B is also implemented: a bounded sidecar index stores content
+terms after a page's durable commit; legacy pages support idempotent bounded
+backfill; content-only retrieval selects candidates without inflating transcript
+blobs; and Mindpage stats expose coverage, errors, and capped pages. Live-chat
+semantic recall remains disabled by default.
 
-Next, index bounded searchable terms from compressed page content and backfill
-existing pages idempotently. Then refuse or explicitly compact unshrinkable
-overflow, followed by cooperative optional-worker cancellation or backend
-deadlines. Continue separating context pressure from RAM, commit, VRAM, CPU,
-disk, battery, and thermal signals. Treat 8K as the initial measurement baseline,
-then test Qwen 3.5 9B at 16K, 24K, 32K, and 48K with one request/model, Flash
-Attention, and q8 KV cache. The 38,000 MiB pagefile supplies Windows commit
-reserve for CPU-backed model/KV pages; it does not extend the GPU's 4 GB VRAM.
+Next, schedule the legacy content-index backfill only while idle and through the
+optional-work coordinator. Then add hard context-overflow refusal/re-measurement,
+followed by cooperative optional-worker cancellation or backend deadlines.
+Continue separating context pressure from RAM, commit, VRAM, CPU, disk, battery,
+and thermal signals. Treat 8K as the initial measurement baseline, then test
+Qwen 3.5 9B at 16K, 24K, 32K, and 48K with one request/model, Flash Attention,
+and q8 KV cache. The 38,000 MiB pagefile supplies Windows commit reserve for
+CPU-backed model/KV pages; it does not extend the GPU's 4 GB VRAM.
 
 Exit gate: orthogonal memories are rejected; buried page facts are retrievable;
 no request exceeds the configured context estimate; optional reflection/backfill

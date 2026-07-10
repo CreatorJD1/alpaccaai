@@ -21,13 +21,17 @@ retained below as historical implementation evidence.
   outreach feeds backoff; one proactive event chooses one delivery surface; and
   eligible cue evidence changes the response strategy with traceable provenance.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
-  active. Phase 6A now rejects orthogonal and negative semantic matches, with
-  focused recall tests covering the abstention boundary; live-chat semantic
-  recall remains disabled by default.
-- The next bounded Phase 6 slice is buried-content Mindpage indexing with an
-  idempotent backfill, followed by hard overflow refusal and cooperative
-  optional-worker cancellation. Keep broader tools and action classes outside
-  the Phase 4 baseline until separately approved and gated.
+  active. Phase 6A rejects orthogonal and negative semantic matches. Phase 6B
+  adds bounded sidecar Mindpage content-term indexing: new pages index after a
+  durable commit, legacy pages support idempotent bounded backfill, and
+  content-only retrieval selects candidates without inflating transcript blobs.
+  Mindpage stats expose index coverage, errors, and capped pages. Live-chat
+  semantic recall remains disabled by default.
+- The next Phase 6 sequence is idle-scheduled legacy content-index backfill
+  under the optional-work coordinator, then hard context-overflow
+  refusal/re-measurement, then cooperative optional-worker cancellation. Keep
+  broader tools and action classes outside the Phase 4 baseline until separately
+  approved and gated.
 
 ## Superseded Claude Code Handoff: Master Phase 4 onward (historical)
 
@@ -92,12 +96,16 @@ LLM processes or inject verbose hidden reasoning into prompts.
 
 ### Phase 6: Mindpage and resource coordinator
 
-Phase 6A semantic-negative/orthogonal recall abstention is implemented and
-covered by focused tests; live-chat semantic recall remains disabled by default.
-Continue with bounded buried-content indexing/backfill, then hard
-refusal/compaction of unshrinkable requests, then cooperative cancellation for
-the single-flight optional-work coordinator so work cannot overlap destructively
-with chat/TTS.
+Phase 6A semantic-negative/orthogonal recall abstention and Phase 6B bounded
+sidecar content-term indexing are implemented and covered by focused tests. New
+pages are indexed after durable commit; legacy pages support idempotent bounded
+backfill; content-only search does not inflate transcript blobs; and Mindpage
+stats expose index coverage, errors, and capped pages. Live-chat semantic recall
+remains disabled by default.
+Next, schedule legacy content-index backfill only while idle under the
+optional-work coordinator, then add hard overflow refusal/re-measurement, then
+cooperative cancellation for the single-flight optional-work coordinator so work
+cannot overlap destructively with chat/TTS.
 Keep 8K as the initial measured context. Only promote Qwen 3.5 9B context after
 real 16K/24K/32K/48K measurements stay below 90 percent commit, retain 2 GiB
 physical-RAM headroom, and avoid sustained SSD paging. The 38,000 MiB pagefile

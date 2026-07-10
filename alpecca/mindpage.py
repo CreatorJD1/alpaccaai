@@ -7,6 +7,7 @@ request-size estimate rather than model narration.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -41,7 +42,13 @@ PRESSURE_HIGH = 0.90
 DEFAULT_PREFAULT_TOKENS = 320
 HOT_TTL_SECONDS = 6 * 60 * 60
 WARM_TTL_SECONDS = 30 * 24 * 60 * 60
+CONTENT_INDEX_TERM_LIMIT = 384
+CONTENT_INDEX_QUERY_LIMIT = 16
+CONTENT_INDEX_BATCH_LIMIT = 64
+CONTENT_INDEX_ERROR_BACKOFF_SECONDS = 60.0
+CONTENT_INDEX_MAX_BACKOFF_SECONDS = 3600.0
 _page_fts_ready_paths: set[str] = set()
+_content_fts_ready_paths: set[str] = set()
 
 
 def estimate_tokens(text: str) -> int:
@@ -74,6 +81,138 @@ def _connect(db_path: Path = DB_PATH):
 def _scope(value: str) -> str:
     clean = re.sub(r"[^a-zA-Z0-9_.:-]+", "-", str(value or "shared").strip())
     return (clean.strip("-._:") or "shared")[:160]
+
+
+def _blob_bytes(blob) -> bytes:
+    try:
+        return bytes(blob or b"")
+    except (TypeError, ValueError):
+        return b""
+
+
+def _content_blob_digest(blob) -> str:
+    return hashlib.sha256(_blob_bytes(blob)).hexdigest()
+
+
+def _normalized_content_term(value: str) -> str:
+    term = re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+    if len(term) <= 2 or term in _STOP_WORDS:
+        return ""
+    return term
+
+
+def _content_index_terms(content: str, *, limit: int = CONTENT_INDEX_TERM_LIMIT) -> tuple[list[str], bool]:
+    """Return a bounded, deterministic vocabulary without retaining transcripts."""
+    maximum = max(0, min(CONTENT_INDEX_TERM_LIMIT, int(limit)))
+    terms: list[str] = []
+    seen: set[str] = set()
+    capped = False
+    for raw in _WORD.findall(str(content or "").lower()):
+        term = _normalized_content_term(raw)
+        if not term or term in seen:
+            continue
+        if len(terms) >= maximum:
+            capped = True
+            break
+        seen.add(term)
+        terms.append(term)
+    return terms, capped
+
+
+def _decode_content_blob(blob) -> str:
+    """Decode a page blob for indexing, preserving corrupt-blob failures."""
+    return zlib.decompress(_blob_bytes(blob)).decode("utf-8", errors="replace")
+
+
+def _ensure_content_index_schema(conn, cache_key: str) -> None:
+    """Install the bounded sidecar index and cleanup hooks for one database."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mindpage_content_index_state (
+            page_id      INTEGER PRIMARY KEY,
+            blob_digest  TEXT NOT NULL,
+            terms        TEXT NOT NULL DEFAULT '',
+            term_count   INTEGER NOT NULL DEFAULT 0,
+            truncated    INTEGER NOT NULL DEFAULT 0,
+            status       TEXT NOT NULL DEFAULT 'indexed',
+            retry_count  INTEGER NOT NULL DEFAULT 0,
+            retry_after  REAL NOT NULL DEFAULT 0,
+            indexed_at   REAL NOT NULL DEFAULT 0,
+            last_error   TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(mindpage_content_index_state)")
+    }
+    migrations = {
+        "blob_digest": "TEXT NOT NULL DEFAULT ''",
+        "terms": "TEXT NOT NULL DEFAULT ''",
+        "term_count": "INTEGER NOT NULL DEFAULT 0",
+        "truncated": "INTEGER NOT NULL DEFAULT 0",
+        "status": "TEXT NOT NULL DEFAULT 'indexed'",
+        "retry_count": "INTEGER NOT NULL DEFAULT 0",
+        "retry_after": "REAL NOT NULL DEFAULT 0",
+        "indexed_at": "REAL NOT NULL DEFAULT 0",
+        "last_error": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, definition in migrations.items():
+        if name not in columns:
+            conn.execute(
+                f"ALTER TABLE mindpage_content_index_state ADD COLUMN {name} {definition}"
+            )
+    # These cleanup hooks work even when FTS5 is unavailable. They make a changed
+    # page pending again, so stale terms cannot be selected after a later backfill.
+    conn.executescript(
+        """
+        CREATE TRIGGER IF NOT EXISTS mindpage_content_state_page_ad
+        AFTER DELETE ON mindpage_pages BEGIN
+            DELETE FROM mindpage_content_index_state WHERE page_id=old.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS mindpage_content_state_page_au
+        AFTER UPDATE OF content_blob ON mindpage_pages BEGIN
+            DELETE FROM mindpage_content_index_state WHERE page_id=old.id;
+        END;
+        """
+    )
+    if cache_key in _content_fts_ready_paths:
+        return
+    existed = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mindpage_content_fts'"
+    ).fetchone() is not None
+    conn.executescript(
+        """
+        CREATE VIRTUAL TABLE IF NOT EXISTS mindpage_content_fts USING fts5(
+            terms,
+            content='mindpage_content_index_state',
+            content_rowid='page_id'
+        );
+        CREATE TRIGGER IF NOT EXISTS mindpage_content_fts_ai
+        AFTER INSERT ON mindpage_content_index_state
+        WHEN new.status='indexed' AND length(new.terms) > 0 BEGIN
+            INSERT INTO mindpage_content_fts(rowid, terms)
+            VALUES (new.page_id, new.terms);
+        END;
+        CREATE TRIGGER IF NOT EXISTS mindpage_content_fts_ad
+        AFTER DELETE ON mindpage_content_index_state
+        WHEN old.status='indexed' AND length(old.terms) > 0 BEGIN
+            INSERT INTO mindpage_content_fts(mindpage_content_fts, rowid, terms)
+            VALUES('delete', old.page_id, old.terms);
+        END;
+        CREATE TRIGGER IF NOT EXISTS mindpage_content_fts_au
+        AFTER UPDATE OF terms, status ON mindpage_content_index_state BEGIN
+            INSERT INTO mindpage_content_fts(mindpage_content_fts, rowid, terms)
+            SELECT 'delete', old.page_id, old.terms
+            WHERE old.status='indexed' AND length(old.terms) > 0;
+            INSERT INTO mindpage_content_fts(rowid, terms)
+            SELECT new.page_id, new.terms
+            WHERE new.status='indexed' AND length(new.terms) > 0;
+        END;
+        """
+    )
+    if not existed:
+        conn.execute("INSERT INTO mindpage_content_fts(mindpage_content_fts) VALUES('rebuild')")
+    _content_fts_ready_paths.add(cache_key)
 
 
 def ensure_schema(db_path: Path = DB_PATH) -> None:
@@ -167,6 +306,12 @@ def ensure_schema(db_path: Path = DB_PATH) -> None:
                 _page_fts_ready_paths.add(cache_key)
             except sqlite3.OperationalError:
                 pass
+        try:
+            _ensure_content_index_schema(conn, cache_key)
+        except sqlite3.OperationalError:
+            # Paging remains durable without FTS5. Backfill records the index as
+            # unavailable instead of making page writes fail.
+            pass
 
 
 def install_memory_indexes(db_path: Path = DB_PATH) -> None:
@@ -253,7 +398,14 @@ def write_page(*, kind: str, topic: str, summary: str, content: str,
                 now, float(max(0.0, min(1.0, salience))), _scope(scope),
             ),
         )
-        return int(cur.lastrowid)
+        page_id = int(cur.lastrowid)
+    # The page has committed before indexing. A failed optional index can never
+    # make the durable write fail or remove the original compressed evidence.
+    try:
+        _index_page_content(page_id, blob, db_path=db_path)
+    except Exception as exc:
+        _record_content_index_error(page_id, blob, exc, db_path=db_path)
+    return page_id
 
 
 def write_episode_page(turns: list[dict], *, scope: str = "shared",
@@ -284,6 +436,214 @@ def _inflate(blob) -> str:
         return ""
 
 
+def _content_index_counts(conn) -> dict:
+    row = conn.execute(
+        """
+        SELECT COUNT(p.id) AS pages,
+               COALESCE(SUM(CASE WHEN s.status='indexed' THEN 1 ELSE 0 END), 0) AS indexed,
+               COALESCE(SUM(CASE WHEN s.status='error' THEN 1 ELSE 0 END), 0) AS errors,
+               COALESCE(SUM(CASE WHEN s.status='indexed' THEN s.term_count ELSE 0 END), 0) AS terms,
+               COALESCE(SUM(CASE WHEN s.status='indexed' AND s.truncated != 0 THEN 1 ELSE 0 END), 0)
+                   AS capped
+        FROM mindpage_pages AS p
+        LEFT JOIN mindpage_content_index_state AS s ON s.page_id=p.id
+        """
+    ).fetchone()
+    pages = int(row["pages"] or 0) if row else 0
+    indexed = int(row["indexed"] or 0) if row else 0
+    errors = int(row["errors"] or 0) if row else 0
+    pending = max(0, pages - indexed - errors)
+    terms = int(row["terms"] or 0) if row else 0
+    capped = int(row["capped"] or 0) if row else 0
+    coverage = round(indexed / pages, 6) if pages else 1.0
+    return {
+        "content_indexed_pages": indexed,
+        "content_index_pending": pending,
+        "content_index_errors": errors,
+        "content_index_terms": terms,
+        "content_index_capped_pages": capped,
+        "content_index_coverage": coverage,
+        "content_index": {
+            "indexed_pages": indexed,
+            "pending_pages": pending,
+            "error_pages": errors,
+            "retrying_pages": errors,
+            "indexed_terms": terms,
+            "capped_pages": capped,
+            "has_capped_pages": bool(capped),
+            "coverage": coverage,
+        },
+    }
+
+
+def _index_page_content(page_id: int, blob, *, db_path: Path = DB_PATH) -> bool:
+    """Safely replace one page's derived vocabulary after its page write commits."""
+    content = _decode_content_blob(blob)
+    terms, capped = _content_index_terms(content)
+    term_text = " ".join(terms)
+    digest = _content_blob_digest(blob)
+    now = time.time()
+    with _connect(db_path) as conn:
+        page = conn.execute(
+            "SELECT content_blob FROM mindpage_pages WHERE id=?", (int(page_id),)
+        ).fetchone()
+        if not page or _content_blob_digest(page["content_blob"]) != digest:
+            return False
+        available = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mindpage_content_fts'"
+        ).fetchone()
+        if not available:
+            raise sqlite3.OperationalError("Mindpage content FTS5 index is unavailable")
+        conn.execute(
+            """
+            INSERT INTO mindpage_content_index_state
+                (page_id, blob_digest, terms, term_count, truncated, status,
+                 retry_count, retry_after, indexed_at, last_error)
+            VALUES (?, ?, ?, ?, ?, 'indexed', 0, 0, ?, '')
+            ON CONFLICT(page_id) DO UPDATE SET
+                blob_digest=excluded.blob_digest,
+                terms=excluded.terms,
+                term_count=excluded.term_count,
+                truncated=excluded.truncated,
+                status='indexed',
+                retry_count=0,
+                retry_after=0,
+                indexed_at=excluded.indexed_at,
+                last_error=''
+            """,
+            (int(page_id), digest, term_text, len(terms), int(capped), now),
+        )
+    return True
+
+
+def _record_content_index_error(page_id: int, blob, error: Exception, *,
+                                db_path: Path = DB_PATH) -> bool:
+    """Record a retryable derived-index failure without changing the page itself."""
+    digest = _content_blob_digest(blob)
+    now = time.time()
+    detail = " ".join(str(error or "content index error").split())[:240]
+    with _connect(db_path) as conn:
+        page = conn.execute(
+            "SELECT 1 FROM mindpage_pages WHERE id=?", (int(page_id),)
+        ).fetchone()
+        if not page:
+            return False
+        previous = conn.execute(
+            "SELECT retry_count FROM mindpage_content_index_state WHERE page_id=?",
+            (int(page_id),),
+        ).fetchone()
+        retry_count = max(1, int(previous["retry_count"] or 0) + 1) if previous else 1
+        delay = min(
+            CONTENT_INDEX_MAX_BACKOFF_SECONDS,
+            CONTENT_INDEX_ERROR_BACKOFF_SECONDS * (2 ** min(6, retry_count - 1)),
+        )
+        conn.execute(
+            """
+            INSERT INTO mindpage_content_index_state
+                (page_id, blob_digest, terms, term_count, truncated, status,
+                 retry_count, retry_after, indexed_at, last_error)
+            VALUES (?, ?, '', 0, 0, 'error', ?, ?, 0, ?)
+            ON CONFLICT(page_id) DO UPDATE SET
+                blob_digest=excluded.blob_digest,
+                terms='',
+                term_count=0,
+                truncated=0,
+                status='error',
+                retry_count=excluded.retry_count,
+                retry_after=excluded.retry_after,
+                indexed_at=0,
+                last_error=excluded.last_error
+            """,
+            (int(page_id), digest, retry_count, now + delay, detail),
+        )
+    return True
+
+
+def _backfill_content_index_rows(conn, batch: int, now: float) -> list[sqlite3.Row]:
+    """Select a bounded priority queue plus a rotating stale-index check."""
+    rows = list(conn.execute(
+        """
+        SELECT p.id, p.content_blob, s.blob_digest, s.status
+        FROM mindpage_pages AS p
+        LEFT JOIN mindpage_content_index_state AS s ON s.page_id=p.id
+        WHERE s.page_id IS NULL
+           OR (s.status='error' AND COALESCE(s.retry_after, 0) <= ?)
+           OR (s.status NOT IN ('indexed', 'error'))
+        ORDER BY CASE WHEN s.page_id IS NULL THEN 0 ELSE 1 END, p.id ASC
+        LIMIT ?
+        """,
+        (float(now), int(batch)),
+    ).fetchall())
+    remaining = max(0, int(batch) - len(rows))
+    if remaining <= 0:
+        return rows
+    cursor_row = conn.execute(
+        "SELECT value FROM mindpage_meta WHERE key='content_index_scan_cursor'"
+    ).fetchone()
+    try:
+        cursor = max(0, int(float(cursor_row["value"]))) if cursor_row else 0
+    except (TypeError, ValueError):
+        cursor = 0
+    validate = list(conn.execute(
+        """
+        SELECT p.id, p.content_blob, s.blob_digest, s.status
+        FROM mindpage_pages AS p
+        JOIN mindpage_content_index_state AS s ON s.page_id=p.id
+        WHERE s.status='indexed' AND p.id > ?
+        ORDER BY p.id ASC LIMIT ?
+        """,
+        (cursor, remaining),
+    ).fetchall())
+    if len(validate) < remaining:
+        validate.extend(conn.execute(
+            """
+            SELECT p.id, p.content_blob, s.blob_digest, s.status
+            FROM mindpage_pages AS p
+            JOIN mindpage_content_index_state AS s ON s.page_id=p.id
+            WHERE s.status='indexed' AND p.id <= ?
+            ORDER BY p.id ASC LIMIT ?
+            """,
+            (cursor, remaining - len(validate)),
+        ).fetchall())
+    if validate:
+        conn.execute(
+            """
+            INSERT INTO mindpage_meta(key, value) VALUES('content_index_scan_cursor', ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value
+            """,
+            (str(int(validate[-1]["id"])),),
+        )
+    rows.extend(validate)
+    return rows
+
+
+def backfill_content_index(batch: int = 8, *, db_path: Path = DB_PATH) -> dict:
+    """Backfill missing or stale derived content indexes in a small idempotent batch."""
+    result = {"scanned": 0, "indexed": 0, "errors": 0, "pending": 0}
+    if not MINDPAGE:
+        return result
+    ensure_schema(db_path)
+    bounded_batch = max(1, min(CONTENT_INDEX_BATCH_LIMIT, int(batch)))
+    now = time.time()
+    with _connect(db_path) as conn:
+        candidates = _backfill_content_index_rows(conn, bounded_batch, now)
+    for row in candidates:
+        result["scanned"] += 1
+        blob = row["content_blob"]
+        digest = _content_blob_digest(blob)
+        if str(row["status"] or "") == "indexed" and str(row["blob_digest"] or "") == digest:
+            continue
+        try:
+            if _index_page_content(int(row["id"]), blob, db_path=db_path):
+                result["indexed"] += 1
+        except Exception as exc:
+            _record_content_index_error(int(row["id"]), blob, exc, db_path=db_path)
+            result["errors"] += 1
+    with _connect(db_path) as conn:
+        result["pending"] = _content_index_counts(conn)["content_index_pending"]
+    return result
+
+
 def _query_words(text: str) -> set[str]:
     return {
         word for word in _WORD.findall((text or "").lower())
@@ -292,9 +652,9 @@ def _query_words(text: str) -> set[str]:
 
 
 def search_pages(query: str, limit: int = 5, *, include_cold: bool = False,
-                 scope: str = "shared", include_shared: bool = True,
-                 db_path: Path = DB_PATH) -> list[dict]:
-    """Search bounded page metadata without inflating stored transcripts."""
+                  scope: str = "shared", include_shared: bool = True,
+                  db_path: Path = DB_PATH) -> list[dict]:
+    """Search metadata and derived content terms without inflating transcripts."""
     if not MINDPAGE or not str(query or "").strip():
         return []
     ensure_schema(db_path)
@@ -309,7 +669,9 @@ def search_pages(query: str, limit: int = 5, *, include_cold: bool = False,
     placeholders = ", ".join("?" for _ in scopes)
     cold_where = "" if include_cold else " AND tier != 'cold'"
     where = f"WHERE scope IN ({placeholders}){cold_where}"
-    terms = " OR ".join(f'"{word}"' for word in sorted(q_words)[:16])
+    metadata_terms = " OR ".join(f'"{word}"' for word in sorted(q_words)[:CONTENT_INDEX_QUERY_LIMIT])
+    content_words, _ = _content_index_terms(q_text, limit=CONTENT_INDEX_QUERY_LIMIT)
+    content_terms = " OR ".join(f'"{word}"' for word in content_words)
     with _connect(db_path) as conn:
         base_rows = conn.execute(
             f"""
@@ -322,11 +684,11 @@ def search_pages(query: str, limit: int = 5, *, include_cold: bool = False,
             """
             , scopes
         ).fetchall()
-        fts_rows = []
-        if terms:
+        metadata_rows = []
+        if metadata_terms:
             cold_clause = "" if include_cold else "AND p.tier != 'cold'"
             try:
-                fts_rows = conn.execute(
+                metadata_rows = conn.execute(
                     f"""
                     SELECT p.id, p.ts, p.tier, p.kind, p.topic, p.summary,
                            p.token_est, p.last_access, p.access_count, p.salience, p.scope
@@ -336,12 +698,34 @@ def search_pages(query: str, limit: int = 5, *, include_cold: bool = False,
                     ORDER BY bm25(mindpage_fts)
                     LIMIT 120
                     """,
-                    (terms, *scopes),
+                    (metadata_terms, *scopes),
                 ).fetchall()
             except sqlite3.OperationalError:
-                fts_rows = []
+                metadata_rows = []
+        content_rows = []
+        if content_terms:
+            cold_clause = "" if include_cold else "AND p.tier != 'cold'"
+            try:
+                content_rows = conn.execute(
+                    f"""
+                    SELECT p.id, p.ts, p.tier, p.kind, p.topic, p.summary,
+                           p.token_est, p.last_access, p.access_count, p.salience, p.scope
+                    FROM mindpage_content_fts
+                    JOIN mindpage_content_index_state AS s
+                        ON s.page_id=mindpage_content_fts.rowid AND s.status='indexed'
+                    JOIN mindpage_pages AS p ON p.id=mindpage_content_fts.rowid
+                    WHERE mindpage_content_fts MATCH ? AND p.scope IN ({placeholders}) {cold_clause}
+                    ORDER BY bm25(mindpage_content_fts)
+                    LIMIT 120
+                    """,
+                    (content_terms, *scopes),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                content_rows = []
     rows_by_id = {int(row["id"]): row for row in base_rows}
-    for row in fts_rows:
+    metadata_ids = {int(row["id"]) for row in metadata_rows}
+    content_ids = {int(row["id"]) for row in content_rows}
+    for row in [*metadata_rows, *content_rows]:
         rows_by_id[int(row["id"])] = row
     scored = []
     for row in rows_by_id.values():
@@ -349,12 +733,27 @@ def search_pages(query: str, limit: int = 5, *, include_cold: bool = False,
         hay = " ".join([item.get("topic", ""), item.get("summary", "")]).lower()
         overlap = len(q_words & _query_words(hay))
         phrase = bool(q_text and len(q_text) >= 5 and q_text in hay)
-        if not overlap and not phrase:
+        page_id = int(item["id"])
+        metadata_match = bool(overlap or phrase or page_id in metadata_ids)
+        content_match = page_id in content_ids
+        if not metadata_match and not content_match:
             continue
-        score = (3.0 if phrase else 0.0) + overlap * 1.25 + float(item.get("salience") or 0)
+        if metadata_match and content_match:
+            match_source = "both"
+        elif content_match:
+            match_source = "content"
+        else:
+            match_source = "metadata"
+        score = (
+            (3.0 if phrase else 0.0)
+            + overlap * 1.25
+            + (1.0 if content_match else 0.0)
+            + float(item.get("salience") or 0)
+        )
         item["score"] = round(score, 4)
         item["overlap"] = overlap
         item["phrase_match"] = phrase
+        item["match_source"] = match_source
         scored.append((score, float(item.get("last_access") or 0), item))
     scored.sort(key=lambda value: (value[0], value[1]), reverse=True)
     return [item for _, _, item in scored[: max(1, int(limit))]]
@@ -418,6 +817,7 @@ def recall_page(query: str, limit: int = 3, db_path: Path = DB_PATH, *,
             page["score"] = hit.get("score")
             page["overlap"] = hit.get("overlap")
             page["phrase_match"] = hit.get("phrase_match")
+            page["match_source"] = hit.get("match_source")
             out.append(page)
     return out
 
@@ -461,6 +861,7 @@ def prefault_pages(query: str, *, token_budget: int = DEFAULT_PREFAULT_TOKENS,
         page["score"] = candidate.get("score")
         page["overlap"] = candidate.get("overlap")
         page["phrase_match"] = candidate.get("phrase_match")
+        page["match_source"] = candidate.get("match_source")
         page["evidence_text"] = evidence
         selected.append(page)
         remaining -= used
@@ -863,6 +1264,27 @@ def _page_stats(db_path: Path) -> dict:
             "COALESCE(SUM(LENGTH(content_blob) + LENGTH(topic) + LENGTH(summary) "
             "+ COALESCE(LENGTH(embedding), 0)), 0) AS bytes FROM mindpage_pages"
         ).fetchone()
+        try:
+            content_index = _content_index_counts(conn)
+        except sqlite3.OperationalError:
+            content_index = {
+                "content_indexed_pages": 0,
+                "content_index_pending": int(total["count"] or 0) if total else 0,
+                "content_index_errors": 0,
+                "content_index_terms": 0,
+                "content_index_capped_pages": 0,
+                "content_index_coverage": 0.0,
+                "content_index": {
+                    "indexed_pages": 0,
+                    "pending_pages": int(total["count"] or 0) if total else 0,
+                    "error_pages": 0,
+                    "retrying_pages": 0,
+                    "indexed_terms": 0,
+                    "capped_pages": 0,
+                    "has_capped_pages": False,
+                    "coverage": 0.0,
+                },
+            }
     disk_budget = max(1, int(float(MINDPAGE_DISK_GB) * 1024 * 1024 * 1024))
     page_bytes = int(total["bytes"] or 0) if total else 0
     tiers = {
@@ -879,7 +1301,7 @@ def _page_stats(db_path: Path) -> dict:
         "page_tokens": int(total["tokens"] or 0) if total else 0,
         "page_bytes": page_bytes,
         "page_payload_bytes": page_bytes,
-        "storage_measurement": "compressed page payload plus indexed metadata; SQLite overhead excluded",
+        "storage_measurement": "compressed page payload; sidecar term-index coverage reported separately; SQLite overhead excluded",
         "hot_page_count": int(hot.get("count") or 0),
         "hot_page_tokens": int(hot.get("tokens") or 0),
         "hot_page_bytes": int(hot.get("bytes") or 0),
@@ -887,6 +1309,7 @@ def _page_stats(db_path: Path) -> dict:
         "disk_fill": round(min(1.0, page_bytes / disk_budget), 6),
         "disk_over_budget": page_bytes > disk_budget,
         "tiers": tiers,
+        **content_index,
     }
 
 
@@ -904,6 +1327,22 @@ def stats(history: list[dict] | None = None, db_path: Path = DB_PATH,
             "page_count": 0,
             "disk_fill": 0.0,
             "tiers": {},
+            "content_indexed_pages": 0,
+            "content_index_pending": 0,
+            "content_index_errors": 0,
+            "content_index_terms": 0,
+            "content_index_capped_pages": 0,
+            "content_index_coverage": 0.0,
+            "content_index": {
+                "indexed_pages": 0,
+                "pending_pages": 0,
+                "error_pages": 0,
+                "retrying_pages": 0,
+                "indexed_terms": 0,
+                "capped_pages": 0,
+                "has_capped_pages": False,
+                "coverage": 0.0,
+            },
         }
     if ledger is None:
         raw_history = list(history or [])

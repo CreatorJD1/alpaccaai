@@ -26,12 +26,15 @@ labels retained in historical plans and handoffs.
   proactive delivery selects one surface; and confidence-gated cue evidence
   changes response strategy before generation without asserting a feeling.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
-  active. Phase 6A semantic-negative/orthogonal recall abstention is implemented
-  and covered by focused tests; live-chat semantic recall remains disabled by
-  default.
-- The next bounded Phase 6 slice is buried-content Mindpage indexing with an
-  idempotent backfill, followed by hard overflow refusal and cooperative
-  optional-worker cancellation.
+  active. Phase 6A semantic-negative/orthogonal recall abstention and Phase 6B
+  bounded sidecar content-term indexing are implemented and covered by focused
+  tests. New pages index after durable commit; legacy pages support idempotent
+  bounded backfill; content-only search does not inflate transcript blobs; and
+  stats expose index coverage, errors, and capped pages. Live-chat semantic
+  recall remains disabled by default.
+- The next Phase 6 sequence is idle-scheduled legacy content-index backfill
+  under the optional-work coordinator, then hard context-overflow
+  refusal/re-measurement, then cooperative optional-worker cancellation.
 - Discord proactive participation, recursion, and voice remain default-off until
   the Phase 10 identity, scope, and rate-limit gates pass.
 - `ALPECCA_TOOL_MODE` is `smart` and `ALPECCA_INNATE_TOOLS=1` in this branch.
@@ -41,6 +44,10 @@ labels retained in historical plans and handoffs.
   history only after a durable page commit, automatically pre-faults relevant
   bounded page evidence, and exposes one grounded pressure snapshot through the
   Soul, cognition state, WebSocket replies, `/mindpage/stats`, and House HQ.
+- Mindpage content-only retrieval now uses a bounded sidecar index instead of
+  inflating transcript blobs during search. New pages are indexed post-commit;
+  legacy-page backfill is implemented but is not yet scheduled from the idle
+  coordinator.
 - Long-term recall now unions its bounded salience/recency pool with FTS5 lexical
   candidates, so an old exact memory does not disappear behind the 500-row pool.
 - Page tiers now support hot promotion plus explicit warm/cold maintenance. Disk
