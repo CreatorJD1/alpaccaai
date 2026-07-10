@@ -30,11 +30,13 @@ labels retained in historical plans and handoffs.
   bounded sidecar content-term indexing are implemented and covered by focused
   tests. New pages index after durable commit; legacy pages support idempotent
   bounded backfill; content-only search does not inflate transcript blobs; and
-  stats expose index coverage, errors, and capped pages. Live-chat semantic
-  recall remains disabled by default.
-- The next Phase 6 sequence is idle-scheduled legacy content-index backfill
-  under the optional-work coordinator, then hard context-overflow
-  refusal/re-measurement, then cooperative optional-worker cancellation.
+  stats expose index coverage, errors, and capped pages. Legacy content-index
+  backfill is idle-scheduled through the optional `backfill` coordinator at a
+  300-second default interval. It stays silent and defers under chat, TTS, or
+  other optional-work contention without losing its due state. Live-chat
+  semantic recall remains disabled by default.
+- The next Phase 6 sequence is hard context-overflow refusal/re-measurement,
+  then cooperative optional-worker cancellation.
 - Discord proactive participation, recursion, and voice remain default-off until
   the Phase 10 identity, scope, and rate-limit gates pass.
 - `ALPECCA_TOOL_MODE` is `smart` and `ALPECCA_INNATE_TOOLS=1` in this branch.
@@ -46,8 +48,9 @@ labels retained in historical plans and handoffs.
   Soul, cognition state, WebSocket replies, `/mindpage/stats`, and House HQ.
 - Mindpage content-only retrieval now uses a bounded sidecar index instead of
   inflating transcript blobs during search. New pages are indexed post-commit;
-  legacy-page backfill is implemented but is not yet scheduled from the idle
-  coordinator.
+  legacy-page backfill is idle-scheduled through the optional `backfill`
+  coordinator at a 300-second default interval. It is silent and preserves its
+  due state when chat, TTS, or other optional work has the shared lease.
 - Long-term recall now unions its bounded salience/recency pool with FTS5 lexical
   candidates, so an old exact memory does not disappear behind the 500-row pool.
 - Page tiers now support hot promotion plus explicit warm/cold maintenance. Disk

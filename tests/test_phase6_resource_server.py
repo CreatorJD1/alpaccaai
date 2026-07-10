@@ -20,6 +20,17 @@ def optional_work(monkeypatch):
     return coordinator
 
 
+@pytest.fixture
+def mindpage_backfill_status(monkeypatch):
+    status = dict(server._background_autonomy_status)
+    status.update({
+        "last_mindpage_content_index_backfill_at": 0.0,
+        "last_mindpage_content_index_backfill_run": {},
+    })
+    monkeypatch.setattr(server, "_background_autonomy_status", status)
+    return status
+
+
 def test_optional_work_skips_overlap_and_defers_for_chat_or_tts(
     monkeypatch, optional_work
 ):
@@ -211,3 +222,105 @@ def test_optional_work_telemetry_is_compact_and_runtime_ready(optional_work):
         {"event": "start", "category": "reflection", "detail": ""},
         {"event": "finish", "category": "reflection", "detail": ""},
     ]
+
+
+def test_mindpage_content_index_backfill_runs_when_due_and_records_status(
+    monkeypatch, optional_work, mindpage_backfill_status
+):
+    calls: list[tuple[str, str, object, tuple, dict]] = []
+    run = {"scanned": 8, "indexed": 3, "errors": 0, "pending": 4}
+
+    async def completed_optional(category, label, fn, *args, **kwargs):
+        calls.append((category, label, fn, args, kwargs))
+        return run
+
+    async def unexpected_broadcast(*_args, **_kwargs):
+        raise AssertionError("maintenance must not broadcast activity")
+
+    monkeypatch.setattr(server, "_optional_bounded_thread", completed_optional)
+    monkeypatch.setattr(server, "_broadcast", unexpected_broadcast)
+    monkeypatch.setattr(server, "BACKGROUND_MINDPAGE_CONTENT_INDEX_INTERVAL", 300.0)
+
+    result = asyncio.run(server._maintain_mindpage_content_index(now=1_000.0))
+
+    assert result == run
+    assert calls == [
+        (
+            "backfill",
+            "mindpage_content_index_backfill",
+            server.mindpage_mod.backfill_content_index,
+            (),
+            {"batch": 8, "timeout": 10.0},
+        )
+    ]
+    assert mindpage_backfill_status["last_mindpage_content_index_backfill_at"] == 1_000.0
+    assert mindpage_backfill_status["last_mindpage_content_index_backfill_run"] == {
+        "status": "completed",
+        "scanned": 8,
+        "indexed": 3,
+        "errors": 0,
+        "pending": 4,
+    }
+
+
+def test_mindpage_content_index_backfill_skips_until_interval_is_due(
+    monkeypatch, optional_work, mindpage_backfill_status
+):
+    mindpage_backfill_status["last_mindpage_content_index_backfill_at"] = 900.0
+    mindpage_backfill_status["last_mindpage_content_index_backfill_run"] = {"status": "completed"}
+    monkeypatch.setattr(server, "BACKGROUND_MINDPAGE_CONTENT_INDEX_INTERVAL", 300.0)
+
+    async def unexpected_optional(*_args, **_kwargs):
+        raise AssertionError("not-due maintenance must not acquire an optional lease")
+
+    monkeypatch.setattr(server, "_optional_bounded_thread", unexpected_optional)
+
+    result = asyncio.run(server._maintain_mindpage_content_index(now=1_000.0))
+
+    assert result == {"status": "skipped", "reason": "interval", "next_in": 200.0}
+    assert mindpage_backfill_status["last_mindpage_content_index_backfill_at"] == 900.0
+    assert mindpage_backfill_status["last_mindpage_content_index_backfill_run"] == {
+        "status": "completed"
+    }
+
+
+def test_mindpage_content_index_backfill_defers_for_chat_without_dispatch(
+    monkeypatch, optional_work, mindpage_backfill_status
+):
+    monkeypatch.setattr(server, "active_chat_turns", 1)
+
+    async def unexpected_optional(*_args, **_kwargs):
+        raise AssertionError("chat-priority maintenance must not acquire an optional lease")
+
+    monkeypatch.setattr(server, "_optional_bounded_thread", unexpected_optional)
+
+    result = asyncio.run(server._maintain_mindpage_content_index(now=1_000.0))
+
+    assert result == {"status": "deferred", "reason": "chat-active", "category": "backfill"}
+    assert mindpage_backfill_status["last_mindpage_content_index_backfill_at"] == 0.0
+    assert mindpage_backfill_status["last_mindpage_content_index_backfill_run"] == {}
+
+
+def test_mindpage_content_index_backfill_preserves_due_time_when_optional_work_or_tts_defers(
+    monkeypatch, optional_work, mindpage_backfill_status
+):
+    calls: list[object] = []
+    monkeypatch.setattr(
+        server.mindpage_mod,
+        "backfill_content_index",
+        lambda **_kwargs: calls.append("backfill"),
+    )
+    held = optional_work.start("reflection")
+    assert held.lease is not None
+
+    overlap = asyncio.run(server._maintain_mindpage_content_index(now=1_000.0))
+    optional_work.finish(held.lease)
+
+    monkeypatch.setattr(server, "active_tts_requests", 1)
+    tts = asyncio.run(server._maintain_mindpage_content_index(now=1_001.0))
+
+    assert overlap["reason"] == "optional-work-active"
+    assert tts["reason"] == "tts-active"
+    assert calls == []
+    assert mindpage_backfill_status["last_mindpage_content_index_backfill_at"] == 0.0
+    assert mindpage_backfill_status["last_mindpage_content_index_backfill_run"] == {}

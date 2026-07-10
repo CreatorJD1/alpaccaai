@@ -34,11 +34,13 @@ retained in the implementation sequence as historical planning context.
   sidecar content-term indexing are implemented and covered by focused tests.
   New pages index after durable commit; legacy pages support idempotent bounded
   backfill; content-only search does not inflate transcript blobs; and stats
-  expose index coverage, errors, and capped pages. Live-chat semantic recall
-  remains disabled by default.
-- The next Phase 6 sequence is idle-scheduled legacy content-index backfill
-  under the optional-work coordinator, then hard context-overflow
-  refusal/re-measurement, then cooperative optional-worker cancellation.
+  expose index coverage, errors, and capped pages. Legacy content-index
+  backfill is idle-scheduled through the optional `backfill` coordinator at a
+  300-second default interval. It remains silent and defers under chat, TTS,
+  or other optional-work contention without losing its due state. Live-chat
+  semantic recall remains disabled by default.
+- The next Phase 6 sequence is hard context-overflow refusal/re-measurement,
+  then cooperative optional-worker cancellation.
 
 ## Truth Baseline
 
@@ -114,7 +116,7 @@ They are not fixed Alpecca hardware.
 | Feature | Status | Honest current state |
 |---|---|---|
 | Keyword/FTS recall and embedding backfill | PARTIAL | Bounded and useful; Phase 6A rejects orthogonal and negative semantic matches, while live-chat semantic recall remains disabled by default |
-| Mindpage Layer A | PARTIAL | Request ledger, write-before-delete paging, tiers, page faults, and bounded sidecar content-term indexing work; content-only search does not inflate transcript blobs. Idle-scheduled legacy backfill and fixed-prompt overflow handling remain |
+| Mindpage Layer A | PARTIAL | Request ledger, write-before-delete paging, tiers, page faults, and bounded sidecar content-term indexing work; content-only search does not inflate transcript blobs. Legacy index backfill is idle-scheduled; fixed-prompt overflow refusal and cooperative cancellation remain |
 | Conversation/privacy partitioning | DONE | Creator app and House HQ turns are scope-partitioned; future guest/Discord subjects remain capability-denied until their later gates |
 | Resource pressure sensing | PARTIAL | Context pressure is grounded; whole-machine sensing draft is not wired |
 | Approved pagefile broker | BLOCKED | Draft math, caps, approval proof, live recheck, and verification are unsafe |
@@ -296,9 +298,11 @@ backfill; content-only retrieval selects candidates without inflating transcript
 blobs; and Mindpage stats expose coverage, errors, and capped pages. Live-chat
 semantic recall remains disabled by default.
 
-Next, schedule the legacy content-index backfill only while idle and through the
-optional-work coordinator. Then add hard context-overflow refusal/re-measurement,
-followed by cooperative optional-worker cancellation or backend deadlines.
+Legacy content-index backfill is now idle-scheduled through the optional
+`backfill` coordinator at a 300-second default interval. It remains silent and
+defers under chat, TTS, or other optional-work contention without losing its
+due state. Next, add hard context-overflow refusal/re-measurement, followed by
+cooperative optional-worker cancellation or backend deadlines.
 Continue separating context pressure from RAM, commit, VRAM, CPU, disk, battery,
 and thermal signals. Treat 8K as the initial measurement baseline, then test
 Qwen 3.5 9B at 16K, 24K, 32K, and 48K with one request/model, Flash Attention,

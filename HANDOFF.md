@@ -25,11 +25,13 @@ retained below as historical implementation evidence.
   adds bounded sidecar Mindpage content-term indexing: new pages index after a
   durable commit, legacy pages support idempotent bounded backfill, and
   content-only retrieval selects candidates without inflating transcript blobs.
-  Mindpage stats expose index coverage, errors, and capped pages. Live-chat
-  semantic recall remains disabled by default.
-- The next Phase 6 sequence is idle-scheduled legacy content-index backfill
-  under the optional-work coordinator, then hard context-overflow
-  refusal/re-measurement, then cooperative optional-worker cancellation. Keep
+  Mindpage stats expose index coverage, errors, and capped pages. Legacy
+  content-index backfill is now idle-scheduled through the optional `backfill`
+  coordinator at a 300-second default interval. It remains silent and defers
+  under chat, TTS, or other optional-work contention without losing its due
+  state. Live-chat semantic recall remains disabled by default.
+- The next Phase 6 sequence is hard context-overflow refusal/re-measurement,
+  then cooperative optional-worker cancellation. Keep
   broader tools and action classes outside the Phase 4 baseline until separately
   approved and gated.
 
@@ -102,10 +104,12 @@ pages are indexed after durable commit; legacy pages support idempotent bounded
 backfill; content-only search does not inflate transcript blobs; and Mindpage
 stats expose index coverage, errors, and capped pages. Live-chat semantic recall
 remains disabled by default.
-Next, schedule legacy content-index backfill only while idle under the
-optional-work coordinator, then add hard overflow refusal/re-measurement, then
-cooperative cancellation for the single-flight optional-work coordinator so work
-cannot overlap destructively with chat/TTS.
+Legacy content-index backfill is now idle-scheduled through the optional
+`backfill` coordinator at a 300-second default interval. It stays silent and
+defers under chat, TTS, or other optional-work contention without losing its
+due state. Next, add hard overflow refusal/re-measurement, then cooperative
+cancellation for the single-flight optional-work coordinator so work cannot
+overlap destructively with chat/TTS.
 Keep 8K as the initial measured context. Only promote Qwen 3.5 9B context after
 real 16K/24K/32K/48K measurements stay below 90 percent commit, retain 2 GiB
 physical-RAM headroom, and avoid sustained SSD paging. The 38,000 MiB pagefile

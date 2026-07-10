@@ -506,6 +506,16 @@ BACKGROUND_DELIVERY_TIMEOUT = 6.0
 BACKGROUND_MINDSCAPE_TIMEOUT = 12.0
 BACKGROUND_LIVING_INTERVAL = 40.0
 BACKGROUND_EMBED_BACKFILL_INTERVAL = 120.0
+try:
+    # Derived-index work is local, bounded, and useful by default. Keep it
+    # deliberately infrequent so an idle companion does not churn through old
+    # page transcripts while the creator is using the laptop.
+    BACKGROUND_MINDPAGE_CONTENT_INDEX_INTERVAL = max(
+        30.0,
+        float(os.environ.get("ALPECCA_MINDPAGE_CONTENT_INDEX_INTERVAL", "300")),
+    )
+except (TypeError, ValueError):
+    BACKGROUND_MINDPAGE_CONTENT_INDEX_INTERVAL = 300.0
 _background_autonomy_status = {
     "enabled": True,
     "started_at": _time.time(),
@@ -527,6 +537,9 @@ _background_autonomy_status = {
     "last_living_engagement_proposal": {},
     "last_backfill_at": 0.0,
     "last_backfill_run": {},
+    "mindpage_content_index_backfill_interval": BACKGROUND_MINDPAGE_CONTENT_INDEX_INTERVAL,
+    "last_mindpage_content_index_backfill_at": 0.0,
+    "last_mindpage_content_index_backfill_run": {},
     "last_error": "",
     "tick_count": 0,
     "living_tick_count": 0,
@@ -902,6 +915,60 @@ async def _optional_bounded_thread(
         asyncio.create_task(
             _release_optional_work_when_settled(coordinator, lease, settled)
         )
+    return result
+
+
+def _compact_mindpage_content_index_run(result: object) -> dict:
+    """Keep app-visible maintenance state useful without retaining page content."""
+    if result is None:
+        return {"status": "timed_out"}
+    if not isinstance(result, dict):
+        return {"status": "completed"}
+    compact = {"status": str(result.get("status") or "completed")[:40]}
+    for key in ("scanned", "indexed", "errors", "pending"):
+        value = result.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            compact[key] = max(0, min(value, 1_000_000))
+    return compact
+
+
+async def _maintain_mindpage_content_index(*, now: float | None = None):
+    """Backfill a small legacy Mindpage index batch only when the companion is idle."""
+    scheduled_at = float(_time.time() if now is None else now)
+    if _player_chat_priority_active():
+        return {"status": "deferred", "reason": "chat-active", "category": "backfill"}
+
+    last_run = float(
+        _background_autonomy_status.get("last_mindpage_content_index_backfill_at") or 0.0
+    )
+    elapsed = scheduled_at - last_run
+    if last_run and elapsed < BACKGROUND_MINDPAGE_CONTENT_INDEX_INTERVAL:
+        return {
+            "status": "skipped",
+            "reason": "interval",
+            "next_in": round(BACKGROUND_MINDPAGE_CONTENT_INDEX_INTERVAL - elapsed, 3),
+        }
+
+    try:
+        result = await _optional_bounded_thread(
+            "backfill",
+            "mindpage_content_index_backfill",
+            mindpage_mod.backfill_content_index,
+            batch=8,
+            timeout=10.0,
+        )
+    except Exception as exc:
+        result = {"status": "error", "error": type(exc).__name__}
+
+    if _optional_work_deferred(result):
+        # A refused lease is not a run: leave the due timestamp untouched so it
+        # is retried promptly once chat, TTS, or another optional job releases.
+        return result
+
+    _background_autonomy_status["last_mindpage_content_index_backfill_at"] = scheduled_at
+    _background_autonomy_status["last_mindpage_content_index_backfill_run"] = (
+        _compact_mindpage_content_index_run(result)
+    )
     return result
 
 
@@ -1392,6 +1459,10 @@ async def lifespan(app: FastAPI):
                                     "memories with embeddings"
                                 ),
                             })
+                # Content-index maintenance is deliberately silent. It uses the
+                # same optional-work slot as embedding backfill, never holds
+                # `mind_lock`, and retries as soon as a deferred idle window ends.
+                await _maintain_mindpage_content_index(now=now)
                 if chat_priority:
                     reflect_now = False
                     living_due = False
