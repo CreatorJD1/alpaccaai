@@ -1,5 +1,39 @@
 # Alpecca — Handoff (updated 2026-07-09)
 
+## Master architecture checkpoint (2026-07-09)
+
+- `docs/ALPECCA_MASTER_PLAN.md` and `docs/ALPECCA_MASTER_PLAN.pdf` are the
+  dependency-ordered implementation plan produced from the AI-core, security,
+  Mindpage/pagefile, Discord, Creator contact, and V4 embodiment audits.
+- The corrected compute boundary is authoritative: the local laptop is
+  approximately 24 GB DDR5-4800 with an RTX 3050 Laptop GPU (4 GB VRAM). Any 34 GB
+  memory or H100-class label belongs only to an observed/requested Hugging Face
+  ZeroGPU or Google notebook runtime. Cloud allocations are ephemeral and are
+  never counted as local or persistent Alpecca capacity.
+- Current security hold: keep public tunnels and computer control disabled until
+  Phase 1 passes. The existing Alpecca value appears in House HQ source/generated
+  bundles because Jason considers it part of her public identity; preserve it and
+  do not revoke or rotate it. The defect is that the server currently accepts that
+  public value as bearer authorization and HTML navigation can bootstrap a
+  privileged cookie. Phase 1 must separate public identity from a new protected
+  authorization secret and fix the middleware before remote autonomy.
+- Phase order is: containment -> authoritative CreatorJD identity + OS singleton
+  + active-portal lease -> scoped turn transactions -> cue/commitment/action
+  receipts -> unified initiative/grounded affect -> Mindpage/resource fixes ->
+  approved pagefile broker -> bounded recursive improvement -> multimodal source
+  perception -> Discord/contact -> V4 behavior -> Mindscape/cloud failover -> soak.
+- `alpecca/creator_contact.py` and `alpecca/system_pressure.py` remain untracked
+  WIP scaffolds. They are not live capabilities and must not be wired before the
+  identity/approval gates. From the audited 38,000 MiB pagefile baseline, exact
+  4 GiB steps are 42,096, 46,192, 50,288, and 54,384 MiB; current pressure did
+  not justify an increase.
+- V4 remains the live body with 74 spring joints and 22 colliders. Promotion
+  still requires 170 cm scale correction, posed-boot sole grounding, stationary
+  hips-track filtering, expression reset, one-shot gesture scheduling, collider
+  tuning, and design-lock turntable QA.
+
+---
+
 ## Mindpage adaptive paging checkpoint (2026-07-09)
 
 - `alpecca/mindpage.py` now measures the actual formatted request instead of
@@ -37,7 +71,7 @@
 - User requirement remains: **disable layers instead of deleting**.
 - Current state:
   - The updated regular-outfit source remains `data/alpecca_art_source/vrm_experiments/alpecca_vroid_proxy_v0.vroid` (9,650,830 bytes, saved 2026-07-09 12:19:40). It was preserved byte-for-byte as `alpecca_vroid_proxy_v0_updated_source_20260709_121940_preserved.vroid` before the base-view work.
-  - The stripped inspection model is a separate file: `data/alpecca_art_source/vrm_experiments/alpecca_vroid_proxy_v13_base_view_170cm.vroid` (7,321,206 bytes, saved 2026-07-09 15:07:52). Do not treat v13 as the regular-outfit source.
+  - The stripped inspection model is a separate file: `data/alpecca_art_source/vrm_experiments/alpecca_vroid_proxy_v13_base_view_170cm.vroid` (9,603,521 bytes, modified 2026-07-09 17:13:10). It changed after the earlier 15:07 visual checkpoint, so reverify its visible layer state before relying on the older QA notes. Do not treat v13 as the regular-outfit source.
   - Blank/no-item presets are active in v13 for `Tops`, `Bottoms`, `Socks`, and `Shoes`; neck/accessory routes remain absent. `Inner Top` and `Inner Bottom` expose no blank preset, so the minimal required underlayers remain. No item or texture layer was deleted.
   - Base height was 170.2 cm / 5 ft 7 in when v13 was saved (`Fem Height=0.475`, `Masc Height=0.050`) with shoes disabled. VRoid displayed 170.3 cm after returning from Photo Booth with the same unchanged sliders; this is within the 170.2-170.4 cm gate and appears to be display/pose rounding.
   - Full-body editor QA was completed at front, left/right 3/4, side, back 3/4, and back. A persistent front A-pose capture is `data/alpecca_art_source/vrm_experiments/qa_lane/alpecca_v13_base_front_20260709.png`.

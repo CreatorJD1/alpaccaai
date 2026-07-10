@@ -2,6 +2,7 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
 ollama>=0.3.0
+cryptography>=43.0
 
 # Sensory layer (Windows window-title capture).
 # pywin32 only installs on Windows; on other OSes Alpecca falls back automatically.

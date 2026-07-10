@@ -1,122 +1,101 @@
-# Alpecca Feature & Function Skeleton (Tiered Infographic)
+# Alpecca Feature And Function Skeleton
 
-Last reviewed: 2026-07-09  
-Canonical source stack: `PROJECT_CONTEXT.md`, `HANDOFF.md`, `docs/AGENTIC_ASSESSMENT.md`, `docs/ALPECCA_CURRENT_PROGRESS.md`.
+Last reviewed: **2026-07-09**
+
+Canonical status source: `docs/ALPECCA_MASTER_PLAN.md`.
 
 ## Legend
 
-Green: Done  
-Amber: Partially done / conditional  
-Slate: Partially superseded by newer documentation/behavior  
-Blue: Parked / intentionally deferred  
-Gray: Not started
+- Green: DONE - live, tested, runtime-verified, documented, and not security-blocked.
+- Amber: PARTIAL - useful implementation exists but a required gate is open.
+- Red: BLOCKED - unsafe to activate until remediation passes.
+- Gray: NOT STARTED - no production implementation.
+- Blue: PARKED - intentionally deferred experiment.
+- Slate: SUPERSEDED - replaced claim or design.
 
 ```mermaid
 flowchart TB
-    classDef done fill:#2e7d32,stroke:#1b5e20,color:#ffffff;
-    classDef partial fill:#f9a825,stroke:#7f6000,color:#1a1a1a;
-    classDef superseded fill:#546e7a,stroke:#263238,color:#ffffff;
-    classDef parked fill:#1565c0,stroke:#0d47a1,color:#ffffff;
-    classDef notstarted fill:#90a4ae,stroke:#546e7a,color:#ffffff;
+    classDef done fill:#27864a,stroke:#185c32,color:#ffffff;
+    classDef partial fill:#f2a922,stroke:#9a6508,color:#172033;
+    classDef blocked fill:#c83d4d,stroke:#7f1f2b,color:#ffffff;
+    classDef notstarted fill:#9aa7b8,stroke:#5d6878,color:#ffffff;
+    classDef parked fill:#3276c5,stroke:#184c88,color:#ffffff;
 
-    S0["ALPECCA CURRENT SKELETON (runtime + product surface)"]:::partial
+    A["ALPECCA: one local-first companion system"]:::partial
+    A --> F["Foundation runtime"]:::partial
+    F --> F1["FastAPI / WebSocket / SQLite"]:::partial
+    F --> F2["Remote auth + tunnels"]:::blocked
+    F --> F3["Singleton + active portal"]:::notstarted
 
-    S0 --> T1["Tier 1: Foundation Runtime"]
-    T1 --> T1A["Fast chat path + runtime status + stream routing"]:::done
-    T1 --> T1B["Server orchestration, lifecycle, websocket"]:::done
-    T1 --> T1C["Persistence: DB state, memories, state log, proposals"]:::done
-    T1 --> T1D["Remote/auth gates and tunnel modes (auth solid; ngrok launch never captures URL)"]:::partial
+    A --> C["Cognition + agency"]:::partial
+    C --> C1["Soul seven-subagent arbitration"]:::done
+    C --> C2["CoreMind turn loop"]:::partial
+    C --> C3["Cue + commitment ledger"]:::notstarted
+    C --> C4["External approvals"]:::blocked
 
-    S0 --> T2["Tier 2: Interaction Agents"]
-    T2 --> T2A["Soul seven-subagent loop"]:::done
-    T2 --> T2B["Snapshot-driven focus dispatch + room motion"]:::done
-    T2 --> T2C["Tool loop with bounded rounds and schema gate"]:::done
-    T2 --> T2D["Tool mode control: keyword/smart/always"]:::done
-    T2 --> T2E["Innate tools: memory/journal/status/plan/recall (bounded 7-tool offer; keyword-preferred selection keeps recall/plan reachable)"]:::done
-    T2 --> T2F["Vision + computer use"]:::partial
+    A --> M["Memory + Mindpage"]:::partial
+    M --> M1["Keyword/FTS + embedding backfill"]:::partial
+    M --> M2["Mindpage Layer A"]:::partial
+    M --> M3["Conversation privacy partition"]:::blocked
+    M --> M4["llama.cpp KV persistence"]:::parked
 
-    S0 --> T3["Tier 3: Memory System"]
-    T3 --> T3A["Keyword recall (live chat default)"]:::done
-    T3 --> T3B["Semantic backfill pipeline (idempotent)"]:::done
-    T3 --> T3C["Bounded recall candidate scoring"]:::done
-    T3 --> T3D["Embeddings on demand (offline-safe fallbacks)"]:::done
-    T3 --> T3E["Mindpage layer A: pages, writeback, pressure"]:::done
-    T3 --> T3F["Context budget shrink and pressure signal flow (adaptive: measures full request, reserves response capacity, commit-safe paging)"]:::done
-    T3 --> T3G["Pagefile KV cache (llama.cpp save/restore)"]:::notstarted
-    T3 --> T3H["Layer C mmap/memory-tier deep mode"]:::notstarted
+    A --> R["Recursive improvement + automation"]:::partial
+    R --> R1["Selfmod / learning"]:::partial
+    R --> R2["Routines / watchers"]:::partial
+    R --> R3["Unified initiative budget"]:::notstarted
+    R --> R4["Computer autonomy"]:::blocked
 
-    S0 --> T4["Tier 4: Agency Controls"]
-    T4 --> T4A["Constrained pick for tie-break/live/proactive choice"]:::done
-    T4 --> T4B["Deterministic fallback on parse failure"]:::done
-    T4 --> T4C["Proposal-first world edits"]:::done
-    T4 --> T4D["ASK_FIRST enforcement on execution"]:::done
-    T4 --> T4E["Planner step cap + strict payload format"]:::done
+    A --> E["Experience + embodiment"]:::partial
+    E --> E1["House HQ + virtual app"]:::partial
+    E --> E2["V4 VRM + 74 spring joints"]:::partial
+    E --> E3["Expression / gesture scheduler"]:::partial
+    E --> E4["Locked design QA"]:::partial
 
-    S0 --> T5["Tier 5: Automation"]
-    T5 --> T5A["Routines table + poll loop + routes (create/toggle only; no DELETE route)"]:::partial
-    T5 --> T5B["Watcher loop + scan-no-content policy"]:::done
-    T5 --> T5C["Built-in routine kinds only (safe, existing functions)"]:::done
-    T5 --> T5D["Consolidation + VACUUM routine (consolidation real; explicit vacuum() hook exists, not yet a scheduled routine kind)"]:::partial
-    T5 --> T5E["MCP tool federation"]:::parked
+    A --> P["Perception + communication"]:::partial
+    P --> P1["TTS voice"]:::partial
+    P --> P2["Image / file perception"]:::partial
+    P --> P3["Audio perception"]:::notstarted
+    P --> P4["Discord autonomy"]:::blocked
+    P --> P5["Creator contact outbox"]:::notstarted
 
-    S0 --> T6["Tier 6: Studio & Experience Surface"]
-    T6 --> T6A["House HQ 2D + WS sense/event pipeline"]:::done
-    T6 --> T6B["Studio tooling: character sheet + prompt/image route"]:::done
-    T6 --> T6C["VRM runtime page + grounding (works on feat/vrm-preview; unmerged to main)"]:::partial
-    T6 --> T6D["VCS app pipeline + texture lab integration"]:::done
-    T6 --> T6E["Asset-level 3D model/art iteration"]:::partial
-    T6 --> T6F["VRoid source pass for base model and outfit corrections"]:::partial
-
-    S0 --> T7["Tier 7: Voice / Periphery / Ops"]
-    T7 --> T7A["Identity voice stack (f5/kokoro + defaults)"]:::done
-    T7 --> T7B["Discord bridge and notification logic"]:::done
-    T7 --> T7C["Desktop/app file/vision feature flags"]:::done
-    T7 --> T7D["Cloud integration (optional: cloud/mirror/deep)"]:::partial
-    T7 --> T7E["MCP/closed frameworks in new paths"]:::superseded
-
-    S0 --> T8["Tier 8: Governance and Safety Envelope"]
-    T8 --> T8A["Locked spelling and artifact rules (no art upload to Cloudflare)"]:::done
-    T8 --> T8B["No default autonomous external side effects"]:::done
-    T8 --> T8C["Deterministic/noise-hardened fallbacks"]:::done
-    T8 --> T8D["Offline honesty and bounded behavior"]:::done
-    T8 --> T8E["Legacy doc posture cleanup + archived stale docs"]:::done
+    A --> X["Cloud + continuity"]:::partial
+    X --> X1["HF art/runtime assets"]:::partial
+    X --> X2["ZeroGPU / notebook compute"]:::partial
+    X --> X3["Cloudflare shell"]:::blocked
+    X --> X4["Mindscape continuity"]:::blocked
 ```
 
-## Honest completion evidence (selected)
+## Hardware And Cloud Boundary
 
-- `config.py`: tool modes, backfill, planner, routines/watchers flags, model defaults and cloud/deep backends.
-- `alpecca/mind.py`: core loop, tool-schema selection, constrained pick callers, proactive control, propose execution flow, memory pressure injection, mindpage history writeback.
-- `alpecca/actions.py` + `alpecca/toolkit.py`: action surface and tool dispatch semantics.
-- `alpecca/cognition.py`: proposal schema migration/payload column and execution decisions.
-- `alpecca/planner.py`: bounded local planning path with strict JSON + one-retry contract.
-- `alpecca/memory.py`: backfill routine with NULL-only idempotent embedding updates.
-- `server.py`: background backfill tick, /routines routes, /mindpage/stats, /cognition/proposals, watch/task lifecycles.
-- `alpecca/mindpage.py`: page table, pressure stats, recall, stub generation, writeback.
-- `alpecca/routines.py` and `alpecca/watchers.py`: automation and safe observation feed.
-- `tests/test_core.py`: regression coverage for tool modes, backfill, mindpage recall, planner execution gate, proposals, routines/watchers routes, and offline fallback behavior.
+| Lane | Status | Rule |
+|---|---|---|
+| Local Windows host | Authoritative | Approximately 24 GB DDR5-4800 and RTX 3050 Laptop 4 GB |
+| Hugging Face ZeroGPU | Optional / ephemeral | Stateless bounded inference only; runtime hardware must be probed |
+| Google notebook / Colab | Optional / ephemeral | Stateless bounded jobs only; capacity and uptime are not guaranteed |
 
-## Status by layer
+The old 34 GB DDR5/H100 local-rig claim is superseded. Those labels refer only
+to a cloud runtime when observed, never to the laptop or persistent capacity.
 
-- **Done:** foundation runtime, tool gating (keyword-preferred 7-tool offer), proposal governance, base memory upgrades, adaptive mindpage paging + FTS5 recall, stage 3 constrained decisions, planner safety gates, watchers, mindpage layer A, house/vcs surface routes.
-- **Partial:** remote/tunnel modes, routines route surface, consolidation/VACUUM scheduling, VRM page merge status, vision/computer-use behavior, deep tier experiments, 3D model matching pass, and advanced automation composition.
-- **Not started / blocked:** Layer B KV persistence, Layer C mmap/pagefile deep tier in production path, MCP auto-provisioning at runtime.
-- **Superseded:** legacy "8B/qwen3-8b" references and earlier system reviews now replaced by current assessment docs.
+## Highest-Priority Blockers
 
-## Verified audit corrections (2026-07-09, multi-subagent code audit; updated same day after the adaptive Mindpage pass)
+1. Rotate and remove the exposed root token; fix HTML self-authentication; keep
+   tunnels and computer control disabled.
+2. Add authoritative CreatorJD identity, OS singleton, active-portal lease, and
+   identity-bound approval ledger.
+3. Partition turns/history/memory by actor, conversation, surface, and privacy;
+   prevent late commits after timeout.
+4. Add cue/commitment/action receipts so promised work executes or fails honestly.
+5. Unify proactive budgets before enabling Discord or recursive follow-ups.
 
-Five concrete defects were found by parallel code audit. The 2026-07-09 adaptive Mindpage implementation resolved three of them:
+## Current V4 Embodiment Boundary
 
-1. **FIXED — Innate tool cap dropped recall.** The 7-tool offer is now preference-driven (`alpecca/mind.py` `_chat_tools_schema`): recall/plan/journal tools are guaranteed slots when the message mentions them, so `recall_page` is no longer silently unreachable with the planner on.
-2. **OPEN — Routines have no DELETE route.** `/routines` supports list/create/toggle only; `tests/test_core.py` deletes rows via raw SQL. Routines can be disabled but never removed over HTTP.
-3. **MOSTLY FIXED — VACUUM.** `alpecca/mindpage.py` `vacuum()` now exists as an explicit maintenance hook; it is not yet exposed as a scheduled routine kind, so T5D stays partial.
-4. **OPEN — ngrok tunnel is a blind launch.** `app.py` `_start_tunnel` starts ngrok via bare `subprocess.Popen` and never captures the public URL; only the cloudflare path goes through `preview_mod.ensure`.
-5. **FIXED — Pressure now drives shrink.** The adaptive Mindpage ledger measures the complete LLM request, reserves response capacity, and pages history commit-safely; pressure is grounded telemetry (Soul, prompts, cognition, WS, API, House HQ gauge), not just a surfaced number.
+- Runtime body loads with 74 spring joints and 22 colliders.
+- Preserve the locked adult 19-year-old, 5 ft 7 in / approximately 170 cm design.
+- Open: 3D scale calibration, boot-sole grounding, stationary root motion,
+  expression reset, one-shot gesture scheduling, hoodie collider tuning, hair and
+  left X/bow clip fidelity, and front/3/4/side/back turntable QA.
 
-The same pass added FTS5 lexical recall (`alpecca/memory.py`), hot/warm/cold page tiers with maintenance, and a House HQ working-memory gauge. Layer B (llama.cpp slot persistence) and Layer C (OS pagefile/mmap) remain experimental and not activated.
+## Verification
 
-Also noted: the planner is conservatively "partial" in the entire-project diagram (execution proposal-gated, minimal tool set) — that framing is kept; the "fast" chat tier serves background/subagent work only since live player chat is pinned to the reason tier (`server.py`); VRM page + grounding is fully wired but exists only on `feat/vrm-preview`, absent from `main`.
-
-## Next 2-step verification
-
-1. Run: `python -m pytest -q tests/test_core.py -q`
-2. Run: `npm.cmd run house:build`
+The complete acceptance gates and phase ordering live in
+`docs/ALPECCA_MASTER_PLAN.md` and `docs/ALPECCA_MASTER_PLAN.pdf`.

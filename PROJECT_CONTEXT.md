@@ -49,6 +49,21 @@ Important current priorities:
 - `scripts/prepare_house_hq_r2_static.py` excludes Alpecca art folders by default.
 - `scripts/publish_alpecca_art_library_hf.py` syncs art to Hugging Face.
 
+## Compute Boundary
+
+- The authoritative local host is the Windows laptop with approximately **24 GB
+  DDR5-4800 system RAM** and an **RTX 3050 Laptop GPU with 4 GB VRAM**. Local design,
+  model routing, context limits, and workload shedding must fit this envelope.
+- Any **34 GB memory** or **H100-class GPU** label refers only to an observed or
+  requested Hugging Face ZeroGPU / Google notebook cloud runtime. It is not the
+  laptop specification and is never counted as persistent Alpecca capacity.
+- ZeroGPU and notebook hardware is ephemeral, provider-dependent, and must be
+  runtime-probed. Cloud loss must leave local chat, policy, memory, and approvals
+  available.
+- The local host remains authoritative for identity, policy, memory, approvals,
+  presence, and continuity. Remote compute may return bounded inference results;
+  it never becomes another CoreMind or owns canonical state.
+
 ## Alpecca Design Lock
 
 Never change Alpecca's core design while generating or repairing art. The canonical design lock lives at:
