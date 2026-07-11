@@ -2,12 +2,13 @@
 
 Last updated: **2026-07-10**
 
-## Phase 6E-6G Checkpoint
+## Phase 6E-6H Checkpoint
 
 Phase 6E adds bounded, evidence-only host-resource observation and context-tier
 measurement. Phase 6F consumes only fresh advisory host pressure to defer
-optional maintenance before a coordinator lease. It does not promote a model
-tier or change the machine.
+optional maintenance before a coordinator lease. Phase 6H adds an execute-only,
+read-only host preflight to the measurement harness. None of these steps
+promotes a model tier or changes the machine.
 
 `alpecca.host_resources.HostResourceSampler` is read-only. It samples available
 host CPU, RAM, Windows commit, VRAM, disk, battery, and thermal signals and
@@ -33,7 +34,8 @@ actions.
 ## One-Tier Harness
 
 `scripts\measure_context_tier.py` is a JSON-only, one-tier measurement harness.
-Its default invocation is a side-effect-free dry run at the 8,192-token tier:
+Its default invocation is a side-effect-free dry run at the 8,192-token tier;
+it does not instantiate a host sampler or make an Ollama request:
 
 ```powershell
 python scripts\measure_context_tier.py
@@ -47,10 +49,25 @@ python scripts\measure_context_tier.py --execute --tier 16384
 ```
 
 The only allowed tiers are `8192`, `16384`, `24576`, `32768`, and `49152`.
-When execution is explicitly requested, the harness validates the approved local
-`qwen3.5:9b` model and a direct loopback Ollama HTTP base URL, then makes at most
-one non-streaming, non-thinking `/api/generate` request using a deterministic,
-non-private synthetic needle prompt. It captures before, during, and after
+Only `--execute --tier N` captures the read-only before-sample and evaluates the
+host preflight. Known high or critical host pressure, RAM/commit/disk headroom
+below fixed thresholds, or a low unplugged battery block the run before any
+Ollama HTTP request, with a request count of zero. The fixed execute thresholds
+are:
+
+- Host assessment: `high` or `critical` blocks.
+- RAM headroom: at least 6 GiB and 20%.
+- Commit headroom: at least 8 GiB and 20%.
+- Disk headroom: at least 10 GiB and 10%.
+- Battery: blocks only at or below 25% when not charging.
+
+Unknown, invalid, or partial telemetry remains explicit preflight evidence; it
+does not fabricate a block.
+
+The harness validates the approved local `qwen3.5:9b` model and a direct
+loopback Ollama HTTP base URL before preflight. When preflight permits execution,
+it makes at most one non-streaming, non-thinking `/api/generate` request using a
+deterministic, non-private synthetic needle prompt. It captures during and after
 read-only host samples when available.
 
 ## Manual Gates And Non-Goals
@@ -65,12 +82,13 @@ marker verification, request and Ollama timing, token telemetry, host samples,
 and explicit unknowns. A later promotion remains a separately approved decision;
 the harness cannot make it automatically.
 
-No real model tier was run in this documentation checkpoint, and no tier was
-promoted.
+On 2026-07-10, a real-machine execute invocation was blocked by critical host
+pressure before any Ollama request. No real `qwen3.5:9b` inference or
+context-tier measurement completed, and no tier was promoted.
 
 ## Remaining Phase 6 Work
 
-Phase 6 remains **PARTIAL**. The next remaining work is real manual context-tier
-measurements, followed only by any separately approved promotion based on their
-evidence. No direct pagefile mutation is authorized in Phase 6; pagefile work
-remains blocked behind the separate Phase 7 creator-approval gate.
+Phase 6 remains **PARTIAL**. The next gated action is to clear resources and
+re-run preflight, then separately authorize one 8,192 measurement. No direct
+pagefile mutation is authorized in Phase 6; pagefile work remains blocked behind
+the separate Phase 7 creator-approval gate.

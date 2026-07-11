@@ -60,16 +60,21 @@ retained in the implementation sequence as historical planning context.
   telemetry or advisory data; unknown, invalid, or unavailable data stays
   `null`. It makes no LLM or system call and does not change seven-agent Soul
   deliberation, urgency, or actions.
-- `scripts\measure_context_tier.py` is a one-tier evidence harness. It defaults
-  to a no-request dry run at 8,192; a real request requires explicit
-  `--execute --tier N`, and `--all` is rejected. Only 8,192, 16,384, 24,576,
-  32,768, and 49,152 are allowed. Reports require manual review and never
-  automatically promote a tier or change model/application configuration,
-  pagefile, or system settings. No real model tier was run in this checkpoint.
-- Phase 6 remains partial. The next remaining work is real manual context-tier
-  measurements, followed only by any separately approved promotion based on
-  their evidence; no direct pagefile mutation is authorized. See
-  `docs/CONTEXT_TIER_MEASUREMENT.md` for the Phase 6E-6G contract.
+- Phase 6H adds an execute-only, read-only host preflight to the one-tier
+  `scripts\measure_context_tier.py` harness. The default 8,192 dry run still
+  uses no sampler and makes no request. On `--execute --tier N`, known high or
+  critical host pressure, RAM/commit/disk headroom below fixed thresholds, or a
+  low unplugged battery block the run before Ollama with zero HTTP requests.
+  Unknown telemetry remains explicit and does not fabricate a block. `--all`
+  remains rejected; reports never promote a tier or change configuration,
+  pagefile, or system settings.
+- On 2026-07-10, a real-machine execute invocation was blocked by critical host
+  pressure before any Ollama request. No real `qwen3.5:9b` inference or
+  context-tier measurement completed, and no tier was promoted.
+- Phase 6 remains partial. The next gated action is to clear resources and
+  re-run preflight, then separately authorize one 8,192 measurement; no direct
+  pagefile mutation is authorized. See `docs/CONTEXT_TIER_MEASUREMENT.md` for
+  the Phase 6E-6H contract.
 
 ## Truth Baseline
 
@@ -147,7 +152,7 @@ They are not fixed Alpecca hardware.
 | Keyword/FTS recall and embedding backfill | PARTIAL | Bounded and useful; Phase 6A rejects orthogonal and negative semantic matches, while live-chat semantic recall remains disabled by default |
 | Mindpage Layer A | PARTIAL | Request ledger, write-before-delete paging, tiers, page faults, bounded sidecar content-term indexing, fixed-prompt overflow refusal, and cooperative maintenance cancellation work. Legacy index backfill is idle-scheduled; LLM calls, TTS synthesis, reflection, and VACUUM are not force-cancelled |
 | Conversation/privacy partitioning | DONE | Creator app and House HQ turns are scope-partitioned; future guest/Discord subjects remain capability-denied until their later gates |
-| Resource pressure sensing | PARTIAL | Read-only `HostResourceSampler` exposes host evidence through `GET /system/resources`; Phase 6F uses only fresh advisory host pressure to defer optional maintenance before a coordinator lease. Phase 6G separately projects the cached assessment into Soul `host_pressure`, never raw telemetry or advisory data; unknown stays `null`, it makes no LLM/system call, and it does not change seven-agent deliberation, urgency, or actions. Chat and TTS are unchanged, and no automatic context reduction/pagefile/configuration/system action occurs |
+| Resource pressure sensing | PARTIAL | Read-only `HostResourceSampler` exposes host evidence through `GET /system/resources`; Phase 6F uses only fresh advisory host pressure to defer optional maintenance before a coordinator lease. Phase 6G separately projects the cached assessment into Soul `host_pressure`, never raw telemetry or advisory data; unknown stays `null`, it makes no LLM/system call, and it does not change seven-agent deliberation, urgency, or actions. Phase 6H adds an execute-only, read-only context-measurement preflight: known unsafe evidence blocks before HTTP, while unknowns remain explicit and do not fabricate a block. Chat and TTS are unchanged, and no automatic context reduction/pagefile/configuration/system action occurs |
 | Approved pagefile broker | BLOCKED | Draft math, caps, approval proof, live recheck, and verification are unsafe |
 | llama.cpp KV slot persistence | PARKED | Downloaded experiment, not integrated |
 
@@ -356,32 +361,38 @@ raw host telemetry and advisory data, while unknown, invalid, or unavailable
 data stays `null`. It is observational only: it makes no LLM or system call and
 does not change seven-agent Soul deliberation, urgency, or actions.
 
-`scripts\measure_context_tier.py` records evidence for one allowed tier at a
-time. Its default is a no-request dry run at 8,192. A real local request is
-permitted only with `--execute --tier N`; `--all` is rejected. Allowed tiers are
-8,192, 16,384, 24,576, 32,768, and 49,152. The harness makes no automatic
+Phase 6H makes the one-tier `scripts\measure_context_tier.py` host preflight
+execute-only and read-only. Its default 8,192 dry run uses no sampler and makes
+no request. On `--execute --tier N`, known high or critical host pressure,
+RAM/commit/disk headroom below fixed thresholds, or a low unplugged battery
+block before any Ollama HTTP request; unknown telemetry remains explicit and
+does not fabricate a block. `--all` is rejected. The harness makes no automatic
 promotion or configuration/system change, and every report requires manual
-review before any later decision. No real model tier was run in this checkpoint.
+review before any later decision.
 
-Phase 6 remains **PARTIAL**. The next remaining work is real manual context-tier
-measurements, followed only by any separately approved promotion based on their
-evidence. Continue separating context pressure from RAM, commit, VRAM, CPU,
-disk, battery, and thermal signals. 8K is the first candidate measurement
-baseline; 16K, 24K, 32K, and 48K remain separate, manual Qwen 3.5 9B evidence
-reviews. No direct pagefile mutation is authorized in Phase 6. The 38,000 MiB
-pagefile supplies Windows commit reserve for CPU-backed model/KV pages; it does
-not extend the GPU's 4 GB VRAM.
+On 2026-07-10, a real-machine execute invocation was blocked by critical host
+pressure before any Ollama request. No real `qwen3.5:9b` inference or
+context-tier measurement completed, and no tier was promoted.
+
+Phase 6 remains **PARTIAL**. The next gated action is to clear resources and
+re-run preflight, then separately authorize one 8,192 measurement. Continue
+separating context pressure from RAM, commit, VRAM, CPU, disk, battery, and
+thermal signals. No direct pagefile mutation is authorized in Phase 6. The
+38,000 MiB pagefile supplies Windows commit reserve for CPU-backed model/KV
+pages; it does not extend the GPU's 4 GB VRAM.
 
 Exit gate: orthogonal memories are rejected; buried page facts are retrievable;
 no request exceeds the configured context estimate; optional reflection/backfill
 cannot overlap destructively with chat/TTS; only fresh advisory host pressure can
 defer optional maintenance before a coordinator lease; chat/TTS are unchanged;
-unknown telemetry allows work; cached host assessment reaches Soul only as
-assessment-only `host_pressure` evidence, with unknown data kept `null` and no
-change to seven-agent deliberation, urgency, or actions; and no automatic
-context reduction, pagefile, configuration, or system action occurs. The
-largest promoted context tier stays below 90 percent commit, preserves 2 GiB of
-physical RAM, and does not enter sustained SSD paging.
+the execute-only read-only preflight blocks known unsafe host pressure, below-
+threshold headroom, and low unplugged battery before HTTP while preserving
+explicit unknowns without fabricating a block; cached host assessment reaches
+Soul only as assessment-only `host_pressure` evidence, with unknown data kept
+`null` and no change to seven-agent deliberation, urgency, or actions; and no
+automatic context reduction, pagefile, configuration, or system action occurs.
+The largest promoted context tier stays below 90 percent commit, preserves 2 GiB
+of physical RAM, and does not enter sustained SSD paging.
 
 ### Phase 7: Creator-approved pagefile broker - BLOCKED
 

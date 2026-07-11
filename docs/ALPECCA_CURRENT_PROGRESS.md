@@ -57,16 +57,21 @@ labels retained in historical plans and handoffs.
   telemetry and advisory data; unknown, invalid, or unavailable data stays
   `null`. This observation makes no LLM or system call and does not change
   seven-agent Soul deliberation, urgency, or actions.
-- `scripts\measure_context_tier.py` is a one-tier evidence harness: its default
-  is a no-request dry run at 8,192, while a live request requires explicit
-  `--execute --tier N`. Only 8,192, 16,384, 24,576, 32,768, and 49,152 are
-  accepted; `--all` is rejected. Results require manual review and can never
-  automatically promote a tier or change model/application configuration,
-  pagefile, or system settings. No real model tier was run in this checkpoint.
-- Phase 6 remains partial. The next remaining work is real manual context-tier
-  measurements, followed only by any separately approved promotion based on
-  their evidence; no direct pagefile mutation is authorized. See
-  `docs/CONTEXT_TIER_MEASUREMENT.md` for the Phase 6E-6G contract.
+- Phase 6H adds an execute-only, read-only host preflight to the one-tier
+  `scripts\measure_context_tier.py` harness. The default 8,192 dry run still
+  uses no sampler and makes no request. On `--execute --tier N`, known high or
+  critical host pressure, RAM/commit/disk headroom below fixed thresholds, or a
+  low unplugged battery block the run before Ollama with zero HTTP requests.
+  Unknown telemetry remains explicit and does not fabricate a block. `--all`
+  remains rejected; reports never promote a tier or change configuration,
+  pagefile, or system settings.
+- On 2026-07-10, a real-machine execute invocation was blocked by critical host
+  pressure before any Ollama request. No real `qwen3.5:9b` inference or
+  context-tier measurement completed, and no tier was promoted.
+- Phase 6 remains partial. The next gated action is to clear resources and
+  re-run preflight, then separately authorize one 8,192 measurement; no direct
+  pagefile mutation is authorized. See `docs/CONTEXT_TIER_MEASUREMENT.md` for
+  the Phase 6E-6H contract.
 - Discord proactive participation, recursion, and voice remain default-off until
   the Phase 10 identity, scope, and rate-limit gates pass.
 - `ALPECCA_TOOL_MODE` is `smart` and `ALPECCA_INNATE_TOOLS=1` in this branch.
@@ -129,7 +134,7 @@ ZeroGPU runtimes only, and those allocations are ephemeral and provider-dependen
 
 - `docs/AGENTIC_ASSESSMENT.md` is the current systems audit and stage-0 snapshot.
 - `docs/MINDPAGE.md` is the Layer A+ target design and constraints.
-- `docs/CONTEXT_TIER_MEASUREMENT.md` records the Phase 6E-6G host-telemetry,
+- `docs/CONTEXT_TIER_MEASUREMENT.md` records the Phase 6E-6H host-telemetry,
   Soul evidence, optional-maintenance deferral, and context-tier measurement
   boundary.
 

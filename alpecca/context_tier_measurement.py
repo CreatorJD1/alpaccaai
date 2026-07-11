@@ -2,12 +2,13 @@
 
 This module deliberately does not read or change application settings, pagefile
 configuration, model inventory, or files. A model request is possible only when
-the caller explicitly passes ``execute=True``. That request is one direct,
-loopback-only POST to Ollama's ``/api/generate`` endpoint.
+the caller explicitly passes ``execute=True`` and a read-only host preflight
+permits it. That request is one direct, loopback-only POST to Ollama's
+``/api/generate`` endpoint.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, is_dataclass
 from hashlib import sha256
 import ipaddress
@@ -28,6 +29,18 @@ DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 SMALL_OUTPUT_CAP_TOKENS = 32
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 180.0
 _PROMPT_TOKEN_BUDGET_CAP = 12_288
+
+# The one optional model request can allocate substantial local memory. These
+# gates are deliberately conservative and are reportable as plain evidence.
+PREFLIGHT_BLOCKING_SEVERITIES: frozenset[str] = frozenset({"high", "critical"})
+MIN_RAM_HEADROOM_BYTES = 6 * 1024 * 1024 * 1024
+MIN_RAM_HEADROOM_FRACTION = 0.20
+MIN_COMMIT_HEADROOM_BYTES = 8 * 1024 * 1024 * 1024
+MIN_COMMIT_HEADROOM_FRACTION = 0.20
+MIN_DISK_HEADROOM_BYTES = 10 * 1024 * 1024 * 1024
+MIN_DISK_HEADROOM_FRACTION = 0.10
+LOW_BATTERY_PERCENT = 25.0
+_PROJECT_SAMPLER_SOURCE = "project:alpecca.host_resources"
 
 
 class ContextTierValidationError(ValueError):
@@ -336,6 +349,388 @@ def _capture_sample(
     return evidence, unknowns
 
 
+def execution_preflight_thresholds() -> dict[str, Any]:
+    """Return the fixed, inspectable gates for one optional Ollama request."""
+    return {
+        "blocking_assessment_severities": sorted(PREFLIGHT_BLOCKING_SEVERITIES),
+        "minimum_headroom": {
+            "ram": {
+                "bytes": MIN_RAM_HEADROOM_BYTES,
+                "fraction": MIN_RAM_HEADROOM_FRACTION,
+            },
+            "commit": {
+                "bytes": MIN_COMMIT_HEADROOM_BYTES,
+                "fraction": MIN_COMMIT_HEADROOM_FRACTION,
+            },
+            "disk": {
+                "bytes": MIN_DISK_HEADROOM_BYTES,
+                "fraction": MIN_DISK_HEADROOM_FRACTION,
+            },
+        },
+        "low_battery_percent": LOW_BATTERY_PERCENT,
+    }
+
+
+def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _nonnegative_number(value: Any, *, maximum: float | None = None) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        return None
+    if maximum is not None and number > maximum:
+        return None
+    return number
+
+
+def _first_number(
+    candidates: list[tuple[Any, str]], *, maximum: float | None = None
+) -> tuple[float | None, str | None]:
+    for value, source in candidates:
+        number = _nonnegative_number(value, maximum=maximum)
+        if number is not None:
+            return number, source
+    return None, None
+
+
+def _first_boolean(candidates: list[tuple[Any, str]]) -> tuple[bool | None, str | None]:
+    for value, source in candidates:
+        if isinstance(value, bool):
+            return value, source
+    return None, None
+
+
+def _assessment_mapping(sample: Mapping[str, Any]) -> tuple[Mapping[str, Any], str]:
+    assessment = _mapping_or_empty(sample.get("assessment"))
+    if assessment:
+        return assessment, "assessment"
+    return _mapping_or_empty(sample.get("resource_signals")), "resource_signals"
+
+
+def _derived_headroom(
+    values: Mapping[str, Any], resource: str
+) -> tuple[float, float] | None:
+    if resource == "disk":
+        available, _ = _first_number(
+            [
+                (values.get("disk_free_bytes"), "disk_free_bytes"),
+                (values.get("free_bytes"), "free_bytes"),
+            ]
+        )
+        total, _ = _first_number(
+            [
+                (values.get("disk_total_bytes"), "disk_total_bytes"),
+                (values.get("total_bytes"), "total_bytes"),
+            ]
+        )
+        if total is None or total <= 0 or available is None or available > total:
+            return None
+        return available, available / total
+
+    used, _ = _first_number(
+        [
+            (values.get(f"{resource}_used_bytes"), f"{resource}_used_bytes"),
+            (values.get("used_bytes"), "used_bytes"),
+        ]
+    )
+    total_names = (
+        ("commit_limit_bytes", "limit_bytes", "commit_total_bytes", "total_bytes")
+        if resource == "commit"
+        else ("ram_total_bytes", "physical_total_bytes", "total_bytes")
+    )
+    total, _ = _first_number([(values.get(name), name) for name in total_names])
+    if total is None or total <= 0 or used is None or used > total:
+        return None
+    headroom = total - used
+    return headroom, headroom / total
+
+
+def _headroom_evidence(sample: Mapping[str, Any], resource: str) -> dict[str, Any]:
+    headroom = _mapping_or_empty(sample.get("headroom"))
+    nested_headroom = _mapping_or_empty(headroom.get(resource))
+    resource_values = _mapping_or_empty(sample.get(resource))
+    assessment, assessment_source = _assessment_mapping(sample)
+    readings = _mapping_or_empty(assessment.get("readings"))
+    reading = _mapping_or_empty(readings.get(resource))
+    raw = _mapping_or_empty(sample.get("raw"))
+
+    bytes_value, bytes_source = _first_number(
+        [
+            (nested_headroom.get("bytes"), f"headroom.{resource}.bytes"),
+            (nested_headroom.get("headroom_bytes"), f"headroom.{resource}.headroom_bytes"),
+            (headroom.get(f"{resource}_bytes"), f"headroom.{resource}_bytes"),
+            (resource_values.get("headroom_bytes"), f"{resource}.headroom_bytes"),
+            (reading.get("headroom_bytes"), f"{assessment_source}.readings.{resource}.headroom_bytes"),
+            (sample.get(f"{resource}_headroom_bytes"), f"{resource}_headroom_bytes"),
+        ]
+    )
+    fraction, fraction_source = _first_number(
+        [
+            (nested_headroom.get("fraction"), f"headroom.{resource}.fraction"),
+            (nested_headroom.get("headroom_fraction"), f"headroom.{resource}.headroom_fraction"),
+            (headroom.get(f"{resource}_fraction"), f"headroom.{resource}_fraction"),
+            (resource_values.get("headroom_fraction"), f"{resource}.headroom_fraction"),
+            (reading.get("headroom_fraction"), f"{assessment_source}.readings.{resource}.headroom_fraction"),
+            (sample.get(f"{resource}_headroom_fraction"), f"{resource}_headroom_fraction"),
+        ],
+        maximum=1.0,
+    )
+
+    for values, source in (
+        (resource_values, resource),
+        (reading, f"{assessment_source}.readings.{resource}"),
+        (raw, "raw"),
+        (sample, "sample"),
+    ):
+        derived = _derived_headroom(values, resource)
+        if derived is None:
+            continue
+        derived_bytes, derived_fraction = derived
+        if bytes_value is None:
+            bytes_value = derived_bytes
+            bytes_source = f"{source}.capacity"
+        if fraction is None:
+            fraction = derived_fraction
+            fraction_source = f"{source}.capacity"
+        if bytes_value is not None and fraction is not None:
+            break
+
+    return {
+        "bytes": bytes_value,
+        "fraction": fraction,
+        "bytes_source": bytes_source,
+        "fraction_source": fraction_source,
+    }
+
+
+def _battery_evidence(sample: Mapping[str, Any]) -> dict[str, Any]:
+    battery = _mapping_or_empty(sample.get("battery"))
+    raw = _mapping_or_empty(sample.get("raw"))
+    assessment, assessment_source = _assessment_mapping(sample)
+    readings = _mapping_or_empty(assessment.get("readings"))
+    reading = _mapping_or_empty(readings.get("battery"))
+    percent, percent_source = _first_number(
+        [
+            (battery.get("percent"), "battery.percent"),
+            (raw.get("battery_percent"), "raw.battery_percent"),
+            (reading.get("percent"), f"{assessment_source}.readings.battery.percent"),
+            (sample.get("battery_percent"), "battery_percent"),
+        ],
+        maximum=100.0,
+    )
+    charging, charging_source = _first_boolean(
+        [
+            (battery.get("charging"), "battery.charging"),
+            (raw.get("battery_charging"), "raw.battery_charging"),
+            (reading.get("charging"), f"{assessment_source}.readings.battery.charging"),
+            (sample.get("battery_charging"), "battery_charging"),
+        ]
+    )
+    return {
+        "percent": percent,
+        "percent_source": percent_source,
+        "charging": charging,
+        "charging_source": charging_source,
+    }
+
+
+def _preflight_reason(
+    *,
+    code: str,
+    resource: str,
+    observed: Any,
+    threshold: Any,
+    message: str,
+    failed_thresholds: list[str] | None = None,
+) -> dict[str, Any]:
+    reason: dict[str, Any] = {
+        "code": code,
+        "resource": resource,
+        "observed": observed,
+        "threshold": threshold,
+        "message": message,
+    }
+    if failed_thresholds:
+        reason["failed_thresholds"] = list(failed_thresholds)
+    return reason
+
+
+def _preflight_evidence_state(
+    sample: Any,
+    observed: Mapping[str, Any],
+    unknowns: list[str],
+) -> str:
+    if not isinstance(sample, Mapping):
+        return "unknown"
+
+    severity = _mapping_or_empty(observed.get("assessment_severity"))
+    if severity.get("value") is not None:
+        return "partial" if unknowns else "observed"
+
+    headroom = _mapping_or_empty(observed.get("headroom"))
+    for resource in ("ram", "commit", "disk"):
+        evidence = _mapping_or_empty(headroom.get(resource))
+        if evidence.get("bytes") is not None or evidence.get("fraction") is not None:
+            return "partial" if unknowns else "observed"
+
+    battery = _mapping_or_empty(observed.get("battery"))
+    if battery.get("percent") is not None or battery.get("charging") is not None:
+        return "partial" if unknowns else "observed"
+    return "unknown"
+
+
+def evaluate_execution_preflight(
+    sample: Any, *, sample_unknowns: Iterable[str] = ()
+) -> dict[str, Any]:
+    """Evaluate one captured host sample without probing, mutating, or requesting.
+
+    Missing or invalid telemetry stays explicit and does not invent a block. Known
+    unsafe evidence blocks the one optional request before an HTTP client exists.
+    """
+    result: dict[str, Any] = {
+        "performed": True,
+        "status": "passed",
+        "request_permitted": True,
+        "sample_available": isinstance(sample, Mapping),
+        "sample_phase": "before",
+        "evidence_state": "unknown",
+        "thresholds": execution_preflight_thresholds(),
+        "reasons": [],
+        "unknowns": [],
+        "observed": {
+            "assessment_severity": None,
+            "headroom": {},
+            "battery": None,
+        },
+    }
+    for unknown in sample_unknowns:
+        if isinstance(unknown, str) and unknown and unknown not in result["unknowns"]:
+            result["unknowns"].append(unknown)
+    if not isinstance(sample, Mapping):
+        result["unknowns"].append(
+            "Host resource preflight sample is unavailable or is not a mapping."
+        )
+        return result
+
+    assessment, assessment_source = _assessment_mapping(sample)
+    raw_severity = assessment.get("severity")
+    severity = raw_severity.strip().lower() if isinstance(raw_severity, str) else None
+    known_severities = {"normal", "elevated", *PREFLIGHT_BLOCKING_SEVERITIES}
+    if severity not in known_severities:
+        severity = None
+        result["unknowns"].append("Host assessment severity is unknown or invalid.")
+    result["observed"]["assessment_severity"] = {
+        "value": severity,
+        "source": f"{assessment_source}.severity" if severity is not None else None,
+    }
+    if severity in PREFLIGHT_BLOCKING_SEVERITIES:
+        result["reasons"].append(
+            _preflight_reason(
+                code=f"host_assessment_{severity}",
+                resource="host_assessment",
+                observed={"severity": severity},
+                threshold={"blocking_severities": sorted(PREFLIGHT_BLOCKING_SEVERITIES)},
+                message=(
+                    f"Host assessment severity is {severity}; execution blocks at high or critical."
+                ),
+            )
+        )
+
+    thresholds = result["thresholds"]["minimum_headroom"]
+    for resource in ("ram", "commit", "disk"):
+        evidence = _headroom_evidence(sample, resource)
+        result["observed"]["headroom"][resource] = evidence
+        resource_threshold = thresholds[resource]
+        failed: list[str] = []
+        if evidence["bytes"] is None:
+            result["unknowns"].append(
+                f"{resource.upper()} headroom bytes are unknown or invalid."
+            )
+        elif evidence["bytes"] < resource_threshold["bytes"]:
+            failed.append("bytes")
+        if evidence["fraction"] is None:
+            result["unknowns"].append(
+                f"{resource.upper()} headroom fraction is unknown or invalid."
+            )
+        elif evidence["fraction"] < resource_threshold["fraction"]:
+            failed.append("fraction")
+        if failed:
+            result["reasons"].append(
+                _preflight_reason(
+                    code=f"{resource}_headroom_below_safe_threshold",
+                    resource=resource,
+                    observed=evidence,
+                    threshold=resource_threshold,
+                    message=(
+                        f"{resource.upper()} headroom is below the safe "
+                        f"{', '.join(failed)} threshold."
+                    ),
+                    failed_thresholds=failed,
+                )
+            )
+
+    battery = _battery_evidence(sample)
+    result["observed"]["battery"] = battery
+    if battery["percent"] is None:
+        result["unknowns"].append("Battery percentage is unknown or invalid.")
+    if battery["charging"] is None:
+        result["unknowns"].append("Battery charging state is unknown or invalid.")
+    if (
+        battery["percent"] is not None
+        and battery["charging"] is False
+        and battery["percent"] <= LOW_BATTERY_PERCENT
+    ):
+        result["reasons"].append(
+            _preflight_reason(
+                code="battery_low_not_charging",
+                resource="battery",
+                observed=battery,
+                threshold={
+                    "low_battery_percent": LOW_BATTERY_PERCENT,
+                    "charging_required_below_or_at_threshold": True,
+                },
+                message=(
+                    "Battery is low and not charging; execution requires more than "
+                    f"{LOW_BATTERY_PERCENT}% charge or active charging."
+                ),
+            )
+        )
+
+    result["evidence_state"] = _preflight_evidence_state(
+        sample,
+        result["observed"],
+        result["unknowns"],
+    )
+    if result["reasons"]:
+        result["status"] = "blocked"
+        result["request_permitted"] = False
+    return result
+
+
+def _preflight_not_run() -> dict[str, Any]:
+    return {
+        "performed": False,
+        "status": "not_run",
+        "request_permitted": False,
+        "sample_available": False,
+        "sample_phase": None,
+        "evidence_state": "unknown",
+        "sample_collected": False,
+        "sample_captured_at_unix_s": None,
+        "thresholds": execution_preflight_thresholds(),
+        "reasons": [],
+        "unknowns": [],
+        "observed": {
+            "assessment_severity": None,
+            "headroom": {},
+            "battery": None,
+        },
+    }
+
+
 def _default_sampler() -> tuple[Any, str, list[str]]:
     """Use the read-only project sampler, or preserve an explicit unknown state."""
     try:
@@ -344,7 +739,7 @@ def _default_sampler() -> tuple[Any, str, list[str]]:
         ProjectHostResourceSampler = None
     if ProjectHostResourceSampler is not None:
         try:
-            return ProjectHostResourceSampler(), "project:alpecca.host_resources", []
+            return ProjectHostResourceSampler(), _PROJECT_SAMPLER_SOURCE, []
         except Exception as exc:
             return HostResourceSampler(), "fallback", [
                 "Project HostResourceSampler could not be initialized: "
@@ -433,8 +828,9 @@ def _empty_report(
             "decision": "manual_review_only",
             "reason": "The harness records evidence and never promotes a context tier.",
         },
+        "preflight": _preflight_not_run(),
         "request": {
-            "allowed": execute,
+            "allowed": False,
             "attempted": False,
             "method": "POST",
             "endpoint": f"{host}/api/generate",
@@ -477,6 +873,7 @@ def _empty_report(
         },
         "resources": {
             "sampler_source": "not_started",
+            "warmup": None,
             "before": None,
             "during": None,
             "after": None,
@@ -514,6 +911,7 @@ def rejected_measurement_report(
             "decision": "manual_review_only",
             "reason": "Rejected requests require manual correction; no execution occurred.",
         },
+        "preflight": _preflight_not_run(),
         "request": {
             "allowed": False,
             "attempted": False,
@@ -555,6 +953,7 @@ def rejected_measurement_report(
         },
         "resources": {
             "sampler_source": "not_started",
+            "warmup": None,
             "before": None,
             "during": None,
             "after": None,
@@ -620,9 +1019,44 @@ def run_context_tier_measurement(
     report["resources"]["sampler_source"] = sampler_source
     _append_unknowns(report, sampler_unknowns)
 
+    if sampler_source == _PROJECT_SAMPLER_SOURCE:
+        warmup, unknowns = _capture_sample(sampler_instance, "warmup", wall_clock)
+        report["resources"]["warmup"] = warmup
+        _append_unknowns(report, unknowns)
+
     before, unknowns = _capture_sample(sampler_instance, "before", wall_clock)
     report["resources"]["before"] = before
     _append_unknowns(report, unknowns)
+
+    preflight = evaluate_execution_preflight(
+        before["data"], sample_unknowns=unknowns
+    )
+    preflight["sample_collected"] = bool(before["collected"])
+    preflight["sample_captured_at_unix_s"] = before["captured_at_unix_s"]
+    report["preflight"] = preflight
+    _append_unknowns(
+        report,
+        [f"Execution preflight: {message}" for message in preflight["unknowns"]],
+    )
+    if not preflight["request_permitted"]:
+        report["status"] = "blocked"
+        _append_unknowns(
+            report,
+            [
+                f"Execution preflight block reason: {reason['message']}"
+                for reason in preflight["reasons"]
+            ],
+        )
+        _append_unknowns(
+            report,
+            [
+                "Execution preflight blocked the Ollama request; no HTTP request was issued.",
+                "During and after host-resource samples were not collected because preflight blocked execution.",
+                "Marker verification and Ollama duration/token telemetry are unavailable because preflight blocked the request.",
+            ],
+        )
+        return report
+    report["request"]["allowed"] = True
 
     payload = build_ollama_payload(
         model=validated_model, tier=validated_tier, prompt=prompt

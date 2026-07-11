@@ -52,19 +52,22 @@ retained below as historical implementation evidence.
   excludes raw host telemetry and advisory data, and unknown, invalid, or
   unavailable data remains `null`. It is observational only, making no LLM or
   system call and changing no seven-agent Soul deliberation, urgency, or action.
-- `scripts\measure_context_tier.py` is an evidence-only, one-tier harness. It
-  dry-runs at 8,192 by default; a real request is allowed only with explicit
-  `--execute --tier N`, and `--all` is rejected. Allowed tiers are 8,192,
-  16,384, 24,576, 32,768, and 49,152. It never automatically promotes a tier or
-  changes model/application configuration, pagefile, registry, other system
-  settings, or files. Every result requires manual review. No real model tier
-  was run in this checkpoint.
-- Phase 6 remains partial. The next remaining work is real manual context-tier
-  measurements, followed only by any separately approved promotion based on
-  their evidence. Do not make a direct pagefile mutation as part of this work.
-  Keep broader tools and action classes outside the Phase 4 baseline until
-  separately approved and gated. See `docs/CONTEXT_TIER_MEASUREMENT.md` for the
-  Phase 6E-6G boundary.
+- Phase 6H adds an execute-only, read-only host preflight to the one-tier
+  `scripts\measure_context_tier.py` harness. The default 8,192 dry run still
+  uses no sampler and makes no request. On `--execute --tier N`, known high or
+  critical host pressure, RAM/commit/disk headroom below fixed thresholds, or a
+  low unplugged battery block the run before Ollama with zero HTTP requests.
+  Unknown telemetry remains explicit and does not fabricate a block. `--all`
+  remains rejected; reports never promote a tier or change configuration,
+  pagefile, registry, system settings, or files.
+- On 2026-07-10, a real-machine execute invocation was blocked by critical host
+  pressure before any Ollama request. No real `qwen3.5:9b` inference or
+  context-tier measurement completed, and no tier was promoted.
+- Phase 6 remains partial. The next gated action is to clear resources and
+  re-run preflight, then separately authorize one 8,192 measurement. Do not
+  make a direct pagefile mutation as part of this work. Keep broader tools and
+  action classes outside the Phase 4 baseline until separately approved and
+  gated. See `docs/CONTEXT_TIER_MEASUREMENT.md` for the Phase 6E-6H boundary.
 
 ## Superseded Claude Code Handoff: Master Phase 4 onward (historical)
 

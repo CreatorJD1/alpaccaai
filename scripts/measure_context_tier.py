@@ -25,12 +25,15 @@ from alpecca.context_tier_measurement import (
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Measure one local qwen3.5:9b context tier; dry-run is the default."
+        description=(
+            "Measure one local qwen3.5:9b context tier; dry-run is the default. "
+            "Execution uses a read-only host-resource preflight."
+        )
     )
     parser.add_argument(
         "--execute",
         action="store_true",
-        help="Permit one loopback Ollama POST; requires an explicit --tier.",
+        help="Permit at most one loopback Ollama POST after preflight; requires --tier.",
     )
     parser.add_argument(
         "--tier",

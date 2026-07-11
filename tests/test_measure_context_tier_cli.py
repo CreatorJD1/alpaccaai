@@ -119,3 +119,40 @@ def test_cli_rejects_cloud_or_nonloopback_execution_before_network_or_sampling(
     assert report["request"]["attempted"] is False
     assert report["request"]["http_request_count"] == 0
     assert error in report["unknowns"][0]
+
+
+def test_cli_emits_a_preflight_block_as_a_nonzero_json_result(monkeypatch, capsys):
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    monkeypatch.delenv("ALPECCA_MODEL", raising=False)
+    calls: list[dict[str, object]] = []
+    expected_report = {
+        "kind": "alpecca_context_tier_measurement",
+        "status": "blocked",
+        "mode": "execute",
+        "request": {
+            "allowed": False,
+            "attempted": False,
+            "http_request_count": 0,
+        },
+    }
+
+    def blocked_preflight(**kwargs):
+        calls.append(kwargs)
+        return expected_report
+
+    monkeypatch.setattr(cli, "run_context_tier_measurement", blocked_preflight)
+
+    assert cli.main(["--execute", "--tier", "8192"]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out.count("\n") == 1
+    assert json.loads(captured.out) == expected_report
+    assert calls == [
+        {
+            "tier": "8192",
+            "execute": True,
+            "host": measurement.DEFAULT_OLLAMA_HOST,
+            "model": measurement.LOCAL_QWEN_MODEL,
+        }
+    ]
