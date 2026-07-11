@@ -2034,6 +2034,10 @@ def test_routines_vacuum_kind_dispatches_mindpage_vacuum(monkeypatch):
         "reserve_initiative",
         lambda **_kwargs: {"allowed": True, "decision": "allow"},
     )
+    # Neutralize the host-pressure governor: this test exercises vacuum dispatch,
+    # not the resource coordinator, and a genuinely busy host would otherwise
+    # defer the routine ("host-pressure") and make the test load-dependent.
+    monkeypatch.setattr(server, "_host_pressure_optional_work_deferral", lambda *_a, **_k: None)
 
     client = TestClient(server.app)
     headers = {server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET}
