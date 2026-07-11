@@ -12,10 +12,21 @@ from alpecca.resource_coordinator import ResourceCoordinator
 import server
 
 
+class _StaticHostResourceSampler:
+    def __init__(self, advisory: object):
+        self.advisory = advisory
+        self.force_values: list[bool] = []
+
+    def snapshot(self, force: bool = False) -> dict:
+        self.force_values.append(force)
+        return {"advisory": self.advisory}
+
+
 @pytest.fixture
 def optional_work(monkeypatch):
     coordinator = ResourceCoordinator()
     monkeypatch.setattr(server, "_optional_work_coordinator", coordinator)
+    monkeypatch.setattr(server, "_host_resource_sampler", _StaticHostResourceSampler({}))
     monkeypatch.setattr(server, "active_chat_turns", 0)
     monkeypatch.setattr(server, "active_tts_requests", 0)
     monkeypatch.setattr(server, "last_chat_turn_started", 0.0)
@@ -137,6 +148,91 @@ def test_host_resource_reads_leave_optional_work_coordination_unchanged(
         assert endpoint_snapshot["timestamp"] == runtime["host_resources"]["timestamp"]
         assert after == before
         assert [item.event for item in optional_work.telemetry()] == ["start"]
+    finally:
+        optional_work.finish(held.lease)
+
+
+def test_high_host_advisory_defers_optional_work_with_compact_evidence(
+    monkeypatch, optional_work
+):
+    sampler = _StaticHostResourceSampler({
+        "defer_optional_work": True,
+        "resource": {"severity": "high"},
+        "reasons": ("resource_high", "commit_headroom_low"),
+    })
+    calls: list[str] = []
+    monkeypatch.setattr(server, "_host_resource_sampler", sampler)
+
+    result = asyncio.run(server._optional_bounded_thread(
+        "backfill", "backfill", lambda: calls.append("ran"),
+    ))
+
+    assert result == {
+        "status": "deferred",
+        "reason": "host-pressure",
+        "category": "backfill",
+        "advisory": {
+            "severity": "high",
+            "reasons": ["resource_high", "commit_headroom_low"],
+        },
+    }
+    assert sampler.force_values == [False]
+    assert calls == []
+    assert optional_work.active() is None
+    assert optional_work.telemetry() == ()
+
+
+def test_unknown_host_advisory_allows_normal_optional_work(monkeypatch, optional_work):
+    sampler = _StaticHostResourceSampler({"evidence_state": "unknown"})
+    calls: list[str] = []
+
+    async def immediate_bounded(_label, fn, *args, **kwargs):
+        kwargs.pop("timeout", None)
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(server, "_host_resource_sampler", sampler)
+    monkeypatch.setattr(server, "_bounded_thread", immediate_bounded)
+
+    result = asyncio.run(server._optional_bounded_thread(
+        "reflection", "reflect", lambda: calls.append("ran") or "completed",
+    ))
+
+    assert result == "completed"
+    assert sampler.force_values == [False]
+    assert calls == ["ran"]
+    assert [item.event for item in optional_work.telemetry()] == ["start", "finish"]
+
+
+def test_host_pressure_deferral_does_not_touch_the_coordinator(monkeypatch, optional_work):
+    sampler = _StaticHostResourceSampler({
+        "defer_optional_work": True,
+        "resource": {"severity": "high"},
+        "reasons": ("resource_high",),
+    })
+    held = optional_work.start("reflection")
+    assert held.lease is not None
+    before = optional_work.snapshot()
+    telemetry = optional_work.telemetry()
+
+    def unexpected_coordinator_call(*_args, **_kwargs):
+        raise AssertionError("host-pressure deferral must not touch the coordinator")
+
+    monkeypatch.setattr(server, "_host_resource_sampler", sampler)
+    monkeypatch.setattr(optional_work, "set_foreground", unexpected_coordinator_call)
+    monkeypatch.setattr(optional_work, "start", unexpected_coordinator_call)
+    monkeypatch.setattr(optional_work, "cancel", unexpected_coordinator_call)
+
+    try:
+        result = asyncio.run(server._optional_bounded_thread(
+            "backfill", "backfill", lambda: "should not run",
+        ))
+
+        assert result["reason"] == "host-pressure"
+        assert sampler.force_values == [False]
+        assert optional_work.active() is held.lease
+        assert held.lease.cancelled is False
+        assert optional_work.snapshot() == before
+        assert optional_work.telemetry() == telemetry
     finally:
         optional_work.finish(held.lease)
 

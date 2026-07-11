@@ -2,10 +2,12 @@
 
 Last updated: **2026-07-10**
 
-## Phase 6E Checkpoint
+## Phase 6E-6F Checkpoint
 
 Phase 6E adds bounded, evidence-only host-resource observation and context-tier
-measurement. It does not promote a model tier or change the machine.
+measurement. Phase 6F consumes only fresh advisory host pressure to defer
+optional maintenance before a coordinator lease. It does not promote a model
+tier or change the machine.
 
 `alpecca.host_resources.HostResourceSampler` is read-only. It samples available
 host CPU, RAM, Windows commit, VRAM, disk, battery, and thermal signals and
@@ -15,10 +17,11 @@ policy, alter system settings, or mutate the pagefile.
 
 `GET /system/resources` returns the shared sampler snapshot. Its host-pressure
 assessment and advisory are machine-level evidence, distinct from Mindpage's
-per-request context pressure. An advisory may identify normal work, optional-work
-deferral, context reduction, or recovery notice as a recommendation; it does
-not yet defer work, change an active context, change configuration, or take any
-system action.
+per-request context pressure. Phase 6F consumes only fresh advisory host pressure
+to defer optional maintenance before a coordinator lease. Chat and TTS behavior
+are unchanged. Unknown or unavailable host data allows work. It performs no
+automatic context reduction, pagefile action, configuration change, or system
+action.
 
 ## One-Tier Harness
 
@@ -60,8 +63,7 @@ promoted.
 
 ## Remaining Phase 6 Work
 
-Phase 6 remains **PARTIAL**. The next integration is bounded use of the
-advisory host-pressure signal to defer optional work. Later work may wire the
-same grounded evidence into Soul-facing state. Neither step authorizes a
-pagefile mutation; pagefile work remains blocked behind the separate Phase 7
-creator-approval gate.
+Phase 6 remains **PARTIAL**. The next separate integration is grounded
+host-pressure-to-Soul state wiring with no automatic behavior. Neither it nor
+Phase 6F authorizes a pagefile mutation; pagefile work remains blocked behind
+the separate Phase 7 creator-approval gate.

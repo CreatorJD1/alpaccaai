@@ -24,6 +24,7 @@ import sys
 import threading
 import uuid
 import zipfile
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -886,6 +887,49 @@ def _optional_cancellation_result(
     return payload
 
 
+def _host_pressure_optional_work_deferral(
+    category: resource_coordinator_mod.OptionalCategory,
+) -> dict | None:
+    """Return a compact deferral only when cached host evidence explicitly asks for it."""
+    try:
+        snapshot = _host_resource_sampler.snapshot(force=False)
+    except Exception:
+        # Resource observation is advisory; unavailable evidence must not block work.
+        return None
+    if not isinstance(snapshot, Mapping):
+        return None
+
+    advisory = snapshot.get("advisory")
+    if not isinstance(advisory, Mapping) or advisory.get("defer_optional_work") is not True:
+        return None
+
+    severity = advisory.get("severity")
+    if not isinstance(severity, str):
+        resource = advisory.get("resource")
+        assessment = snapshot.get("assessment")
+        for evidence in (resource, assessment):
+            if isinstance(evidence, Mapping) and isinstance(evidence.get("severity"), str):
+                severity = evidence["severity"]
+                break
+    if not isinstance(severity, str):
+        severity = "unknown"
+
+    raw_reasons = advisory.get("reasons")
+    reasons = []
+    if isinstance(raw_reasons, (list, tuple)):
+        reasons = [
+            reason.strip()[:80]
+            for reason in raw_reasons
+            if isinstance(reason, str) and reason.strip()
+        ][:4]
+    return {
+        "status": "deferred",
+        "reason": "host-pressure",
+        "category": category,
+        "advisory": {"severity": severity, "reasons": reasons},
+    }
+
+
 async def _release_optional_work_when_settled(
     coordinator: resource_coordinator_mod.ResourceCoordinator,
     lease: resource_coordinator_mod.OptionalWorkLease,
@@ -925,6 +969,9 @@ async def _optional_bounded_thread(
 ):
     """Run optional work through one lease while retaining bounded-thread behavior."""
     coordinator = _optional_work_coordinator
+    host_pressure_deferral = _host_pressure_optional_work_deferral(category)
+    if host_pressure_deferral is not None:
+        return host_pressure_deferral
     _sync_optional_work_foreground()
     decision = coordinator.start(category)
     if not decision.accepted or decision.lease is None:
