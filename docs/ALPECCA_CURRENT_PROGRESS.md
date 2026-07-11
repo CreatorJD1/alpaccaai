@@ -29,11 +29,17 @@ labels retained in historical plans and handoffs.
   `selfmod` autonomous mutation/evaluation path: idle lessons remain evidence
   and create or refresh one bounded creator-review card, but CoreMind does not
   start or evaluate a `selfmod` trial. `proactive.should_chatter` has a
-  validated opt-in `chance` override seam, but no ledger, controller, or API
-  applies it; no behavior trial is running. Not all tunables are proven to have
-  a runtime consumer. Phase 8B is not started: it must provide a server-owned,
-  creator-approved controller with atomic runtime-only apply/readback/rollback,
-  fixed metric collection, and startup recovery before real trials begin.
+  validated opt-in `chance` override seam. Phase 8B now has an **INTERNAL**
+  approval-proof-backed `BehaviorTrialController` for only
+  `creator-personal` / `chatter_chance`. SQLite enforces at most one active
+  `approved` or `running` trial; its runtime-only SQLite override supports
+  apply/readback/rollback, automatic expiry rollback, and startup recovery.
+  CoreMind consumes the override only after successful recovery. There are no
+  public/self-improvement HTTP routes, no authenticated creator approval
+  binding, no metric collector/completion loop, and no real trial. It is not
+  creator-approved and does not satisfy the Phase 8 exit gate. Phase 8C must
+  add server-derived authentication, spec-bound approval, metric collection,
+  and UI.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A semantic-negative/orthogonal recall abstention and Phase 6B
   bounded sidecar content-term indexing are implemented and covered by focused

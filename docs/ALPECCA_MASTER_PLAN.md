@@ -163,7 +163,7 @@ They are not fixed Alpecca hardware.
 | Proactive/living behavior | BASELINE COMPLETE | Living ticks, proactive speech, and routines share one scoped budget; ignored outreach backs off and each proactive event selects one delivery surface |
 | Routines and watchers | PARTIAL | Empty/off by default; routine deletion and unified scheduling remain |
 | Background work coordination | PARTIAL | Timeouts do not cancel worker threads; optional jobs can overlap |
-| Recursive self-improvement | PARTIAL | Phase 8A contains legacy `selfmod` autonomy: idle lessons remain evidence and create/refresh a bounded creator-review card, while CoreMind starts/evaluates no `selfmod` trial. `proactive.should_chatter` has a validated opt-in chance override seam only; no ledger/controller/API applies it, no behavior trial is running, and not all tunables are proven consumed. |
+| Recursive self-improvement | PARTIAL | Phase 8A contains legacy `selfmod` autonomy: idle lessons remain evidence and create/refresh a bounded creator-review card, while CoreMind starts/evaluates no `selfmod` trial. Phase 8B has an **INTERNAL** approval-proof-backed `BehaviorTrialController` only for `creator-personal` / `chatter_chance`: the database permits at most one active `approved` or `running` trial, and its runtime-only SQLite override has apply/readback/rollback, automatic expiry rollback, and startup recovery before CoreMind consumes it. There are no public/self-improvement HTTP routes, authenticated creator approval binding, metric collector/completion loop, or real trial. It is not creator-approved, does not meet the Phase 8 exit gate, and needs Phase 8C for server-derived authentication, spec-bound approval, metrics, and UI. |
 | External action approvals | BLOCKED | Creator-only scoped approval works for read-only `self_status`; external or mutating action classes remain blocked |
 | MCP federation | PARKED | Largest external surface; no current companion-value need |
 
@@ -421,20 +421,38 @@ history remains evidence only. Not all legacy tunables are proven to have a
 runtime consumer.
 
 `proactive.should_chatter` now has a validated opt-in `chance` override seam.
-It does not bypass the existing eligibility gates, and no ledger, controller, or
-API applies the override. No behavior trial is running.
+It does not bypass the existing eligibility gates. The internal Phase 8B
+controller supplies its override only after the startup recovery gate succeeds,
+and CoreMind consumes it only after that recovery. No real behavior trial has
+started.
 
-#### Phase 8B: Creator-approved runtime controller
+#### Phase 8B: Internal approval-proof-backed behavior trial controller
 
-Before real trials, build a server-owned, creator-approved controller with
-atomic runtime-only apply/readback/rollback, fixed metric collection, and
-startup recovery. Only then may a real trial use an allowlisted behavioral
-policy. Code or system changes remain reviewable handoff proposals only.
+An **INTERNAL** approval-proof-backed `BehaviorTrialController` exists solely
+for `creator-personal` / `chatter_chance`. SQLite enforces at most one active
+`approved` or `running` trial. Its runtime-only SQLite override supports
+apply/readback/rollback, automatic expiry rollback, and a startup recovery gate;
+CoreMind consumes that override only after successful recovery.
 
-Exit gate: no trial starts without policy approval; every trial has hypothesis,
-fixed metric collection, evidence, end time, and rollback; worsening trials
-revert exactly; startup recovers any interrupted runtime-only state; source,
-shell, accounts, files, and OS remain outside the self-modification set.
+This is not an authenticated creator approval flow. There are no
+public/self-improvement HTTP routes, no authenticated creator approval binding,
+no metric collector/completion loop, and no real trial has started. It must not
+be described as creator-approved, and it does not satisfy the Phase 8 exit gate.
+
+#### Phase 8C: Server-derived approval, metrics, and UI - REQUIRED
+
+Phase 8C must provide server-derived authenticated creator identity, approval
+bound to the exact validated specification, metric collection and completion,
+and creator UI. Only that later work can make a real behavioral trial
+reviewable against its hypothesis, exposure window, evidence, end time, and
+exact rollback. Code or system changes remain reviewable handoff proposals only.
+
+Exit gate remains unmet: it requires server-derived authenticated creator
+identity and approval bound to the exact validated specification, fixed metric
+collection through a completion/evaluation loop, evidence, end time, and exact
+rollback; worsening trials must revert exactly; startup must recover interrupted
+runtime-only state; and source, shell, accounts, files, and OS must remain
+outside the self-modification set.
 
 ### Phase 9: Multimodal and source perception - PARTIAL
 

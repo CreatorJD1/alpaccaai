@@ -23,6 +23,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Mapping
+from numbers import Number
 
 from config import (
     OLLAMA_MODEL,
@@ -972,6 +973,7 @@ class CoreMind:
         self,
         *,
         host_resource_snapshot_supplier: Callable[[], object] | None = None,
+        chatter_chance_supplier: Callable[[], object] | None = None,
     ) -> None:
         state_store.init_db()
         cognition_mod.init_db()
@@ -980,6 +982,9 @@ class CoreMind:
         # This stays opt-in so normal chat and Soul reads never trigger a host
         # sample. A caller may provide a cached, read-only snapshot supplier.
         self._host_resource_snapshot_supplier = host_resource_snapshot_supplier
+        self._chatter_chance_supplier = (
+            chatter_chance_supplier if callable(chatter_chance_supplier) else None
+        )
         self.llm = _LLM()
         self._prev_obs: Observation | None = None
         self._last_signals: dict | None = None   # last fatigue read, for introspection
@@ -1061,6 +1066,29 @@ class CoreMind:
     ) -> None:
         """Install a cached, read-only host snapshot supplier for Soul state."""
         self._host_resource_snapshot_supplier = supplier if callable(supplier) else None
+
+    def set_chatter_chance_supplier(
+        self,
+        supplier: Callable[[], object] | None,
+    ) -> None:
+        """Install a read-only chance supplier for proactive chatter."""
+        self._chatter_chance_supplier = supplier if callable(supplier) else None
+
+    def _resolved_chatter_chance(self) -> float | None:
+        """Return one valid supplied chance, or None to keep the config default."""
+        supplier = getattr(self, "_chatter_chance_supplier", None)
+        if not callable(supplier):
+            return None
+        try:
+            supplied = supplier()
+            if isinstance(supplied, bool) or not isinstance(supplied, Number):
+                return None
+            chance = float(supplied)
+            if not math.isfinite(chance) or not 0.0 <= chance <= 1.0:
+                return None
+        except Exception:
+            return None
+        return chance
 
     def _tool_mode(self) -> str:
         mode = (ActionsCfg.TOOL_MODE or "").strip().lower()
@@ -3177,6 +3205,7 @@ class CoreMind:
         if not ProactiveCfg.ENABLED:
             return None
         now = time.time()
+        chance = self._resolved_chatter_chance()
         reason = proactive_mod.should_speak(
             self.state, state_store.mood_history(limit=40), self._last_volunteer_ts
         )
@@ -3186,8 +3215,10 @@ class CoreMind:
         # No mood shift -- but she can still just start a conversation. The LLM
         # may judge the final fire/seed choice once deterministic eligibility
         # passes; random chance remains the offline/parse fallback.
+        chatter_chance_kwargs = {"chance": chance} if chance is not None else {}
         chatter_eligible = proactive_mod.should_chatter(
-            now, self._last_user_ts, self._last_volunteer_ts, 0.0
+            now, self._last_user_ts, self._last_volunteer_ts, 0.0,
+            **chatter_chance_kwargs,
         )
         if chatter_eligible:
             recent = memory_store.recent(limit=8)
@@ -3214,7 +3245,8 @@ class CoreMind:
                     self._last_volunteer_ts = now
                     return seeds[pick]
             if proactive_mod.should_chatter(now, self._last_user_ts,
-                                            self._last_volunteer_ts, random.random()):
+                                            self._last_volunteer_ts, random.random(),
+                                            **chatter_chance_kwargs):
                 self._last_volunteer_ts = now
                 return random.choice(seeds)
         return None

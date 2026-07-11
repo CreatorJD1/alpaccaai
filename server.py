@@ -67,6 +67,7 @@ from alpecca import resource_coordinator as resource_coordinator_mod
 from alpecca import turn_context as turn_context_mod
 from alpecca import commitments as commitments_mod
 from alpecca import commitment_executor as commitment_executor_mod
+from alpecca.behavior_trial_controller import BehaviorTrialController
 
 ROOT_DIR = Path(__file__).parent
 WEB_DIR = ROOT_DIR / "web"
@@ -76,7 +77,24 @@ HOUSE_HQ_PUBLIC = HOUSE_HQ_DIR / "public"
 
 # One shared mind for the session. A background sensor lets the mood drift even
 # while you're not typing, by folding in a fresh observation on every tick.
-mind = CoreMind()
+behavior_trial_controller = BehaviorTrialController()
+
+# A persisted runtime override is not trusted until startup has closed any
+# interrupted trial. This event starts unset deliberately and is reset for
+# every lifespan entry.
+_behavior_trial_recovery_ready = threading.Event()
+
+
+def _behavior_trial_chatter_chance() -> float:
+    """Use only the baseline until interrupted-trial recovery succeeds."""
+    if not _behavior_trial_recovery_ready.is_set():
+        return behavior_trial_controller.default_chatter_chance
+    return behavior_trial_controller.chatter_chance()
+
+
+mind = CoreMind(
+    chatter_chance_supplier=_behavior_trial_chatter_chance,
+)
 sensor = WindowSensor()
 # Voice-tone sense: opt-in (ALPECCA_VOICE=1) and quietly inert otherwise.
 voice_sensor = VoiceSensor()
@@ -1521,6 +1539,37 @@ async def lifespan(app: FastAPI):
     tender while you ground through an error, or settled while you were away.
     We keep a reference to the task so it isn't silently garbage-collected.
     """
+    _behavior_trial_recovery_ready.clear()
+    try:
+        recovered_trials = await asyncio.to_thread(
+            behavior_trial_controller.recover_interrupted,
+        )
+    except Exception:
+        # Recovery is retried on the next process start. It never starts or
+        # executes a behavior trial and must not block local startup.
+        pass
+    else:
+        _behavior_trial_recovery_ready.set()
+        if recovered_trials:
+            try:
+                cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                    source="behavior_trial_recovery",
+                    content=(
+                        f"Closed {len(recovered_trials)} interrupted behavior trial(s) "
+                        "without starting or executing a trial."
+                    ),
+                    confidence=1.0,
+                    privacy_class="local",
+                    metadata={
+                        "trial_count": len(recovered_trials),
+                        "trial_ids": [int(row["id"]) for row in recovered_trials],
+                    },
+                ))
+            except Exception:
+                # Recovery already succeeded; failure to record its evidence
+                # must not reactivate or leave an override unclosed.
+                pass
+
     try:
         recovered = await asyncio.to_thread(
             commitments_mod.recover_running_commitments,

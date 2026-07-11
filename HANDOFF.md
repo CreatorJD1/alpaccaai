@@ -24,11 +24,17 @@ retained below as historical implementation evidence.
   `selfmod` autonomous mutation/evaluation path: idle lessons remain evidence
   and create or refresh one bounded creator-review card, but CoreMind does not
   start or evaluate a `selfmod` trial. `proactive.should_chatter` has a
-  validated opt-in `chance` override seam, but no ledger, controller, or API
-  applies it; no behavior trial is running. Not all tunables are proven to have
-  a runtime consumer. Phase 8B is next: a server-owned, creator-approved
-  controller with atomic runtime-only apply/readback/rollback, fixed metric
-  collection, and startup recovery before any real trial can begin.
+  validated opt-in `chance` override seam. Phase 8B now has an **INTERNAL**
+  approval-proof-backed `BehaviorTrialController` for only
+  `creator-personal` / `chatter_chance`. SQLite enforces at most one active
+  `approved` or `running` trial; its runtime-only SQLite override supports
+  apply/readback/rollback, automatic expiry rollback, and startup recovery.
+  CoreMind consumes the override only after successful recovery. There are no
+  public/self-improvement HTTP routes, no authenticated creator approval
+  binding, no metric collector/completion loop, and no real trial. It is not
+  creator-approved and does not satisfy the Phase 8 exit gate. Phase 8C must
+  add server-derived authentication, spec-bound approval, metric collection,
+  and UI.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A rejects orthogonal and negative semantic matches. Phase 6B
   adds bounded sidecar Mindpage content-term indexing: new pages index after a
@@ -185,11 +191,17 @@ validated opt-in `chance` override seam, but no ledger, controller, or API
 applies it; no behavior trial is running. Not all legacy tunables are proven to
 have a runtime consumer.
 
-Phase 8B is the next gate: build a server-owned, creator-approved controller
-with atomic runtime-only apply/readback/rollback, fixed metric collection, and
-startup recovery. Only after that controller is in place may real trials begin.
-Any later trial remains restricted to allowlisted behavioral policies, with a
-proposal, hypothesis, exposure window, evidence, end time, and exact rollback.
+Phase 8B now has an **INTERNAL** approval-proof-backed
+`BehaviorTrialController` for only `creator-personal` / `chatter_chance`. The
+database enforces at most one active `approved` or `running` trial. Its
+runtime-only SQLite override supports apply/readback/rollback, automatic expiry
+rollback, and startup recovery; CoreMind consumes it only after successful
+recovery. There are no public/self-improvement HTTP routes, no authenticated
+creator approval binding, no metric collector/completion loop, and no real
+trial. It is not creator-approved and does not satisfy the Phase 8 exit gate.
+
+Phase 8C is required for server-derived authentication, approval bound to the
+validated specification, metric collection and completion, and creator UI.
 Code, files, accounts, and operating-system changes remain outside the
 self-improvement surface.
 
