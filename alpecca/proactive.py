@@ -13,7 +13,9 @@ grounded self-report about exactly the shift detected here.
 """
 from __future__ import annotations
 
+import math
 import time
+from numbers import Number
 from typing import Optional
 
 from config import Proactive as ProactiveCfg, Reflection as ReflectionCfg
@@ -66,21 +68,46 @@ def should_speak(state: EmotionalState, history: list[dict],
 
 # --- Idle chatter: starting a conversation, not just reporting a shift -------
 
+_CHATTER_CHANCE_UNSET = object()
+
+
+def _validated_chatter_chance(chance: object) -> float:
+    if isinstance(chance, bool) or not isinstance(chance, Number):
+        raise TypeError("chance must be a finite numeric value between 0 and 1")
+    try:
+        value = float(chance)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise TypeError("chance must be a finite real numeric value between 0 and 1") from exc
+    if not math.isfinite(value):
+        raise ValueError("chance must be finite")
+    if not 0.0 <= value <= 1.0:
+        raise ValueError("chance must be between 0 and 1 inclusive")
+    return value
+
+
 def should_chatter(now: float, last_user_ts: float, last_unprompted_ts: float,
-                   roll: float) -> bool:
+                   roll: float, *, chance: object = _CHATTER_CHANCE_UNSET) -> bool:
     """Gate for spontaneous conversation. `roll` is a uniform [0,1) sample the
     caller provides (injected so the timing logic stays deterministic to test).
+    A supplied `chance` overrides the configured probability.
 
     The shape: she only considers speaking after you've been quiet a while,
     never more often than the minimum gap, and even then only sometimes -- so
     her timing reads as a glance over the shoulder, not a timer going off.
     """
+    override_chance = (
+        None
+        if chance is _CHATTER_CHANCE_UNSET
+        else _validated_chatter_chance(chance)
+    )
     if not ProactiveCfg.CHATTER_ENABLED:
         return False
     if now - last_user_ts < ProactiveCfg.CHATTER_SILENCE_S:
         return False
     if now - last_unprompted_ts < ProactiveCfg.CHATTER_MIN_GAP_S:
         return False
+    if override_chance is not None:
+        return roll < override_chance
     return roll < ProactiveCfg.CHATTER_CHANCE
 
 

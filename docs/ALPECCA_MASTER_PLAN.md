@@ -163,7 +163,7 @@ They are not fixed Alpecca hardware.
 | Proactive/living behavior | BASELINE COMPLETE | Living ticks, proactive speech, and routines share one scoped budget; ignored outreach backs off and each proactive event selects one delivery surface |
 | Routines and watchers | PARTIAL | Empty/off by default; routine deletion and unified scheduling remain |
 | Background work coordination | PARTIAL | Timeouts do not cancel worker threads; optional jobs can overlap |
-| Recursive self-improvement | PARTIAL | DB-backed tunables/lessons exist; several effective knobs are not consumed and trial evaluation is weak |
+| Recursive self-improvement | PARTIAL | Phase 8A contains legacy `selfmod` autonomy: idle lessons remain evidence and create/refresh a bounded creator-review card, while CoreMind starts/evaluates no `selfmod` trial. `proactive.should_chatter` has a validated opt-in chance override seam only; no ledger/controller/API applies it, no behavior trial is running, and not all tunables are proven consumed. |
 | External action approvals | BLOCKED | Creator-only scoped approval works for read-only `self_status`; external or mutating action classes remain blocked |
 | MCP federation | PARKED | Largest external surface; no current companion-value need |
 
@@ -412,15 +412,29 @@ a new approval and a new observation period.
 
 ### Phase 8: Bounded recursive self-improvement - PARTIAL
 
-Restrict autonomous experimentation to allowlisted database parameters and
-behavioral policies. Align defaults/bounds/directionality, prove every effective
-value changes a real consumer, require a proposal before each trial, define a
-minimum sample/time exposure and metric, and support exact rollback. Code or
-system changes become reviewable handoff proposals only.
+#### Phase 8A: Legacy autonomy containment
+
+The legacy `selfmod` autonomous mutation/evaluation loop is contained. Idle
+lessons remain evidence and create or refresh one bounded creator-review card,
+but CoreMind does not start or evaluate a `selfmod` trial. Existing `selfmod`
+history remains evidence only. Not all legacy tunables are proven to have a
+runtime consumer.
+
+`proactive.should_chatter` now has a validated opt-in `chance` override seam.
+It does not bypass the existing eligibility gates, and no ledger, controller, or
+API applies the override. No behavior trial is running.
+
+#### Phase 8B: Creator-approved runtime controller
+
+Before real trials, build a server-owned, creator-approved controller with
+atomic runtime-only apply/readback/rollback, fixed metric collection, and
+startup recovery. Only then may a real trial use an allowlisted behavioral
+policy. Code or system changes remain reviewable handoff proposals only.
 
 Exit gate: no trial starts without policy approval; every trial has hypothesis,
-metric, evidence, end time, and rollback; worsening trials revert exactly;
-source, shell, accounts, files, and OS remain outside the self-modification set.
+fixed metric collection, evidence, end time, and rollback; worsening trials
+revert exactly; startup recovers any interrupted runtime-only state; source,
+shell, accounts, files, and OS remain outside the self-modification set.
 
 ### Phase 9: Multimodal and source perception - PARTIAL
 

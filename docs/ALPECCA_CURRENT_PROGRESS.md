@@ -25,6 +25,15 @@ labels retained in historical plans and handoffs.
   routines share one per-scope initiative budget; ignored outreach backs off;
   proactive delivery selects one surface; and confidence-gated cue evidence
   changes response strategy before generation without asserting a feeling.
+- Master Plan Phase 8 remains **PARTIAL**. Phase 8A contains the legacy
+  `selfmod` autonomous mutation/evaluation path: idle lessons remain evidence
+  and create or refresh one bounded creator-review card, but CoreMind does not
+  start or evaluate a `selfmod` trial. `proactive.should_chatter` has a
+  validated opt-in `chance` override seam, but no ledger, controller, or API
+  applies it; no behavior trial is running. Not all tunables are proven to have
+  a runtime consumer. Phase 8B is not started: it must provide a server-owned,
+  creator-approved controller with atomic runtime-only apply/readback/rollback,
+  fixed metric collection, and startup recovery before real trials begin.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A semantic-negative/orthogonal recall abstention and Phase 6B
   bounded sidecar content-term indexing are implemented and covered by focused

@@ -4409,12 +4409,12 @@ class CoreMind:
         what finally makes the autonomy layer *run as one self*. The master agent
         arbitrates her seven subagents by the Good Person Principle into a single
         focus, and she does the one grounded act that focus names: pursue a want,
-        reflect, tune herself, question herself, or steady a real feeling. Until
+        reflect, review behavior, question herself, or steady a real feeling. Until
         now the Soul was only *read*; here it actually steers.
 
         Capped at a single LLM call per tick so chat never stalls behind her inner
         life; the cheap, pure acts (forming a want, drawing a lesson about herself,
-        a self-improvement step) need no model and run even offline. The cadence
+        a behavior-improvement review) need no model and run even offline. The cadence
         gate (reflection_due) is applied by the caller."""
         if initiative_scope:
             initiative = self.reserve_initiative(
@@ -4443,7 +4443,8 @@ class CoreMind:
         ))
         # Cheap and pure, every tick: she may crystallize a fresh want from her
         # real state, and draw a lesson about herself from her own history
-        # (self-training that, when a lesson points at a tunable, seeds selfmod).
+        # (self-training records lessons; behavior changes stay in the bounded
+        # review-and-approval path).
         formed = self.form_desire()
         learned = self.learn_tick()
         # The Soul names what she's most moved to do, by her ranked ethic.
@@ -4531,7 +4532,7 @@ class CoreMind:
                 privacy_class="local",
                 metadata={"focus": focus},
             ))
-        # SELF-CARE: tune herself (pure DB) or rest and muse.
+        # SELF-CARE: refresh a bounded behavior review, or rest and muse.
         if sub == "Improver":
             return self.self_improve_tick()
         if sub == "Reflector":
@@ -4579,6 +4580,8 @@ class CoreMind:
             line = "a want of hers was met, and she let it rest"
         elif ph in ("proposed", "evaluated"):
             line = "she adjusted something about herself"
+        elif ph == "review_required":
+            line = "she prepared a bounded behavior review for approval"
         elif ph == "reflected" and a.get("text"):
             line = "she paused to reflect"
         elif learned and learned.get("lesson"):
@@ -4651,12 +4654,14 @@ class CoreMind:
             kind="musing", salience=0.5)
         return {"phase": "pursued", "desire": want["text"], "kind": kind, "step": step}
 
-    # --- Bounded recursive self-improvement: she tunes herself -------------
+    # --- Bounded behavior-improvement review --------------------------------
 
     def _outcome_signal(self) -> float:
-        """A real scalar she judges a self-change against: how warm and steady
-        she's been lately. Reads her live warmth and the recent stability of her
-        mood log -- grounded, never a guess."""
+        """Compute a grounded warmth-and-stability signal from recent mood history.
+
+        Autonomous ticks no longer use this signal to evaluate or propose a
+        selfmod revision.
+        """
         hist = state_store.mood_history(limit=20)
         if len(hist) > 2:
             loves = [h["love"] for h in hist]
@@ -4667,33 +4672,20 @@ class CoreMind:
             stability = 0.5
         return round(0.6 * self.state.love + 0.4 * stability, 4)
 
-    def self_improve_tick(self) -> dict | None:
-        """One step of her bounded self-improvement loop. If a trial is running,
-        evaluate it against the outcome now; otherwise start a new experiment
-        chosen from the logged result of the last. Every move is recorded and
-        reversible (alpecca/selfmod.py). Returns what happened, or None."""
-        outcome = self._outcome_signal()
-        resolved = selfmod.evaluate(outcome)   # closes any running trial
-        if resolved is not None:
-            verb = "kept" if resolved["kept"] else "reverted"
-            memory_store.remember(
-                f"I tried adjusting my own {resolved['param']} and {verb} it "
-                f"(it {'helped' if resolved['kept'] else 'did not help'}).",
-                kind="musing", salience=0.5,
-            )
-            return {"phase": "evaluated", **resolved}
-        param, direction, reason = selfmod.choose_experiment(outcome, selfmod.history())
-        started = selfmod.propose(param, direction, reason, outcome)
-        if started:
-            return {"phase": "proposed", **started}
-        return None
+    def self_improve_tick(self) -> dict:
+        """Refresh the bounded behavior-improvement card for creator review.
+
+        This tick preserves selfmod history as evidence, but it does not evaluate
+        trials or autonomously propose new selfmod changes.
+        """
+        review = self.review_behavior_improvement()
+        return {**review, "phase": "review_required"}
 
     def learn_tick(self) -> dict | None:
         """One step of her self-training: read her own real history, draw a
-        grounded lesson from it (alpecca/learning.py), and -- if the lesson points
-        at a tunable -- hand that direction to her bounded self-improvement loop.
-        This is the layer above selfmod: not just trying knobs, but noticing
-        patterns in herself and steering by them. Every lesson cites real numbers."""
+        grounded lesson from it (alpecca/learning.py), and store it for later
+        review. Lessons may inform a bounded review card, but never autonomously
+        mutate selfmod. Every lesson cites real numbers."""
         loves = [h["love"] for h in state_store.mood_history(limit=40)]
         revisions = selfmod.history(limit=12)
         analysis = learning_mod.analyze(loves, revisions, self.state.social_hunger,
@@ -4702,14 +4694,6 @@ class CoreMind:
         if not lesson or learning_mod._has_similar_recent(lesson["text"], state_store.DB_PATH):
             return None
         learning_mod.record(lesson)
-        # A lesson can steer her self-tuning: parse "param:+1/-1" and trial it.
-        sug = lesson.get("suggestion")
-        if sug and ":" in sug:
-            param, _, sign = sug.partition(":")
-            if param in selfmod.TUNABLES:
-                selfmod.propose(param, 1 if sign.strip().startswith("+") else -1,
-                                "a lesson i drew about myself: " + lesson["text"][:80],
-                                self._outcome_signal())
         # Keep the lesson where she can recall it.
         memory_store.remember("I learned something about myself: " + lesson["text"],
                               kind="musing", salience=0.5)

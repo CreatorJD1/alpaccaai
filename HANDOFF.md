@@ -20,6 +20,15 @@ retained below as historical implementation evidence.
   routines share one per-scope relevance/cooldown/dedupe budget; unanswered
   outreach feeds backoff; one proactive event chooses one delivery surface; and
   eligible cue evidence changes the response strategy with traceable provenance.
+- Master Plan Phase 8 remains **PARTIAL**. Phase 8A contains the legacy
+  `selfmod` autonomous mutation/evaluation path: idle lessons remain evidence
+  and create or refresh one bounded creator-review card, but CoreMind does not
+  start or evaluate a `selfmod` trial. `proactive.should_chatter` has a
+  validated opt-in `chance` override seam, but no ledger, controller, or API
+  applies it; no behavior trial is running. Not all tunables are proven to have
+  a runtime consumer. Phase 8B is next: a server-owned, creator-approved
+  controller with atomic runtime-only apply/readback/rollback, fixed metric
+  collection, and startup recovery before any real trial can begin.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A rejects orthogonal and negative semantic matches. Phase 6B
   adds bounded sidecar Mindpage content-term indexing: new pages index after a
@@ -166,12 +175,23 @@ floor. Valid steps from the 38,000 MiB baseline are 42,096, 46,192, 50,288, and
 54,384 MiB. Do not modify pagefile settings in development or without explicit
 fresh creator approval.
 
-### Phase 8: bounded recursive self-improvement
+### Phase 8: bounded recursive self-improvement - PARTIAL
 
-Restrict trials to allowlisted, consumed database parameters and policies. Every
-trial needs a proposal, hypothesis, metric, exposure window, evidence, end time,
-and exact rollback. Code, files, accounts, and operating-system changes remain
-outside the autonomous self-improvement surface.
+Phase 8A contains the legacy `selfmod` autonomous mutation/evaluation path.
+Idle lessons remain evidence and create or refresh one bounded creator-review
+card, but CoreMind does not start or evaluate a `selfmod` trial. Existing
+`selfmod` history is evidence only. `proactive.should_chatter` now has a
+validated opt-in `chance` override seam, but no ledger, controller, or API
+applies it; no behavior trial is running. Not all legacy tunables are proven to
+have a runtime consumer.
+
+Phase 8B is the next gate: build a server-owned, creator-approved controller
+with atomic runtime-only apply/readback/rollback, fixed metric collection, and
+startup recovery. Only after that controller is in place may real trials begin.
+Any later trial remains restricted to allowlisted behavioral policies, with a
+proposal, hypothesis, exposure window, evidence, end time, and exact rollback.
+Code, files, accounts, and operating-system changes remain outside the
+self-improvement surface.
 
 ### Phase 9: multimodal and source perception
 
