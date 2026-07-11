@@ -2,7 +2,7 @@
 
 Last updated: **2026-07-10**
 
-## Phase 6E-6F Checkpoint
+## Phase 6E-6G Checkpoint
 
 Phase 6E adds bounded, evidence-only host-resource observation and context-tier
 measurement. Phase 6F consumes only fresh advisory host pressure to defer
@@ -22,6 +22,13 @@ to defer optional maintenance before a coordinator lease. Chat and TTS behavior
 are unchanged. Unknown or unavailable host data allows work. It performs no
 automatic context reduction, pagefile action, configuration change, or system
 action.
+
+Phase 6G projects the cached shared host assessment into the Soul snapshot as
+separate `host_pressure` evidence. This projection is assessment-only: raw host
+telemetry and advisory data never reach the Soul snapshot. Unknown, invalid, or
+unavailable data remains `null`. It is observational only, makes no LLM or
+system call, and does not change seven-agent Soul deliberation, urgency, or
+actions.
 
 ## One-Tier Harness
 
@@ -63,7 +70,7 @@ promoted.
 
 ## Remaining Phase 6 Work
 
-Phase 6 remains **PARTIAL**. The next separate integration is grounded
-host-pressure-to-Soul state wiring with no automatic behavior. Neither it nor
-Phase 6F authorizes a pagefile mutation; pagefile work remains blocked behind
-the separate Phase 7 creator-approval gate.
+Phase 6 remains **PARTIAL**. The next remaining work is real manual context-tier
+measurements, followed only by any separately approved promotion based on their
+evidence. No direct pagefile mutation is authorized in Phase 6; pagefile work
+remains blocked behind the separate Phase 7 creator-approval gate.

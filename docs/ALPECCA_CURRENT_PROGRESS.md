@@ -52,15 +52,21 @@ labels retained in historical plans and handoffs.
   unchanged, and unknown or unavailable host data allows work. It performs no
   automatic context reduction, pagefile action, configuration change, or system
   action.
+- Phase 6G sends the cached shared host assessment to the Soul snapshot as
+  separate `host_pressure` evidence. It is assessment-only, excluding raw host
+  telemetry and advisory data; unknown, invalid, or unavailable data stays
+  `null`. This observation makes no LLM or system call and does not change
+  seven-agent Soul deliberation, urgency, or actions.
 - `scripts\measure_context_tier.py` is a one-tier evidence harness: its default
   is a no-request dry run at 8,192, while a live request requires explicit
   `--execute --tier N`. Only 8,192, 16,384, 24,576, 32,768, and 49,152 are
   accepted; `--all` is rejected. Results require manual review and can never
   automatically promote a tier or change model/application configuration,
   pagefile, or system settings. No real model tier was run in this checkpoint.
-- Phase 6 remains partial. Next is separate grounded host-pressure-to-Soul state
-  wiring with no automatic behavior; no pagefile mutation is authorized. See
-  `docs/CONTEXT_TIER_MEASUREMENT.md` for the Phase 6F contract.
+- Phase 6 remains partial. The next remaining work is real manual context-tier
+  measurements, followed only by any separately approved promotion based on
+  their evidence; no direct pagefile mutation is authorized. See
+  `docs/CONTEXT_TIER_MEASUREMENT.md` for the Phase 6E-6G contract.
 - Discord proactive participation, recursion, and voice remain default-off until
   the Phase 10 identity, scope, and rate-limit gates pass.
 - `ALPECCA_TOOL_MODE` is `smart` and `ALPECCA_INNATE_TOOLS=1` in this branch.
@@ -123,8 +129,9 @@ ZeroGPU runtimes only, and those allocations are ephemeral and provider-dependen
 
 - `docs/AGENTIC_ASSESSMENT.md` is the current systems audit and stage-0 snapshot.
 - `docs/MINDPAGE.md` is the Layer A+ target design and constraints.
-- `docs/CONTEXT_TIER_MEASUREMENT.md` records the Phase 6E-6F host-telemetry,
-  optional-maintenance deferral, and context-tier measurement boundary.
+- `docs/CONTEXT_TIER_MEASUREMENT.md` records the Phase 6E-6G host-telemetry,
+  Soul evidence, optional-maintenance deferral, and context-tier measurement
+  boundary.
 
 ## Archival Policy
 

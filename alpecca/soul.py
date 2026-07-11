@@ -79,10 +79,12 @@ class Snapshot:
     person_fatigue: float = 0.0   # how worn the person reads (compassion signals)
     trial_running: bool = False   # is a self-improvement experiment open
     memory_pressure: MemoryPressureSignal | Mapping[str, object] | None = None
+    host_pressure: Mapping[str, object] | None = None
 
     def as_dict(self) -> dict:
         d = asdict(self)
         d["state"] = self.state.as_dict()
+        d["host_pressure"] = self.host_pressure
         return d
 
 

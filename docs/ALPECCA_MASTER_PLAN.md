@@ -55,15 +55,21 @@ retained in the implementation sequence as historical planning context.
   maintenance before a coordinator lease. Chat and TTS behavior are unchanged,
   and unknown or unavailable host data allows work. It performs no automatic
   context reduction, pagefile action, configuration change, or system action.
+- Phase 6G projects the cached shared host assessment into the Soul snapshot as
+  separate `host_pressure` evidence. This is assessment-only, never raw host
+  telemetry or advisory data; unknown, invalid, or unavailable data stays
+  `null`. It makes no LLM or system call and does not change seven-agent Soul
+  deliberation, urgency, or actions.
 - `scripts\measure_context_tier.py` is a one-tier evidence harness. It defaults
   to a no-request dry run at 8,192; a real request requires explicit
   `--execute --tier N`, and `--all` is rejected. Only 8,192, 16,384, 24,576,
   32,768, and 49,152 are allowed. Reports require manual review and never
   automatically promote a tier or change model/application configuration,
   pagefile, or system settings. No real model tier was run in this checkpoint.
-- Phase 6 remains partial. Next is separate grounded host-pressure-to-Soul state
-  wiring with no automatic behavior; no pagefile mutation is authorized. See
-  `docs/CONTEXT_TIER_MEASUREMENT.md` for the Phase 6F contract.
+- Phase 6 remains partial. The next remaining work is real manual context-tier
+  measurements, followed only by any separately approved promotion based on
+  their evidence; no direct pagefile mutation is authorized. See
+  `docs/CONTEXT_TIER_MEASUREMENT.md` for the Phase 6E-6G contract.
 
 ## Truth Baseline
 
@@ -141,7 +147,7 @@ They are not fixed Alpecca hardware.
 | Keyword/FTS recall and embedding backfill | PARTIAL | Bounded and useful; Phase 6A rejects orthogonal and negative semantic matches, while live-chat semantic recall remains disabled by default |
 | Mindpage Layer A | PARTIAL | Request ledger, write-before-delete paging, tiers, page faults, bounded sidecar content-term indexing, fixed-prompt overflow refusal, and cooperative maintenance cancellation work. Legacy index backfill is idle-scheduled; LLM calls, TTS synthesis, reflection, and VACUUM are not force-cancelled |
 | Conversation/privacy partitioning | DONE | Creator app and House HQ turns are scope-partitioned; future guest/Discord subjects remain capability-denied until their later gates |
-| Resource pressure sensing | PARTIAL | Read-only `HostResourceSampler` exposes host evidence through `GET /system/resources`; Phase 6F uses only fresh advisory host pressure to defer optional maintenance before a coordinator lease. Chat and TTS are unchanged, unknown data allows work, no automatic context reduction/pagefile/configuration/system action occurs, and Soul is not wired |
+| Resource pressure sensing | PARTIAL | Read-only `HostResourceSampler` exposes host evidence through `GET /system/resources`; Phase 6F uses only fresh advisory host pressure to defer optional maintenance before a coordinator lease. Phase 6G separately projects the cached assessment into Soul `host_pressure`, never raw telemetry or advisory data; unknown stays `null`, it makes no LLM/system call, and it does not change seven-agent deliberation, urgency, or actions. Chat and TTS are unchanged, and no automatic context reduction/pagefile/configuration/system action occurs |
 | Approved pagefile broker | BLOCKED | Draft math, caps, approval proof, live recheck, and verification are unsafe |
 | llama.cpp KV slot persistence | PARKED | Downloaded experiment, not integrated |
 
@@ -344,6 +350,12 @@ maintenance before a coordinator lease. Chat and TTS behavior are unchanged, and
 unknown or unavailable host data allows work. It performs no automatic context
 reduction, pagefile action, configuration change, or system action.
 
+Phase 6G projects the cached shared host assessment into the Soul snapshot as
+separate `host_pressure` evidence. The projection is assessment-only: it omits
+raw host telemetry and advisory data, while unknown, invalid, or unavailable
+data stays `null`. It is observational only: it makes no LLM or system call and
+does not change seven-agent Soul deliberation, urgency, or actions.
+
 `scripts\measure_context_tier.py` records evidence for one allowed tier at a
 time. Its default is a no-request dry run at 8,192. A real local request is
 permitted only with `--execute --tier N`; `--all` is rejected. Allowed tiers are
@@ -351,22 +363,25 @@ permitted only with `--execute --tier N`; `--all` is rejected. Allowed tiers are
 promotion or configuration/system change, and every report requires manual
 review before any later decision. No real model tier was run in this checkpoint.
 
-Phase 6 remains **PARTIAL**. Next is separate grounded host-pressure-to-Soul
-state wiring with no automatic behavior. Continue separating context pressure
-from RAM, commit, VRAM, CPU, disk, battery, and thermal signals. 8K is the first
-candidate measurement baseline; 16K, 24K, 32K, and 48K remain separate, manual
-Qwen 3.5 9B evidence reviews. No pagefile mutation is authorized in Phase 6.
-The 38,000 MiB pagefile supplies Windows commit reserve for CPU-backed model/KV
-pages; it does not extend the GPU's 4 GB VRAM.
+Phase 6 remains **PARTIAL**. The next remaining work is real manual context-tier
+measurements, followed only by any separately approved promotion based on their
+evidence. Continue separating context pressure from RAM, commit, VRAM, CPU,
+disk, battery, and thermal signals. 8K is the first candidate measurement
+baseline; 16K, 24K, 32K, and 48K remain separate, manual Qwen 3.5 9B evidence
+reviews. No direct pagefile mutation is authorized in Phase 6. The 38,000 MiB
+pagefile supplies Windows commit reserve for CPU-backed model/KV pages; it does
+not extend the GPU's 4 GB VRAM.
 
 Exit gate: orthogonal memories are rejected; buried page facts are retrievable;
 no request exceeds the configured context estimate; optional reflection/backfill
 cannot overlap destructively with chat/TTS; only fresh advisory host pressure can
 defer optional maintenance before a coordinator lease; chat/TTS are unchanged;
-unknown telemetry allows work; and no automatic context reduction, pagefile,
-configuration, or system action occurs. The largest promoted context tier stays
-below 90 percent commit, preserves 2 GiB of physical RAM, and does not enter
-sustained SSD paging.
+unknown telemetry allows work; cached host assessment reaches Soul only as
+assessment-only `host_pressure` evidence, with unknown data kept `null` and no
+change to seven-agent deliberation, urgency, or actions; and no automatic
+context reduction, pagefile, configuration, or system action occurs. The
+largest promoted context tier stays below 90 percent commit, preserves 2 GiB of
+physical RAM, and does not enter sustained SSD paging.
 
 ### Phase 7: Creator-approved pagefile broker - BLOCKED
 

@@ -78,7 +78,7 @@ def _protected_headers():
     return {server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET}
 
 
-def test_resources_endpoint_and_runtime_share_a_cached_snapshot(monkeypatch):
+def test_resources_runtime_and_soul_share_a_cached_snapshot(monkeypatch):
     sampler, calls = _cached_host_resource_sampler()
     force_values: list[bool] = []
     original_snapshot = sampler.snapshot
@@ -94,6 +94,7 @@ def test_resources_endpoint_and_runtime_share_a_cached_snapshot(monkeypatch):
     first_response = client.get("/system/resources", headers=_protected_headers())
     second_response = client.get("/system/resources", headers=_protected_headers())
     runtime = server._runtime_status(check_models=False)
+    soul_snapshot = server.mind._soul_snapshot()
 
     assert first_response.status_code == 200
     assert second_response.status_code == 200
@@ -104,8 +105,56 @@ def test_resources_endpoint_and_runtime_share_a_cached_snapshot(monkeypatch):
     } <= first.keys()
     assert second["timestamp"] == first["timestamp"]
     assert runtime["host_resources"]["timestamp"] == first["timestamp"]
-    assert force_values == [False, False, False]
+    assert soul_snapshot.host_pressure is not None
+    assert soul_snapshot.host_pressure["sample_state"] == first["state"]
+    assert soul_snapshot.host_pressure["timestamp"] == first["timestamp"]
+    assert soul_snapshot.host_pressure["severity"] == first["assessment"]["severity"]
+    assert soul_snapshot.host_pressure["pressure"] == first["assessment"]["pressure"]
+    assert set(soul_snapshot.host_pressure) == {
+        "source", "sample_state", "timestamp", "age", "severity", "pressure", "evidence_codes",
+    }
+    assert force_values == [False, False, False, False]
     assert calls == {"cpu": 1, "performance": 1, "battery": 1, "disk": 1, "gpu": 1}
+
+
+def test_soul_receives_assessment_only_from_current_shared_sampler(monkeypatch):
+    assessment = {
+        "pressure": 0.91,
+        "severity": "high",
+        "reasons": [{"resource": "commit", "pressure": 0.91}],
+    }
+
+    class AssessmentSampler:
+        def __init__(self):
+            self.force_values: list[bool] = []
+
+        def snapshot(self, force: bool = False) -> dict:
+            self.force_values.append(force)
+            return {
+                "state": "ready",
+                "timestamp": 123.0,
+                "age": 0.0,
+                "raw": {"commit_used_bytes": 91},
+                "headroom": {"commit_fraction": 0.09},
+                "assessment": assessment,
+                "advisory": {"defer_optional_work": True},
+            }
+
+    sampler = AssessmentSampler()
+    monkeypatch.setattr(server, "_host_resource_sampler", sampler)
+
+    soul_snapshot = server.mind._soul_snapshot()
+
+    assert sampler.force_values == [False]
+    assert soul_snapshot.host_pressure == {
+        "source": "host_resource_snapshot",
+        "sample_state": "ready",
+        "timestamp": 123.0,
+        "age": 0.0,
+        "severity": "high",
+        "pressure": 0.91,
+        "evidence_codes": [],
+    }
 
 
 def test_chat_turn_does_not_sample_host_resources(monkeypatch):

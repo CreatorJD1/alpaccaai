@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import random
 import json
+import math
 import re
 import threading
 import time
+from collections.abc import Callable, Mapping
 
 from config import (
     OLLAMA_MODEL,
@@ -966,11 +968,18 @@ class CoreMind:
     """One instance per running companion. Holds the live mood and the last
     observation so it can compute surprise turn to turn."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        host_resource_snapshot_supplier: Callable[[], object] | None = None,
+    ) -> None:
         state_store.init_db()
         cognition_mod.init_db()
         turn_context_mod.ensure_history_schema()
         self.state: EmotionalState = state_store.load_state()
+        # This stays opt-in so normal chat and Soul reads never trigger a host
+        # sample. A caller may provide a cached, read-only snapshot supplier.
+        self._host_resource_snapshot_supplier = host_resource_snapshot_supplier
         self.llm = _LLM()
         self._prev_obs: Observation | None = None
         self._last_signals: dict | None = None   # last fatigue read, for introspection
@@ -1045,6 +1054,13 @@ class CoreMind:
             "Alpecca has started and is waiting for grounded input.",
             target=self._location,
         ))
+
+    def set_host_resource_supplier(
+        self,
+        supplier: Callable[[], object] | None,
+    ) -> None:
+        """Install a cached, read-only host snapshot supplier for Soul state."""
+        self._host_resource_snapshot_supplier = supplier if callable(supplier) else None
 
     def _tool_mode(self) -> str:
         mode = (ActionsCfg.TOOL_MODE or "").strip().lower()
@@ -4189,6 +4205,74 @@ class CoreMind:
 
     # --- Her Soul: the master agent over the seven subagents ----------------
 
+    def _host_pressure_projection(self) -> dict | None:
+        """Project one supplied host assessment into separate, factual evidence."""
+        supplier = getattr(self, "_host_resource_snapshot_supplier", None)
+        if not callable(supplier):
+            return None
+        try:
+            sample = supplier()
+        except Exception:
+            return None
+        if not isinstance(sample, Mapping):
+            return None
+
+        try:
+            assessment = sample["assessment"]
+        except (KeyError, TypeError):
+            return None
+        if not isinstance(assessment, Mapping):
+            return None
+
+        try:
+            signal = soul_pressure_signal_mod.build_soul_pressure_signal(None, assessment)
+            pressure = signal.vector.host
+        except Exception:
+            return None
+        if pressure is None:
+            return None
+
+        sample_state = sample.get("state")
+        timestamp = sample.get("timestamp")
+        age = sample.get("age")
+        severity = assessment.get("severity")
+        if (
+            not isinstance(sample_state, str)
+            or sample_state not in {"ready", "partial", "warming"}
+            or not isinstance(severity, str)
+            or severity not in {"normal", "elevated", "high", "critical"}
+            or isinstance(timestamp, bool)
+            or not isinstance(timestamp, (int, float))
+            or not math.isfinite(float(timestamp))
+            or isinstance(age, bool)
+            or not isinstance(age, (int, float))
+            or not math.isfinite(float(age))
+            or float(age) < 0.0
+        ):
+            return None
+
+        evidence_codes: list[str] = []
+        reasons = assessment.get("reasons")
+        if isinstance(reasons, (list, tuple)):
+            for reason in reasons:
+                if not isinstance(reason, Mapping):
+                    continue
+                code = reason.get("code")
+                if isinstance(code, str) and code and code not in evidence_codes:
+                    evidence_codes.append(code)
+                if len(evidence_codes) >= 4:
+                    break
+
+        return {
+            "source": "host_resource_snapshot",
+            "sample_state": sample_state,
+            "timestamp": float(timestamp),
+            "age": float(age),
+            "severity": severity,
+            "pressure": pressure,
+            "evidence_codes": evidence_codes,
+        }
+
     def _soul_snapshot(self) -> "soul_mod.Snapshot":
         """Build the grounded snapshot the Soul deliberates over -- every field a
         real read of her internals, nothing invented."""
@@ -4211,6 +4295,7 @@ class CoreMind:
             person_fatigue=person_fatigue,
             trial_running=any(r["status"] == "trial" for r in selfmod.history(limit=3)),
             memory_pressure=soul_pressure,
+            host_pressure=self._host_pressure_projection(),
         )
 
     # --- Her journal + recursive self-questioning --------------------------

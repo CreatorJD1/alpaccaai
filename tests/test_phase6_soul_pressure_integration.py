@@ -27,7 +27,7 @@ OVERFLOW_DELTAS = {
 }
 
 
-def _active_snapshot(memory_pressure=None):
+def _active_snapshot(memory_pressure=None, host_pressure=None):
     state = EmotionalState(
         love=0.95,
         compassion=0.7,
@@ -42,6 +42,7 @@ def _active_snapshot(memory_pressure=None):
         person_fatigue=0.7,
         trial_running=True,
         memory_pressure=memory_pressure,
+        host_pressure=host_pressure,
     )
 
 
@@ -116,6 +117,60 @@ def test_pressure_changes_only_named_role_scores_with_bounded_deltas(
             assert abs(current["urgency"] - original["urgency"]) <= 0.2
         else:
             assert current["urgency"] == original["urgency"]
+
+
+def test_host_pressure_is_observable_but_leaves_soul_deliberation_unchanged():
+    host_pressure = {
+        "score": 1.0,
+        "severity": "critical",
+        "defer_optional_work": True,
+        "evidence": {"commit_pressure": 1.0},
+    }
+
+    baseline = soul.soul.deliberate(_active_snapshot())
+    host_only_snapshot = _active_snapshot(host_pressure=host_pressure)
+    host_only = soul.soul.deliberate(host_only_snapshot)
+
+    assert host_only_snapshot.memory_pressure is None
+    assert host_only_snapshot.host_pressure is host_pressure
+    assert host_only_snapshot.as_dict()["host_pressure"] == host_pressure
+    assert host_only["slate"] == baseline["slate"]
+    assert host_only["focus"] == baseline["focus"]
+    assert [item["urgency"] for item in host_only["slate"]] == [
+        item["urgency"] for item in baseline["slate"]
+    ]
+    assert [item["action"] for item in host_only["slate"]] == [
+        item["action"] for item in baseline["slate"]
+    ]
+
+
+def test_memory_pressure_retains_urgency_effects_when_host_pressure_is_present():
+    memory_pressure = {
+        "score": 0.92,
+        "severity": "high",
+        "overflow": False,
+        "evidence": {"context_fill": 0.92},
+    }
+    host_pressure = {
+        "score": 1.0,
+        "severity": "critical",
+        "defer_optional_work": True,
+    }
+
+    baseline = _slate(soul.soul.deliberate(_active_snapshot(host_pressure=host_pressure)))
+    adjusted = _slate(soul.soul.deliberate(_active_snapshot(
+        memory_pressure=memory_pressure,
+        host_pressure=host_pressure,
+    )))
+
+    for name, original in baseline.items():
+        current = adjusted[name]
+        assert _without_urgency(current) == _without_urgency(original)
+        expected = round(
+            max(0.0, min(1.0, original["urgency"] + HIGH_DELTAS.get(name, 0.0))),
+            6,
+        )
+        assert current["urgency"] == pytest.approx(expected)
 
 
 def test_pressure_cannot_create_a_role_intention_or_new_action():

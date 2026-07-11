@@ -18,7 +18,7 @@ def _active_state() -> EmotionalState:
     )
 
 
-def _bare_mind(monkeypatch, ledger):
+def _bare_mind(monkeypatch, ledger, host_resource_snapshot_supplier=None):
     from alpecca import mind as mind_mod
 
     mind = mind_mod.CoreMind.__new__(mind_mod.CoreMind)
@@ -29,6 +29,7 @@ def _bare_mind(monkeypatch, ledger):
     mind._location = "parlor"
     mind._last_mindpage = ledger
     mind._histories = {}
+    mind._host_resource_snapshot_supplier = host_resource_snapshot_supplier
     monkeypatch.setattr(mind_mod.desires_mod, "summary", lambda: {})
     monkeypatch.setattr(mind_mod.selfmod, "history", lambda **_kwargs: [])
     monkeypatch.setattr(mind_mod, "SOUL_LLM", False)
@@ -229,3 +230,113 @@ def test_disabled_latest_telemetry_adds_no_pressure_note(monkeypatch):
     })
 
     assert mind._phase6_pressure_bundle() is None
+
+
+def _host_snapshot(assessment: dict, *, state: str = "ready") -> dict:
+    return {
+        "state": state,
+        "timestamp": 1_700_000_000.25,
+        "age": 0.5,
+        "assessment": assessment,
+        "advisory": {"action": "must_not_reach_soul"},
+    }
+
+
+def test_host_assessment_projects_to_separate_soul_evidence(monkeypatch):
+    assessment = {
+        "pressure": 0.91,
+        "severity": "high",
+        "reasons": [
+            {"code": "ram_pressure"},
+            {"code": "commit_pressure"},
+        ],
+    }
+    mind, _mind_mod = _bare_mind(
+        monkeypatch,
+        _ledger(0.93),
+        lambda: _host_snapshot(assessment),
+    )
+
+    snapshot = mind._soul_snapshot()
+
+    assert snapshot.host_pressure == {
+        "source": "host_resource_snapshot",
+        "sample_state": "ready",
+        "timestamp": 1_700_000_000.25,
+        "age": 0.5,
+        "severity": "high",
+        "pressure": 0.91,
+        "evidence_codes": ["ram_pressure", "commit_pressure"],
+    }
+    assert "advisory" not in snapshot.host_pressure
+    assert "action" not in snapshot.host_pressure
+    assert snapshot.memory_pressure["context_fill"] == 0.93
+    assert snapshot.memory_pressure["pressure_score"] == 0.93
+
+
+def test_unknown_invalid_or_failing_host_samples_never_fabricate_low_pressure(monkeypatch):
+    unknown = _host_snapshot({
+        "pressure": 0.0,
+        "severity": "unknown",
+        "reasons": [],
+    })
+    invalid = _host_snapshot({"pressure": "not-a-number", "severity": "high"})
+
+    def failing_supplier():
+        raise RuntimeError("host sampler unavailable")
+
+    for supplier in (lambda: unknown, lambda: invalid, failing_supplier):
+        mind, _mind_mod = _bare_mind(monkeypatch, _ledger(), supplier)
+
+        assert mind._soul_snapshot().host_pressure is None
+
+
+def test_host_assessment_projection_does_not_mutate_source(monkeypatch):
+    assessment = {
+        "pressure": 0.88,
+        "severity": "high",
+        "reasons": [{"code": "ram_pressure", "observed": {"used": 88}}],
+    }
+    source = _host_snapshot(assessment)
+    before = deepcopy(source)
+    mind, _mind_mod = _bare_mind(monkeypatch, _ledger(), lambda: source)
+
+    mind._soul_snapshot()
+
+    assert source == before
+    assert assessment == before["assessment"]
+
+
+def test_host_snapshot_supplier_is_called_once_per_soul_snapshot(monkeypatch):
+    calls = []
+    assessment = {"pressure": 0.72, "severity": "elevated", "reasons": []}
+
+    def supplier():
+        calls.append(True)
+        return _host_snapshot(assessment)
+
+    mind, _mind_mod = _bare_mind(monkeypatch, _ledger(), supplier)
+
+    assert mind._soul_snapshot().host_pressure["pressure"] == 0.72
+    assert calls == [True]
+
+
+def test_host_pressure_leaves_mindpage_payload_unchanged(monkeypatch):
+    ledger = _ledger(0.94)
+    baseline, _mind_mod = _bare_mind(monkeypatch, deepcopy(ledger))
+    with_host, _mind_mod = _bare_mind(
+        monkeypatch,
+        deepcopy(ledger),
+        lambda: _host_snapshot({
+            "pressure": 0.95,
+            "severity": "critical",
+            "reasons": [{"code": "commit_pressure"}],
+        }),
+    )
+
+    baseline_snapshot = baseline._soul_snapshot()
+    host_snapshot = with_host._soul_snapshot()
+
+    assert host_snapshot.memory_pressure == baseline_snapshot.memory_pressure
+    assert with_host._phase6_pressure_bundle() == baseline._phase6_pressure_bundle()
+    assert "host_pressure" not in host_snapshot.memory_pressure

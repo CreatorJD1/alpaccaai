@@ -468,6 +468,19 @@ active_tts_requests = 0
 last_chat_turn_started = 0.0
 CHAT_PRIORITY_QUIET_SECONDS = 12.0
 _host_resource_sampler = host_resources_mod.HostResourceSampler()
+
+
+def _host_resource_snapshot_supplier() -> dict[str, object]:
+    """Read the current shared sampler cache when CoreMind builds a Soul snapshot."""
+    return _host_resource_sampler.snapshot(force=False)
+
+
+if hasattr(mind, "set_host_resource_supplier"):
+    mind.set_host_resource_supplier(_host_resource_snapshot_supplier)
+else:
+    # CoreMind's transitional constructor seam keeps server startup compatible
+    # until the public setter is available in the shared core module.
+    mind._host_resource_snapshot_supplier = _host_resource_snapshot_supplier
 _optional_work_coordinator = resource_coordinator_mod.ResourceCoordinator()
 INITIATIVE_RESPONSE_WINDOW_SECONDS = max(
     30.0,
