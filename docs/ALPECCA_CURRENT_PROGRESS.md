@@ -57,8 +57,14 @@ labels retained in historical plans and handoffs.
   aggregate baseline/trial evidence only through the existing creator-only,
   read-only, `no-store` endpoint. No real trial exists, so all current outcome
   evidence is baseline-only. The broader Phase 8C plan still requires a
-  server-derived approval flow bound to the exact validated specification,
-  fixed metric evaluation/completion, and creator UI before any real trial.
+  server-derived approval/start flow bound to the exact validated specification,
+  wired metric collection/completion, and creator UI before any real trial.
+  Phase 8C3 now supplies the fixed, pure evaluation contract for a future
+  `qualified_response_rate` trial: per-trial aggregate evidence is isolated by
+  server-owned trial id and classified only as collecting, awaiting settlement,
+  or ready for creator review with an improved/unchanged/worse comparison to
+  the immutable spec baseline. It does not start, complete, roll back, or
+  otherwise mutate a trial, and it is not yet wired to a live trial path.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A semantic-negative/orthogonal recall abstention and Phase 6B
   bounded sidecar content-term indexing are implemented and covered by focused

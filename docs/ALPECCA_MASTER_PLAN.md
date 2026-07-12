@@ -477,9 +477,26 @@ evidence after recovery. No behavior trial has started, so all collected rows
 are baseline evidence. This does not authorize a start route, approval route,
 behavior mutation, autonomous completion, or evaluation.
 
+#### Phase 8C3: Fixed per-trial evaluation contract - COMPLETE, NOT YET ACTUATED
+
+`QualifiedResponseLedger.trial_summary(trial_id)` provides one server-owned
+trial-id cohort's aggregate-only evidence without delivery, response-turn,
+scope, or message identifiers. `behavior_trial_evaluation` is a pure reader of
+that snapshot plus the exact persisted trial record: it verifies the metric
+name/version, trial identity, spec SHA-256, count arithmetic, rate arithmetic,
+baseline, and minimum sample count. It reports only `collecting`,
+`awaiting_settlement`, or `ready_for_creator_review`; once ready it describes
+the rate as `improved`, `unchanged`, or `worse` relative to the immutable
+baseline and always requires creator review.
+
+The contract performs no I/O or trial-state change. It does not start,
+complete, evaluate-to-action, approve, or roll back a trial, and no live code
+currently attaches a trial id to a proactive delivery. That wiring remains a
+later gated scope after creator approval and start are real server-owned flows.
+
 The broader Phase 8C plan remains incomplete: add server-derived approval bound
-to the exact validated specification, a fixed metric completion/evaluation
-contract, and creator UI before any real behavior trial. Any real trial must be
+to the exact validated specification, a controlled start plus wired metric
+collection/completion path, and creator UI before any real behavior trial. Any real trial must be
 reviewable against its hypothesis, exposure window, evidence, end time, and
 exact rollback. Code or system changes remain reviewable handoff proposals only.
 

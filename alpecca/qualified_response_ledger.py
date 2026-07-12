@@ -422,6 +422,43 @@ class QualifiedResponseLedger:
             "rate": None,
         }
 
+    @staticmethod
+    def _finalize_bucket(bucket: dict[str, Any]) -> dict[str, Any]:
+        completed = int(bucket["qualified_responses"]) + int(bucket["unanswered"])
+        bucket["completed"] = completed
+        bucket["rate"] = (
+            None if completed == 0 else float(bucket["qualified_responses"]) / completed
+        )
+        return bucket
+
+    def _trial_bucket(self, trial_id: int) -> dict[str, Any]:
+        """Read one aggregate-only bucket for a fixed server-owned trial id."""
+        database_uri = self.db_path.resolve().as_uri() + "?mode=ro"
+        bucket = self._summary_bucket()
+        with sqlite3.connect(database_uri, uri=True) as conn:
+            rows = conn.execute(
+                """
+                SELECT state, COUNT(*) AS count
+                FROM qualified_response_outcomes
+                WHERE metric=? AND definition_version=?
+                  AND cohort='trial' AND trial_id=?
+                GROUP BY state
+                """,
+                (METRIC_NAME, DEFINITION_VERSION, trial_id),
+            ).fetchall()
+        for state, count in rows:
+            if str(state) not in _STATES:
+                continue
+            key = {
+                DISPATCHING: "dispatching",
+                PENDING: "pending",
+                RESPONDED: "qualified_responses",
+                UNANSWERED: "unanswered",
+                CANCELLED: "cancelled",
+            }[str(state)]
+            bucket[key] = int(count)
+        return self._finalize_bucket(bucket)
+
     def summary(self) -> dict[str, Any]:
         """Return aggregate-only evidence without delivery/turn identifiers."""
         database_uri = self.db_path.resolve().as_uri() + "?mode=ro"
@@ -449,26 +486,30 @@ class QualifiedResponseLedger:
             }[str(state)]
             bucket[key] = int(count)
         for bucket in buckets.values():
-            completed = int(bucket["qualified_responses"]) + int(bucket["unanswered"])
-            bucket["completed"] = completed
-            bucket["rate"] = (
-                None if completed == 0 else float(bucket["qualified_responses"]) / completed
-            )
+            self._finalize_bucket(bucket)
         overall = self._summary_bucket()
         for key in ("dispatching", "pending", "qualified_responses", "unanswered", "cancelled"):
             overall[key] = int(buckets["baseline"][key]) + int(buckets["trial"][key])
-        overall["completed"] = int(overall["qualified_responses"]) + int(overall["unanswered"])
-        overall["rate"] = (
-            None
-            if overall["completed"] == 0
-            else float(overall["qualified_responses"]) / int(overall["completed"])
-        )
         return {
             "metric": METRIC_NAME,
             "definition_version": DEFINITION_VERSION,
-            **overall,
+            **self._finalize_bucket(overall),
             "baseline": buckets["baseline"],
             "trial": buckets["trial"],
+        }
+
+    def trial_summary(self, trial_id: int) -> dict[str, Any]:
+        """Return one trial's aggregate-only evidence without mutating it.
+
+        The caller supplies only a server-owned behavior-trial id. No delivery,
+        response-turn, scope, or message identifier is returned.
+        """
+        clean_trial_id = _trial_id(trial_id)
+        return {
+            "metric": METRIC_NAME,
+            "definition_version": DEFINITION_VERSION,
+            "trial_id": clean_trial_id,
+            **self._trial_bucket(clean_trial_id),
         }
 
 

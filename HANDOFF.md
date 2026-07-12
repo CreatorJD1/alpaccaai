@@ -51,8 +51,13 @@ retained below as historical implementation evidence.
   aggregate-only baseline/trial evidence through the existing protected
   `no-store` endpoint. No trial is running, so all evidence is baseline-only.
   Phase 8C still needs server-derived creator approval bound to the exact
-  validated specification, fixed metric completion/evaluation, and creator UI
-  before any real behavior trial.
+  validated specification, controlled start plus wired metric completion, and
+  creator UI before any real behavior trial. Phase 8C3 now has a pure per-trial evaluation
+  contract: aggregate outcome evidence is scoped by server-owned trial id and
+  validated against the exact spec SHA-256, baseline, and sample threshold. It
+  reports collecting/awaiting-settlement/creator-review readiness plus an
+  improved/unchanged/worse comparison, but it performs no I/O, start,
+  completion, approval, rollback, or runtime change.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A rejects orthogonal and negative semantic matches. Phase 6B
   adds bounded sidecar Mindpage content-term indexing: new pages index after a
