@@ -37,10 +37,14 @@ retained below as historical implementation evidence.
   requires it. The chatter supplier is read-only and fails closed; recovery-
   gated server maintenance outside `mind_lock` receipts expired or invalid
   runtime records. `GET /behavior-trials/status` is creator-only, read-only,
-  `no-store`, and unavailable before recovery. There are no behavior-trial
-  start, approval, or mutation routes, no metric collector/completion loop, and
-  no real trial. It is not creator-approved and does not satisfy the Phase 8
-  exit gate. Phase 8C2 now has server-owned durable
+  `no-store`, and unavailable before recovery. Phase 8C5 adds the one
+  creator-only, recovery-gated `POST /behavior-trials/{trial_id}/approve`
+  action for an already registered trial. It accepts no browser-supplied proof,
+  timestamp, or authorization mechanism: the server derives those facts from
+  its protected authorization decision and returns only a sanitized summary.
+  Approval does not start, complete, or otherwise apply a runtime override.
+  There are no behavior-trial registration, start, completion, rollback, or
+  generic mutation routes, and no real trial. Phase 8C2 now has server-owned durable
   `qualified_response_rate` outcomes before any start route: a typed chatter
   candidate plus allowed initiative reserves a provisional row before a live
   creator portal send; only confirmed portal delivery enters the denominator;
@@ -50,8 +54,7 @@ retained below as historical implementation evidence.
   sends are cancelled; confirmed expiry becomes unanswered; status exposes
   aggregate-only baseline/trial evidence through the existing protected
   `no-store` endpoint. No trial is running, so all evidence is baseline-only.
-  Phase 8C still needs server-derived creator approval bound to the exact
-  validated specification, controlled start plus wired metric completion, and
+  Phase 8C still needs a controlled start plus wired metric completion and
   creator UI before any real behavior trial. Phase 8C3 now has a pure per-trial evaluation
   contract: aggregate outcome evidence is scoped by server-owned trial id and
   validated against the exact spec SHA-256, baseline, and sample threshold. It
@@ -63,8 +66,8 @@ retained below as historical implementation evidence.
   HMAC-bound `chatter_chance` override whose immutable metric is exactly
   `qualified_response_rate` at the same server-owned dispatch timestamp. Any
   recovery gap, expiry, tampering, missing override, or other metric records a
-  baseline row instead. No approval, start, completion, or mutation route was
-  added.
+  baseline row instead. C4 itself added no approval, start, completion, or
+  mutation route; C5 separately adds approval-only, not trial activation.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A rejects orthogonal and negative semantic matches. Phase 6B
   adds bounded sidecar Mindpage content-term indexing: new pages index after a
@@ -237,19 +240,20 @@ requires that binding and successful recovery. The chatter supplier is read-
 only and fails closed; recovery-gated server maintenance outside `mind_lock`
 receipts expired or invalid runtime records. `GET /behavior-trials/status` is
 creator-only, read-only, `no-store`, and unavailable before recovery. There
-are no behavior-trial start, approval, or mutation routes, no metric collector
-or completion loop, and no real trial is running. The controller's internal
-creator-binding method is not an HTTP approval flow.
+were no behavior-trial start, approval, or mutation routes at the C1 scope,
+no metric collector or completion loop, and no real trial was running. The
+controller's internal creator-binding method was not an HTTP approval flow.
 
 Phase 8C2 is complete as an observational-only evidence layer. It durably
 records `qualified_response_rate` outcomes only for confirmed typed chatter
 deliveries to a creator portal and matching authenticated creator WebSocket
 turns in the same scope/surface. It stores no message content, client scores,
 or caller-provided timestamps and exposes only aggregate evidence. No real trial
-is running, every row is baseline-only, and no start/approval/mutation route
-exists. The broader Phase 8C plan still requires server-derived authenticated
-creator approval bound to the exact validated specification, fixed metric
-collection/completion, and creator UI for a real behavior trial. Code, files,
+is running, every row is baseline-only, and no start/completion/runtime-mutation
+route exists. Phase 8C5 now provides the server-derived authenticated creator
+approval action bound to an already validated specification; fixed metric
+collection/completion and creator UI are still required for a real behavior
+trial. Code, files,
 accounts, and operating-system changes remain outside the self-improvement
 surface.
 

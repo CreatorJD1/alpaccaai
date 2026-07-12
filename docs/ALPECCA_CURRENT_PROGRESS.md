@@ -42,10 +42,14 @@ labels retained in historical plans and handoffs.
   requires it. The chatter supplier is read-only and fails closed; recovery-
   gated server maintenance outside `mind_lock` receipts expired or invalid
   runtime records. `GET /behavior-trials/status` is creator-only, read-only,
-  `no-store`, and unavailable before recovery. There are no behavior-trial
-  start, approval, or mutation routes, no metric collector/completion loop, and
-  no real trial. It is not creator-approved and does not satisfy the Phase 8
-  exit gate. Phase 8C2 now provides the server-owned durable
+  `no-store`, and unavailable before recovery. Phase 8C5 adds the one
+  creator-only, recovery-gated `POST /behavior-trials/{trial_id}/approve`
+  action for an already registered trial. It accepts no browser-supplied proof,
+  timestamp, or authorization mechanism: the server derives those facts from
+  its protected authorization decision and returns only a sanitized summary.
+  Approval does not start, complete, or otherwise apply a runtime override.
+  There are no behavior-trial registration, start, completion, rollback, or
+  generic mutation routes, and no real trial. Phase 8C2 now provides the server-owned durable
   `qualified_response_rate` evidence layer: only a typed `chatter` candidate
   with an allowed initiative that is confirmed delivered to the creator's live
   WebSocket/House HQ portal can enter the denominator. The ledger reserves a
@@ -57,8 +61,8 @@ labels retained in historical plans and handoffs.
   aggregate baseline/trial evidence only through the existing creator-only,
   read-only, `no-store` endpoint. No real trial exists, so all current outcome
   evidence is baseline-only. The broader Phase 8C plan still requires a
-  server-derived approval/start flow bound to the exact validated specification,
-  wired metric collection/completion, and creator UI before any real trial.
+  controlled start flow, wired metric collection/completion, and creator UI
+  before any real trial.
   Phase 8C3 now supplies the fixed, pure evaluation contract for a future
   `qualified_response_rate` trial: per-trial aggregate evidence is isolated by
   server-owned trial id and classified only as collecting, awaiting settlement,
@@ -71,8 +75,15 @@ labels retained in historical plans and handoffs.
   metric name, and planned end against the same server-owned dispatch timestamp.
   Only a valid running `qualified_response_rate` trial id is attached; recovery
   not ready, a missing/expired/tampered override, or another metric remains
-  baseline-only. This still adds no approval, start, completion, mutation, or
-  trial-management route.
+  baseline-only. C4 itself adds no approval, start, completion, mutation, or
+  trial-management route; C5 separately adds approval-only, not activation.
+
+  Phase 8C5 now exposes the approval-only action. It is creator-only,
+  recovery-gated, and `no-store`; it derives principal, authorization
+  mechanism, issuance/expiry, and approval time on the server rather than
+  accepting them from the browser. It logs a content-free CognitionObservation
+  after durable approval and cannot register, start, complete, roll back, or
+  change Alpecca's runtime behavior.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A semantic-negative/orthogonal recall abstention and Phase 6B
   bounded sidecar content-term indexing are implemented and covered by focused

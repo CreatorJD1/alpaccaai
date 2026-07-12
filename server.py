@@ -2956,20 +2956,131 @@ def _require_creator_request(req: Request) -> auth_mod.AuthDecision:
     return decision
 
 
+def _behavior_trial_public_summary(record: Mapping[str, object]) -> dict:
+    """Expose only the bounded trial facts needed by the creator-facing API."""
+    spec = record.get("spec")
+    if not isinstance(spec, Mapping):
+        spec = {}
+    return {
+        "id": int(record["id"]),
+        "scope": str(record["scope"]),
+        "proposal_id": int(record["proposal_id"]),
+        "state": str(record["state"]),
+        "parameter": str(spec.get("parameter") or ""),
+        "metric": str(spec.get("metric") or ""),
+        "spec_sha256": str(record["spec_sha256"]),
+    }
+
+
+def _behavior_trial_recovery_response() -> JSONResponse:
+    return JSONResponse(
+        {"detail": "behavior trial recovery is not ready"},
+        status_code=503,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/behavior-trials/status")
 def behavior_trial_status(req: Request) -> JSONResponse:
     """Return the recovered controller's bounded, creator-only status snapshot."""
     _require_creator_request(req)
     if not _behavior_trial_recovery_ready.is_set():
-        return JSONResponse(
-            {"detail": "behavior trial recovery is not ready"},
-            status_code=503,
-            headers={"Cache-Control": "no-store"},
-        )
+        return _behavior_trial_recovery_response()
     snapshot = dict(behavior_trial_controller.status_snapshot())
     snapshot["outcome_evidence"] = qualified_response_ledger.summary()
     return JSONResponse(
         snapshot,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/behavior-trials/{trial_id}/approve")
+def behavior_trial_creator_approve(trial_id: int, req: Request) -> JSONResponse:
+    """Record one creator-triggered approval for an already validated trial.
+
+    The protected server authorization decision supplies every approval fact;
+    this endpoint accepts no browser-provided proof, timestamp, or mechanism.
+    It intentionally does not start the approved trial.
+    """
+    decision = _require_creator_request(req)
+    if not _behavior_trial_recovery_ready.is_set():
+        return _behavior_trial_recovery_response()
+    try:
+        current = behavior_trial_controller.get(trial_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="invalid behavior trial",
+            headers={"Cache-Control": "no-store"},
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial storage unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    if current is None:
+        raise HTTPException(
+            status_code=404,
+            detail="behavior trial not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    if current.get("state") not in {"registered", "approved"}:
+        raise HTTPException(
+            status_code=409,
+            detail="only a registered or approved behavior trial can be creator-approved",
+            headers={"Cache-Control": "no-store"},
+        )
+    approved_at = _time.time()
+    try:
+        updated = behavior_trial_controller.approve_creator(
+            trial_id,
+            principal=decision.principal,
+            authorization_mechanism=decision.mechanism,
+            authorization_issued_at=decision.issued_at,
+            authorization_expires_at=decision.expires_at,
+            approved_at=approved_at,
+        )
+    except ValueError as exc:
+        # The controller validates exact spec/binding/state invariants. Its
+        # failure must never start the trial or fall back to a generic approval.
+        raise HTTPException(
+            status_code=409,
+            detail="behavior trial cannot be creator-approved",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial approval unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    summary = _behavior_trial_public_summary(updated)
+    try:
+        cognition_mod.record_observation(cognition_mod.CognitionObservation(
+            source="behavior_trial_creator_approval",
+            content=(
+                f"Creator approved Alpecca behavior trial {summary['id']} for "
+                "bounded evaluation."
+            ),
+            confidence=1.0,
+            privacy_class="local",
+            metadata={
+                "trial_id": summary["id"],
+                "scope": summary["scope"],
+                "parameter": summary["parameter"],
+                "metric": summary["metric"],
+                "authorization": decision.mechanism,
+                "approved_at": approved_at,
+                "started": False,
+            },
+        ))
+    except Exception:
+        # Approval is already durable; an auxiliary audit failure must not
+        # retry, widen, or start the trial.
+        pass
+    return JSONResponse(
+        {"approved": True, "trial": summary},
         headers={"Cache-Control": "no-store"},
     )
 
