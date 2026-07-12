@@ -1647,6 +1647,51 @@ body.alpecca-chat-open #touchInteract {
   background: #d86a8d;
 }
 
+.voice-meters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px 14px;
+  margin: 8px 0 12px;
+}
+
+.voice-meter span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  color: rgba(255, 248, 232, 0.72);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.voice-meter span b {
+  color: #8eeeff;
+  font-size: 0.66rem;
+  font-weight: 850;
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.voice-meter > i {
+  height: 6px;
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.voice-meter > i > em {
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #6fdcff, #8eeeff);
+  transition: width 320ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
 .systems-affect-signal[data-affect="compassion"] > i > em {
   background: #f0bd59;
 }

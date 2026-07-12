@@ -1655,6 +1655,36 @@ let alpeccaVoiceEmotionState: Record<string, number> = {};
 let chatWasPointerLocked = false;
 let alpeccaActiveSystem: AlpeccaSystemId = "overview";
 let alpeccaSystemLoadSequence = 0;
+let alpeccaVoiceLivePoll: ReturnType<typeof setInterval> | null = null;
+
+// Keep the Voice viewer live: while it is the open system, re-fetch /voice and
+// repaint the meters in place so her modulation is seen moving, not frozen.
+function stopAlpeccaVoiceLivePoll() {
+  if (alpeccaVoiceLivePoll !== null) {
+    clearInterval(alpeccaVoiceLivePoll);
+    alpeccaVoiceLivePoll = null;
+  }
+}
+
+function startAlpeccaVoiceLivePoll() {
+  stopAlpeccaVoiceLivePoll();
+  alpeccaVoiceLivePoll = setInterval(() => {
+    if (alpeccaActiveSystem !== "voice" || alpeccaSystems.classList.contains("hidden")) {
+      stopAlpeccaVoiceLivePoll();
+      return;
+    }
+    void (async () => {
+      try {
+        const data = await fetchAlpeccaSystemData("voice") as Record<string, unknown>;
+        if (alpeccaActiveSystem === "voice" && !alpeccaSystems.classList.contains("hidden")) {
+          alpeccaSystemsBody.innerHTML = renderAlpeccaVoiceViewer(data);
+        }
+      } catch {
+        // Transient fetch failures keep the last frame; the poll retries.
+      }
+    })();
+  }, 1400);
+}
 let alpeccaScreenShareStream: MediaStream | null = null;
 let alpeccaScreenShareVideo: HTMLVideoElement | null = null;
 let alpeccaScreenShareTimer: number | null = null;
@@ -4043,6 +4073,48 @@ function alpeccaCharacterAssetUrl(kind: "reference" | "image", name: string) {
   return alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/character/${kind}/${encodeURIComponent(name)}`);
 }
 
+// Live visual of how she is steering her own voice right now: engine, mood,
+// and animated meters for the modulation she is applying. Refreshes on a timer
+// while the Voice system is open (see alpeccaVoiceLivePoll), so it reads as a
+// living view rather than a static text dump.
+function alpeccaVoiceMeter(label: string, value: number, lo: number, hi: number, hint = ""): string {
+  const pct = Math.round(THREE.MathUtils.clamp((value - lo) / Math.max(1e-6, hi - lo), 0, 1) * 100);
+  return `<div class="voice-meter"><span>${escapeHudText(label)}<b>${escapeHudText(hint || String(value))}</b></span><i><em style="width:${pct}%"></em></i></div>`;
+}
+
+function renderAlpeccaVoiceViewer(data: Record<string, unknown>): string {
+  const num = (k: string, d = 0) => (typeof data[k] === "number" && Number.isFinite(data[k] as number) ? (data[k] as number) : d);
+  const str = (k: string, d: string) => systemString(data[k], d);
+  const engine = str("active_engine", str("last_engine", "warming"));
+  const profile = str("profile", "af_heart");
+  const primary = str("primary", alpeccaAiMood || "content");
+  const tone = str("tone", "even");
+  const rate = Math.round(num("rate_pct", Math.round(num("speed", 1) * 100)));
+  const semis = num("pitch_semitones", 0);
+  return `${systemIntro("VOICE", `${primary} - ${tone} tone`, "How she is shaping her own voice right now, live from her emotional state. This viewer reads her modulation; it does not choose it.")}
+    <div class="systems-metrics">
+      <div><span>Engine</span><strong>${escapeHudText(engine)}</strong></div>
+      <div><span>Profile</span><strong>${escapeHudText(profile)}</strong></div>
+      <div><span>Pace</span><strong>${rate}%${semis ? ` / ${semis > 0 ? "+" : ""}${semis} st` : ""}</strong></div>
+      <div><span>Modulation</span><strong>${num("modulation_strength", 1).toFixed(2)}x</strong></div>
+    </div>
+    <section><h3>Voice modulation (live)</h3>
+      <div class="voice-meters">
+        ${alpeccaVoiceMeter("Pitch", num("pitch", 1), 0.88, 1.12, num("pitch", 1).toFixed(3))}
+        ${alpeccaVoiceMeter("Speed", num("speed", 1), 0.62, 1.24, num("speed", 1).toFixed(3))}
+        ${alpeccaVoiceMeter("Volume", num("volume", 0.8), 0.5, 1.12, num("volume", 0.8).toFixed(3))}
+        ${alpeccaVoiceMeter("Warmth", num("warmth", 0.5), 0, 1)}
+        ${alpeccaVoiceMeter("Breath", num("breath", 0.25), 0, 1)}
+      </div>
+      <div class="voice-meters">
+        ${alpeccaVoiceMeter("Arousal", num("arousal", 0.5), 0, 1)}
+        ${alpeccaVoiceMeter("Valence", num("valence", 0.5), 0, 1)}
+        ${alpeccaVoiceMeter("Intensity", num("intensity", 0.5), 0, 1)}
+      </div>
+    </section>
+    <div class="systems-actions"><button type="button" data-system-action="voice-preview">Hear current voice</button></div>`;
+}
+
 function renderAlpeccaSystem(systemId: AlpeccaSystemId, data: Record<string, unknown>) {
   if (systemId === "overview") {
     const home = (data.home || data) as Record<string, unknown>;
@@ -4091,9 +4163,7 @@ function renderAlpeccaSystem(systemId: AlpeccaSystemId, data: Record<string, unk
       <div class="systems-actions"><button type="button" data-system-action="screen-start">Share screen</button><button type="button" data-system-action="screen-stop">Stop sharing</button><button type="button" data-system-action="enroll-voice">Teach creator voice</button></div>`;
   }
   if (systemId === "voice") {
-    return `${systemIntro("VOICE", "Alpecca's live voice", "Read-only emotion modulation from her current state; the viewer does not choose her voice mode.")}
-      <div class="systems-actions"><button type="button" data-system-action="voice-preview">Hear current voice</button></div>
-      <section><h3>Voice state</h3>${systemObjectRows(data, 20)}</section>`;
+    return renderAlpeccaVoiceViewer(data);
   }
   if (systemId === "mindscape") {
     const status = systemString(data.status || data.sync_status, "local only");
@@ -4270,6 +4340,8 @@ async function loadAlpeccaSystem(systemId: AlpeccaSystemId = alpeccaActiveSystem
     alpeccaSystemsBody.innerHTML = renderAlpeccaSystem(systemId, data);
     const host = alpeccaAiBaseUrl ? new URL(alpeccaAiBaseUrl).host : "offline";
     alpeccaSystemsStatus.textContent = `${alpeccaSystemLabels[systemId]} - live from ${host}`;
+    if (systemId === "voice") startAlpeccaVoiceLivePoll();
+    else stopAlpeccaVoiceLivePoll();
   } catch (error) {
     if (requestId !== alpeccaSystemLoadSequence) return;
     const message = error instanceof Error ? error.message : "System unavailable";
@@ -4295,6 +4367,7 @@ function closeAlpeccaSystems() {
   alpeccaSystems.classList.add("hidden");
   document.body.classList.remove("alpecca-systems-open");
   alpeccaSystemLoadSequence += 1;
+  stopAlpeccaVoiceLivePoll();
   recordAlpeccaSystemsReturn();
 }
 

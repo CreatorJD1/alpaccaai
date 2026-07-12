@@ -50,10 +50,11 @@ set ALPECCA_VISION_BACKEND=auto
 set ALPECCA_VISION_CLOUD_MODEL=gemma4:cloud
 set ALPECCA_VISION_MODEL=qwen3.5:9b
 
-REM --- Her voice: free + local. Pin Kokoro (her natural, fully-local voice);
-REM it now keeps edge as a network fallback, so this can't strand her on the
-REM robotic browser voice. Setting it here also overrides any stale setx.
-set ALPECCA_TTS_BACKEND=kokoro
+REM --- Her voice: free + local. 'auto' blends her F5 clone (high-emotion
+REM moments) with Kokoro af_heart (calm/everyday), each the other's fallback,
+REM so her cloned F5 voice ("tts5") is used again instead of Kokoro-only.
+REM Force 'kokoro' or 'f5' here to pin a single engine.
+set ALPECCA_TTS_BACKEND=auto
 
 echo ============================================
 echo               A L P E C C A
