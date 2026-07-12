@@ -77,8 +77,74 @@ from alpecca import commitment_executor as commitment_executor_mod
 from alpecca import behavior_trial_candidates as behavior_trial_candidates_mod
 from alpecca import behavior_trial_review_decisions as behavior_trial_review_decisions_mod
 from alpecca import behavior_trial_settlement as behavior_trial_settlement_mod
+from alpecca import attachment_ingress as attachment_ingress_mod
+from alpecca import audio_ingress as audio_ingress_mod
 from alpecca.behavior_trial_controller import BehaviorTrialController
 from alpecca.qualified_response_ledger import QualifiedResponseLedger
+
+
+async def _read_bounded_body(req: Request, *, max_bytes: int) -> bytes:
+    """Read one request body without allowing Starlette to buffer past a cap."""
+    raw_length = req.headers.get("content-length", "").strip()
+    if raw_length:
+        try:
+            declared_length = int(raw_length)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid content-length")
+        if declared_length < 0:
+            raise HTTPException(status_code=400, detail="invalid content-length")
+        if declared_length > max_bytes:
+            raise HTTPException(status_code=413, detail="attachment is too large")
+
+    body = bytearray()
+    async for chunk in req.stream():
+        if len(body) + len(chunk) > max_bytes:
+            raise HTTPException(status_code=413, detail="attachment is too large")
+        body.extend(chunk)
+    return bytes(body)
+
+
+async def _read_bounded_json_object(
+    req: Request, *, max_bytes: int
+) -> dict[str, object]:
+    """Parse one bounded UTF-8 JSON object without buffering an unlimited body."""
+    raw = await _read_bounded_body(req, max_bytes=max_bytes)
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="body must be JSON")
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    return value
+
+
+async def _record_capability_use(
+    capability: str,
+    *,
+    action: str,
+    principal: str,
+    source: str,
+) -> bool:
+    """Commit content-free use evidence before a private capability proceeds."""
+    try:
+        observation_id = await asyncio.to_thread(
+            capabilities_mod.record_use,
+            capability,
+            action=action,
+            allowed=True,
+            principal_role="creator" if principal == "creator" else "unknown",
+            source=source,
+        )
+    except Exception:
+        return False
+    return observation_id is not None
+
+
+def _raise_capability_audit_unavailable() -> None:
+    raise HTTPException(
+        status_code=503,
+        detail={"code": "capability_audit_unavailable"},
+    )
 
 ROOT_DIR = Path(__file__).parent
 WEB_DIR = ROOT_DIR / "web"
@@ -779,6 +845,7 @@ async def _deliver_proactive_once(
 # ``mind_lock`` only protects the short observation snapshot.  Turn commit
 # barriers fence writes after generation; no LLM call runs under this lock.
 mind_lock = asyncio.Lock()
+_hearing_lock = asyncio.Lock()
 active_chat_turns = 0
 active_tts_requests = 0
 last_chat_turn_started = 0.0
@@ -1050,7 +1117,8 @@ async def _locked_ws_chat_turn(turn: turn_context_mod.TurnContext,
                                situation_hint: str = "",
                                reply_tier: str = "reason",
                                on_token=None,
-                               activity_recorded: bool = False) -> dict:
+                               activity_recorded: bool = False,
+                               private_context: bool = False) -> dict:
     # Keep sensor state coherent, but never hold this state lock across a model
     # call. A synchronous worker is serialized below until it finishes even if
     # its caller has already timed out.
@@ -1068,6 +1136,7 @@ async def _locked_ws_chat_turn(turn: turn_context_mod.TurnContext,
         user_text,
         situation=situation,
         image_desc=image_desc,
+        private_context=private_context,
         reply_tier=reply_tier,
         turn=turn,
         **kwargs,
@@ -1090,7 +1159,8 @@ async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = No
                                      reply_tier: str = "reason",
                                      on_token=None,
                                      activity_recorded: bool = False,
-                                     turn: turn_context_mod.TurnContext | None = None) -> dict:
+                                     turn: turn_context_mod.TurnContext | None = None,
+                                     private_context: bool = False) -> dict:
     global active_chat_turns, last_chat_turn_started
     turn = turn or turn_context_mod.TurnContext.create(
         _server_conversation_id("creator", "direct"),
@@ -1105,6 +1175,7 @@ async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = No
             turn,
             user_text,
             image_desc=image_desc,
+            private_context=private_context,
             situation_hint=situation_hint,
             reply_tier=reply_tier,
             on_token=on_token,
@@ -4285,16 +4356,47 @@ async def sight_push(req: Request) -> dict:
     vision model, it becomes what she 'last saw', and it touches her mood. The
     browser throttles how often it pushes (the vision model is heavy). Returns her
     short description of what's on your screen."""
-    data = await req.body()
+    _require_creator_request(req)
+    data = await _read_bounded_body(
+        req, max_bytes=attachment_ingress_mod.DEFAULT_MAX_IMAGE_BYTES
+    )
     if not data:
         raise HTTPException(status_code=400, detail="empty frame")
+    content_type = req.headers.get("content-type", "").split(";", 1)[0].strip() or None
+    scope = f"sight:{uuid.uuid4().hex}"
+    try:
+        inspected_image = attachment_ingress_mod.inspect_image_bytes(
+            data,
+            scope=scope,
+            authorized_scopes={scope},
+            source="house-hq:screen-share",
+            declared_mime_type=content_type,
+        )
+    except attachment_ingress_mod.ImageIngressRejected as exc:
+        _raise_image_rejection(exc)
+    if not await _record_capability_use(
+        "screen_sight", action="capture", principal="creator", source="api"
+    ):
+        _raise_capability_audit_unavailable()
     from alpecca import vision as _vision
-    desc = await asyncio.to_thread(_vision.describe_image, data, _vision._SCREEN_PROMPT)
+    desc = await asyncio.to_thread(
+        _vision.describe_image,
+        inspected_image.image_bytes,
+        _vision._SCREEN_PROMPT,
+        ambient=True,
+    )
     if desc:
         screen_sight.latest = desc
         async with mind_lock:
             mind.see(desc)
-    return {"ok": bool(desc), "description": desc or ""}
+    return {
+        "ok": bool(desc),
+        "description": desc or "",
+        "perception": {
+            **inspected_image.as_dict(),
+            "status": "described" if desc else "vision-unavailable",
+        },
+    }
 
 
 @app.get("/sight")
@@ -5546,18 +5648,46 @@ async def listen(req: Request) -> dict:
     """Push-to-talk: the browser records an utterance and sends the audio here;
     we transcribe it locally (faster-whisper) and hand the words back. The
     audio is never stored -- it exists exactly long enough to become text."""
-    audio = await req.body()
+    _require_creator_request(req)
+    audio = await _read_bounded_body(req, max_bytes=audio_ingress_mod.MAX_AUDIO_BYTES)
     if not audio:
         raise HTTPException(status_code=400, detail="no audio")
-    text = await asyncio.to_thread(hearing.transcribe, audio)
+    content_type = req.headers.get("content-type", "").split(";", 1)[0].strip()
+    scope = f"listen:{uuid.uuid4().hex}"
+    try:
+        inspected_audio = audio_ingress_mod.inspect_audio_bytes(
+            audio,
+            scope=scope,
+            authorized_scopes={scope},
+            source="house-hq:push-to-talk",
+            declared_mime_type=content_type,
+        )
+    except audio_ingress_mod.AudioIngressRejected as exc:
+        _raise_audio_rejection(exc)
+    if not await _record_capability_use(
+        "microphone", action="capture", principal="creator", source="api"
+    ):
+        _raise_capability_audit_unavailable()
+    async with _hearing_lock:
+        text = await asyncio.to_thread(
+            hearing.transcribe, inspected_audio.audio_bytes
+        )
     # Best-effort: tell from the same audio whether it's her creator or a guest,
     # and let her adapt. Falls through silently if voice recognition is off.
     from alpecca import people
-    ident = await asyncio.to_thread(people.identify_voice, audio)
+    ident = await asyncio.to_thread(people.identify_voice, inspected_audio.audio_bytes)
     if ident:
         async with mind_lock:
             mind.set_speaker(ident)
-    return {"text": text or "", "heard": bool(text), "speaker": ident or ""}
+    return {
+        "text": text or "",
+        "heard": bool(text),
+        "speaker": ident or "",
+        "perception": {
+            **inspected_audio.as_dict(),
+            "status": "transcribed" if text else "no-transcript",
+        },
+    }
 
 
 @app.post("/people/enroll_voice")
@@ -5566,11 +5696,37 @@ async def enroll_voice(req: Request) -> dict:
     posts the audio here; we store only a small local embedding, never the
     audio. After this she can tell you from a guest by voice."""
     from alpecca import people
-    audio = await req.body()
+    _require_creator_request(req)
+    audio = await _read_bounded_body(req, max_bytes=audio_ingress_mod.MAX_AUDIO_BYTES)
     if not audio:
         raise HTTPException(status_code=400, detail="no audio")
-    ok = await asyncio.to_thread(people.enroll_creator_voice, audio)
-    return {"ok": ok}
+    content_type = req.headers.get("content-type", "").split(";", 1)[0].strip()
+    scope = f"voice-enrollment:{uuid.uuid4().hex}"
+    try:
+        inspected_audio = audio_ingress_mod.inspect_audio_bytes(
+            audio,
+            scope=scope,
+            authorized_scopes={scope},
+            source="house-hq:voice-enrollment",
+            declared_mime_type=content_type,
+        )
+    except audio_ingress_mod.AudioIngressRejected as exc:
+        _raise_audio_rejection(exc)
+    if not await _record_capability_use(
+        "microphone", action="capture", principal="creator", source="api"
+    ):
+        _raise_capability_audit_unavailable()
+    async with _hearing_lock:
+        ok = await asyncio.to_thread(
+            people.enroll_creator_voice, inspected_audio.audio_bytes
+        )
+    return {
+        "ok": ok,
+        "perception": {
+            **inspected_audio.as_dict(),
+            "status": "enrolled" if ok else "enrollment-failed",
+        },
+    }
 
 
 @app.get("/people/state")
@@ -5731,19 +5887,26 @@ async def channel_inbound(req: Request) -> dict:
     back on their own channel. See alpecca/openclaw_bridge.py for the
     delivery half."""
     from alpecca import openclaw_bridge   # local import keeps import order safe
-    try:
-        payload = await req.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="body must be JSON")
-    text = (payload.get("text") or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="text required")
-    channel = (payload.get("channel") or payload.get("source") or "openclaw").strip()
-    sender = (payload.get("sender") or "").strip()
-    reply_target = (payload.get("reply_target") or "").strip()
-    situation_hint = (payload.get("situation") or payload.get("context") or "").strip()
-    room = (payload.get("room") or payload.get("location") or "").strip()
-    image_desc = (payload.get("image_desc") or "").strip() or None
+    payload = await _read_bounded_json_object(req, max_bytes=6 * 1024 * 1024)
+    def field(*names: str, default: str = "") -> str:
+        for name in names:
+            value = payload.get(name)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return default
+
+    text = field("text")
+    channel = field("channel", "source", default="openclaw")
+    sender = field("sender")
+    reply_target = field("reply_target")
+    situation_hint = field("situation", "context")
+    room = field("room", "location")
+    image_data = field("image")
+    private_perception = field("private_perception")
+    if not text and not image_data:
+        raise HTTPException(status_code=400, detail="text or image required")
+    image_desc = None
+    image_perception: dict[str, object] | None = None
     decision = getattr(req.state, "authorization", None)
     principal = getattr(decision, "principal", "guest") or "guest"
     route_surface = (
@@ -5760,25 +5923,47 @@ async def channel_inbound(req: Request) -> dict:
         portal_epoch=f"local-{route_surface}",
     )
     mind.note_initiative_user_activity(turn.scope_key)
-    # A surface (e.g. Discord) can hand us a raw image; run it through the same
-    # vision + self-recognition path the app uses, so she actually sees it.
-    image_data = payload.get("image") or ""
-    if not image_desc and image_data:
-        img = _decode_image(image_data)
-        if img is None:
-            try:
-                img = base64.b64decode(image_data)
-            except Exception:
-                img = None
-        if img:
-            # One combined vision call (describe + self-recognition) keeps the
-            # GPU cost down so the chat model can reload for her actual reply.
-            image_desc = await asyncio.to_thread(vision.describe_and_recognize, img)
+    # Image bytes are validated, measured, and bound to this server-issued turn
+    # before a local-only model may see them. Client-provided descriptions are
+    # never treated as perception evidence.
+    if image_data:
+        try:
+            inspected_image = attachment_ingress_mod.ingest_image(
+                image_data,
+                scope=_attachment_turn_scope(turn),
+                authorized_scopes={_attachment_turn_scope(turn)},
+                source=f"{route_surface}:chat-image",
+            )
+        except attachment_ingress_mod.ImageIngressRejected as exc:
+            _raise_image_rejection(exc)
+        if route_surface == "house-hq":
+            if not await _record_capability_use(
+                "webcam",
+                action="capture",
+                principal=principal,
+                source="api",
+            ):
+                _raise_capability_audit_unavailable()
+        image_desc = await asyncio.to_thread(
+            vision.describe_and_recognize,
+            inspected_image.image_bytes,
+            local_only=True,
+        )
+        image_perception = {
+            **inspected_image.as_dict(),
+            "status": "described" if image_desc else "vision-unavailable",
+        }
+        image_desc = image_desc or (
+            "the local vision model could not make the image out; no visual "
+            "details were inferred"
+        )
+        if not text:
+            text = "(they sent an image without any words)"
 
     # A surface can also hand us a readable file (text/code/pdf, base64). She
     # reads a bounded excerpt of it as quoted material inside the message.
-    file_name = (payload.get("file_name") or "").strip()
-    file_data = payload.get("file_data") or ""
+    file_name = field("file_name")
+    file_data = field("file_data")
     if file_name and file_data:
         file_excerpt = _extract_channel_file_text(file_name, file_data)
         if file_excerpt:
@@ -5798,6 +5983,15 @@ async def channel_inbound(req: Request) -> dict:
     result = await _ws_chat_turn_with_timeout(
         text,
         image_desc=image_desc,
+        private_context=bool(
+            image_data
+            or file_data
+            or (
+                route_surface == "house-hq"
+                and principal == "creator"
+                and private_perception in {"microphone", "screen", "sensor"}
+            )
+        ),
         situation_hint=situation_hint,
         reply_tier=_house_chat_reply_tier(text),
         activity_recorded=True,
@@ -5807,6 +6001,8 @@ async def channel_inbound(req: Request) -> dict:
     delivered = openclaw_bridge.try_deliver(reply, reply_target=reply_target)
     _mindscape_request_event_sync("channel_inbound")
     result = {**result, "delivered": delivered, "source": channel, "sender": sender}
+    if image_perception is not None:
+        result["perception"] = image_perception
     return result
 
 
@@ -5814,11 +6010,16 @@ def _extract_channel_file_text(name: str, data: str, max_chars: int = 8000) -> s
     """Bounded text from a channel-shared file (base64). Plain text decodes
     directly; PDFs go through pypdf when installed. Never raises -- an
     unreadable file just yields an empty string."""
-    try:
-        raw = base64.b64decode(data)
-    except Exception:
+    max_bytes = 2_000_000
+    max_encoded_chars = ((max_bytes + 2) // 3) * 4
+    if not isinstance(data, str) or not data or len(data) > max_encoded_chars:
         return ""
-    if not raw or len(raw) > 2_000_000:
+    try:
+        encoded = data.encode("ascii")
+        raw = base64.b64decode(encoded, validate=True)
+    except (UnicodeEncodeError, ValueError):
+        return ""
+    if not raw or len(raw) > max_bytes:
         return ""
     if name.lower().endswith(".pdf"):
         try:
@@ -5838,13 +6039,43 @@ def _extract_channel_file_text(name: str, data: str, max_chars: int = 8000) -> s
     return extracted.strip()[:max_chars]
 
 
-def _decode_image(data_url: str) -> bytes | None:
-    """Pull raw bytes out of a data-URL ('data:image/jpeg;base64,...')."""
-    try:
-        _, _, b64 = data_url.partition(",")
-        return base64.b64decode(b64) if b64 else None
-    except Exception:
-        return None
+def _attachment_turn_scope(turn: turn_context_mod.TurnContext) -> str:
+    """Bind attachment provenance to one server-issued turn, not caller data."""
+    return f"turn:{turn.turn_id}"
+
+
+def _image_rejection_status(reason: str) -> int:
+    if reason == "size-limit":
+        return 413
+    if reason in {"unsupported-mime", "mime-mismatch"}:
+        return 415
+    if reason in {"invalid-dimensions", "pixel-limit"}:
+        return 422
+    return 400
+
+
+def _raise_image_rejection(exc: attachment_ingress_mod.ImageIngressRejected) -> None:
+    raise HTTPException(
+        status_code=_image_rejection_status(exc.reason),
+        detail={"code": "attachment_rejected", "reason": exc.reason},
+    )
+
+
+def _audio_rejection_status(reason: str) -> int:
+    if reason == "size-limit":
+        return 413
+    if reason in {"unsupported-mime", "mime-mismatch"}:
+        return 415
+    if reason in {"duration-limit", "duration-unavailable"}:
+        return 422
+    return 400
+
+
+def _raise_audio_rejection(exc: audio_ingress_mod.AudioIngressRejected) -> None:
+    raise HTTPException(
+        status_code=_audio_rejection_status(exc.reason),
+        detail={"code": "attachment_rejected", "reason": exc.reason},
+    )
 
 
 @app.websocket("/ws")
@@ -5904,16 +6135,34 @@ async def ws(socket: WebSocket) -> None:
             raw = await socket.receive_text()
             if not _ws_portal_epoch_current(socket, portal_epoch):
                 return
+            if len(raw) > 6 * 1024 * 1024:
+                if not await _send_ws_json(
+                    socket,
+                    {"type": "error", "code": "frame_too_large"},
+                    portal_epoch=portal_epoch,
+                ):
+                    return
+                continue
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
                 # A malformed frame shouldn't tear down the conversation.
                 continue
-            user_text = (msg.get("text") or "").strip()
-            image_url = msg.get("image") or ""
-            request_id = (msg.get("request_id") or "").strip()
-            source = (msg.get("source") or "").strip()
-            context = (msg.get("context") or msg.get("situation") or "").strip()
+            if not isinstance(msg, dict):
+                continue
+            def ws_field(*names: str) -> str:
+                for name in names:
+                    value = msg.get(name)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+                return ""
+
+            user_text = ws_field("text")
+            image_url = ws_field("image")
+            request_id = ws_field("request_id")
+            source = ws_field("source")
+            context = ws_field("context", "situation")
+            private_perception = ws_field("private_perception")
             if not user_text and not image_url:
                 continue
             if _ws_background_source(source) and user_text:
@@ -5962,21 +6211,69 @@ async def ws(socket: WebSocket) -> None:
             # vision call can take seconds, so it happens before we take the
             # mind lock. An unreadable image yields an honest "couldn't see".
             image_desc = None
+            image_perception: dict[str, object] | None = None
             if image_url:
-                img = _decode_image(image_url)
-                if img:
-                    image_desc = await asyncio.to_thread(vision.describe_image, img)
-                    # Grounded self-recognition: does she see herself / her avatar?
-                    recog = await asyncio.to_thread(vision.recognize_self, img)
-                    if recog and image_desc:
-                        if recog["is_self"]:
-                            image_desc += (" (You recognize this as YOU -- your own "
-                                           f"avatar: {recog['why']})")
-                        elif recog["verdict"] == "no":
-                            image_desc += " (This is not you.)"
+                try:
+                    inspected_image = attachment_ingress_mod.ingest_image(
+                        image_url,
+                        scope=_attachment_turn_scope(active_turn),
+                        authorized_scopes={_attachment_turn_scope(active_turn)},
+                        source=f"{route_surface}:websocket-image",
+                    )
+                except attachment_ingress_mod.ImageIngressRejected as exc:
+                    sent = await _send_ws_json(
+                        socket,
+                        {
+                            "type": "error",
+                            "request_id": request_id,
+                            "source": source,
+                            "code": "attachment_rejected",
+                            "reason": exc.reason,
+                        },
+                        turn=active_turn,
+                    )
+                    active_turn.cancel("attachment_rejected")
+                    _finish_ws_portal_turn(socket, active_turn)
+                    active_turn = None
+                    if not sent:
+                        return
+                    continue
+                if route_surface == "house-hq":
+                    audited = await _record_capability_use(
+                        "webcam",
+                        action="capture",
+                        principal=decision.principal,
+                        source="websocket",
+                    )
+                    if not audited:
+                        sent = await _send_ws_json(
+                            socket,
+                            {
+                                "type": "error",
+                                "request_id": request_id,
+                                "source": source,
+                                "code": "capability_audit_unavailable",
+                            },
+                            turn=active_turn,
+                        )
+                        active_turn.cancel("capability_audit_unavailable")
+                        _finish_ws_portal_turn(socket, active_turn)
+                        active_turn = None
+                        if not sent:
+                            return
+                        continue
+                image_desc = await asyncio.to_thread(
+                    vision.describe_and_recognize,
+                    inspected_image.image_bytes,
+                    local_only=True,
+                )
+                image_perception = {
+                    **inspected_image.as_dict(),
+                    "status": "described" if image_desc else "vision-unavailable",
+                }
                 image_desc = image_desc or (
-                    "you couldn't make the image out -- your vision model isn't "
-                    "available right now")
+                    "the local vision model could not make the image out; no visual "
+                    "details were inferred")
             if not _ws_portal_epoch_current(socket, portal_epoch):
                 return
             if not user_text:
@@ -6016,12 +6313,21 @@ async def ws(socket: WebSocket) -> None:
             result = await _ws_chat_turn_with_timeout(
                 user_text,
                 image_desc=image_desc,
+                private_context=bool(
+                    image_url
+                    or (
+                        decision.principal == "creator"
+                        and private_perception in {"microphone", "screen", "sensor"}
+                    )
+                ),
                 situation_hint=context,
                 reply_tier=_house_chat_reply_tier(user_text),
                 on_token=on_token,
                 activity_recorded=True,
                 turn=active_turn,
             )
+            if image_perception is not None:
+                result["perception"] = image_perception
             if pump_task is not None and token_q is not None:
                 token_q.put_nowait(None)          # end-of-stream sentinel
                 try:

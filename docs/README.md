@@ -1,6 +1,6 @@
 ﻿# Docs Index
 
-**Last updated:** 2026-07-10
+**Last updated:** 2026-07-12
 
 Stage 0 is complete. Phone and communication-channel security is intentionally
 deferred until the post-stage hardening pass; no phone identifier or channel is
@@ -25,16 +25,22 @@ as required passdown or reference logs.
 
 ### CURRENT
 - `docs/ALPECCA_MASTER_PLAN.md`
-- `docs/ALPECCA_MASTER_PLAN.pdf`
 - `docs/ALPECCA_FEATURE_SKELETON_INFRASTRUCTURE.md`
-- `docs/ALPECCA_FEATURE_SKELETON_INFRASTRUCTURE.pdf`
-- `docs/ALPECCA_PROJECT_ARCHITECTURE_MAP.pdf`
 - `docs/AGENTIC_ASSESSMENT.md`
 - `docs/MINDPAGE.md`
 - `docs/DOWNLOADED_SYSTEMS.md`
 - `docs/ALPECCA_CURRENT_PROGRESS.md`
 - `PROJECT_CONTEXT.md`
 - `HANDOFF.md`
+
+### VISUAL BASELINE (2026-07-10)
+- `docs/ALPECCA_MASTER_PLAN.pdf`
+- `docs/ALPECCA_FEATURE_SKELETON_INFRASTRUCTURE.pdf`
+- `docs/ALPECCA_PROJECT_ARCHITECTURE_MAP.pdf`
+
+These PDFs remain useful architecture visuals, but their feature-status labels
+predate the 2026-07-12 Phase 9 checkpoint. Use the current Markdown and canonical
+sources above for implementation status until the visual set is regenerated.
 
 ### HISTORICAL / PASSDOWN
 - `docs/ALPECCA_V11_*.md`
@@ -81,5 +87,5 @@ small.
 
 The July 9 architecture PDFs supersede the downloaded June 14 systems graph.
 That graph assigned 34 GB DDR5 and H100 capacity to the local rig. Current docs
-separate the 24 GB DDR5-4800 / RTX 3050 4 GB laptop from optional, ephemeral Hugging
+separate the 24 GB DDR4 / RTX 3050 4 GB laptop from optional, ephemeral Hugging
 Face ZeroGPU and Google notebook compute.

@@ -1,7 +1,8 @@
 """Innate (internal) tools exposed through the regular tool-calling loop.
 
 These tools are local-only and safe-by-default, using already-existing runtime
-functions and always recording a CognitionObservation for auditability.
+functions. Scoped turns keep private arguments/results inside the turn instead
+of copying them into the currently unpartitioned CognitionObservation store.
 """
 from __future__ import annotations
 
@@ -24,9 +25,32 @@ from alpecca.turn_context import TurnContext
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _SOURCE_INSPECTION_ROOTS = {
     "source": _REPOSITORY_ROOT / "alpecca",
+    "house": _REPOSITORY_ROOT / "apps" / "house-hq" / "src",
+    "tests": _REPOSITORY_ROOT / "tests",
+    "scripts": _REPOSITORY_ROOT / "scripts",
     "docs": _REPOSITORY_ROOT / "docs",
+    "project": _REPOSITORY_ROOT,
 }
-_SOURCE_BLOCKED_PARTS = {"data", ".git", "credentials", "secrets"}
+_SOURCE_PROJECT_FILES = frozenset({
+    "agents.md",
+    "app.py",
+    "claude.md",
+    "config.py",
+    "handoff.md",
+    "package.json",
+    "project.md",
+    "project_context.md",
+    "readme.md",
+    "requirements.txt",
+    "requirements-core.txt",
+    "requirements-mcp.txt",
+    "requirements-mindpage-optional.txt",
+    "server.py",
+})
+_SOURCE_BLOCKED_PARTS = {
+    ".agents", ".codex", ".git", ".venv", "build", "credentials", "data",
+    "dist", "node_modules", "secrets", "venv",
+}
 _SOURCE_BLOCKED_NAMES = {
     ".env", ".env.local", "access_token.txt", "credentials.json",
     "id_rsa", "secrets.json", "token.json",
@@ -82,7 +106,7 @@ class InnateToolkit:
             "move to a Home room",
             "draft approval-required plans",
             "recall a paged-out conversation episode",
-            "inspect a bounded repository source or docs file when the creator asks",
+            "inspect a bounded repository source file when the creator asks",
         ]
 
     def describe(self) -> str:
@@ -130,8 +154,8 @@ class InnateToolkit:
                         "properties": {
                             "root": {
                                 "type": "string",
-                                "enum": ["source", "docs"],
-                                "description": "Safe repository area; source is the default.",
+                                "enum": ["source", "house", "tests", "scripts", "docs", "project"],
+                                "description": "Explicit safe repository area; source is the default.",
                             },
                             "path": {
                                 "type": "string",
@@ -487,12 +511,19 @@ class InnateToolkit:
         }, ensure_ascii=False)
 
     def _source_inspect(self, args: dict, turn: TurnContext) -> str:
-        """Inspect only creator-approved source/docs paths through the local guard."""
+        """Inspect only creator-approved repository paths through the local guard."""
         if turn.principal != "creator":
             return "error: source_inspect is available only to the creator"
+        llm = getattr(self.mind, "llm", None)
+        local_available = getattr(llm, "local_inference_available", None)
+        if callable(local_available) and not local_available():
+            return "error: source_inspect requires Alpecca's verified local model"
+        is_cloud = getattr(llm, "is_cloud", None)
+        if callable(is_cloud) and is_cloud():
+            return "error: source_inspect requires Alpecca's verified local model"
         root = str(args.get("root") or "source").strip().lower()
         if root not in _SOURCE_INSPECTION_ROOTS:
-            return "error: source_inspect root must be source or docs"
+            return "error: source_inspect root is not an approved repository area"
         relative_path = args.get("path")
         if not isinstance(relative_path, str) or not relative_path.strip():
             return "error: source_inspect requires a relative path"
@@ -500,8 +531,12 @@ class InnateToolkit:
         if any(part in _SOURCE_BLOCKED_PARTS for part in parts):
             return "error: source_inspect does not allow data or credential paths"
         filename = parts[-1] if parts else ""
-        if filename in _SOURCE_BLOCKED_NAMES:
+        if filename in _SOURCE_BLOCKED_NAMES or filename.startswith(".env"):
             return "error: source_inspect does not allow credential files"
+        if root == "project" and (
+            len(parts) != 1 or filename not in _SOURCE_PROJECT_FILES
+        ):
+            return "error: source_inspect project root allows only canonical top-level source files"
         result = source_perception_mod.inspect_local_source(
             root,
             relative_path,

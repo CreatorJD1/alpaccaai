@@ -174,6 +174,16 @@ labels retained in historical plans and handoffs.
 - On 2026-07-10, a real-machine execute invocation was blocked by critical host
   pressure before any Ollama request. No real `qwen3.5:9b` inference or
   context-tier measurement completed, and no tier was promoted.
+- Phase 9 multimodal/source perception is **PARTIAL**. Creator source inspection
+  is reachable through the smart tool gate and remains read-only, explicitly
+  rooted, creator-only, and verified-local-model-only. Image, screen, push-to-
+  talk, and voice-enrollment ingress now fail closed on byte/MIME/container/
+  dimension/duration violations, derive SHA-256 server-side, return metadata-
+  only scoped provenance, and keep private perception on verified loopback
+  Ollama inference. House microphone capture auto-stops at 60 seconds and stale
+  work cancels on disconnect. Remaining gates are trusted file ingress, expiring
+  capability leases, provider-specific egress consent/receipts, and signed
+  Discord guest subjects; Phase 10 stays blocked.
 - Phase 6 remains partial. The next gated action is to clear resources and
   re-run preflight, then separately authorize one 8,192 measurement; no direct
   pagefile mutation is authorized. See `docs/CONTEXT_TIER_MEASUREMENT.md` for
@@ -232,7 +242,7 @@ following higher-risk features remain held or bounded:
   scaffolds, not live capabilities. The pagefile implementation is not approved
   for activation.
 
-The corrected local compute target is approximately 24 GB DDR5-4800 with an RTX 3050
+The corrected local compute target is approximately 24 GB DDR4 with an RTX 3050
 Laptop GPU (4 GB). The old 34 GB/H100 labels describe optional cloud notebook or
 ZeroGPU runtimes only, and those allocations are ephemeral and provider-dependent.
 

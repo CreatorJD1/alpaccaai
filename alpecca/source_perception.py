@@ -6,7 +6,7 @@ import hashlib
 import mimetypes
 from pathlib import Path
 import struct
-from typing import Mapping
+from typing import Literal, Mapping
 
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -40,6 +40,18 @@ _TEXT_APPLICATION_MIMES = frozenset({
     "application/yaml",
     "text/typescript",
 })
+
+
+ImageMimeType = Literal["image/png", "image/jpeg", "image/gif"]
+
+
+@dataclass(frozen=True, slots=True)
+class ImageHeader:
+    """Bounded header facts for a supported image without retaining pixels."""
+
+    mime_type: ImageMimeType
+    width: int | None
+    height: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,38 +205,87 @@ def _mime_type(path: Path) -> str:
     return _TEXT_MIME_BY_SUFFIX.get(suffix) or mimetypes.guess_type(path.name)[0] or ""
 
 
-def _image_metadata(data: bytes) -> tuple[str, dict[str, int | str]] | None:
-    if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
-        width, height = struct.unpack(">II", data[16:24])
-        return "image/png", {"format": "png", "width": width, "height": height}
-    if data.startswith((b"GIF87a", b"GIF89a")) and len(data) >= 10:
-        width, height = struct.unpack("<HH", data[6:10])
-        return "image/gif", {"format": "gif", "width": width, "height": height}
-    if not data.startswith(b"\xff\xd8"):
-        return None
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_JPEG_SOF_MARKERS = frozenset({
+    0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+    0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF,
+})
+
+
+def _jpeg_dimensions(data: bytes) -> tuple[int | None, int | None]:
+    """Read a JPEG SOF segment without decoding compressed image data."""
+
     index = 2
-    while index + 9 <= len(data):
-        if data[index] != 0xFF:
+    while index < len(data):
+        while index < len(data) and data[index] != 0xFF:
             index += 1
+        while index < len(data) and data[index] == 0xFF:
+            index += 1
+        if index >= len(data):
+            return None, None
+        marker = data[index]
+        index += 1
+        if marker in {0x00, 0x01, 0xD8, 0xD9} or 0xD0 <= marker <= 0xD7:
             continue
-        marker = data[index + 1]
-        if marker in {0xD8, 0xD9}:
-            index += 2
-            continue
-        if index + 4 > len(data):
-            break
-        segment_length = struct.unpack(">H", data[index + 2:index + 4])[0]
-        if segment_length < 2 or index + 2 + segment_length > len(data):
-            break
-        if marker in {
-            0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
-            0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF,
-        } and segment_length >= 7:
-            start = index + 4
-            height, width = struct.unpack(">HH", data[start + 1:start + 5])
-            return "image/jpeg", {"format": "jpeg", "width": width, "height": height}
-        index += 2 + segment_length
-    return "image/jpeg", {"format": "jpeg"}
+        if index + 2 > len(data):
+            return None, None
+        segment_length = struct.unpack(">H", data[index:index + 2])[0]
+        if segment_length < 2 or index + segment_length > len(data):
+            return None, None
+        if marker in _JPEG_SOF_MARKERS:
+            if segment_length < 8:
+                return None, None
+            height, width = struct.unpack(">HH", data[index + 3:index + 7])
+            return width, height
+        index += segment_length
+    return None, None
+
+
+def parse_image_header(data: bytes) -> ImageHeader | None:
+    """Return supported image MIME and dimensions from bytes already in memory.
+
+    This parser does not decode pixels, open paths, write files, call models, or
+    perform network I/O. A recognized but incomplete image returns its MIME with
+    missing dimensions so callers can reject it without guessing.
+    """
+
+    if not isinstance(data, bytes):
+        return None
+    if data.startswith(_PNG_SIGNATURE):
+        if (
+            len(data) < 24
+            or data[8:12] != b"\x00\x00\x00\r"
+            or data[12:16] != b"IHDR"
+        ):
+            return ImageHeader("image/png", None, None)
+        width, height = struct.unpack(">II", data[16:24])
+        return ImageHeader("image/png", width, height)
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        if len(data) < 10:
+            return ImageHeader("image/gif", None, None)
+        width, height = struct.unpack("<HH", data[6:10])
+        return ImageHeader("image/gif", width, height)
+    if data.startswith(b"\xff\xd8"):
+        width, height = _jpeg_dimensions(data)
+        return ImageHeader("image/jpeg", width, height)
+    return None
+
+
+def _image_metadata(data: bytes) -> tuple[str, dict[str, int | str]] | None:
+    header = parse_image_header(data)
+    if header is None:
+        return None
+    if header.width is None or header.height is None:
+        # Preserve the legacy source-inspection result for a recognizable but
+        # incomplete JPEG. The stricter ingress guard rejects it separately.
+        if header.mime_type == "image/jpeg":
+            return "image/jpeg", {"format": "jpeg"}
+        return None
+    return header.mime_type, {
+        "format": header.mime_type.split("/", 1)[1],
+        "width": header.width,
+        "height": header.height,
+    }
 
 
 def _wav_metadata(data: bytes) -> dict[str, int | float | str] | None:
@@ -396,6 +457,8 @@ def inspect_local_source(
 
 
 __all__ = [
+    "ImageHeader",
+    "ImageMimeType",
     "MAX_EXCERPT_CHARS",
     "MAX_FILE_BYTES",
     "MAX_WAV_CHUNKS",
@@ -403,4 +466,5 @@ __all__ = [
     "SourceInspection",
     "SourceProvenance",
     "inspect_local_source",
+    "parse_image_header",
 ]

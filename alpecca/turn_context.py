@@ -243,7 +243,13 @@ def _clean_history(history: list[dict]) -> list[dict]:
         content = str(item.get("content") or "").strip()
         if role not in {"user", "assistant", "system"} or not content:
             continue
-        cleaned.append({"role": role, "content": content[:8000]})
+        cleaned_item: dict[str, str | bool] = {
+            "role": role,
+            "content": content[:8000],
+        }
+        if item.get("private_context") is True:
+            cleaned_item["private_context"] = True
+        cleaned.append(cleaned_item)
     return cleaned
 
 

@@ -113,7 +113,7 @@ clean, revert, stage, or claim ownership of unrelated items above.
 | Fact | Measured value |
 |---|---:|
 | Laptop | Dell G15 5525 |
-| Installed DIMMs | 16 GB + 8 GB DDR5-4800 |
+| Installed DIMMs | Approximately 16 GB + 8 GB DDR4 (user-confirmed; speed not reverified) |
 | OS-usable physical RAM | 23.24 GiB |
 | Free RAM at sample | 8.61 GiB |
 | Windows commit limit | 60.35 GiB |
@@ -124,8 +124,9 @@ clean, revert, stage, or claim ownership of unrelated items above.
 | GPU | NVIDIA GeForce RTX 3050 Laptop GPU, 4,096 MiB |
 | GPU used / free / temperature | 731 MiB / 3,234 MiB / 38 C |
 
-The DIMMs were independently queried and report DDR5 at 4,800 MT/s. This
-supersedes older project documents that labeled the local laptop memory DDR4.
+An earlier automated query was recorded as DDR5-4800, but Jason explicitly
+corrected the target laptop to DDR4. The user-confirmed DDR4 label is
+authoritative here; the memory speed remains unverified in this checkpoint.
 Free-memory, commit, disk, GPU, and temperature values are transient samples,
 not capacity guarantees. The 38,000 MiB pagefile is intentional commit reserve
 for CPU-backed model and KV-cache allocation; it does not add VRAM. The current

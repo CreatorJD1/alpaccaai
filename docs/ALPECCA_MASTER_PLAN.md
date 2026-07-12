@@ -82,7 +82,7 @@ retained in the implementation sequence as historical planning context.
 
 | Lane | Actual role | Capacity rule |
 |---|---|---|
-| Local laptop | Authoritative CoreMind, SQLite, Mindpage, safety, identity, approvals, live fallback, voice | Approximately 24 GB DDR5-4800 and RTX 3050 Laptop GPU with 4 GB VRAM |
+| Local laptop | Authoritative CoreMind, SQLite, Mindpage, safety, identity, approvals, live fallback, voice | Approximately 24 GB DDR4 and RTX 3050 Laptop GPU with 4 GB VRAM |
 | Hugging Face ZeroGPU | Optional stateless deep, vision, texture, or batch inference | Ephemeral and quota-governed; probe the assigned runtime; never add it to local RAM/VRAM totals |
 | Google notebook / Colab | Optional stateless accelerated inference or batch work | Ephemeral; GPU, RAM, uptime, and limits are not guaranteed |
 
@@ -229,7 +229,7 @@ baseline with a successful restore drill. `creator_contact.py` and
 `system_pressure.py` remain inactive WIP merely because files exist.
 
 Exit gate passed 2026-07-10: every current diagram uses the status contract;
-local hardware is 24 GB DDR5-4800 / RTX 3050 4 GB; cloud allocations are labeled
+local hardware is 24 GB DDR4 / RTX 3050 4 GB; cloud allocations are labeled
 ephemeral; old 34 GB/H100 local-host claims are superseded; the encrypted
 database/V4/VRoid baseline passed capture-time restore and independent verification.
 
@@ -624,6 +624,24 @@ Add scoped read-only source browsing, bounded MIME-aware file extraction, image
 dimension/size limits, local-first vision, audio attachment transcription, and
 clear perception-failure state. Route private sensors through a deny-by-default
 cloud egress broker. Webcam/screen grants are visible and auto-stop on disconnect.
+
+Implemented through the 2026-07-12 checkpoint: creator-scoped `source_inspect`
+is reachable through the smart tool gate and restricted to explicit repository
+roots; source turns require a verified loopback Ollama endpoint and non-cloud
+model. Image and audio routes now enforce pre-model byte caps, strict
+MIME/container matching, image dimensions/pixels, audio duration, exact
+server-issued scopes, derived SHA-256 provenance, metadata-only responses, and
+local-only/cloud-denied classification. Private sensor descriptions,
+microphone-derived text, source-tool turns, retained private history, and paged
+private evidence force verified local generation. House push-to-talk stops at
+60 seconds and cancels stale capture/transcription on disconnect. Capability
+uses are audited without raw content.
+
+Remaining before DONE: replace legacy channel `file_data` parsing with the same
+trusted ingress/citation boundary; issue expiring connection-bound grants for
+camera, screen, microphone, and files; add provider/model-specific cloud consent
+and immutable egress/grant/stop receipts; and bind Discord service auth to
+server-signed guest actor subjects. Until then Phase 10 remains blocked.
 
 Exit gate: Alpecca can cite viewed files/images/audio with provenance; malformed
 or oversized inputs fail closed; prompt injection cannot grant authority; no

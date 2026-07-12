@@ -717,7 +717,10 @@ micBtn.addEventListener('click', async ()=>{
         if(d.heard && d.text){
           // Send the words through the exact same path as typed chat.
           addMsg(d.text, 'me');
-          if(ws.readyState === 1) ws.send(JSON.stringify({text: d.text}));
+          if(ws.readyState === 1) ws.send(JSON.stringify({
+            text: d.text,
+            private_perception: 'microphone',
+          }));
         } else {
           setAvatarState('idle');
           statusEl.textContent = "couldn't make that out — try again a little closer to the mic";

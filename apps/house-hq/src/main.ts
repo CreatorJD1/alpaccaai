@@ -1596,10 +1596,13 @@ let alpeccaVoiceLastText = "";
 let alpeccaVoiceRequestSequence = 0;
 const alpeccaSpokenRepliesStorageKey = "alpeccaHouseSpokenReplies";
 let alpeccaSpokenRepliesEnabled = localStorage.getItem(alpeccaSpokenRepliesStorageKey) !== "off";
+const ALPECCA_PUSH_TO_TALK_MAX_MS = 60_000;
 let alpeccaPushToTalkRecorder: MediaRecorder | null = null;
 let alpeccaPushToTalkStream: MediaStream | null = null;
 let alpeccaPushToTalkChunks: Blob[] = [];
 let alpeccaPushToTalkSequence = 0;
+let alpeccaPushToTalkStopTimer: number | null = null;
+let alpeccaPushToTalkRequest: AbortController | null = null;
 let alpeccaCameraStream: MediaStream | null = null;
 let alpeccaVoiceEngine = "";
 let alpeccaVoiceName = "af_heart";
@@ -4443,6 +4446,7 @@ function connectAlpeccaAi() {
     });
 
     alpeccaSocket.addEventListener("close", (event) => {
+      cancelAlpeccaPushToTalk();
       alpeccaSocket = null;
       alpeccaAiAwaitingReply = false;
       alpeccaAiReplyStartedAt = 0;
@@ -4679,12 +4683,22 @@ function stopAlpeccaPushToTalkStream() {
   alpeccaPushToTalkStream = null;
 }
 
+function clearAlpeccaPushToTalkStopTimer() {
+  if (alpeccaPushToTalkStopTimer === null) return;
+  window.clearTimeout(alpeccaPushToTalkStopTimer);
+  alpeccaPushToTalkStopTimer = null;
+}
+
 function cancelAlpeccaPushToTalk() {
   alpeccaPushToTalkSequence += 1;
+  clearAlpeccaPushToTalkStopTimer();
+  alpeccaPushToTalkRequest?.abort();
+  alpeccaPushToTalkRequest = null;
   const recorder = alpeccaPushToTalkRecorder;
   alpeccaPushToTalkRecorder = null;
   alpeccaPushToTalkChunks = [];
   if (recorder) {
+    recorder.ondataavailable = null;
     recorder.onstop = null;
     recorder.onerror = null;
     if (recorder.state !== "inactive") recorder.stop();
@@ -4694,11 +4708,14 @@ function cancelAlpeccaPushToTalk() {
 }
 
 async function transcribeAlpeccaPushToTalk(blob: Blob, sequence: number) {
+  if (sequence !== alpeccaPushToTalkSequence || alpeccaChat.classList.contains("hidden")) return;
   if (!blob.size || !alpeccaAiBaseUrl) {
     showAlpeccaProfileLine("Voice input needs the live local backend.", "listening");
     setAlpeccaPushToTalkState("idle");
     return;
   }
+  const request = new AbortController();
+  alpeccaPushToTalkRequest = request;
   setAlpeccaPushToTalkState("processing");
   showAlpeccaProfileLine("Transcribing your voice locally...", "thinking");
   try {
@@ -4706,6 +4723,7 @@ async function transcribeAlpeccaPushToTalk(blob: Blob, sequence: number) {
       method: "POST",
       headers: blob.type ? { "Content-Type": blob.type } : undefined,
       body: blob,
+      signal: request.signal,
     });
     if (!response.ok) throw new Error(`voice input returned ${response.status}`);
     const data = await response.json() as Record<string, unknown>;
@@ -4715,20 +4733,25 @@ async function transcribeAlpeccaPushToTalk(blob: Blob, sequence: number) {
       showAlpeccaProfileLine("I could not make that out. Try speaking a little closer to the microphone.", "listening");
       return;
     }
-    await sendAlpeccaChat(heard);
+    await sendAlpeccaChat(heard, "", "microphone");
   } catch (error) {
-    if (sequence !== alpeccaPushToTalkSequence) return;
+    if (sequence !== alpeccaPushToTalkSequence || request.signal.aborted) return;
     const detail = error instanceof Error ? error.message : "voice input failed";
     appendAlpeccaLog("System", detail);
     showAlpeccaProfileLine("Voice transcription is unavailable right now.", "listening");
   } finally {
+    if (alpeccaPushToTalkRequest === request) alpeccaPushToTalkRequest = null;
     if (sequence === alpeccaPushToTalkSequence) setAlpeccaPushToTalkState("idle");
   }
 }
 
 async function toggleAlpeccaPushToTalk() {
-  if (alpeccaPushToTalkRecorder?.state === "recording") {
-    alpeccaPushToTalkRecorder.stop();
+  const activeRecorder = alpeccaPushToTalkRecorder;
+  if (activeRecorder) {
+    if (activeRecorder.state === "recording") {
+      clearAlpeccaPushToTalkStopTimer();
+      activeRecorder.stop();
+    }
     return;
   }
   if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
@@ -4736,25 +4759,37 @@ async function toggleAlpeccaPushToTalk() {
     return;
   }
   closeAlpeccaCamera();
+  const sequence = ++alpeccaPushToTalkSequence;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    if (alpeccaChat.classList.contains("hidden")) {
+    if (sequence !== alpeccaPushToTalkSequence || alpeccaChat.classList.contains("hidden")) {
       stream.getTracks().forEach((track) => track.stop());
       return;
     }
-    const recorder = new MediaRecorder(stream);
-    const sequence = ++alpeccaPushToTalkSequence;
     alpeccaPushToTalkStream = stream;
+    const recorder = new MediaRecorder(stream);
     alpeccaPushToTalkRecorder = recorder;
     alpeccaPushToTalkChunks = [];
     recorder.ondataavailable = (event) => {
-      if (event.data.size) alpeccaPushToTalkChunks.push(event.data);
+      if (
+        sequence === alpeccaPushToTalkSequence
+        && alpeccaPushToTalkRecorder === recorder
+        && event.data.size
+      ) {
+        alpeccaPushToTalkChunks.push(event.data);
+      }
     };
     recorder.onerror = () => {
+      if (sequence !== alpeccaPushToTalkSequence || alpeccaPushToTalkRecorder !== recorder) return;
       cancelAlpeccaPushToTalk();
       showAlpeccaProfileLine("Microphone recording stopped unexpectedly.", "listening");
     };
     recorder.onstop = () => {
+      recorder.ondataavailable = null;
+      recorder.onstop = null;
+      recorder.onerror = null;
+      if (sequence !== alpeccaPushToTalkSequence || alpeccaPushToTalkRecorder !== recorder) return;
+      clearAlpeccaPushToTalkStopTimer();
       const chunks = alpeccaPushToTalkChunks;
       const mimeType = recorder.mimeType || "audio/webm";
       alpeccaPushToTalkRecorder = null;
@@ -4763,9 +4798,17 @@ async function toggleAlpeccaPushToTalk() {
       void transcribeAlpeccaPushToTalk(new Blob(chunks, { type: mimeType }), sequence);
     };
     recorder.start();
+    const stopTimer = window.setTimeout(() => {
+      if (alpeccaPushToTalkStopTimer !== stopTimer) return;
+      alpeccaPushToTalkStopTimer = null;
+      if (sequence !== alpeccaPushToTalkSequence || alpeccaPushToTalkRecorder !== recorder) return;
+      if (recorder.state === "recording") recorder.stop();
+    }, ALPECCA_PUSH_TO_TALK_MAX_MS);
+    alpeccaPushToTalkStopTimer = stopTimer;
     setAlpeccaPushToTalkState("recording");
     showAlpeccaProfileLine("Listening - tap the microphone again to send.", "listening");
   } catch {
+    if (sequence !== alpeccaPushToTalkSequence) return;
     cancelAlpeccaPushToTalk();
     showAlpeccaProfileLine("Microphone access was unavailable or denied.", "listening");
   }
@@ -4853,7 +4896,63 @@ function showAlpeccaProfileLine(text: string, mode = "talking", featureId = alpe
   updateAlpeccaChatExpressionPortrait(true);
 }
 
-async function sendAlpeccaChat(text: string, image = "") {
+const ALPECCA_CHAT_REJECTION_BODY_MAX_CHARS = 2_048;
+const ALPECCA_CHAT_REJECTION_FIELD_MAX_CHARS = 160;
+
+function boundedAlpeccaChatRejectionField(value: unknown) {
+  if (typeof value !== "string") return "";
+  return value.replace(/\s+/g, " ").trim().slice(0, ALPECCA_CHAT_REJECTION_FIELD_MAX_CHARS);
+}
+
+async function readAlpeccaChatRejection(response: Response) {
+  let detailText = "";
+  let code = "";
+  let reason = "";
+  try {
+    const body = await response.text();
+    if (body.length <= ALPECCA_CHAT_REJECTION_BODY_MAX_CHARS) {
+      const payload = JSON.parse(body) as Record<string, unknown>;
+      code = boundedAlpeccaChatRejectionField(payload.code);
+      const detail = payload.detail;
+      if (typeof detail === "string") {
+        detailText = boundedAlpeccaChatRejectionField(detail);
+      } else if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+        const detailPayload = detail as Record<string, unknown>;
+        code = boundedAlpeccaChatRejectionField(detailPayload.code) || code;
+        reason = boundedAlpeccaChatRejectionField(detailPayload.reason);
+        detailText = boundedAlpeccaChatRejectionField(detailPayload.message);
+      }
+    }
+  } catch {
+    // A malformed or unreadable rejection remains terminal, with a generic message.
+  }
+
+  if (code === "attachment_rejected") {
+    const attachmentMessage: Record<string, string> = {
+      "size-limit": "That image is too large to send.",
+      "unsupported-mime": "That image format is not supported.",
+      "mime-mismatch": "That image's format does not match its contents.",
+      "invalid-dimensions": "That image's dimensions are not supported.",
+      "pixel-limit": "That image's dimensions are too large.",
+      "invalid-bytes": "That image could not be read.",
+      "malformed-data-url": "That image could not be read.",
+      "malformed-base64": "That image could not be read.",
+    };
+    return {
+      message: attachmentMessage[reason] || "That image was rejected by the backend.",
+      code: reason ? `${code}:${reason}` : code,
+    };
+  }
+
+  return {
+    message: detailText
+      ? `Request rejected: ${detailText}`
+      : `The backend rejected that request (HTTP ${response.status}).`,
+    code,
+  };
+}
+
+async function sendAlpeccaChat(text: string, image = "", privatePerception = "") {
   const trimmed = text.trim();
   if (!trimmed && !image) return;
   const promptText = trimmed || "I'm showing you something through the camera right now.";
@@ -4894,6 +4993,7 @@ async function sendAlpeccaChat(text: string, image = "") {
     speaker: "guest",
     request_id: requestId,
     ...(image ? { image } : {}),
+    ...(privatePerception ? { private_perception: privatePerception } : {}),
   };
   const inboundUrl = alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/channel/house-hq`);
   if (alpeccaAiBaseUrl && inboundUrl) {
@@ -4920,6 +5020,24 @@ async function sendAlpeccaChat(text: string, image = "") {
         handleAlpeccaAiMessage(JSON.stringify(replyPayload));
         return;
       }
+      if (response.status >= 400 && response.status < 500) {
+        const rejection = await readAlpeccaChatRejection(response);
+        appendAlpeccaLog(
+          "System",
+          `House live chat request rejected (${response.status}${rejection.code ? `, ${rejection.code}` : ""}).`,
+        );
+        if (alpeccaAiPendingPlayerRequestId === requestId) {
+          alpeccaAiAwaitingReply = false;
+          alpeccaAiReplyStartedAt = 0;
+          alpeccaAiSlowReplyNoticeShown = false;
+          alpeccaAiPendingPlayerRequestId = "";
+          alpeccaAiLastPlayerMessage = "";
+          appendAlpeccaLog("System", rejection.message);
+          showAlpeccaProfileLine(rejection.message, "listening");
+          showMessage(rejection.message, 5);
+        }
+        return;
+      }
       appendAlpeccaLog("System", `House live chat channel returned ${response.status}. Falling back to websocket.`);
     } catch {
       appendAlpeccaLog("System", "House live chat channel failed; trying websocket fallback.");
@@ -4933,6 +5051,7 @@ async function sendAlpeccaChat(text: string, image = "") {
       source: "house-chat",
       request_id: requestId,
       ...(image ? { image } : {}),
+      ...(privatePerception ? { private_perception: privatePerception } : {}),
     }));
     return;
   }

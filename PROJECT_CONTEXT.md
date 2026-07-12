@@ -3,7 +3,7 @@
 This is the canonical project context for coding agents working on Alpecca.
 Read this before `AGENTS.md`, `CLAUDE.md`, `HANDOFF.md`, or implementation files.
 
-## Current Implementation Checkpoint (2026-07-10)
+## Current Implementation Checkpoint (2026-07-12)
 
 This checkpoint supersedes older route, access, and phase-status language
 retained elsewhere for historical context.
@@ -22,7 +22,11 @@ retained elsewhere for historical context.
   routines share one per-scope initiative budget; ignored outreach backs off;
   one proactive event uses one delivery surface; and eligible cue evidence
   changes response strategy without claiming a literal feeling change.
-- Phase 6 Mindpage and resource coordination is the active next slice.
+- Phase 9 multimodal/source perception is the active slice. Source inspection,
+  bounded image/audio ingress, scoped provenance, audited sensor use, and
+  verified-local private inference are implemented. Trusted file ingress,
+  expiring capability leases, provider-specific egress consent, and signed
+  Discord guest identity remain incomplete; Phase 10 stays blocked.
 
 ## Identity
 
@@ -52,8 +56,9 @@ observe -> interpret -> retrieve memory -> update self-state -> choose intent ->
 
 Important current priorities:
 
-- Complete Phase 6 Mindpage/resource reliability without widening Phase 4
-  execution or bypassing the Phase 5 initiative boundary.
+- Continue Phase 9 through trusted file ingress and server-issued sensor leases
+  without widening Phase 4 execution or bypassing the Phase 5 initiative
+  boundary. Phase 6 resource measurement remains separately gated.
 - Natural replies through the live backend, not event echoes or copied user text.
 - Stable local model path uses the currently approved Ollama model from `ALPECCA_MODEL`; do not revive retired legacy model paths.
 - Voice should use her personality and modulation system, with Kokoro `af_heart` as the intended voice profile.
@@ -78,7 +83,7 @@ Important current priorities:
 ## Compute Boundary
 
 - The authoritative local host is the Windows laptop with approximately **24 GB
-  DDR5-4800 system RAM** and an **RTX 3050 Laptop GPU with 4 GB VRAM**. Local design,
+  DDR4 system RAM** and an **RTX 3050 Laptop GPU with 4 GB VRAM**. Local design,
   model routing, context limits, and workload shedding must fit this envelope.
 - Any **34 GB memory** or **H100-class GPU** label refers only to an observed or
   requested Hugging Face ZeroGPU / Google notebook cloud runtime. It is not the

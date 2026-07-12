@@ -97,6 +97,25 @@ def _turn(scope: str = "guest-phase5") -> turn_context.TurnContext:
     )
 
 
+def test_private_perception_forces_verified_local_generation(monkeypatch):
+    calls = []
+
+    def generate(*_args, **kwargs):
+        calls.append(kwargs)
+        return "I can describe only what the local vision path reported."
+
+    mind, _mind_mod = _core_mind(monkeypatch, generate)
+    result = mind.chat(
+        "What am I showing you?",
+        image_desc="A local camera frame.",
+        private_context=True,
+        turn=_turn("creator-private"),
+    )
+
+    assert result["reply"].startswith("I can describe")
+    assert calls and calls[0]["local_only"] is True
+
+
 def test_chat_returns_bounded_operational_affect_with_cue_provenance(monkeypatch):
     prompts = []
 

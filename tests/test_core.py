@@ -5320,7 +5320,8 @@ def test_smart_tool_mode_offers_tools_for_memorized_requests_and_streams_are_pau
         captured = {}
 
         def fake_generate(system_prompt, user_msg, history=None, tools=None,
-                          on_token=None, on_tool=None, tier="reason"):
+                          on_token=None, on_tool=None, tier="reason",
+                          local_only=False):
             captured["tools"] = tools
             captured["on_tool"] = on_tool
             captured["on_token"] = on_token
@@ -5355,7 +5356,8 @@ def test_always_tool_mode_offers_tools_even_for_small_talk():
         mind = CoreMind()
         captured = {}
 
-        def fake_generate(system_prompt, user_msg, history=None, tools=None, on_tool=None, tier="reason"):
+        def fake_generate(system_prompt, user_msg, history=None, tools=None,
+                          on_tool=None, tier="reason", local_only=False):
             captured["tools"] = tools
             captured["on_tool"] = on_tool
             return "I'll do that."
@@ -5388,7 +5390,8 @@ def test_live_chat_recall_avoids_embedding_model(monkeypatch):
         captured["embed_fn"] = embed_fn
         return []
 
-    def fake_generate(system_prompt, user_msg, history=None, tools=None, on_tool=None, tier="reason"):
+    def fake_generate(system_prompt, user_msg, history=None, tools=None,
+                      on_tool=None, tier="reason", local_only=False):
         return "I'm here with you."
 
     monkeypatch.setattr(memory_store, "recall", fake_recall)
@@ -5454,7 +5457,8 @@ def test_chat_history_eviction_writes_mindpage_episode(monkeypatch):
     ]
     captured = {}
 
-    def fake_generate(system_prompt, user_msg, history=None, tools=None, on_tool=None, tier="reason"):
+    def fake_generate(system_prompt, user_msg, history=None, tools=None,
+                      on_tool=None, tier="reason", local_only=False):
         return "I'm here with you."
 
     def fake_write_episode_page(turns, db_path=None):
@@ -5534,7 +5538,8 @@ def test_chat_prompt_injects_room_context_when_room_is_requested():
     mind._location = "library"
     captured = {}
 
-    def fake_generate(system_prompt, user_msg, history=None, tools=None, on_tool=None, tier="reason"):
+    def fake_generate(system_prompt, user_msg, history=None, tools=None,
+                      on_tool=None, tier="reason", local_only=False):
         captured["system_prompt"] = system_prompt
         return "I am in the Library."
 
@@ -5559,7 +5564,8 @@ def test_live_house_context_overrides_stale_stored_room():
     mind._location = "studio"
     captured = {}
 
-    def fake_generate(system_prompt, user_msg, history=None, tools=None, on_tool=None, tier="reason"):
+    def fake_generate(system_prompt, user_msg, history=None, tools=None,
+                      on_tool=None, tier="reason", local_only=False):
         captured["system_prompt"] = system_prompt
         return "I'm in the Observatory with you."
 

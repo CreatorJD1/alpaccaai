@@ -1,9 +1,30 @@
-# Alpecca — Handoff (updated 2026-07-11)
+# Alpecca — Handoff (updated 2026-07-12)
 
-## Current Active Handoff: Phase 6 Mindpage And Resource Coordination
+## Current Active Handoff: Phase 9 Multimodal And Source Perception
 
 This checkpoint supersedes the older active-scope and phase-status language
 retained below as historical implementation evidence.
+
+- Phase 9 is materially advanced but remains **PARTIAL**. Creator chat can now
+  reach `source_inspect` through the smart tool gate; repository reads are
+  read-only, explicitly rooted, creator-only, and require a verified loopback
+  Ollama target with a non-cloud model. Image and push-to-talk ingress now use
+  strict pre-model byte/MIME/container/dimension/duration gates, server-derived
+  SHA-256 provenance, exact turn/request scopes, metadata-only responses, and
+  local-only/cloud-denied envelopes. Screen, camera, microphone, and voice
+  enrollment uses are recorded through the capability audit path. House HQ
+  auto-stops microphone capture at 60 seconds and cancels stale recording or
+  transcription work on disconnect.
+- Private image descriptions, microphone-derived text, source-tool turns,
+  retained private history, and paged private evidence force verified local
+  inference. A remote `OLLAMA_HOST`, HF primary backend, or cloud-tagged model
+  receives no private request and produces the honest local-unavailable
+  fallback instead. The normal non-private hosted-chat paths remain unchanged.
+- Phase 9 is not DONE: channel file ingestion still lacks the common trusted
+  envelope; camera/screen/microphone grants are not server-issued expiring
+  leases; a provider-specific egress consent broker is absent; and Discord
+  guild actors still need signed guest subjects so bridge authentication cannot
+  become creator authority. Keep Phase 10 Discord participation/voice blocked.
 
 - `/house-hq` now serves the **Void Prototype**, including a native categorized
   **Alpecca Systems** center and an orthographic view.
@@ -293,10 +314,19 @@ surface.
 
 ### Phase 9: multimodal and source perception
 
-Add scoped, read-only source browsing; bounded MIME-aware text/file extraction;
-image/audio limits; provenance; local-first vision/transcription; and an
-explicit provider-consent broker for private cloud egress. Screen, webcam, and
-microphone grants must be visible, logged, and stop on disconnect.
+**PARTIAL as of 2026-07-12.** Scoped read-only repository browsing, strict
+image/audio ingress, derived provenance, verified-local sensor inference,
+capability-use audit records, and bounded House microphone lifecycle are now
+implemented. Focused tests cover malformed/oversized payloads, MIME/magic
+mismatch, dimensions, duration, scope, provenance, authorization-before-read,
+local-only model routing, and House/WebSocket integration.
+
+Still required: replace legacy channel `file_data` extraction with the common
+trusted envelope and a server-resolved House attach flow; add expiring,
+connection-bound capability leases with disconnect revocation; add the exact
+provider/model egress consent broker and immutable grant/deny/stop receipts;
+and partition Discord bridge service authentication from signed guest actor
+identity. Do not mark Phase 9 complete or unblock Phase 10 before those gates.
 
 ### Phase 10: Discord presence and voice - BLOCKED
 
@@ -370,7 +400,7 @@ superseded status labels or old active scopes; the Phase 3 onward roadmap above,
   dependency-ordered implementation plan produced from the AI-core, security,
   Mindpage/pagefile, Discord, Creator contact, and V4 embodiment audits.
 - The corrected compute boundary is authoritative: the local laptop is
-  approximately 24 GB DDR5-4800 with an RTX 3050 Laptop GPU (4 GB VRAM). Any 34 GB
+  approximately 24 GB DDR4 with an RTX 3050 Laptop GPU (4 GB VRAM). Any 34 GB
   memory or H100-class label belongs only to an observed/requested Hugging Face
   ZeroGPU or Google notebook runtime. Cloud allocations are ephemeral and are
   never counted as local or persistent Alpecca capacity.

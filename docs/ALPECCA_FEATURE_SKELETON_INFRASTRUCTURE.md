@@ -42,7 +42,7 @@ flowchart TB
     A --> R["Recursive improvement + automation"]:::partial
     R --> R1["Selfmod / learning"]:::partial
     R --> R2["Routines / watchers"]:::partial
-    R --> R3["Unified initiative budget"]:::notstarted
+    R --> R3["Unified initiative budget"]:::complete
     R --> R4["Computer autonomy"]:::blocked
 
     A --> E["Experience + embodiment"]:::partial
@@ -54,7 +54,7 @@ flowchart TB
     A --> P["Perception + communication"]:::partial
     P --> P1["TTS voice"]:::partial
     P --> P2["Image / file perception"]:::partial
-    P --> P3["Audio perception"]:::notstarted
+    P --> P3["Audio perception"]:::partial
     P --> P4["Discord autonomy"]:::blocked
     P --> P5["Creator contact outbox"]:::notstarted
 
@@ -69,7 +69,7 @@ flowchart TB
 
 | Lane | Status | Rule |
 |---|---|---|
-| Local Windows host | Authoritative | Approximately 24 GB DDR5-4800 and RTX 3050 Laptop 4 GB |
+| Local Windows host | Authoritative | Approximately 24 GB DDR4 and RTX 3050 Laptop 4 GB |
 | Hugging Face ZeroGPU | Optional / ephemeral | Stateless bounded inference only; runtime hardware must be probed |
 | Google notebook / Colab | Optional / ephemeral | Stateless bounded jobs only; capacity and uptime are not guaranteed |
 
@@ -78,14 +78,14 @@ to a cloud runtime when observed, never to the laptop or persistent capacity.
 
 ## Highest-Priority Blockers
 
-1. Rotate and remove the exposed root token; fix HTML self-authentication; keep
-   tunnels and computer control disabled.
-2. Add authoritative CreatorJD identity, OS singleton, active-portal lease, and
-   identity-bound approval ledger.
-3. Partition turns/history/memory by actor, conversation, surface, and privacy;
-   prevent late commits after timeout.
-4. Add cue/commitment/action receipts so promised work executes or fails honestly.
-5. Unify proactive budgets before enabling Discord or recursive follow-ups.
+1. Replace legacy channel file extraction with the common trusted ingress and
+   scoped citation boundary.
+2. Add expiring, connection-bound capability leases for camera, screen,
+   microphone, and file use, including disconnect revocation.
+3. Add provider/model-specific cloud consent and immutable egress receipts.
+4. Separate Discord bridge service authentication from signed guest actor
+   identity before enabling autonomous participation or voice.
+5. Finish V4 motion, expression, grounding, and locked-design QA.
 
 ## Current V4 Embodiment Boundary
 

@@ -103,6 +103,7 @@ from alpecca import affect_evidence as affect_evidence_mod
 from alpecca import initiative as initiative_mod
 from alpecca import memory_pressure as memory_pressure_mod
 from alpecca import soul_pressure_signal as soul_pressure_signal_mod
+from alpecca.local_inference import verified_local_ollama_target
 from config import Proactive as ProactiveCfg, Reflection as ReflectionCfg, Actions as ActionsCfg
 
 
@@ -347,9 +348,27 @@ class _LLM:
         return self._deep is not None
 
     def is_cloud(self) -> bool:
-        """True when her thinking runs in the cloud (HF), so callers can keep
-        sensed/local-only context out of the prompt."""
+        """Whether the primary backend is HF.
+
+        Hybrid hosted routes are evaluated per call; private paths must use
+        :meth:`local_inference_available` or ``generate(local_only=True)``.
+        """
         return self._backend == "hf"
+
+    def _verified_local_target(self, model: str) -> bool:
+        return (
+            self._backend != "hf"
+            and self._client is not None
+            and verified_local_ollama_target(
+                OLLAMA_HOST,
+                model,
+                known_cloud_models={CHAT_CLOUD_MODEL, OLLAMA_CLOUD_MODEL},
+            )
+        )
+
+    def local_inference_available(self, model: str | None = None) -> bool:
+        """Whether private material can use the configured Ollama target."""
+        return self._verified_local_target(model or OLLAMA_MODEL)
 
     def model_for(self, tier: str) -> str:
         """Which Ollama model serves a given tier. 'fast' routes cheap, low-stakes
@@ -393,6 +412,10 @@ class _LLM:
                         "keep_alive": OLLAMA_KEEP_ALIVE}
         if tools:
             kwargs["tools"] = tools
+        if local_only and not self._verified_local_target(kwargs["model"]):
+            raise RuntimeError(
+                "local-only inference rejected a remote endpoint or cloud model"
+            )
         # Hybrid chat: reasoning-tier turns try the hosted cloud model first --
         # ~3s replies from a much bigger brain, with a context window the
         # laptop couldn't hold. ANY failure (offline, signed out, quota gone,
@@ -529,7 +552,7 @@ class _LLM:
                  history: list[dict] | None = None,
                  tools: list[dict] | None = None,
                  on_tool=None, tier: str = "reason",
-                 on_token=None) -> str:
+                 on_token=None, local_only: bool = False) -> str:
         """One reply. When `tools` are offered and the model calls one, we run
         it through `on_tool(name, args) -> str` and give the model one more
         pass to fold the result into its words. A model or client that can't
@@ -547,7 +570,26 @@ class _LLM:
         reflection/self-questioning), her local brain still answers everything
         else, and if the deep client is absent or fails we fall straight through
         to local reasoning -- so her depth still happens, just plainer."""
-        if tier == "deep" and getattr(self, "_deep_chain", None):
+        local_model = OLLAMA_MODEL if tools else self.model_for(tier)
+        if tier == "deep":
+            local_model = REFLECT_MODEL or OLLAMA_MODEL
+        if local_only and not self._verified_local_target(local_model):
+            error = (
+                "private context requires a loopback Ollama endpoint and a "
+                "non-cloud local model"
+            )
+            self._mark_model_use(
+                requested=tier,
+                used="fallback",
+                backend="offline",
+                model=local_model,
+                ok=False,
+                fallback=True,
+                error=error,
+            )
+            return self._fallback(system_prompt, user_msg, error=error)
+        if (not local_only and tier == "deep"
+                and getattr(self, "_deep_chain", None)):
             # Walk the chain (e.g. ollama-cloud -> zerogpu): first link that
             # answers wins; every failure falls to the next, and the local
             # thinking pass below remains the final net.
@@ -592,7 +634,8 @@ class _LLM:
                 import sys
                 print(f"[mind] local thinking pass failed -> plain local. "
                       f"{type(exc).__name__}: {exc}", file=sys.stderr)
-        if tier == "fast" and COLAB_FAST_CHAT and COLAB_URL and not tools:
+        if (not local_only and tier == "fast" and COLAB_FAST_CHAT
+                and COLAB_URL and not tools):
             try:
                 text = colab_t4.chat(
                     system_prompt,
@@ -646,10 +689,15 @@ class _LLM:
                 # for plain short generations, not reliable function calls.
                 tool_model = OLLAMA_MODEL
                 try:
-                    resp = self._chat(messages, tools=tools, model=tool_model)
+                    resp = self._chat(
+                        messages, tools=tools, model=tool_model,
+                        local_only=local_only,
+                    )
                 except Exception:
                     # Older client/model without tool support -- plain chat.
-                    resp = self._chat(messages, model=tool_model)
+                    resp = self._chat(
+                        messages, model=tool_model, local_only=local_only
+                    )
                 msg = resp["message"]
                 # Let her CHAIN tool calls across a bounded number of rounds, so a
                 # small multi-step request ("open my notes, then the docs page")
@@ -668,10 +716,16 @@ class _LLM:
                         messages.append({"role": "tool", "content": str(result)})
                     last = (i == rounds - 1)
                     try:
-                        resp = self._chat(messages, tools=(None if last else tools),
-                                          model=tool_model)
+                        resp = self._chat(
+                            messages,
+                            tools=(None if last else tools),
+                            model=tool_model,
+                            local_only=local_only,
+                        )
                     except Exception:
-                        resp = self._chat(messages, model=tool_model)
+                        resp = self._chat(
+                            messages, model=tool_model, local_only=local_only
+                        )
                     msg = resp["message"]
                 self._mark_model_use(
                     requested=tier,
@@ -685,7 +739,7 @@ class _LLM:
             # sleeping Space can't stall the turn -- on timeout the local 9B
             # answers THIS turn while the abandoned attempt finishes waking
             # the Space, making the NEXT turns cloud-fast.
-            if (tier == "reason" and not tools and on_token is None
+            if (not local_only and tier == "reason" and not tools and on_token is None
                     and CHAT_ZEROGPU and ZEROGPU_SPACE and self._backend != "hf"):
                 import concurrent.futures
                 if getattr(self, "_space_chat_pool", None) is None:
@@ -738,7 +792,11 @@ class _LLM:
                 resp = self._chat(
                     messages,
                     model=model,
-                    local_only=bool(on_token is not None or (CHAT_ZEROGPU and ZEROGPU_SPACE)),
+                    local_only=bool(
+                        local_only
+                        or on_token is not None
+                        or (CHAT_ZEROGPU and ZEROGPU_SPACE)
+                    ),
                 )
                 used_tier = tier
                 # Hybrid chat may have answered from the cloud even though the
@@ -749,7 +807,9 @@ class _LLM:
                 # same call on the reasoning model rather than dropping to the
                 # templated stub. This is what makes the gemma4 default safe.
                 if model != OLLAMA_MODEL:
-                    resp = self._chat(messages, model=OLLAMA_MODEL)
+                    resp = self._chat(
+                        messages, model=OLLAMA_MODEL, local_only=local_only
+                    )
                     used_tier = "reason"
                     used_model = self.last_chat_model or OLLAMA_MODEL
                 else:
@@ -1111,6 +1171,19 @@ class CoreMind:
         mode = self._tool_mode()
         if not (self.actuator.enabled or self.toolkit.enabled):
             return None
+        source_intent = (
+            any(term in user_low for term in (
+                "your source", "source code", "codebase", "repository code",
+                "inspect file", "inspect the file", "read file", "read the file",
+                "review file", "review the file", "documentation file",
+            ))
+            or (
+                any(suffix in user_low for suffix in (".py", ".ts", ".md"))
+                and any(verb in user_low for verb in (
+                    "check", "inspect", "look at", "read", "review",
+                ))
+            )
+        )
         if mode == "keyword":
             action_terms = (
                 "open ", "launch ", "start ", "close ", "switch ", "click ",
@@ -1130,6 +1203,7 @@ class CoreMind:
                     "location", "self status", "go room", "make a plan",
                     "draft a plan", "plan for", "workshop plan",
                 ))
+                or source_intent
                 # Non-trivial direct request to review internal state.
                 or "what room are you" in user_low
                 or "where are you" in user_low and "house" in user_low
@@ -1143,10 +1217,18 @@ class CoreMind:
         # until that Phase 4 boundary exists; legacy direct callers retain
         # today's behavior for compatibility.
         actuator_schemas = [] if turn is not None else self.actuator.tools_schema()
-        combined = [*actuator_schemas, *self.toolkit.schemas()]
+        toolkit_schemas = self.toolkit.schemas()
+        if turn is not None and turn.principal != "creator":
+            toolkit_schemas = [
+                schema for schema in toolkit_schemas
+                if schema.get("function", {}).get("name") != "source_inspect"
+            ]
+        combined = [*actuator_schemas, *toolkit_schemas]
         if len(combined) <= 7:
             return combined
         preferred_names = []
+        if source_intent and (turn is None or turn.principal == "creator"):
+            preferred_names.append("source_inspect")
         if any(term in user_low for term in ("make a plan", "draft a plan", "plan for", "workshop plan")):
             preferred_names.append("make_plan")
         if any(term in user_low for term in (
@@ -1902,13 +1984,19 @@ class CoreMind:
              image_desc: str | None = None,
              reply_tier: str = "reason",
              on_token=None,
-             turn: turn_context_mod.TurnContext | None = None) -> dict:
+             turn: turn_context_mod.TurnContext | None = None,
+             private_context: bool = False) -> dict:
         """Run one conversational turn and return a structured result the UI can
         render: the reply plus the resulting mood (so the avatar can react).
 
         `image_desc` is what the vision model saw in an image the person
         attached this turn (or None). It's woven into the prompt as something
         she actually saw, and remembered like any other shared moment.
+
+        `private_context` marks locally derived sensor or file material. It
+        forces this turn and its bounded follow-up history onto verified local
+        inference; cloud consent requires a separate broker rather than a
+        caller-provided model hint.
 
         `on_token` (optional) receives live text deltas of the FIRST draft so
         the UI can show her words as they form. The returned reply remains
@@ -2183,6 +2271,32 @@ class CoreMind:
                 affect_metadata=affect_metadata,
                 implicit_turn=implicit_turn,
             )
+        private_memory_markers = (
+            "they showed me an image:",
+            "they attached the file",
+            "<<<file start>>>",
+        )
+        private_model_context = bool(
+            private_context
+            or image_desc
+            or (self._sight and not CLOUD_SEND_SENSES)
+            or prompt_pages
+            or any(
+                bool((message or {}).get("private_context"))
+                for message in prompt_history
+            )
+            or any(
+                any(
+                    marker in str((memory or {}).get("content") or "").lower()
+                    for marker in private_memory_markers
+                )
+                for memory in prompt_memories
+            )
+            or any(
+                schema.get("function", {}).get("name") == "source_inspect"
+                for schema in (tool_schema or [])
+            )
+        )
         self._record_mindpage_ledger(final_ledger)
         request_ledger = final_ledger
         cognition_mod.set_intent(cognition_mod.IntentState(
@@ -2201,6 +2315,7 @@ class CoreMind:
             {"on_token": guarded_token}
             if (on_token is not None and tool_schema is None) else {}
         )
+        privacy_kwargs = {"local_only": True} if private_model_context else {}
         reply = self.llm.generate(
             system_prompt, user_msg, prompt_history,
             tools=tool_schema,
@@ -2209,6 +2324,7 @@ class CoreMind:
             ) if tool_schema else None,
             tier=reply_tier,
             **stream_kwargs,
+            **privacy_kwargs,
         )
         # Anti-repetition system: if she just echoed a recent line, regenerate a
         # fresh one so she talks like a person, not a looping bot. Plain replies
@@ -2255,7 +2371,8 @@ class CoreMind:
                 self._record_mindpage_ledger(request_ledger)
                 reply = self.llm.generate(fresh_prompt, user_msg,
                                           prompt_history,
-                                          tier=reply_tier)
+                                          tier=reply_tier,
+                                          **privacy_kwargs)
                 if self.llm.last_call().get("fallback"):
                     break
         if not turn.begin_commit():
@@ -2492,8 +2609,11 @@ class CoreMind:
                 cognition_mod.mark_observation_remembered(image_obs_id, image_memory_id)
 
         # Keep a little rolling context for this conversation only.
-        history.append({"role": "user", "content": user_msg})
-        history.append({"role": "assistant", "content": reply})
+        history_metadata = (
+            {"private_context": True} if private_model_context else {}
+        )
+        history.append({"role": "user", "content": user_msg, **history_metadata})
+        history.append({"role": "assistant", "content": reply, **history_metadata})
         # Keep the raw log bounded; only the last HISTORY_MESSAGES ride along
         # anyway, and long sessions shouldn't grow memory without limit.
         if len(history) > HISTORY_MESSAGES * 4:

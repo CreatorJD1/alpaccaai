@@ -17,8 +17,9 @@ the vision model actually reported. If the model isn't pulled or the hardware
 is missing, each capability quietly reports nothing -- same degradation
 contract as every other sense.
 
-Privacy: frames live in memory just long enough for one model call, then
-they're gone. No image is ever written to disk by this module.
+Privacy: local frames live in memory just long enough for one model call, then
+they're gone. The optional ZeroGPU adapter uses a short-lived local temporary
+file because its client requires a path, and removes it after the call.
 """
 from __future__ import annotations
 
@@ -27,7 +28,13 @@ import threading
 import time
 from typing import Callable, Optional
 
-from config import Vision as VisionCfg, OLLAMA_HOST, OLLAMA_NUM_CTX
+from config import (
+    Vision as VisionCfg,
+    OLLAMA_HOST,
+    OLLAMA_NUM_CTX,
+    VISION_CLOUD_MODEL,
+)
+from alpecca.local_inference import verified_local_ollama_target
 
 
 # --- The shared eye: one image in, a short description out ------------------
@@ -53,6 +60,12 @@ def _describe_local(image_bytes: bytes, prompt: str) -> Optional[str]:
     """Local Ollama vision, forced onto CPU (num_gpu=0) and unloaded right after
     so the 6 GB vision model can't fight the chat model for the small GPU's VRAM
     -- running it on the GPU OOM-crashes Ollama. Reliable but slow."""
+    if not verified_local_ollama_target(
+        OLLAMA_HOST,
+        VisionCfg.MODEL,
+        known_cloud_models={VISION_CLOUD_MODEL},
+    ):
+        return None
     try:
         import ollama
         client = ollama.Client(host=OLLAMA_HOST)
@@ -80,7 +93,6 @@ def _describe_ollama_cloud(image_bytes: bytes, prompt: str) -> Optional[str]:
     same signed-in local Ollama API as everything else. No ZeroGPU queue or
     quota, zero local VRAM -- pixels go to the account's hosted model and only
     text comes back. None on any failure so callers can fall back."""
-    from config import VISION_CLOUD_MODEL
     if not VISION_CLOUD_MODEL:
         return None
     try:
@@ -156,7 +168,9 @@ def describe_image(image_bytes: bytes, prompt: str = _DESCRIBE_PROMPT,
     return _describe_local(image_bytes, prompt)
 
 
-def describe_and_recognize(image_bytes: bytes) -> Optional[str]:
+def describe_and_recognize(
+    image_bytes: bytes, *, local_only: bool = False
+) -> Optional[str]:
     """One VL call that both describes an image AND flags whether it depicts
     Alpecca herself. Cheaper than two calls on a small GPU (each vision call
     evicts the chat model from VRAM), so this is what the chat/Discord path uses.
@@ -173,7 +187,7 @@ def describe_and_recognize(image_bytes: bytes) -> Optional[str]:
         f"on a NEW line, given that Alpecca looks like: {ref} -- write 'SELF: yes' "
         "if the image depicts Alpecca / that same avatar, otherwise 'SELF: no'."
     )
-    raw = describe_image(image_bytes, prompt=prompt)
+    raw = describe_image(image_bytes, prompt=prompt, ambient=local_only)
     if not raw:
         return None
     is_self = False
