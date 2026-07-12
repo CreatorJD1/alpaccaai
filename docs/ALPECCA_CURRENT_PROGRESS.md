@@ -188,11 +188,42 @@ labels retained in historical plans and handoffs.
   separate service-only credential, maps to `guest`, rejects the creator bearer,
   and keeps image-bearing backend requests on loopback. House microphone capture
   auto-stops at 60 seconds and stale work cancels on disconnect. A hardened,
-  independently anchored provider/model/deployment-specific egress consent core
+  externally anchored provider/model/deployment-specific egress consent core
   now exists, but no vision/provider call or interactive creator control uses it
   yet. A hardened request/event/scope-bound signed guest-actor core also exists,
   but no bridge/server path mints or consumes its envelopes. Remaining gates are
   wiring both cores; Phase 10 stays blocked.
+- Generic public vision is now **verified-local only** across image chat,
+  screen/webcam sensing, pose tagging, self-recognition, ingestion, and Studio.
+  Backend flags and cloud model tags cannot authorize egress or produce
+  creator-approved metadata. Remote provider helpers are dormant because no
+  current route can attest every exact deployment/model/location/destination/
+  HTTPS fact required by the consent ledger; no production remote vision route
+  is live.
+- A conversation-only guest boundary is implemented independently of signed
+  actor identity. Non-creator turns receive no tools, commitments, creator
+  continuity, state mutation, runtime telemetry, Mindpage, cognition, or
+  initiative writes. Only a server-created exact-turn envelope can carry a
+  validated Discord image description, and image-derived guest turns are not
+  retained. Stable actor/thread context, allowlists, participation, approvals,
+  rate limits, and voice remain unfinished.
+- Discord is now hard-locked to allowlisted DMs. Guild/thread messages have zero
+  media/backend effects; proactive participation, recursion, and voice cannot be
+  enabled by environment flags. DM bodies always use guest authority. A separate
+  protected actor-seal credential is implemented without rotating or revoking
+  existing creator, bridge-service, or bot credentials.
+- Phase 11 is **PARTIAL, CORE ONLY**. A model-free notification outbox now
+  implements opaque payload references, frozen policy registries, idempotent
+  enqueue and claims, quiet hours and quotas, explicit indeterminate outcomes,
+  acknowledgement/cancellation, an external monotonic-anchor contract, exact schema
+  verification, and fixed-batch recovery. It has no adapter, destination,
+  credential, autonomous trigger, callback route, server route, or UI wiring;
+  no creator-contact channel is live.
+  Independent follow-up review passes 47 focused tests, including repeated
+  concurrency runs; this completes the model-free core, not delivery.
+- SQLite anchor sidecars are development-only and cannot detect coordinated
+  restoration with their main database. Production identity, egress, and outbox
+  wiring still requires a separate-failure-domain monotonic anchor.
 - Phase 6 remains partial. The next gated action is to clear resources and
   re-run preflight, then separately authorize one 8,192 measurement; no direct
   pagefile mutation is authorized. See `docs/CONTEXT_TIER_MEASUREMENT.md` for

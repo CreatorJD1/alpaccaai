@@ -82,15 +82,46 @@ on loopback until server-side perception routing. Signed per-actor subjects
 remain unfinished, so this does not enable guild participation or Discord
 autonomy.
 
+All generic image, screen, webcam, pose, self-recognition, ingestion, and Studio
+vision wrappers are now verified-local. `VISION_BACKEND`, a cloud model tag, or
+the retired Discord cloud flag cannot authorize egress or produce a
+creator-approved result. Private provider helpers are dormant until an adapter
+can attest every exact provider/deployment/model/location/destination/HTTPS fact
+required by the consent ledger. No production remote vision route is live.
+
 A hardened provider/model/deployment-specific egress consent ledger now exists
-with exact operation/keyed-payload binding, independent rollback anchoring,
+with exact operation/keyed-payload binding, an external monotonic-anchor contract,
 restart revocation, tokenless server consumption, exact sealed schema identity,
 and bounded maintenance. It remains a foundation: no perception provider or
 interactive creator control is wired to it. A hardened signed Discord guest-
 actor core also exists with actual request-byte/event/scope bindings and
 structurally guest-only results, but bridge minting and server consumption are
-not wired.
+not wired. A separate live capability boundary now makes every non-creator turn
+reply-only, without tools, commitments, creator continuity, state mutation, or
+private telemetry. Validated Discord image context can enter only through an
+in-process exact-turn envelope and is not persisted. This closes capability
+leakage but does not yet establish stable Discord actor or thread identity.
+The bridge is therefore hard-locked to allowlisted DMs. Guild/thread input,
+proactive participation, recursion, and voice are code-disabled, and all DM
+payloads remain guest authority. Actor sealing now has a dedicated protected
+credential separate from creator, service, and bot credentials.
 Phase 10 Discord participation and voice stay blocked on those boundaries.
+
+## Current Phase 11 Checkpoint - PARTIAL, CORE ONLY
+
+The notification outbox now has a durable model-free state machine with opaque
+payload references, frozen route policy, idempotent claims, quiet-hour and quota
+deferral, explicit indeterminate delivery, acknowledgements, independent
+external monotonic anchoring, exact schema verification, and bounded recovery. This is an
+unwired foundation only: it has no destination, transport, credential,
+autonomous trigger, callback route, server route, or UI control. No external
+notification capability should be inferred from the presence of this module.
+Independent follow-up review passes 47 focused tests, including repeated
+concurrency cases. The state-machine core is complete; transport remains absent.
+
+The bundled SQLite sidecars are development-only, single-file rollback
+detectors. A production path must inject an anchor in a separate failure domain;
+co-restoring both local files cannot be detected.
 
 ## Stage 3 - LLM-In-The-Loop Choice Points
 

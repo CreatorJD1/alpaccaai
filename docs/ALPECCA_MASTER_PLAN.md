@@ -649,7 +649,7 @@ requests on loopback. Signed per-actor subjects are still required.
 
 A hardened, unwired egress-consent core now freezes exact provider, deployment,
 model, destination, location, HTTPS route, operation, keyed payload metadata,
-and byte count; it adds independent rollback anchoring, restart revocation,
+and byte count; it adds an external monotonic-anchor contract, restart revocation,
 sealed content-free attempt evidence, exact schema verification, tokenless
 server consumption, and bounded cleanup. Remaining before DONE: wire an
 interactive creator authority and this core into each perception provider
@@ -658,6 +658,13 @@ Discord event and scope identifiers, fixed service policy, and independent
 rollback evidence to a structurally guest-only result. It still needs bridge
 minting, server consumption, and stable actor/thread scope derivation. Until
 both live wiring gates pass, Phase 10 remains blocked.
+
+Generic vision is now verified-local for image chat, screen/webcam sensing,
+pose tagging, self-recognition, ingestion, and Studio. Backend configuration no
+longer implies consent. Remote vision wiring is blocked until a provider adapter
+can attest the exact deployment, model, processing location, destination, and
+HTTPS route; the current loopback Ollama-cloud and dynamic ZeroGPU descriptions
+are insufficient and must not be replaced with invented aliases or locations.
 
 Exit gate: Alpecca can cite viewed files/images/audio with provenance; malformed
 or oversized inputs fail closed; prompt injection cannot grant authority; no
@@ -672,17 +679,44 @@ creator-only nonce/expiry/replay-protected approval interactions. Then add audio
 attachments, per-guild voice queues, idle disconnect, and only later an opt-in
 DAVE-compatible live receive experiment.
 
+Implemented foundation: non-creator turns now use a reply-only bounded pipeline
+with no creator continuity, tools, commitments, state mutation, or private
+telemetry. Caller-supplied image descriptions cannot enter it; a validated
+Discord image uses an in-process exact-turn envelope and is not retained. This
+does not provide stable actor/thread identity, allowlists, participation, rate
+limits, approvals, or voice, so the phase remains blocked.
+
+The deployed bridge posture is DM-only until those gates pass. Guild/thread
+messages hard-return before media/backend work; proactive participation,
+recursion, and voice are code-locked off regardless of environment variables.
+DMs remain guest authority. Actor sealing has its own protected credential and
+does not reuse or rotate creator, service, or bot credentials.
+
 Exit gate: guests receive conversation-only capabilities; no cross-channel
 memory; irrelevant messages produce silence; approvals cannot be spoofed in
 natural language; TTS never leaks across channels; audio is local and discarded.
 
-### Phase 11: Creator contact and notification outbox - NOT STARTED
+### Phase 11: Creator contact and notification outbox - PARTIAL; CORE ONLY (2026-07-12)
 
-Build a durable idempotent outbox with retries, acknowledgements, quiet hours,
-global/category/channel quotas, and daily cost caps. Implement app Web Push first,
-Discord DM second, SMS third, and phone calls only as a separate explicit opt-in.
-Destinations and external IDs stay in secret-backed adapters, never prompts,
-logs, git, or Mindscape snapshots.
+The durable model-free core is implemented with opaque payload references,
+closed category/adapter registries, idempotent enqueue, quiet hours, global and
+per-route quotas, expiring claims, explicit indeterminate outcomes,
+acknowledgement/cancellation, an external monotonic-anchor contract, exact schema
+verification, and bounded recovery. It is deliberately unwired: there is no
+transport client, destination, credential, autonomous trigger, callback route,
+server endpoint, or UI control yet.
+The independent follow-up review passed 47 focused tests, including repeated
+anchor-finalization and provider-outcome concurrency cases. The core foundation
+is complete; delivery remains unwired.
+
+Bundled SQLite anchors are development-only single-file rollback detectors;
+production wiring requires an anchor in a separate failure domain because a
+coordinated restore of both local databases is otherwise indistinguishable.
+
+After that gate, implement app Web Push first, Discord DM second, SMS third,
+and phone calls only as a separate explicit opt-in. Destinations and external
+IDs stay in secret-backed adapters, never prompts, logs, git, or Mindscape
+snapshots.
 
 Exit gate: concurrent requests create one event; restart resumes delivery;
 acknowledgement stops escalation; notification does not silently seize the active

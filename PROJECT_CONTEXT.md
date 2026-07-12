@@ -38,13 +38,40 @@ retained elsewhere for historical context.
   the bridge to `guest`, and keeps image-bearing bridge requests on loopback
   before model routing. A hardened provider/model/deployment-specific egress
   consent ledger now exists as an unwired foundation with exact operation and
-  keyed payload binding, independent rollback anchoring, restart revocation,
+  keyed payload binding, an external monotonic-anchor contract, restart revocation,
   sealed content-free receipts, and bounded maintenance. Phase 9 remains
   **PARTIAL**: vision/provider calls and interactive creator decisions are not
   wired to that ledger. A hardened signed guest-actor identity core also exists
-  with actual request-byte/event/scope bindings, independent rollback anchoring,
+  with actual request-byte/event/scope bindings, an external monotonic-anchor contract,
   exact schema identity, and structurally guest-only results, but the bridge and
-  server do not mint or consume its envelopes yet. Phase 10 stays blocked.
+  server do not mint or consume its envelopes yet. Independently, every current
+  non-creator CoreMind turn is now conversation-only: no tools, commitments,
+  private continuity, runtime telemetry, state mutation, or initiative writes.
+  Server-validated Discord image descriptions can enter only through an
+  in-process exact-turn envelope and remain ephemeral. Stable actor/thread
+  context still depends on the signed identity wiring, so Phase 10 stays blocked.
+- The live Discord bridge is hard-locked to creator-allowlisted DMs. Guild and
+  thread messages return before media or backend work; environment flags cannot
+  enable participation, proactive speech, recursion, or voice. DM payloads are
+  always guest authority. A dedicated actor-identity seal credential now exists
+  without changing the creator, bridge-service, or bot credentials.
+- Every generic image, screen, webcam, pose, self-recognition, and Studio vision
+  wrapper is now verified-local regardless of `ALPECCA_VISION_BACKEND`.
+  Configuration alone cannot label cloud egress creator-approved. The private
+  provider helpers remain dormant until one adapter can attest an exact provider,
+  deployment, model, processing location, destination, and HTTPS route for the
+  existing one-shot consent ledger. No such production route is currently live.
+- A restart-safe Phase 11 notification-outbox core now exists as an unwired,
+  model-free foundation. It uses opaque payload references, frozen category and
+  adapter registries, quiet hours, quotas, idempotent claims, explicit
+  indeterminate delivery state, externally anchored transition evidence,
+  exact schema verification, and fixed-batch recovery. It contains no transport
+  client, destination, credential, autonomous trigger, or callback route, so no
+  creator-contact channel is live and Phase 11 remains **PARTIAL**.
+- Bundled SQLite anchors are development/single-file rollback detectors only.
+  Production egress, actor identity, and notification wiring must inject an
+  anchor from a separate failure domain; coordinated restoration of both local
+  SQLite files cannot be detected honestly.
 - Phase 12 embodiment has advanced in parallel: V4 now targets a measured
   1.70 m height, strips VRMA root translation, compensates V4 full-face mouth
   morphs after speech, uses bounded two-bone right-arm terminal IK, and exposes
@@ -85,6 +112,9 @@ Important current priorities:
   and signed Discord guest identity without widening Phase 4 execution or
   bypassing the Phase 5 initiative boundary. Phase 6 resource measurement
   remains separately gated.
+- Keep the Phase 11 outbox separate from adapters until its independent review
+  passes; add one secret-backed transport at a time only after sender-bound
+  acknowledgement and live creator controls are defined.
 - Natural replies through the live backend, not event echoes or copied user text.
 - Stable local model path uses the currently approved Ollama model from `ALPECCA_MODEL`; do not revive retired legacy model paths.
 - Voice should use her personality and modulation system, with Kokoro `af_heart` as the intended voice profile.

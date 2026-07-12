@@ -409,22 +409,56 @@ private perception provider attempt and partition Discord bridge service
 authentication from signed guest actor identity. Do not mark Phase 9 complete
 or unblock Phase 10 before those gates.
 
+Generic vision is now verified-local by construction. `VISION_BACKEND`, a cloud
+model tag, or the former Discord cloud flag cannot authorize image egress or
+produce `creator-approved` metadata. Private Ollama-cloud and ZeroGPU helper
+functions remain dormant for a future consent adapter. Do not wire one until the
+provider can truthfully supply the exact deployment, model, processing location,
+destination class, and HTTPS route required by `alpecca/egress_consent.py`.
+Current Ollama-cloud-through-loopback and dynamically selected ZeroGPU routes do
+not meet that contract. Art and Studio paths remain local; do not upload art to
+Cloudflare.
+
 ### Phase 10: Discord presence and voice - PARTIAL; AUTONOMY STILL BLOCKED
 
 Reactive creator-DM text and bounded creator-DM image seeing/sending work.
+The current non-creator CoreMind path is now a reply-only conversation boundary:
+it uses a static prompt and retains no history until signed actor scopes exist.
+It exposes no tools, commitments, private continuity, state, location, model
+telemetry, Mindpage, cognition, or initiative
+mutation. Arbitrary caller image descriptions are ignored; a Discord image can
+reach the guest model only through a server-created exact-turn envelope, and
+that image-derived turn is not persisted. This is capability denial, not actor
+authentication or Discord autonomy.
+The bridge itself is now hard-locked to allowlisted DMs: guild/thread messages
+return before media or backend work, and environment flags cannot enable
+participation, proactive speech, recursion, or voice. Every DM body is labeled
+guest. The dedicated actor-identity seal credential is separate from creator
+authorization, bridge service authentication, and the bot token; no existing
+credential was changed or revoked.
 Keep guild image access plus Discord participation/recursion disabled until
 scoped bridge envelopes, signed guest actor identity, creator/guild/channel
 allowlists, conversation partitioning, guest capability denial, persistent rate
 limits, and nonce-bound creator approvals work. Add audio queues and live receive
 only after the text bridge passes its gate.
 
-### Phase 11: creator contact and notification outbox - DEFERRED
+### Phase 11: creator contact and notification outbox - PARTIAL; DELIVERY UNWIRED
 
-Build a durable, idempotent outbox with app Web Push first, Discord DM second,
-SMS third, and phone calls only by separate opt-in. Keep destinations and IDs
-in secret-backed adapters, not prompts, cognition records, git, or Mindscape.
-Phone/contact-channel security and identifier work are deferred until after the
-staged plan at Jason's instruction.
+`alpecca/notification_outbox.py` now provides the model-free durable core:
+opaque payload references, closed category/adapter policy, idempotent enqueue,
+quiet hours and quotas, expiring claims, explicit indeterminate outcomes,
+acknowledgement/cancellation state, externally anchored transition chains,
+exact schema checks, and fixed-batch recovery. It intentionally has no adapter,
+destination, credential, autonomous trigger, callback route, or server/UI
+wiring. Independent follow-up review passed all 47 focused tests, including
+repeated concurrency cases. Add app Web Push first, Discord DM second, SMS third, and
+phone calls only through a separate explicit opt-in. Destinations and IDs stay
+in secret-backed adapters, never prompts, cognition records, git, or Mindscape.
+
+The bundled SQLite anchor implementations are development-only and detect
+uncoordinated main-DB rollback. They do not detect a coordinated restore of both
+local files. Production identity, egress, or notification wiring therefore
+requires a `MonotonicAnchor` implementation in a separate failure domain.
 
 ### Phase 12: V4 embodiment behavior and physics
 
