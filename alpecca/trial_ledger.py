@@ -7,6 +7,7 @@ hook.  Every mutation is scope-bound and identical retries are idempotent.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import math
 import sqlite3
@@ -148,6 +149,19 @@ def _decode_object(raw: str | None, *, name: str) -> dict[str, Any] | None:
     return value
 
 
+def spec_sha256_from_json(spec_json: str) -> str:
+    """Return the SHA-256 of the exact persisted trial-spec JSON text."""
+    if not isinstance(spec_json, str):
+        raise TrialLedgerError("stored trial spec must be a JSON string")
+    _decode_object(spec_json, name="trial spec")
+    return hashlib.sha256(spec_json.encode("utf-8")).hexdigest()
+
+
+def spec_sha256(spec_json: str) -> str:
+    """Backward-compatible alias for :func:`spec_sha256_from_json`."""
+    return spec_sha256_from_json(spec_json)
+
+
 def _validated_spec_json(spec: object) -> str:
     if not isinstance(spec, ExperimentTrial):
         raise UnvalidatedExperimentTrial(
@@ -271,6 +285,13 @@ def init_db(db_path: Path = DB_PATH) -> None:
             BEGIN
                 SELECT RAISE(ABORT, 'illegal experiment trial transition');
             END;
+
+            CREATE TRIGGER IF NOT EXISTS experiment_trial_spec_immutable
+            BEFORE UPDATE OF spec_json ON experiment_trial_ledger
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE(ABORT, 'experiment trial specification is immutable');
+            END;
             """
         )
 
@@ -303,12 +324,14 @@ def _trial_dict(
     observations: list[sqlite3.Row],
     rollback: sqlite3.Row | None,
 ) -> dict[str, Any]:
+    spec_json = row["spec_json"]
     return {
         "id": int(row["id"]),
         "scope": str(row["scope"]),
         "proposal_id": int(row["proposal_id"]),
         "state": str(row["state"]),
-        "spec": _decode_object(row["spec_json"], name="trial spec") or {},
+        "spec": _decode_object(spec_json, name="trial spec") or {},
+        "spec_sha256": spec_sha256_from_json(spec_json),
         "approval_proof": _decode_object(row["approval_json"], name="approval proof"),
         "created_at": float(row["created_at"]),
         "updated_at": float(row["updated_at"]),
@@ -400,6 +423,39 @@ def register_trial(
     return result
 
 
+def approve_trial_in_transaction(
+    conn: sqlite3.Connection,
+    trial_id: int,
+    proof: ProposalApprovalProof,
+    *,
+    scope: str,
+) -> int:
+    """Approve a trial using the caller-owned transaction without committing it."""
+    clean_scope = _scope(scope)
+    row = _row_in_scope(conn, trial_id, clean_scope)
+    encoded = _proof_json(
+        proof, scope=clean_scope, proposal_id=int(row["proposal_id"])
+    )
+    if row["approval_json"] is not None:
+        if str(row["approval_json"]) != encoded:
+            raise TrialStateError("trial already has different approval proof")
+        return int(row["id"])
+    if str(row["state"]) != REGISTERED:
+        raise TrialStateError(f"cannot approve a {row['state']} trial")
+    approved_at = json.loads(encoded)["approved_at"]
+    updated = conn.execute(
+        """
+        UPDATE experiment_trial_ledger
+        SET state='approved', approval_json=?, updated_at=?
+        WHERE id=? AND scope=? AND state='registered'
+        """,
+        (encoded, approved_at, int(trial_id), clean_scope),
+    )
+    if updated.rowcount != 1:  # pragma: no cover - caller transaction fences races
+        raise TrialStateError("trial approval lost its registered state")
+    return int(trial_id)
+
+
 def approve_trial(
     trial_id: int,
     proof: ProposalApprovalProof,
@@ -411,27 +467,9 @@ def approve_trial(
     clean_scope = _scope(scope)
     init_db(db_path)
     with connect(db_path) as conn:
-        row = _row_in_scope(conn, trial_id, clean_scope)
-        encoded = _proof_json(
-            proof, scope=clean_scope, proposal_id=int(row["proposal_id"])
+        return_result = approve_trial_in_transaction(
+            conn, trial_id, proof, scope=clean_scope
         )
-        if row["approval_json"] is not None:
-            if str(row["approval_json"]) != encoded:
-                raise TrialStateError("trial already has different approval proof")
-            return_result = int(row["id"])
-        else:
-            if str(row["state"]) != REGISTERED:
-                raise TrialStateError(f"cannot approve a {row['state']} trial")
-            approved_at = json.loads(encoded)["approved_at"]
-            conn.execute(
-                """
-                UPDATE experiment_trial_ledger
-                SET state='approved', approval_json=?, updated_at=?
-                WHERE id=? AND scope=? AND state='registered'
-                """,
-                (encoded, approved_at, int(trial_id), clean_scope),
-            )
-            return_result = int(trial_id)
     result = get_trial(return_result, scope=clean_scope, db_path=db_path)
     if result is None:  # pragma: no cover
         raise TrialLedgerError("approved trial was not retrievable")
@@ -684,11 +722,14 @@ __all__ = [
     "TrialStateError",
     "UnvalidatedExperimentTrial",
     "approve_trial",
+    "approve_trial_in_transaction",
     "complete_trial",
     "get_trial",
     "init_db",
     "record_metric_observation",
     "record_rollback",
     "register_trial",
+    "spec_sha256",
+    "spec_sha256_from_json",
     "start_trial",
 ]

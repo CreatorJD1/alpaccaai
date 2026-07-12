@@ -1042,6 +1042,7 @@ hud.innerHTML = `
         <div class="workshop-title">
           <strong>Workshop &middot; Improvement Queue</strong>
           <small id="workshopSummary">Loading proposals...</small>
+          <small id="workshopTrialStatus" class="workshop-trial-status"></small>
         </div>
         <div class="workshop-head-actions">
           <button type="button" data-workshop-run title="Run runtime + behavior self-review">Run Review</button>
@@ -1229,6 +1230,7 @@ const touchInteract = hud.querySelector<HTMLButtonElement>("#touchInteract")!;
 const alpeccaWorkshop = hud.querySelector<HTMLDivElement>("#alpeccaWorkshop")!;
 const workshopList = hud.querySelector<HTMLDivElement>("#workshopList")!;
 const workshopSummary = hud.querySelector<HTMLElement>("#workshopSummary")!;
+const workshopTrialStatus = hud.querySelector<HTMLElement>("#workshopTrialStatus")!;
 const alpeccaSystems = hud.querySelector<HTMLDivElement>("#alpeccaSystems")!;
 const alpeccaSystemsNav = hud.querySelector<HTMLElement>("#alpeccaSystemsNav")!;
 const alpeccaSystemsStatus = hud.querySelector<HTMLElement>("#alpeccaSystemsStatus")!;
@@ -5387,6 +5389,7 @@ async function inspectAlpeccaImprovementQueue() {
 // ---------------------------------------------------------------------------
 
 let workshopBusy = false;
+let workshopTrialStatusSequence = 0;
 
 const WORKSHOP_STATUS_LABEL: Record<string, string> = {
   noticed: "Noticed",
@@ -5526,6 +5529,46 @@ async function loadAlpeccaWorkshop() {
   }
 }
 
+async function loadWorkshopTrialStatus() {
+  const sequence = ++workshopTrialStatusSequence;
+  let status = "Behavior trial: unavailable";
+  workshopTrialStatus.textContent = "Behavior trial: loading...";
+  try {
+    const response = await alpeccaBackendFetch(
+      alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/behavior-trials/status`),
+      { method: "GET", cache: "no-store", signal: AbortSignal.timeout(5000) },
+    );
+    if (response.status === 401) {
+      status = "Behavior trial: sign-in required";
+    } else if (response.status === 403) {
+      status = "Behavior trial: creator access required";
+    } else if (response.status === 200) {
+      const data = await response.json() as { active_trial?: unknown };
+      const activeTrial = data?.active_trial;
+      if (activeTrial === null) {
+        status = "Behavior trial: no active trial";
+      } else if (activeTrial && typeof activeTrial === "object") {
+        const trial = activeTrial as {
+          state?: unknown;
+          parameter?: unknown;
+          creator_binding_present?: unknown;
+        };
+        if (
+          (trial.state === "approved" || trial.state === "running") &&
+          trial.parameter === "chatter_chance"
+        ) {
+          status = trial.creator_binding_present === true
+            ? `Behavior trial: chatter chance ${trial.state}`
+            : "Behavior trial: approval is not bound";
+        }
+      }
+    }
+  } catch {
+    // Status is advisory only; failures must not imply that no trial is active.
+  }
+  if (sequence === workshopTrialStatusSequence) workshopTrialStatus.textContent = status;
+}
+
 function openAlpeccaWorkshop() {
   alpeccaWorkshop.classList.remove("hidden");
   workshopSummary.textContent = "Loading...";
@@ -5533,9 +5576,12 @@ function openAlpeccaWorkshop() {
   appendAlpeccaLog("System", "Opening the improvement Workshop.");
   pulseAlpeccaImprovementQueue(3.4);
   void loadAlpeccaWorkshop();
+  void loadWorkshopTrialStatus();
 }
 
 function closeAlpeccaWorkshop() {
+  workshopTrialStatusSequence += 1;
+  workshopTrialStatus.textContent = "";
   alpeccaWorkshop.classList.add("hidden");
 }
 
@@ -13295,6 +13341,7 @@ alpeccaWorkshop.addEventListener("click", (event) => {
   }
   if (target.closest("[data-workshop-refresh]")) {
     void loadAlpeccaWorkshop();
+    void loadWorkshopTrialStatus();
     return;
   }
   const actButton = target.closest<HTMLButtonElement>("button[data-wc-act]");

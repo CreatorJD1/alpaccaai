@@ -30,7 +30,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 import uvicorn
 
 from config import (HOME, HOST, PORT, DEEP_BACKEND, OLLAMA_HOST,
@@ -90,6 +96,49 @@ def _behavior_trial_chatter_chance() -> float:
     if not _behavior_trial_recovery_ready.is_set():
         return behavior_trial_controller.default_chatter_chance
     return behavior_trial_controller.chatter_chance()
+
+
+async def _expire_due_behavior_trials_once() -> None:
+    """Reconcile runtime-only trials after recovery without touching the mind lock."""
+    if not _behavior_trial_recovery_ready.is_set():
+        return
+    try:
+        closed_trials = await asyncio.to_thread(
+            behavior_trial_controller.maintain_runtime_state,
+        )
+    except Exception:
+        # Runtime maintenance is retried by the next background tick. A storage
+        # failure must not block startup, chat, or unrelated autonomous work.
+        return
+    if not closed_trials:
+        return
+
+    trial_ids: list[int] = []
+    for trial in closed_trials:
+        if not isinstance(trial, Mapping):
+            continue
+        trial_id = trial.get("id")
+        if isinstance(trial_id, int) and not isinstance(trial_id, bool) and trial_id > 0:
+            trial_ids.append(trial_id)
+    try:
+        cognition_mod.record_observation(cognition_mod.CognitionObservation(
+            source="behavior_trial_maintenance",
+            content=(
+                f"Closed {len(closed_trials)} behavior trial(s) during runtime "
+                "maintenance without starting or extending a trial."
+            ),
+            confidence=1.0,
+            privacy_class="local",
+            metadata={
+                "trial_count": len(closed_trials),
+                "trial_ids": trial_ids,
+                "terminal_state": "rolled_back",
+            },
+        ))
+    except Exception:
+        # Runtime maintenance is already durable; failing to record its
+        # evidence must not make the running companion unavailable.
+        pass
 
 
 mind = CoreMind(
@@ -1622,6 +1671,9 @@ async def lifespan(app: FastAPI):
         while True:
             await asyncio.sleep(DRIFT_INTERVAL)
             try:
+                # This is independent of speech eligibility and stays outside
+                # `mind_lock`, so a due rollback cannot queue behind chat.
+                await _expire_due_behavior_trials_once()
                 _background_autonomy_status["tick_count"] = int(_background_autonomy_status.get("tick_count") or 0) + 1
                 _background_autonomy_status["last_drift_at"] = _time.time()
                 async with mind_lock:
@@ -1894,6 +1946,11 @@ app = FastAPI(title="Alpecca", lifespan=lifespan)
 from starlette.responses import JSONResponse as _JSON
 
 _AUTH_SECRET = auth_mod.load_or_create_authorization_secret(HOME)
+# The controller is constructed before protected authorization initializes, so
+# bind the already-loaded server secret as its approval seal before any request
+# or lifespan recovery can use a behavior trial. This does not create or rotate
+# a separate credential.
+behavior_trial_controller.set_approval_seal_key(_AUTH_SECRET)
 _CREATOR_PASSWORD = auth_mod.load_creator_password()
 _TRUSTED_DEVICE_DAYS = max(
     1,
@@ -2702,6 +2759,22 @@ def _require_creator_request(req: Request) -> auth_mod.AuthDecision:
     if decision.principal != "creator":
         raise HTTPException(status_code=403, detail="creator authorization required")
     return decision
+
+
+@app.get("/behavior-trials/status")
+def behavior_trial_status(req: Request) -> JSONResponse:
+    """Return the recovered controller's bounded, creator-only status snapshot."""
+    _require_creator_request(req)
+    if not _behavior_trial_recovery_ready.is_set():
+        return JSONResponse(
+            {"detail": "behavior trial recovery is not ready"},
+            status_code=503,
+            headers={"Cache-Control": "no-store"},
+        )
+    return JSONResponse(
+        behavior_trial_controller.status_snapshot(),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/commitments")

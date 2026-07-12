@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
 import sqlite3
 
 import pytest
@@ -85,6 +87,36 @@ def test_registration_requires_validated_spec_and_replays_idempotently(tmp_path)
         trial_ledger.register_trial(forged, scope=SCOPE, db_path=db_path)
 
 
+def test_spec_sha256_uses_exact_persisted_json_object_bytes(tmp_path):
+    db_path = tmp_path / "trials.db"
+    raw_spec = '{\n  "label": "caf' + chr(0xE9) + '",\n  "values": [2, 1]\n}'
+    trial_ledger.init_db(db_path)
+    with connect(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO experiment_trial_ledger
+                (scope, proposal_id, state, spec_json, approval_json,
+                 created_at, updated_at, started_at, planned_end_at, ended_at)
+            VALUES (?, ?, 'registered', ?, NULL, ?, ?, NULL, NULL, NULL)
+            """,
+            (SCOPE, 84, raw_spec, 90, 90),
+        )
+        trial_id = int(cursor.lastrowid)
+        persisted = conn.execute(
+            "SELECT spec_json FROM experiment_trial_ledger WHERE id=?", (trial_id,)
+        ).fetchone()["spec_json"]
+
+    expected = hashlib.sha256(persisted.encode("utf-8")).hexdigest()
+    reconstructed = json.dumps(
+        json.loads(persisted), ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    )
+    assert expected != hashlib.sha256(reconstructed.encode("utf-8")).hexdigest()
+    assert trial_ledger.spec_sha256(persisted) == expected
+    assert trial_ledger.get_trial(trial_id, scope=SCOPE, db_path=db_path)["spec_sha256"] == expected
+    with pytest.raises(trial_ledger.TrialLedgerError, match="not an object"):
+        trial_ledger.spec_sha256('["not", "a", "trial", "spec"]')
+
+
 def test_same_proposal_cannot_register_conflicting_spec(tmp_path):
     db_path = tmp_path / "trials.db"
     trial_ledger.register_trial(validated_trial(), scope=SCOPE, db_path=db_path)
@@ -151,6 +183,35 @@ def test_approval_and_start_are_idempotent_but_conflicts_fail(tmp_path):
         trial_ledger.start_trial(
             item["id"], scope=SCOPE, started_at=101, db_path=db_path
         )
+
+
+def test_transactional_approval_helper_preserves_generic_wrapper_behavior(tmp_path):
+    db_path = tmp_path / "trials.db"
+    item = trial_ledger.register_trial(validated_trial(), scope=SCOPE, db_path=db_path)
+
+    with connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        approved_id = trial_ledger.approve_trial_in_transaction(
+            conn, item["id"], approval(), scope=SCOPE
+        )
+        assert approved_id == item["id"]
+        row = conn.execute(
+            "SELECT state, approval_json FROM experiment_trial_ledger WHERE id=?",
+            (item["id"],),
+        ).fetchone()
+        assert row["state"] == trial_ledger.APPROVED
+        assert json.loads(row["approval_json"])["proof_id"] == "approval-1"
+        conn.execute("ROLLBACK")
+
+    assert trial_ledger.get_trial(item["id"], scope=SCOPE, db_path=db_path) == item
+    approved = trial_ledger.approve_trial(
+        item["id"], approval(), scope=SCOPE, db_path=db_path
+    )
+    assert approved["state"] == trial_ledger.APPROVED
+    assert approved["approval_proof"]["proof_id"] == "approval-1"
+    assert trial_ledger.approve_trial(
+        item["id"], approval(), scope=SCOPE, db_path=db_path
+    ) == approved
 
 
 def test_metric_observations_and_completion_enforce_exposure(tmp_path):
@@ -303,6 +364,19 @@ def test_database_trigger_rejects_direct_state_jump(tmp_path):
             conn.execute(
                 "UPDATE experiment_trial_ledger SET state='running' WHERE id=?",
                 (item["id"],),
+            )
+    assert trial_ledger.get_trial(item["id"], scope=SCOPE, db_path=db_path) == item
+
+
+def test_database_trigger_rejects_trial_spec_mutation(tmp_path):
+    db_path = tmp_path / "trials.db"
+    item = trial_ledger.register_trial(validated_trial(), scope=SCOPE, db_path=db_path)
+
+    with connect(db_path) as conn:
+        with pytest.raises(sqlite3.IntegrityError, match="specification is immutable"):
+            conn.execute(
+                "UPDATE experiment_trial_ledger SET spec_json=? WHERE id=?",
+                ('{"different":true}', item["id"]),
             )
     assert trial_ledger.get_trial(item["id"], scope=SCOPE, db_path=db_path) == item
 

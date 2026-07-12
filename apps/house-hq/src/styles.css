@@ -2366,6 +2366,15 @@ body[data-view-mode="orthographic"] .living-state.hud-expanded {
   font-weight: 800;
 }
 
+.workshop-trial-status {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: rgba(255, 248, 232, 0.54);
+  font-size: 0.66rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
 .workshop-head-actions {
   display: flex;
   flex-wrap: wrap;

@@ -163,7 +163,7 @@ They are not fixed Alpecca hardware.
 | Proactive/living behavior | BASELINE COMPLETE | Living ticks, proactive speech, and routines share one scoped budget; ignored outreach backs off and each proactive event selects one delivery surface |
 | Routines and watchers | PARTIAL | Empty/off by default; routine deletion and unified scheduling remain |
 | Background work coordination | PARTIAL | Timeouts do not cancel worker threads; optional jobs can overlap |
-| Recursive self-improvement | PARTIAL | Phase 8A contains legacy `selfmod` autonomy: idle lessons remain evidence and create/refresh a bounded creator-review card, while CoreMind starts/evaluates no `selfmod` trial. Phase 8B has an **INTERNAL** approval-proof-backed `BehaviorTrialController` only for `creator-personal` / `chatter_chance`: the database permits at most one active `approved` or `running` trial, and its runtime-only SQLite override has apply/readback/rollback, automatic expiry rollback, and startup recovery before CoreMind consumes it. There are no public/self-improvement HTTP routes, authenticated creator approval binding, metric collector/completion loop, or real trial. It is not creator-approved, does not meet the Phase 8 exit gate, and needs Phase 8C for server-derived authentication, spec-bound approval, metrics, and UI. |
+| Recursive self-improvement | PARTIAL | Phase 8A contains legacy `selfmod` autonomy: idle lessons remain evidence and create/refresh a bounded creator-review card, while CoreMind starts/evaluates no `selfmod` trial. Phase 8B has an **INTERNAL** approval-proof-backed `BehaviorTrialController` only for `creator-personal` / `chatter_chance`: the database permits at most one active `approved` or `running` trial, and its runtime-only SQLite override has apply/readback/rollback, automatic expiry rollback, and startup recovery before CoreMind consumes it. Phase 8C1 makes the generic ledger retain immutable specs and the exact SHA-256 of each raw persisted spec, requires a creator-only `chatter_chance` binding sidecar HMAC-sealed in memory with the existing protected server authorization secret before runtime consumption, uses a read-only fail-closed chatter supplier plus recovery-gated off-`mind_lock` maintenance for expiry/integrity receipts, and exposes creator-only, read-only, `no-store` `GET /behavior-trials/status` only after recovery. There are no behavior-trial start, approval, or mutation routes, no metric collector/completion loop, and no real trial. All Phase 8 remains partial; Phase 8C2 still needs server-owned durable `qualified_response_rate` outcomes before any start route. |
 | External action approvals | BLOCKED | Creator-only scoped approval works for read-only `self_status`; external or mutating action classes remain blocked |
 | MCP federation | PARKED | Largest external surface; no current companion-value need |
 
@@ -434,18 +434,36 @@ for `creator-personal` / `chatter_chance`. SQLite enforces at most one active
 apply/readback/rollback, automatic expiry rollback, and a startup recovery gate;
 CoreMind consumes that override only after successful recovery.
 
-This is not an authenticated creator approval flow. There are no
-public/self-improvement HTTP routes, no authenticated creator approval binding,
-no metric collector/completion loop, and no real trial has started. It must not
-be described as creator-approved, and it does not satisfy the Phase 8 exit gate.
+This is not an authenticated creator approval flow. It must not be described as
+creator-approved, and it does not satisfy the Phase 8 exit gate.
 
-#### Phase 8C: Server-derived approval, metrics, and UI - REQUIRED
+#### Phase 8C1: Spec integrity, creator binding, and status read - PARTIAL
 
-Phase 8C must provide server-derived authenticated creator identity, approval
-bound to the exact validated specification, metric collection and completion,
-and creator UI. Only that later work can make a real behavioral trial
-reviewable against its hypothesis, exposure window, evidence, end time, and
-exact rollback. Code or system changes remain reviewable handoff proposals only.
+Phase 8C1 keeps all Phase 8 partial. The generic ledger
+retains immutable specifications and the exact SHA-256 of each raw persisted
+specification. For `creator-personal` / `chatter_chance`, the behavior
+controller has a creator-only binding sidecar HMAC-sealed in memory with the
+existing protected server authorization secret; runtime consumption of its
+override requires that binding and successful startup recovery. The chatter
+supplier is read-only and fails closed; recovery-gated server maintenance
+outside `mind_lock` receipts expired or invalid runtime records.
+
+`GET /behavior-trials/status` is creator-only and read-only, returns
+`Cache-Control: no-store`, and is unavailable before recovery completes. There
+are no behavior-trial start, approval, or mutation routes, no metric collector
+or completion loop, and no real trial is running. The controller's internal
+creator-binding method is not an HTTP approval flow.
+
+#### Phase 8C2: Durable outcomes before any start route - REQUIRED
+
+Before any behavior-trial start route, Phase 8C2 must add server-owned durable
+`qualified_response_rate` outcomes. The broader Phase 8C plan still requires
+server-derived authenticated creator identity, approval bound to the exact
+validated specification, metric collection and completion, and creator UI for a
+real behavior trial. Phase 8C remains incomplete: a later scope must still make
+any real behavioral trial reviewable against its hypothesis, exposure window,
+evidence, end time, and exact rollback. Code or system changes remain
+reviewable handoff proposals only.
 
 Exit gate remains unmet: it requires server-derived authenticated creator
 identity and approval bound to the exact validated specification, fixed metric
