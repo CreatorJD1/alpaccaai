@@ -145,6 +145,84 @@ def test_authenticated_house_channel_png_uses_one_local_vision_call_and_metadata
     )
 
 
+def test_creator_discord_image_uses_enabled_remote_vision_with_truthful_metadata(
+    client, monkeypatch, isolated_server
+):
+    payload = _png()
+    vision_calls: list[tuple[bytes, bool]] = []
+    audit_calls: list[tuple[str, dict[str, str]]] = []
+
+    def fake_vision(image_bytes: bytes, *, local_only: bool = False):
+        vision_calls.append((image_bytes, local_only))
+        return server.vision.VisionDescription(
+            "A creator-supplied Discord image.",
+            "ollama-cloud",
+            "approved-remote",
+            "creator-approved",
+        )
+
+    async def fake_audit(capability: str, **kwargs: str) -> bool:
+        audit_calls.append((capability, kwargs))
+        return True
+
+    monkeypatch.setattr(server, "DISCORD_MEDIA_ENABLED", True)
+    monkeypatch.setattr(server, "DISCORD_CLOUD_VISION_ENABLED", True)
+    monkeypatch.setattr(server.vision, "describe_and_recognize_result", fake_vision)
+    monkeypatch.setattr(server, "_record_capability_use", fake_audit)
+
+    response = client.post(
+        "/channel/discord",
+        headers=_auth_headers(),
+        json={"text": "Who is this?", "image": _data_url(payload)},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert vision_calls == [(payload, False)]
+    assert audit_calls == [(
+        "discord_media",
+        {"action": "observe", "principal": "creator", "source": "discord_bridge"},
+    )]
+    assert isolated_server[-1]["image_desc"] == "A creator-supplied Discord image."
+    assert body["perception"]["classification_scope"] == "local-ingress-validation"
+    assert body["perception"]["classification"] == {
+        "processing_location": "local-only",
+        "cloud_egress": "denied",
+    }
+    assert body["perception"]["vision_processing"] == {
+        "backend": "ollama-cloud",
+        "processing_location": "approved-remote",
+        "cloud_egress": "creator-approved",
+    }
+
+
+def test_discord_image_route_is_disabled_without_explicit_media_opt_in(
+    client, monkeypatch, isolated_server
+):
+    vision_calls = []
+    monkeypatch.setattr(server, "DISCORD_MEDIA_ENABLED", False)
+    monkeypatch.setattr(
+        server.vision,
+        "describe_and_recognize_result",
+        lambda *_args, **_kwargs: vision_calls.append(True),
+    )
+
+    response = client.post(
+        "/channel/discord",
+        headers=_auth_headers(),
+        json={"text": "Who is this?", "image": _data_url(_png())},
+    )
+
+    assert response.status_code == 403
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json()["detail"] == {
+        "code": "capability_disabled",
+        "capability": "discord_media",
+    }
+    assert vision_calls == []
+    assert isolated_server == []
+
+
 def test_only_creator_house_sensor_marker_forces_private_chat_context(
     client, isolated_server
 ):

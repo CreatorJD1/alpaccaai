@@ -25,13 +25,32 @@ retained below as historical implementation evidence.
   answer is ephemeral: it cannot confirm/create commitments, enter recent-reply
   memory, persist as content-bearing history/cognition, reach Mindscape, or use
   the OpenClaw delivery bridge. Follow-ups must reattach the file.
+- Creator-DM Discord images are now implemented through a dedicated authenticated
+  `/channel/discord` route. The bridge accepts one PNG/JPEG/GIF under 2 MiB,
+  sniffs MIME/dimensions from bytes before forwarding, records content-free
+  ingress/egress observations, and no longer sends the retired raw document
+  fields. Discord image vision is separately enabled by the launcher and uses
+  the configured `gemma4:cloud` route first (measured about 7 seconds on the
+  current laptop); every response distinguishes local ingress validation from
+  the backend that actually processed pixels. Local `qwen3.5:9b` remains the
+  fallback but measured beyond four minutes on CPU, so image calls have a
+  five-minute fallback timeout. Explicit creator requests such as `!image
+  portrait`, `!image base`, `!image reference`, or `!image gallery` attach one
+  byte-validated image from a closed Alpecca-owned local catalog. No model text,
+  Discord filename, URL, or user path can select an outbound file.
 - Private image descriptions, microphone-derived text, source-tool turns,
   House file excerpts, retained private history, and paged private evidence
-  force verified local inference. File attachment context is isolated as
-  untrusted prompt data and suppresses tool schemas for that turn. A remote
-  `OLLAMA_HOST`, HF primary backend, or cloud-tagged model receives no private
-  request and produces the honest local-unavailable fallback instead. Normal
-  non-private hosted-chat paths remain unchanged.
+  force verified local inference. The narrow exception is an explicitly enabled
+  creator-DM Discord image, which was already sent through Discord and may use
+  the configured vision backend; its actual backend and egress state are exposed
+  in `vision_processing`. File attachment context remains isolated as untrusted
+  prompt data and suppresses tool schemas for that turn. A remote `OLLAMA_HOST`,
+  HF primary backend, or cloud-tagged model receives no House/private sensor or
+  source-file request. Normal non-private hosted-chat paths remain unchanged.
+- Verification for this checkpoint: `1186 passed, 2 skipped` under `tests/`,
+  `tests/test_core.py` green, and `npm.cmd run house:build` green. Repository-
+  wide collection still requires the optional VCS `emergentintegrations`
+  package; without that extra, collection stops before running tests.
 - Phase 9 is not DONE: camera/screen/microphone/file grants are not server-issued
   expiring capability leases; a provider/model-specific egress consent broker
   is absent; and Discord guild actors still need signed guest subjects so bridge
@@ -353,12 +372,14 @@ immutable grant/deny/stop receipts; and partition Discord bridge service
 authentication from signed guest actor identity. Do not mark Phase 9 complete
 or unblock Phase 10 before those gates.
 
-### Phase 10: Discord presence and voice - BLOCKED
+### Phase 10: Discord presence and voice - PARTIAL; AUTONOMY STILL BLOCKED
 
-Keep Discord participation/recursion disabled until scoped bridge envelopes,
-creator/guild/channel allowlists, conversation partitioning, guest capability
-denial, persistent rate limits, and nonce-bound creator approvals work. Add
-audio queues and live receive only after the text bridge passes its gate.
+Reactive creator-DM text and bounded creator-DM image seeing/sending work.
+Keep guild image access plus Discord participation/recursion disabled until
+scoped bridge envelopes, signed guest actor identity, creator/guild/channel
+allowlists, conversation partitioning, guest capability denial, persistent rate
+limits, and nonce-bound creator approvals work. Add audio queues and live receive
+only after the text bridge passes its gate.
 
 ### Phase 11: creator contact and notification outbox - DEFERRED
 

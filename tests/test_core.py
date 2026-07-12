@@ -4756,7 +4756,8 @@ def test_void_system_voice_panel_is_read_only_not_voice_picker():
     assert "Hear current voice" in panel
     assert "data-system-action=\"voice-preview\"" in panel
     assert "Voice samples" not in panel
-    assert "viewer does not choose her voice mode" in panel
+    assert "viewer reads her modulation" in panel
+    assert "it does not choose it" in panel
 
 
 def test_house_hq_exposes_chat_grounding_review_action():

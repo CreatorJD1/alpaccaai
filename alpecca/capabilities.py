@@ -46,6 +46,7 @@ CAPABILITY_SPECS = (
     CapabilitySpec("app_control", "ALPECCA_APPS", "process_control", "choice"),
     CapabilitySpec("computer_control", "ALPECCA_COMPUTER_USE", "computer_control"),
     CapabilitySpec("directory_watchers", "ALPECCA_WATCH_DIRS", "filesystem", "choice"),
+    CapabilitySpec("discord_media", "ALPECCA_DISCORD_MEDIA", "network"),
 )
 
 _AUDIT_ACTIONS = frozenset({

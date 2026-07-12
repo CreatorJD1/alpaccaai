@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 from config import (
@@ -38,6 +39,16 @@ from alpecca.local_inference import verified_local_ollama_target
 
 
 # --- The shared eye: one image in, a short description out ------------------
+
+
+@dataclass(frozen=True, slots=True)
+class VisionDescription:
+    """A grounded description plus the backend that actually saw the pixels."""
+
+    text: str
+    backend: str
+    processing_location: str
+    cloud_egress: str
 
 _DESCRIBE_PROMPT = (
     "Describe this image in two or three sentences, plainly and concretely: "
@@ -136,9 +147,12 @@ def _describe_zerogpu(image_bytes: bytes, prompt: str) -> Optional[str]:
                 pass
 
 
-def describe_image(image_bytes: bytes, prompt: str = _DESCRIBE_PROMPT,
-                   ambient: bool = False) -> Optional[str]:
-    """One vision call: bytes in, short description out, None on failure.
+def describe_image_result(
+    image_bytes: bytes,
+    prompt: str = _DESCRIBE_PROMPT,
+    ambient: bool = False,
+) -> Optional[VisionDescription]:
+    """One vision call with truthful routing metadata, or None on failure.
 
     Routing (config.VISION_BACKEND): 'auto' tries Ollama cloud sight first (big
     hosted VL model, no queue/quota), then her ZeroGPU space, then local on
@@ -152,29 +166,49 @@ def describe_image(image_bytes: bytes, prompt: str = _DESCRIBE_PROMPT,
     are always local-only."""
     from config import VISION_BACKEND
     if ambient:
-        return _describe_local(image_bytes, prompt)
+        local = _describe_local(image_bytes, prompt)
+        return (
+            VisionDescription(local, "local-ollama", "local-only", "denied")
+            if local else None
+        )
     if VISION_BACKEND in ("auto", "ollama-cloud"):
         cloud = _describe_ollama_cloud(image_bytes, prompt)
         if cloud:
-            return cloud
+            return VisionDescription(
+                cloud,
+                "ollama-cloud",
+                "approved-remote",
+                "creator-approved",
+            )
         if VISION_BACKEND != "auto":
             return None            # cloud-only: never touch the local GPU
     if VISION_BACKEND in ("auto", "zerogpu", "cloud"):
         cloud = _describe_zerogpu(image_bytes, prompt)
         if cloud:
-            return cloud
+            return VisionDescription(
+                cloud,
+                "hugging-face-zerogpu",
+                "approved-remote",
+                "creator-approved",
+            )
         if VISION_BACKEND != "auto":
             return None            # cloud-only: never touch the local GPU
-    return _describe_local(image_bytes, prompt)
+    local = _describe_local(image_bytes, prompt)
+    return (
+        VisionDescription(local, "local-ollama", "local-only", "denied")
+        if local else None
+    )
 
 
-def describe_and_recognize(
-    image_bytes: bytes, *, local_only: bool = False
-) -> Optional[str]:
-    """One VL call that both describes an image AND flags whether it depicts
-    Alpecca herself. Cheaper than two calls on a small GPU (each vision call
-    evicts the chat model from VRAM), so this is what the chat/Discord path uses.
-    Returns an enriched description string, or None if she couldn't look."""
+def describe_image(image_bytes: bytes, prompt: str = _DESCRIBE_PROMPT,
+                   ambient: bool = False) -> Optional[str]:
+    """Compatibility wrapper returning only the grounded description text."""
+
+    result = describe_image_result(image_bytes, prompt=prompt, ambient=ambient)
+    return result.text if result else None
+
+
+def _self_recognition_prompt() -> str:
     try:
         from alpecca import introspection
         look = introspection.self_appearance()
@@ -182,14 +216,14 @@ def describe_and_recognize(
         look = ""
     ref = look or ("long cream-blonde wavy hair, soft blue eyes that glow, and a "
                    "glowing chest power-core emblem")
-    prompt = (
+    return (
         "Describe this image in one or two plain sentences (what it shows). Then, "
         f"on a NEW line, given that Alpecca looks like: {ref} -- write 'SELF: yes' "
         "if the image depicts Alpecca / that same avatar, otherwise 'SELF: no'."
     )
-    raw = describe_image(image_bytes, prompt=prompt, ambient=local_only)
-    if not raw:
-        return None
+
+
+def _enrich_self_recognition(raw: str) -> str:
     is_self = False
     desc_lines = []
     for line in raw.splitlines():
@@ -202,6 +236,43 @@ def describe_and_recognize(
     if is_self:
         desc += " (You recognize this as YOU -- your own avatar.)"
     return desc
+
+
+def describe_and_recognize(
+    image_bytes: bytes, *, local_only: bool = False
+) -> Optional[str]:
+    """One VL call that both describes an image AND flags whether it depicts
+    Alpecca herself. Cheaper than two calls on a small GPU (each vision call
+    evicts the chat model from VRAM), so this is what the chat/Discord path uses.
+    Returns an enriched description string, or None if she couldn't look."""
+    raw = describe_image(
+        image_bytes,
+        prompt=_self_recognition_prompt(),
+        ambient=local_only,
+    )
+    if not raw:
+        return None
+    return _enrich_self_recognition(raw)
+
+
+def describe_and_recognize_result(
+    image_bytes: bytes, *, local_only: bool = False
+) -> Optional[VisionDescription]:
+    """Description/self-recognition with the backend that processed the image."""
+
+    result = describe_image_result(
+        image_bytes,
+        prompt=_self_recognition_prompt(),
+        ambient=local_only,
+    )
+    if result is None:
+        return None
+    return VisionDescription(
+        text=_enrich_self_recognition(result.text),
+        backend=result.backend,
+        processing_location=result.processing_location,
+        cloud_egress=result.cloud_egress,
+    )
 
 
 def recognize_self(image_bytes: bytes) -> Optional[dict]:

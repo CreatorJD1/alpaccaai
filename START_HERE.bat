@@ -49,6 +49,11 @@ REM webcam) are hard-forced local and never leave this PC.
 set ALPECCA_VISION_BACKEND=auto
 set ALPECCA_VISION_CLOUD_MODEL=gemma4:cloud
 set ALPECCA_VISION_MODEL=qwen3.5:9b
+REM CreatorJD explicitly enabled bounded Discord image seeing/sending. Discord
+REM attachments are locally validated first; creator DMs may then use the
+REM configured cloud vision model, with the actual backend recorded per turn.
+set ALPECCA_DISCORD_MEDIA=1
+set ALPECCA_DISCORD_CLOUD_VISION=1
 
 REM --- Her voice: free + local. 'auto' blends her F5 clone (high-emotion
 REM moments) with Kokoro af_heart (calm/everyday), each the other's fallback,

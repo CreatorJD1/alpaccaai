@@ -84,6 +84,18 @@ from alpecca.behavior_trial_controller import BehaviorTrialController
 from alpecca.qualified_response_ledger import QualifiedResponseLedger
 
 
+def _environment_enabled(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() not in {
+        "", "0", "false", "no", "off",
+    }
+
+
+DISCORD_MEDIA_ENABLED = _environment_enabled("ALPECCA_DISCORD_MEDIA")
+DISCORD_CLOUD_VISION_ENABLED = _environment_enabled(
+    "ALPECCA_DISCORD_CLOUD_VISION"
+)
+
+
 async def _read_bounded_body(req: Request, *, max_bytes: int) -> bytes:
     """Read one request body without allowing Starlette to buffer past a cap."""
     raw_length = req.headers.get("content-length", "").strip()
@@ -5900,6 +5912,7 @@ def portrait() -> FileResponse:
 
 @app.post("/channel/inbound")
 @app.post("/channel/house-hq")
+@app.post("/channel/discord")
 async def channel_inbound(req: Request, response: Response) -> dict:
     """Inbound bridge for OpenClaw (or any other messaging surface).
 
@@ -5930,9 +5943,10 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     private_perception = field("private_perception")
     source_ref_value = payload.get("source_ref")
     has_legacy_file_payload = "file_data" in payload or "file_name" in payload
-    route_surface = (
-        "house-hq" if req.url.path == "/channel/house-hq" else "channel"
-    )
+    route_surface = {
+        "/channel/house-hq": "house-hq",
+        "/channel/discord": "discord",
+    }.get(req.url.path, "channel")
     if has_legacy_file_payload:
         raise HTTPException(
             status_code=400,
@@ -6017,9 +6031,30 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         if not text:
             text = "Please inspect this attached file."
     # Image bytes are validated, measured, and bound to this server-issued turn
-    # before a local-only model may see them. Client-provided descriptions are
-    # never treated as perception evidence.
+    # before any vision model may see them. House/generic images stay local-only;
+    # the dedicated creator Discord route may use its separately enabled remote
+    # backend and reports the backend/egress result explicitly. Client-provided
+    # descriptions are never treated as perception evidence.
     if image_data:
+        if route_surface == "discord":
+            decision = _require_creator_request(req)
+            principal = decision.principal
+            if not DISCORD_MEDIA_ENABLED:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "capability_disabled",
+                        "capability": "discord_media",
+                    },
+                    headers={"Cache-Control": "no-store"},
+                )
+            if not await _record_capability_use(
+                "discord_media",
+                action="observe",
+                principal=principal,
+                source="discord_bridge",
+            ):
+                _raise_capability_audit_unavailable()
         try:
             inspected_image = attachment_ingress_mod.ingest_image(
                 image_data,
@@ -6037,14 +6072,44 @@ async def channel_inbound(req: Request, response: Response) -> dict:
                 source="api",
             ):
                 _raise_capability_audit_unavailable()
-        image_desc = await asyncio.to_thread(
-            vision.describe_and_recognize,
-            inspected_image.image_bytes,
-            local_only=True,
-        )
+        vision_processing = {
+            "backend": "local-ollama",
+            "processing_location": "local-only",
+            "cloud_egress": "denied",
+        }
+        if route_surface == "discord":
+            vision_result = await asyncio.to_thread(
+                vision.describe_and_recognize_result,
+                inspected_image.image_bytes,
+                local_only=not DISCORD_CLOUD_VISION_ENABLED,
+            )
+            image_desc = vision_result.text if vision_result else None
+            if vision_result is not None:
+                vision_processing = {
+                    "backend": vision_result.backend,
+                    "processing_location": vision_result.processing_location,
+                    "cloud_egress": vision_result.cloud_egress,
+                }
+            else:
+                vision_processing = {
+                    "backend": "unavailable-after-configured-route",
+                    "processing_location": "none",
+                    "cloud_egress": (
+                        "creator-approved-attempted"
+                        if DISCORD_CLOUD_VISION_ENABLED else "denied"
+                    ),
+                }
+        else:
+            image_desc = await asyncio.to_thread(
+                vision.describe_and_recognize,
+                inspected_image.image_bytes,
+                local_only=True,
+            )
         image_perception = {
             **inspected_image.as_dict(),
             "status": "described" if image_desc else "vision-unavailable",
+            "classification_scope": "local-ingress-validation",
+            "vision_processing": vision_processing,
         }
         image_desc = image_desc or (
             "the local vision model could not make the image out; no visual "

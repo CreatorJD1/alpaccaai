@@ -50,7 +50,7 @@ def test_void_system_center_covers_the_retired_house_internal_menu():
         assert endpoint in source
 
 
-def test_void_system_center_is_native_and_legacy_environment_is_unreachable():
+def test_void_system_center_keeps_both_native_modes_and_legacy_shell_unreachable():
     source = (ROOT / "apps" / "house-hq" / "src" / "main.ts").read_text(
         encoding="utf-8"
     )
@@ -58,7 +58,9 @@ def test_void_system_center_is_native_and_legacy_environment_is_unreachable():
     assert "<iframe" not in source
     assert "alpeccaCoreFrame" not in source
     assert "environmentModeFromUrl" not in source
-    assert 'searchParams.get("environment")' not in source
+    assert 'searchParams.get("environment")' in source
+    assert 'const currentEnvironmentMode: "prototype" | "hq"' in source
+    assert 'id="environmentModeToggle"' in source
     assert "switchEnvironmentMode" not in source
     assert "createPrototypeVoid();" in source
     assert "new THREE.OrthographicCamera" in source
