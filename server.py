@@ -6644,7 +6644,7 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     # external channel requires a separate, explicit egress capability path.
     delivered = (
         False
-        if file_attachment is not None
+        if file_attachment is not None or route_surface == "discord"
         else openclaw_bridge.try_deliver(reply, reply_target=reply_target)
     )
     _mindscape_request_event_sync("channel_inbound")

@@ -65,6 +65,7 @@ def test_discord_route_rejects_creator_bearer_and_runs_service_as_guest(
     monkeypatch,
 ) -> None:
     captured: dict[str, object] = {}
+    deliveries: list[str] = []
 
     async def fake_turn(*_args, **kwargs):
         captured["turn"] = kwargs["turn"]
@@ -77,7 +78,11 @@ def test_discord_route_rejects_creator_bearer_and_runs_service_as_guest(
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(server, "_mindscape_request_event_sync", lambda *_args: None)
-    monkeypatch.setattr(openclaw_bridge, "try_deliver", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        openclaw_bridge,
+        "try_deliver",
+        lambda text, **_kwargs: deliveries.append(text),
+    )
 
     client = TestClient(server.app)
     creator = client.post(
@@ -99,6 +104,7 @@ def test_discord_route_rejects_creator_bearer_and_runs_service_as_guest(
     turn = captured["turn"]
     assert getattr(turn, "principal") == "guest"
     assert getattr(turn, "surface") == "discord"
+    assert deliveries == []
 
 
 def test_bridge_service_header_cannot_open_creator_routes() -> None:
