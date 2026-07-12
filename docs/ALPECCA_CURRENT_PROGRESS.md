@@ -187,9 +187,10 @@ labels retained in historical plans and handoffs.
   and sealed content-free evidence. Discord bridge authentication now uses a
   separate service-only credential, maps to `guest`, rejects the creator bearer,
   and keeps image-bearing backend requests on loopback. House microphone capture
-  auto-stops at 60 seconds and stale work cancels on disconnect. Remaining gates
-  are wiring the
-  provider/model-specific egress consent broker and signed Discord guest
+  auto-stops at 60 seconds and stale work cancels on disconnect. A hardened,
+  independently anchored provider/model/deployment-specific egress consent core
+  now exists, but no vision/provider call or interactive creator control uses it
+  yet. Remaining gates are wiring that core and signed Discord guest
   subjects; Phase 10 stays blocked.
 - Phase 6 remains partial. The next gated action is to clear resources and
   re-run preflight, then separately authorize one 8,192 measurement; no direct

@@ -40,6 +40,14 @@ retained below as historical implementation evidence.
   CoreMind as `guest`. Image-bearing bridge requests use loopback even when
   text traffic is configured for a tunnel. Signed per-actor subjects and scoped
   Discord conversation identity are still not wired.
+- A hardened Phase 9 egress-consent ledger now exists in
+  `alpecca/egress_consent.py`, but it is not live. Its frozen route policy binds
+  provider, deployment, model, processing location, destination class, HTTPS
+  route, one operation, keyed payload metadata, and byte count. It uses a
+  separate monotonic anchor, automatic restart stop, exact sealed schema
+  manifest, tokenless server consumption, content-free attempt evidence, and
+  fixed-batch stale cleanup. Vision/provider calls, the interactive creator
+  authority, API/UI controls, and ordered attempt reporting still need wiring.
 - Creator-DM Discord images are now implemented through a dedicated authenticated
   `/channel/discord` route. The bridge accepts one PNG/JPEG/GIF under 2 MiB,
   sniffs MIME/dimensions from bytes before forwarding, records content-free
@@ -65,7 +73,7 @@ retained below as historical implementation evidence.
 - Verification for this checkpoint: `1296 passed, 2 skipped` under `tests/`;
   `tests/test_core.py` is green; the focused lease suites are green; House HQ
   builds; and the classic inline JavaScript parses successfully.
-- Phase 9 is not DONE: a provider/model-specific egress consent broker is not
+- Phase 9 is not DONE: the provider/model-specific egress consent core is not
   wired into perception, and Discord guild actors still need signed guest
   subjects so bridge service authentication cannot become creator authority.
   Keep Phase 10 Discord participation/voice blocked.

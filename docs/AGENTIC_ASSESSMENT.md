@@ -82,8 +82,12 @@ on loopback until server-side perception routing. Signed per-actor subjects
 remain unfinished, so this does not enable guild participation or Discord
 autonomy.
 
-Phase 9 is not complete. Provider/model-specific egress consent is not yet
-wired into perception, and signed Discord guest identity remains unfinished.
+A hardened provider/model/deployment-specific egress consent ledger now exists
+with exact operation/keyed-payload binding, independent rollback anchoring,
+restart revocation, tokenless server consumption, exact sealed schema identity,
+and bounded maintenance. It remains a foundation: no perception provider or
+interactive creator control is wired to it. Signed Discord guest identity also
+remains unfinished.
 Phase 10 Discord participation and voice stay blocked on those boundaries.
 
 ## Stage 3 - LLM-In-The-Loop Choice Points

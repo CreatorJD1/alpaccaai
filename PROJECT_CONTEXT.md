@@ -36,9 +36,13 @@ retained elsewhere for historical context.
   content-free transition receipts. Discord transport now uses a separate
   service-only credential; `/channel/discord` rejects the creator bearer, maps
   the bridge to `guest`, and keeps image-bearing bridge requests on loopback
-  before model routing. Phase 9 remains **PARTIAL**: the
-  provider/model-specific egress consent broker and signed Discord guest
-  identity remain unfinished; Phase 10 stays blocked.
+  before model routing. A hardened provider/model/deployment-specific egress
+  consent ledger now exists as an unwired foundation with exact operation and
+  keyed payload binding, independent rollback anchoring, restart revocation,
+  sealed content-free receipts, and bounded maintenance. Phase 9 remains
+  **PARTIAL**: vision/provider calls and interactive creator decisions are not
+  wired to that ledger, and signed Discord guest identity remains unfinished;
+  Phase 10 stays blocked.
 - Phase 12 embodiment has advanced in parallel: V4 now targets a measured
   1.70 m height, strips VRMA root translation, compensates V4 full-face mouth
   morphs after speech, uses bounded two-bone right-arm terminal IK, and exposes

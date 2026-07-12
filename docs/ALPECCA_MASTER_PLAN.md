@@ -647,10 +647,14 @@ uses a separate service-only credential: the Discord route rejects the creator
 bearer, maps transport authority to `guest`, and keeps image-bearing bridge
 requests on loopback. Signed per-actor subjects are still required.
 
-Remaining before DONE: wire provider/model-specific cloud consent and immutable
-egress evidence into each perception provider attempt, and bind Discord service
-authentication to server-signed guest actor subjects. Until then Phase 10
-remains blocked.
+A hardened, unwired egress-consent core now freezes exact provider, deployment,
+model, destination, location, HTTPS route, operation, keyed payload metadata,
+and byte count; it adds independent rollback anchoring, restart revocation,
+sealed content-free attempt evidence, exact schema verification, tokenless
+server consumption, and bounded cleanup. Remaining before DONE: wire an
+interactive creator authority and this core into each perception provider
+attempt, then bind Discord service authentication to server-signed guest actor
+subjects. Until then Phase 10 remains blocked.
 
 Exit gate: Alpecca can cite viewed files/images/audio with provenance; malformed
 or oversized inputs fail closed; prompt injection cannot grant authority; no
