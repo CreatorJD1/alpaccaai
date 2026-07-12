@@ -360,6 +360,55 @@ def test_injected_authority_owns_creator_decision_and_exact_route_identity(
     assert grant["route"]["model"] == "acme/private-vision-v2"
 
 
+@pytest.mark.parametrize(
+    "model_id",
+    ["gemma4:cloud", "Qwen/Qwen2.5-VL-7B-Instruct"],
+)
+def test_model_identifiers_preserve_common_exact_provider_forms(
+    tmp_path: Path, model_id: str
+):
+    ledger, _clock, authority, _anchor_store = _ledger(
+        tmp_path, policy=_policy(primary_model=model_id)
+    )
+    authority.queue(True)
+
+    grant = _request(ledger)
+
+    assert ledger.policy.resolve(PRIMARY_ROUTE).model == model_id
+    assert authority.requests[-1].model == model_id
+    assert grant["route"]["model"] == model_id
+
+
+def test_model_identifier_case_is_byte_exact_in_persisted_route_binding(
+    tmp_path: Path,
+):
+    exact_model = "Qwen/Qwen2.5-VL-7B-Instruct"
+    changed_model = "qwen/Qwen2.5-VL-7B-Instruct"
+    exact, _clock, exact_authority, _anchor_store = _ledger(
+        tmp_path,
+        policy=_policy(primary_model=exact_model),
+        db_name="exact-model.db",
+        anchor_name="exact-model-anchor.db",
+    )
+    changed, _clock, changed_authority, _anchor_store = _ledger(
+        tmp_path,
+        policy=_policy(primary_model=changed_model),
+        db_name="changed-model.db",
+        anchor_name="changed-model-anchor.db",
+    )
+    exact_authority.queue(True)
+    changed_authority.queue(True)
+
+    exact_grant = _request(exact)
+    changed_grant = _request(changed)
+
+    exact_row = _grant_row(exact.db_path, exact_grant["consent_id"])
+    changed_row = _grant_row(changed.db_path, changed_grant["consent_id"])
+    assert exact_grant["route"]["model"] == exact_model
+    assert changed_grant["route"]["model"] == changed_model
+    assert exact_row["route_hmac"] != changed_row["route_hmac"]
+
+
 def test_creator_denial_is_authority_issued_and_receipted(tmp_path: Path):
     ledger, _clock, authority, _anchor_store = _ledger(tmp_path)
     decision_id = authority.queue(False)
@@ -1042,6 +1091,38 @@ def test_policy_identifiers_are_strict_and_exact_deployment_is_required():
             destination_class="managed-api",
             transport_route="https://example.test/v1/infer",
         )
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "",
+        "a" * 161,
+        " leading",
+        "trailing ",
+        "two words",
+        "line\nbreak",
+        "control\x00value",
+        "https://models.example.test/acme/model",
+        "HTTPS:models.example.test/model",
+        "acme/model?revision=1",
+        "acme/model#revision",
+        "acme\\model",
+        "/acme/model",
+        "acme/model/",
+        "acme//model",
+        "acme/./model",
+        "acme/../model",
+        "acme/-model",
+        "model:",
+        ":cloud",
+        "model::cloud",
+        "acme/model:cloud/extra",
+    ],
+)
+def test_malformed_model_identifiers_fail_closed(model_id: str):
+    with pytest.raises(consent_mod.EgressConsentError, match="invalid_model"):
+        _policy(primary_model=model_id)
 
 
 def test_external_anchor_is_required_but_pluggable(tmp_path: Path):

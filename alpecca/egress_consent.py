@@ -39,6 +39,7 @@ MAX_PAYLOAD_METADATA_BYTES = 4096
 MAX_TTL_SECONDS = 300
 MAX_USES = 16
 MAX_BYTES_PER_USE = 16 * 1024 * 1024
+MAX_MODEL_IDENTIFIER_LENGTH = 160
 MAINTENANCE_BATCH_SIZE = 8
 
 _META_DOMAIN = "alpecca.egress-consent-meta.v2"
@@ -54,7 +55,11 @@ _DECISION_DOMAIN = b"alpecca.egress-consent-decision.v2"
 _ANCHOR_DOMAIN = "alpecca.egress-consent-external-anchor.v1"
 
 _SAFE_ID_RE = re.compile(r"[a-z][a-z0-9._-]{1,79}\Z")
-_SAFE_MODEL_RE = re.compile(r"[a-z0-9][a-z0-9._/-]{1,159}\Z")
+_MODEL_COMPONENT = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
+_MODEL_IDENTIFIER_RE = re.compile(
+    rf"{_MODEL_COMPONENT}(?:/{_MODEL_COMPONENT})*(?::{_MODEL_COMPONENT})?\Z"
+)
+_URL_SCHEME_PREFIXES = ("http:", "https:", "ws:", "wss:", "ftp:", "file:", "data:")
 _OPERATION_RE = re.compile(r"op_[A-Za-z0-9_-]{22,86}\Z")
 _DECISION_RE = re.compile(r"decision_[A-Za-z0-9_-]{22,86}\Z")
 _TOKEN_RE = re.compile(r"ec2_[A-Za-z0-9_-]{40,86}\Z")
@@ -270,12 +275,14 @@ def _safe_id(value: object, name: str) -> str:
     return value
 
 
-def _model_id(value: object) -> str:
-    if not isinstance(value, str) or _SAFE_MODEL_RE.fullmatch(value) is None:
-        raise EgressConsentError("invalid_model")
-    if value.startswith("/") or value.endswith("/") or "//" in value:
-        raise EgressConsentError("invalid_model")
-    if any(part in {"", ".", ".."} for part in value.split("/")):
+def _model_identifier(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= MAX_MODEL_IDENTIFIER_LENGTH
+        or not value.isascii()
+        or value.lower().startswith(_URL_SCHEME_PREFIXES)
+        or _MODEL_IDENTIFIER_RE.fullmatch(value) is None
+    ):
         raise EgressConsentError("invalid_model")
     return value
 
@@ -381,7 +388,7 @@ class AllowedEgressRoute:
             "destination_class",
         ):
             _safe_id(getattr(self, field_name), field_name)
-        _model_id(self.model)
+        _model_identifier(self.model)
         if (
             self.provider in _UNKNOWN_ROUTE_IDENTITIES
             or self.deployment in _UNKNOWN_ROUTE_IDENTITIES
