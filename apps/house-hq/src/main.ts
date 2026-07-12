@@ -968,7 +968,6 @@ hud.innerHTML = `
     <div class="source-actions source-nav">
       <button type="button" data-nav="mindscape">Mindscape</button>
       <button type="button" data-nav="voice">Voice</button>
-      <button type="button" data-nav="journal">Journal</button>
       <button type="button" data-nav="tools">Tools</button>
     </div>
     <button id="openAlpeccaSource" class="source-open" type="button">Open Systems</button>
@@ -1097,6 +1096,7 @@ hud.innerHTML = `
           <div class="systems-nav-group"><span>Records</span>
             <button type="button" data-system-id="memory">Memory</button>
             <button type="button" data-system-id="journal">Journal</button>
+            <button type="button" data-system-id="mindscape">Mindscape</button>
             <button type="button" data-system-id="files">Files</button>
           </div>
           <div class="systems-nav-group"><span>Actions</span>
@@ -4094,6 +4094,13 @@ function renderAlpeccaSystem(systemId: AlpeccaSystemId, data: Record<string, unk
     return `${systemIntro("VOICE", "Alpecca's live voice", "Read-only emotion modulation from her current state; the viewer does not choose her voice mode.")}
       <div class="systems-actions"><button type="button" data-system-action="voice-preview">Hear current voice</button></div>
       <section><h3>Voice state</h3>${systemObjectRows(data, 20)}</section>`;
+  }
+  if (systemId === "mindscape") {
+    const status = systemString(data.status || data.sync_status, "local only");
+    const cloud = data.cloud_configured === true || data.cloud_url ? "configured" : "local only";
+    return `${systemIntro("MINDSCAPE", "Continuity layer", "Her local continuity snapshot. A cloud target is optional and keeps continuity if this device goes down.")}
+      <div class="systems-metrics"><div><span>Status</span><strong>${escapeHudText(status)}</strong></div><div><span>Cloud</span><strong>${escapeHudText(cloud)}</strong></div></div>
+      <section><h3>Continuity state</h3>${systemObjectRows(data, 20)}</section>`;
   }
   if (systemId === "studio") {
     const sheet = systemRecord(data.sheet);
