@@ -58,6 +58,13 @@ retained below as historical implementation evidence.
   reports collecting/awaiting-settlement/creator-review readiness plus an
   improved/unchanged/worse comparison, but it performs no I/O, start,
   completion, approval, rollback, or runtime change.
+  Phase 8C4 now supplies dormant attribution: an eligible proactive dispatch
+  gets a trial id only when a query-only controller check verifies a live,
+  HMAC-bound `chatter_chance` override whose immutable metric is exactly
+  `qualified_response_rate` at the same server-owned dispatch timestamp. Any
+  recovery gap, expiry, tampering, missing override, or other metric records a
+  baseline row instead. No approval, start, completion, or mutation route was
+  added.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A rejects orthogonal and negative semantic matches. Phase 6B
   adds bounded sidecar Mindpage content-term indexing: new pages index after a

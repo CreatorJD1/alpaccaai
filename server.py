@@ -535,6 +535,24 @@ async def _begin_qualified_response_dispatch(
 ) -> str | None:
     """Reserve a provisional portal exposure before the transport await."""
     delivery_id = uuid.uuid4().hex
+    dispatched_at = _time.time()
+    trial_id: int | None = None
+    if _behavior_trial_recovery_ready.is_set():
+        try:
+            candidate_trial_id = await asyncio.to_thread(
+                behavior_trial_controller.active_outcome_trial_id,
+                dispatched_at=dispatched_at,
+            )
+            if (
+                isinstance(candidate_trial_id, int)
+                and not isinstance(candidate_trial_id, bool)
+                and candidate_trial_id > 0
+            ):
+                trial_id = candidate_trial_id
+        except Exception:
+            # Outcome attribution is optional evidence. A controller read
+            # failure must leave the delivery baseline-only, never block it.
+            pass
     try:
         await asyncio.to_thread(
             qualified_response_ledger.begin_dispatch,
@@ -543,7 +561,8 @@ async def _begin_qualified_response_dispatch(
             surface=turn.surface,
             proactive_turn_id=turn.turn_id,
             response_window_seconds=INITIATIVE_RESPONSE_WINDOW_SECONDS,
-            dispatched_at=_time.time(),
+            trial_id=trial_id,
+            dispatched_at=dispatched_at,
         )
     except Exception:
         return None

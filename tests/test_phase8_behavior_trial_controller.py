@@ -47,13 +47,14 @@ def _validated_chatter_trial(
     *,
     old_value: float = DEFAULT_CHANCE,
     trial_value: float = TRIAL_CHANCE,
+    metric: str = "ignored_outreach_rate",
 ):
     return experiment_trials.validate_trial_spec(
         experiment_trials.TrialSpecification(
             proposal_id=proposal_id,
             parameter="chatter_chance",
             hypothesis="A lower chatter chance will reduce ignored outreach.",
-            metric="ignored_outreach_rate",
+            metric=metric,
             baseline=0.35,
             exposure=experiment_trials.ExposureWindow(300, 5),
             change=experiment_trials.ParameterChange(old_value, trial_value),
@@ -664,6 +665,57 @@ def test_due_trial_reads_as_default_until_off_lock_maintenance_rolls_it_back(tmp
     assert rolled_back["ended_at"] == running["planned_end_at"]
     assert rolled_back["rollback"]["recorded_at"] == running["planned_end_at"]
     assert _runtime_rows(controller.db_path) == []
+
+
+def test_active_outcome_trial_id_is_read_only_and_requires_a_verified_live_override(
+    tmp_path, monkeypatch
+):
+    clock = _Clock()
+    controller = _controller(tmp_path, clock=clock)
+    running = _running_trial(controller, metric="qualified_response_rate")
+    original_connect = controller_mod.sqlite3.connect
+    statements: list[str] = []
+
+    def traced_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(controller_mod.sqlite3, "connect", traced_connect)
+
+    assert controller.active_outcome_trial_id(dispatched_at=STARTED_AT) == running["id"]
+    assert statements
+    assert all(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+
+    clock.set(running["planned_end_at"])
+    assert controller.active_outcome_trial_id() is None
+
+
+def test_active_outcome_trial_id_fails_closed_for_a_tampered_binding(tmp_path):
+    controller = _controller(tmp_path)
+    running = _running_trial(controller, metric="qualified_response_rate")
+    with sqlite3.connect(controller.db_path) as conn:
+        conn.execute(
+            "UPDATE behavior_trial_creator_approval_bindings "
+            "SET proof_id='tampered-proof' WHERE trial_id=?",
+            (running["id"],),
+        )
+
+    assert controller.active_outcome_trial_id(dispatched_at=STARTED_AT) is None
+    record = controller.get(running["id"])
+    assert record is not None
+    assert record["state"] == trial_ledger.RUNNING
+
+
+def test_active_outcome_trial_id_ignores_a_running_trial_for_another_metric(tmp_path):
+    controller = _controller(tmp_path)
+    running = _running_trial(controller, metric="ignored_outreach_rate")
+
+    assert controller.active_outcome_trial_id(dispatched_at=STARTED_AT) is None
+    assert controller.chatter_chance() == TRIAL_CHANCE
+    record = controller.get(running["id"])
+    assert record is not None
+    assert record["state"] == trial_ledger.RUNNING
 
 
 def test_chatter_chance_fails_closed_and_receipts_a_tampered_running_binding(tmp_path):

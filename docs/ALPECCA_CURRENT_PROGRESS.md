@@ -64,7 +64,15 @@ labels retained in historical plans and handoffs.
   server-owned trial id and classified only as collecting, awaiting settlement,
   or ready for creator review with an improved/unchanged/worse comparison to
   the immutable spec baseline. It does not start, complete, roll back, or
-  otherwise mutate a trial, and it is not yet wired to a live trial path.
+  otherwise mutate a trial; C4 supplies only the separate dormant attribution
+  seam described below.
+  Phase 8C4 now wires attribution only: before an eligible proactive dispatch,
+  the server read-checks the controller's creator binding, runtime override,
+  metric name, and planned end against the same server-owned dispatch timestamp.
+  Only a valid running `qualified_response_rate` trial id is attached; recovery
+  not ready, a missing/expired/tampered override, or another metric remains
+  baseline-only. This still adds no approval, start, completion, mutation, or
+  trial-management route.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A semantic-negative/orthogonal recall abstention and Phase 6B
   bounded sidecar content-term indexing are implemented and covered by focused

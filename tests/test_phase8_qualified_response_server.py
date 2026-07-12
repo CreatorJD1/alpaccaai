@@ -69,6 +69,16 @@ class _ResponseLedger:
         return self.result
 
 
+class _OutcomeTrialController:
+    def __init__(self, trial_id: object) -> None:
+        self.trial_id = trial_id
+        self.calls: list[float] = []
+
+    def active_outcome_trial_id(self, *, dispatched_at: float):
+        self.calls.append(dispatched_at)
+        return self.trial_id
+
+
 def _delivery_mind(*, cleared: list[tuple[str, str]] | None = None):
     return SimpleNamespace(
         state=SimpleNamespace(mood_label=lambda: "steady", as_dict=lambda: {"mood": "steady"}),
@@ -153,6 +163,59 @@ def test_typed_chatter_reserves_before_portal_send_and_confirms_after(monkeypatc
         "appearance": {"pose": "idle"},
     }]
     assert scheduled == [initiative]
+
+
+def test_verified_running_trial_is_attached_to_the_server_owned_dispatch(monkeypatch):
+    ledger = _DeliveryLedger()
+    controller = _OutcomeTrialController(17)
+    turn = _turn()
+    server._behavior_trial_recovery_ready.set()
+    monkeypatch.setattr(server, "qualified_response_ledger", ledger)
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server._time, "time", lambda: 123.0)
+
+    delivery_id = asyncio.run(server._begin_qualified_response_dispatch(turn))
+
+    assert delivery_id
+    assert controller.calls == [123.0]
+    assert ledger.calls == [("begin", {
+        "delivery_id": delivery_id,
+        "scope_key": turn.scope_key,
+        "surface": turn.surface,
+        "proactive_turn_id": turn.turn_id,
+        "response_window_seconds": server.INITIATIVE_RESPONSE_WINDOW_SECONDS,
+        "trial_id": 17,
+        "dispatched_at": 123.0,
+    })]
+
+
+def test_unrecovered_server_never_queries_for_outcome_trial_attribution(monkeypatch):
+    ledger = _DeliveryLedger()
+    controller = _OutcomeTrialController(17)
+    monkeypatch.setattr(server, "qualified_response_ledger", ledger)
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server._time, "time", lambda: 222.0)
+
+    delivery_id = asyncio.run(server._begin_qualified_response_dispatch(_turn()))
+
+    assert delivery_id
+    assert controller.calls == []
+    assert ledger.calls[0][1]["trial_id"] is None
+
+
+@pytest.mark.parametrize("candidate", [None, 0, True, "17"])
+def test_unverified_or_invalid_trial_id_leaves_dispatch_baseline_only(monkeypatch, candidate):
+    ledger = _DeliveryLedger()
+    controller = _OutcomeTrialController(candidate)
+    server._behavior_trial_recovery_ready.set()
+    monkeypatch.setattr(server, "qualified_response_ledger", ledger)
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server._time, "time", lambda: 321.0)
+
+    delivery_id = asyncio.run(server._begin_qualified_response_dispatch(_turn()))
+
+    assert delivery_id
+    assert ledger.calls[0][1]["trial_id"] is None
 
 
 def test_mood_speech_and_channel_delivery_never_create_metric_exposure(monkeypatch):

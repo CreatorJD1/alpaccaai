@@ -25,6 +25,7 @@ from alpecca import self_improvement_policy
 from alpecca import trial_ledger
 from alpecca.db import connect
 from alpecca.experiment_trials import ValidatedTrialSpecification
+from alpecca.qualified_response_ledger import METRIC_NAME as QUALIFIED_RESPONSE_METRIC
 from alpecca.trial_ledger import ProposalApprovalProof
 from config import DB_PATH, Proactive
 
@@ -1616,6 +1617,53 @@ class BehaviorTrialController:
                 return chance
             except Exception:
                 return self.default_chatter_chance
+
+    def active_outcome_trial_id(
+        self,
+        *,
+        dispatched_at: float | None = None,
+    ) -> int | None:
+        """Return a verified running trial id suitable for outcome attribution.
+
+        This is intentionally read-only and fails closed.  A caller records the
+        returned id alongside a server-owned delivery timestamp; a due, missing,
+        malformed, or unverified override is never attributed to a trial.
+        """
+        stamp = self._now() if dispatched_at is None else _timestamp(
+            dispatched_at, name="dispatched_at"
+        )
+        database_uri = self.db_path.resolve().as_uri() + "?mode=ro"
+        with sqlite3.connect(database_uri, uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT trial.*
+                FROM behavior_trial_runtime_overrides AS runtime
+                JOIN experiment_trial_ledger AS trial ON trial.id=runtime.trial_id
+                WHERE runtime.scope=? AND runtime.parameter=?
+                  AND trial.scope=? AND trial.state='running'
+                """,
+                (self.scope, CHATTER_CHANCE_PARAMETER, self.scope),
+            ).fetchone()
+            if row is None:
+                return None
+            try:
+                self._assert_verified_active_override(conn, row)
+                record = self._record_from_row(row)
+                spec = record.get("spec")
+                if (
+                    not isinstance(spec, Mapping)
+                    or spec.get("metric") != QUALIFIED_RESPONSE_METRIC
+                ):
+                    return None
+                planned_end_at = _timestamp(
+                    row["planned_end_at"], name="planned_end_at"
+                )
+                if planned_end_at <= stamp:
+                    return None
+                return int(row["id"])
+            except Exception:
+                return None
 
     def _rollback_in_transaction(
         self,

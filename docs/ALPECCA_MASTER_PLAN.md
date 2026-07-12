@@ -490,9 +490,25 @@ the rate as `improved`, `unchanged`, or `worse` relative to the immutable
 baseline and always requires creator review.
 
 The contract performs no I/O or trial-state change. It does not start,
-complete, evaluate-to-action, approve, or roll back a trial, and no live code
-currently attaches a trial id to a proactive delivery. That wiring remains a
-later gated scope after creator approval and start are real server-owned flows.
+complete, evaluate-to-action, approve, or roll back a trial. C4 may feed it a
+verified trial cohort, but controlled creator approval/start and a completion
+lifecycle remain later gated scopes.
+
+#### Phase 8C4: Verified running-trial outcome attribution - COMPLETE, DORMANT
+
+The server now asks `BehaviorTrialController.active_outcome_trial_id()` before
+it records an eligible proactive dispatch. That reader is query-only and fails
+closed unless the runtime override, HMAC-backed creator binding, immutable
+preimage, supported `chatter_chance` parameter, `qualified_response_rate`
+metric, and planned-end check all succeed at the exact server-owned dispatch
+timestamp. Only then does the durable outcome ledger receive that trial id;
+otherwise the row remains baseline-only. The server keeps this read outside
+`mind_lock`, and controller/read failures cannot block delivery.
+
+No behavior trial is running by default, so this path is dormant in normal use.
+It does not create an approval, start, completion, evaluation-action, or
+mutation route. C4 only ensures that a later controlled running trial will not
+mix its evidence with baseline rows or an unrelated metric.
 
 The broader Phase 8C plan remains incomplete: add server-derived approval bound
 to the exact validated specification, a controlled start plus wired metric
