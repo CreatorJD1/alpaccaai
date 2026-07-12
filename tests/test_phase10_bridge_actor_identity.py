@@ -10,6 +10,7 @@ import multiprocessing
 import shutil
 import sqlite3
 import threading
+from collections.abc import Iterator, Mapping
 from dataclasses import FrozenInstanceError, asdict
 from pathlib import Path
 
@@ -47,6 +48,51 @@ ENVELOPE_TABLE = "bridge_actor_identity_envelopes"
 EVIDENCE_TABLE = "bridge_actor_identity_evidence"
 AUDIT_TABLE = "bridge_actor_identity_audit"
 
+IMMUTABILITY_TRIGGER_DDL = {
+    "bridge_actor_v2_state_monotonic": f"""
+        CREATE TRIGGER bridge_actor_v2_state_monotonic
+        BEFORE UPDATE ON {STATE_TABLE}
+        WHEN NEW.revision != OLD.revision + 1
+            OR NEW.envelope_count < OLD.envelope_count
+            OR NEW.envelope_count > OLD.envelope_count + 1
+            OR NEW.evidence_count < OLD.evidence_count
+            OR NEW.evidence_count > OLD.evidence_count + 1
+            OR NEW.consumed_count < OLD.consumed_count
+            OR NEW.consumed_count > OLD.consumed_count + 1
+            OR NEW.high_water_ms < OLD.high_water_ms
+        BEGIN
+            SELECT RAISE(ABORT, 'bridge actor state must advance monotonically');
+        END
+    """,
+    "bridge_actor_v2_envelope_immutable": f"""
+        CREATE TRIGGER bridge_actor_v2_envelope_immutable
+        BEFORE UPDATE OF
+            envelope_id,envelope_version,schema_version,policy_version,
+            key_version,service,platform,boundary_hmac,
+            actor_subject_hmac,guild_scope_hmac,channel_scope_hmac,
+            thread_scope_hmac,event_id_hmac,body_hmac,nonce_hmac,
+            issued_at_ms,expires_at_ms,envelope_seal
+        ON {ENVELOPE_TABLE}
+        BEGIN
+            SELECT RAISE(ABORT, 'bridge actor envelope is immutable');
+        END
+    """,
+    "bridge_actor_v2_evidence_no_update": f"""
+        CREATE TRIGGER bridge_actor_v2_evidence_no_update
+        BEFORE UPDATE ON {EVIDENCE_TABLE}
+        BEGIN
+            SELECT RAISE(ABORT, 'bridge actor evidence is immutable');
+        END
+    """,
+    "bridge_actor_v2_audit_no_update": f"""
+        CREATE TRIGGER bridge_actor_v2_audit_no_update
+        BEFORE UPDATE ON {AUDIT_TABLE}
+        BEGIN
+            SELECT RAISE(ABORT, 'bridge actor audit is immutable');
+        END
+    """,
+}
+
 
 class MutableClock:
     def __init__(self, value: int = NOW_MS) -> None:
@@ -69,7 +115,7 @@ class FixedClock:
 
 
 class MemoryAnchor:
-    """Test double showing that the external anchor contract is pluggable."""
+    """Trusted mutable test anchor that can model an independent failure domain."""
 
     def __init__(self) -> None:
         self._values: dict[str, actor_mod.AnchorState] = {}
@@ -101,6 +147,44 @@ class MemoryAnchor:
     def force_snapshot(self, values: dict[str, actor_mod.AnchorState]) -> None:
         with self._lock:
             self._values = dict(values)
+
+
+class AnchorAheadInterleaving(MemoryAnchor):
+    def __init__(self) -> None:
+        super().__init__()
+        self._reads_before_advance: int | None = None
+        self._ahead: actor_mod.AnchorState | None = None
+
+    def advance_on_second_read(self, ahead: actor_mod.AnchorState) -> None:
+        with self._lock:
+            self._reads_before_advance = 2
+            self._ahead = ahead
+
+    def read(self, namespace: str) -> actor_mod.AnchorState | None:
+        with self._lock:
+            if self._reads_before_advance is not None:
+                self._reads_before_advance -= 1
+                if self._reads_before_advance == 0:
+                    assert self._ahead is not None
+                    self._values[namespace] = self._ahead
+                    self._reads_before_advance = None
+            return self._values.get(namespace)
+
+
+class OversizedEnvelopeMapping(Mapping[str, object]):
+    def __init__(self) -> None:
+        self.iterated = False
+
+    def __getitem__(self, key: str) -> object:
+        self.iterated = True
+        raise AssertionError(f"oversized mapping was copied at key {key}")
+
+    def __iter__(self) -> Iterator[str]:
+        self.iterated = True
+        raise AssertionError("oversized mapping was iterated")
+
+    def __len__(self) -> int:
+        return 1_000_000
 
 
 def _store(
@@ -244,7 +328,7 @@ def test_constructor_owns_all_assertions_and_phase10_remains_disabled(tmp_path: 
     assert store.voice_enabled is False
 
 
-def test_constructor_dependencies_are_frozen_snapshots_and_cannot_be_rebound(
+def test_value_snapshots_reject_ordinary_rebinding_but_capabilities_stay_mutable(
     tmp_path: Path,
 ):
     policy = actor_mod.BridgeActorPolicy(
@@ -299,7 +383,7 @@ def test_constructor_dependencies_are_frozen_snapshots_and_cannot_be_rebound(
         ("_boundary_hmac", "0" * 64),
         ("_genesis_head", "0" * 64),
         ("_anchor_namespace", "0" * 64),
-        ("_dependencies_frozen", False),
+        ("_bindings_frozen", False),
     )
     for name, value in assignments:
         with pytest.raises(AttributeError):
@@ -324,9 +408,11 @@ def test_constructor_dependencies_are_frozen_snapshots_and_cannot_be_rebound(
     with pytest.raises(actor_mod.BridgeActorIdentityError, match="byte limit"):
         _issue(store, request_body=b"x" * 1025)
     assert clock.calls == calls
+    clock.value += 1_234
     envelope = _issue(store, discord_event_id="frozen-dependency-event")
     assert envelope.service == "discord-bridge"
     assert envelope.policy_version == 1
+    assert envelope.issued_at_ms == NOW_MS + 1_234
 
 
 @pytest.mark.parametrize("key", [b"", b"x" * 16, b"x" * 31])
@@ -348,7 +434,7 @@ def test_text_keys_and_same_database_anchor_are_rejected(tmp_path: Path):
             clock=MutableClock(),
             monotonic_anchor=anchor,
         )
-    with pytest.raises(ValueError, match="external"):
+    with pytest.raises(ValueError, match="must not share"):
         actor_mod.BridgeActorIdentityStore(
             anchor_path,
             seal_key=SEAL_KEY,
@@ -518,6 +604,17 @@ def test_request_bytes_and_external_ids_are_bounded_before_clock_or_storage(
             store,
             discord_event_id="x" * (POLICY.max_external_id_bytes + 1),
         )
+    wide_view = memoryview(
+        bytearray(POLICY.max_body_bytes + 4)
+    ).cast("I")
+    assert len(wide_view) < POLICY.max_body_bytes
+    assert wide_view.nbytes > POLICY.max_body_bytes
+    with pytest.raises(actor_mod.BridgeActorIdentityError, match="byte limit"):
+        _issue(store, request_body=wide_view)
+    with pytest.raises(actor_mod.BridgeActorIdentityError, match="event id is invalid"):
+        _issue(store, discord_event_id="\ud800")
+    with pytest.raises(actor_mod.BridgeActorIdentityError, match="event id is invalid"):
+        _issue(store, discord_event_id=1 << (POLICY.max_external_id_bytes * 4 + 1))
     assert clock.calls == calls
     assert _state(store.db_path) == state
     assert _rows(store.db_path, ENVELOPE_TABLE) == []
@@ -598,6 +695,71 @@ def test_malformed_or_tampered_envelopes_never_read_or_advance_clock(tmp_path: P
     assert _verify(store, envelope).accepted is True
 
 
+def test_malformed_unicode_and_transport_shapes_deny_without_unbounded_copy(
+    tmp_path: Path,
+):
+    clock = MutableClock()
+    store = _store(tmp_path, clock=clock)
+    calls = clock.calls
+    oversized = OversizedEnvelopeMapping()
+
+    malformed_values: tuple[object, ...] = (
+        "\ud800",
+        ["not", "an", "envelope"],
+        b'{"not":"a supported transport type"}',
+        {"only": "one-field"},
+        oversized,
+    )
+    outcomes = [
+        store.verify_and_consume(  # type: ignore[arg-type]
+            value,
+            **_request_values(),
+        )
+        for value in malformed_values
+    ]
+
+    assert all(result.accepted is False for result in outcomes)
+    assert all(result.evidence.reason == "malformed_envelope" for result in outcomes)
+    assert oversized.iterated is False
+    assert clock.calls == calls
+
+
+def test_deeply_nested_bounded_json_records_malformed_envelope_denial(
+    tmp_path: Path,
+):
+    policy = actor_mod.BridgeActorPolicy(
+        version=1,
+        envelope_ttl_ms=30_000,
+        max_body_bytes=1024,
+        max_external_id_bytes=256,
+        max_transport_bytes=16_384,
+        max_clock_advance_ms=60_000,
+        max_incremental_audit_rows=16,
+    )
+    deeply_nested = "[" * 4_000 + "0" + "]" * 4_000
+    assert len(deeply_nested.encode("utf-8")) <= policy.max_transport_bytes
+    clock = MutableClock()
+    store = _store(tmp_path, clock=clock, policy=policy)
+    calls = clock.calls
+
+    result = _verify(store, deeply_nested)
+
+    assert result.accepted is False
+    assert result.evidence.reason == "malformed_envelope"
+    assert clock.calls == calls
+    evidence_rows = _rows(store.db_path, EVIDENCE_TABLE)
+    assert len(evidence_rows) == 1
+    assert evidence_rows[0]["evidence_id"] == result.evidence.evidence_id
+    assert evidence_rows[0]["reason"] == "malformed_envelope"
+    audit_rows = _rows(store.db_path, AUDIT_TABLE)
+    assert len(audit_rows) == 1
+    assert audit_rows[0]["operation"] == "deny"
+    assert audit_rows[0]["object_id"] == result.evidence.evidence_id
+    report = store.full_audit()
+    assert report.ok is True
+    assert report.rows_verified == 1
+
+
 def test_future_clock_poisoning_and_rollback_leave_state_unchanged(tmp_path: Path):
     clock = MutableClock()
     store = _store(tmp_path, clock=clock)
@@ -622,6 +784,22 @@ def test_future_clock_poisoning_and_rollback_leave_state_unchanged(tmp_path: Pat
     assert _verify(store, first).accepted is True
 
 
+def test_clock_reserves_ttl_headroom_below_sqlite_int64_max(tmp_path: Path):
+    maximum_issue_time = actor_mod.SQLITE_INT64_MAX - POLICY.envelope_ttl_ms
+    clock = MutableClock(maximum_issue_time)
+    store = _store(tmp_path, clock=clock)
+
+    envelope = _issue(store)
+    assert envelope.issued_at_ms == maximum_issue_time
+    assert envelope.expires_at_ms == actor_mod.SQLITE_INT64_MAX
+
+    before = dict(_state(store.db_path))
+    clock.value = maximum_issue_time + 1
+    with pytest.raises(actor_mod.BridgeActorClockError, match="out of range"):
+        _issue(store, discord_event_id="clock-overflow-event")
+    assert _state(store.db_path) == before
+
+
 def test_restart_preserves_replay_and_stable_guest_subject(tmp_path: Path):
     clock = MutableClock()
     store = _store(tmp_path, clock=clock)
@@ -639,7 +817,7 @@ def test_restart_preserves_replay_and_stable_guest_subject(tmp_path: Path):
     assert next_envelope.actor_subject_hmac == envelope.actor_subject_hmac
 
 
-def test_valid_database_snapshot_rollback_is_quarantined(tmp_path: Path):
+def test_sqlite_anchor_detects_main_database_only_snapshot_rollback(tmp_path: Path):
     clock = MutableClock()
     store = _store(tmp_path, clock=clock)
     envelope = _issue(store)
@@ -660,6 +838,55 @@ def test_valid_database_snapshot_rollback_is_quarantined(tmp_path: Path):
     report = rolled_back.full_audit()
     assert report.ok is False
     assert report.reason == "database_snapshot_rollback"
+
+
+def test_sqlite_anchor_cannot_detect_coordinated_main_and_anchor_restore(
+    tmp_path: Path,
+):
+    clock = MutableClock()
+    store = _store(tmp_path, clock=clock)
+    envelope = _issue(store)
+    anchor_path = tmp_path / "bridge-anchor.sqlite3"
+    main_snapshot = tmp_path / "co-restored-main.bak"
+    anchor_snapshot = tmp_path / "co-restored-anchor.bak"
+    shutil.copy2(store.db_path, main_snapshot)
+    shutil.copy2(anchor_path, anchor_snapshot)
+
+    clock.value += 1_000
+    assert _verify(store, envelope).accepted is True
+    assert store.full_audit().revision == 2
+
+    shutil.copy2(main_snapshot, store.db_path)
+    shutil.copy2(anchor_snapshot, anchor_path)
+    restored = _store(tmp_path, clock=clock)
+
+    assert restored.ready is True
+    assert restored.quarantined is False
+    report = restored.full_audit()
+    assert report.ok is True
+    assert report.revision == 1
+    assert _rows(restored.db_path, EVIDENCE_TABLE) == []
+    assert _rows(restored.db_path, ENVELOPE_TABLE)[0]["consumed_at_ms"] is None
+
+
+def test_anchor_ahead_during_synchronization_quarantines_and_rolls_back(
+    tmp_path: Path,
+):
+    anchor = AnchorAheadInterleaving()
+    clock = MutableClock()
+    store = _store(tmp_path, clock=clock, anchor=anchor)
+    before_state = dict(_state(store.db_path))
+    anchor.advance_on_second_read(actor_mod.AnchorState(2, "f" * 64))
+
+    with pytest.raises(actor_mod.BridgeActorQuarantinedError) as quarantined:
+        _issue(store, discord_event_id="anchor-ahead-interleaving")
+
+    assert quarantined.value.reason == "database_snapshot_rollback"
+    assert store.quarantined is True
+    assert store.status_reason == "database_snapshot_rollback"
+    assert _state(store.db_path) == before_state
+    assert _rows(store.db_path, ENVELOPE_TABLE) == []
+    assert _rows(store.db_path, AUDIT_TABLE) == []
 
 
 def test_database_truncation_is_quarantined_by_automatic_gate(tmp_path: Path):
@@ -751,6 +978,103 @@ def test_dropped_required_index_quarantines_runtime_and_restart_before_consume(
     assert restarted.status_reason == "schema_object_missing"
 
 
+@pytest.mark.parametrize(
+    "ddl",
+    [
+        f"CREATE INDEX bridge_actor_unexpected_idx ON {ENVELOPE_TABLE}(body_hmac)",
+        f"""
+        CREATE TRIGGER bridge_actor_unexpected_trigger
+        BEFORE INSERT ON {ENVELOPE_TABLE}
+        BEGIN
+            SELECT RAISE(ABORT, 'unexpected behavior');
+        END
+        """,
+    ],
+    ids=("extra-index", "extra-trigger"),
+)
+def test_extra_behavior_objects_on_protected_tables_quarantine(
+    tmp_path: Path,
+    ddl: str,
+):
+    clock = MutableClock()
+    store = _store(tmp_path, clock=clock)
+    with connect(store.db_path) as conn:
+        conn.executescript(ddl)
+    calls = clock.calls
+
+    with pytest.raises(actor_mod.BridgeActorQuarantinedError) as quarantined:
+        _issue(store, discord_event_id="blocked-by-extra-schema-behavior")
+    assert quarantined.value.reason == "schema_extra_behavior_object"
+    assert store.quarantined is True
+    assert clock.calls == calls
+
+    restarted = _store(tmp_path, clock=clock)
+    assert restarted.quarantined is True
+    assert restarted.status_reason == "schema_extra_behavior_object"
+
+
+@pytest.mark.parametrize(
+    ("table", "column", "trigger_name"),
+    [
+        (STATE_TABLE, "high_water_ms", "bridge_actor_v2_state_monotonic"),
+        (ENVELOPE_TABLE, "issued_at_ms", "bridge_actor_v2_envelope_immutable"),
+        (EVIDENCE_TABLE, "occurred_at_ms", "bridge_actor_v2_evidence_no_update"),
+        (AUDIT_TABLE, "occurred_at_ms", "bridge_actor_v2_audit_no_update"),
+    ],
+)
+def test_real_storage_for_sealed_timestamps_quarantines_before_coercion(
+    tmp_path: Path,
+    table: str,
+    column: str,
+    trigger_name: str,
+):
+    clock = MutableClock()
+    store = _store(tmp_path, clock=clock)
+    envelope = _issue(store)
+    clock.value += 1_000
+    assert _verify(store, envelope).accepted is True
+
+    with connect(store.db_path) as conn:
+        conn.execute(f"DROP TRIGGER {trigger_name}")
+        conn.execute(f"UPDATE {table} SET {column}={column}+0.5")
+        conn.executescript(IMMUTABILITY_TRIGGER_DDL[trigger_name])
+        storage_classes = {
+            row["storage_class"]
+            for row in conn.execute(
+                f"SELECT typeof({column}) AS storage_class FROM {table}"
+            )
+        }
+    assert storage_classes == {"real"}
+
+    restarted = _store(tmp_path, clock=clock)
+    assert restarted.quarantined is True
+    assert restarted.status_reason == "sealed_state_integrity_failure"
+    assert restarted.full_audit().reason == "sealed_state_integrity_failure"
+
+
+def test_blob_storage_for_sealed_text_quarantines_before_string_coercion(
+    tmp_path: Path,
+):
+    clock = MutableClock()
+    store = _store(tmp_path, clock=clock)
+    _issue(store)
+    trigger_name = "bridge_actor_v2_envelope_immutable"
+    with connect(store.db_path) as conn:
+        conn.execute(f"DROP TRIGGER {trigger_name}")
+        conn.execute(
+            f"UPDATE {ENVELOPE_TABLE} SET body_hmac=CAST(body_hmac AS BLOB)"
+        )
+        conn.executescript(IMMUTABILITY_TRIGGER_DDL[trigger_name])
+        storage_class = conn.execute(
+            f"SELECT typeof(body_hmac) FROM {ENVELOPE_TABLE}"
+        ).fetchone()[0]
+    assert storage_class == "blob"
+
+    restarted = _store(tmp_path, clock=clock)
+    assert restarted.quarantined is True
+    assert restarted.status_reason == "sealed_state_integrity_failure"
+
+
 def test_anchor_schema_substitution_quarantines_before_issue(tmp_path: Path):
     clock = MutableClock()
     anchor = actor_mod.SQLiteMonotonicAnchor(tmp_path / "anchor-schema.sqlite3")
@@ -779,6 +1103,60 @@ def test_anchor_schema_substitution_quarantines_before_issue(tmp_path: Path):
     assert store.quarantined is True
     assert clock.calls == calls
     assert _rows(store.db_path, ENVELOPE_TABLE) == []
+
+
+def test_anchor_extra_index_and_real_revision_quarantine_as_schema_tamper(
+    tmp_path: Path,
+):
+    clock = MutableClock()
+    anchor = actor_mod.SQLiteMonotonicAnchor(tmp_path / "anchor-storage.sqlite3")
+    store = _store(
+        tmp_path,
+        clock=clock,
+        anchor=anchor,
+        anchor_name="unused.sqlite3",
+    )
+    with connect(anchor.db_path) as conn:
+        conn.execute(
+            "CREATE INDEX bridge_actor_anchor_unexpected_idx "
+            "ON bridge_actor_monotonic_anchor(revision)"
+        )
+
+    with pytest.raises(actor_mod.BridgeActorQuarantinedError) as quarantined:
+        _issue(store, discord_event_id="blocked-by-anchor-extra-index")
+    assert quarantined.value.reason == "anchor_schema_definition_mismatch"
+
+    real_anchor = actor_mod.SQLiteMonotonicAnchor(tmp_path / "anchor-real.sqlite3")
+    real_store = _store(
+        tmp_path,
+        clock=clock,
+        anchor=real_anchor,
+        db_name="bridge-actors-real-anchor.sqlite3",
+        anchor_name="unused-real.sqlite3",
+    )
+    with connect(real_anchor.db_path) as conn:
+        conn.execute("DROP TRIGGER bridge_actor_anchor_monotonic")
+        conn.execute(
+            "UPDATE bridge_actor_monotonic_anchor SET revision=revision+0.5"
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER bridge_actor_anchor_monotonic
+            BEFORE UPDATE ON bridge_actor_monotonic_anchor
+            WHEN NEW.revision <= OLD.revision
+            BEGIN
+                SELECT RAISE(ABORT, 'bridge actor anchor must advance');
+            END
+            """
+        )
+        storage_class = conn.execute(
+            "SELECT typeof(revision) FROM bridge_actor_monotonic_anchor"
+        ).fetchone()[0]
+    assert storage_class == "real"
+
+    with pytest.raises(actor_mod.BridgeActorQuarantinedError) as quarantined:
+        _issue(real_store, discord_event_id="blocked-by-anchor-real-revision")
+    assert quarantined.value.reason == "anchor_schema_definition_mismatch"
 
 
 def test_routine_issue_and_consume_do_not_run_exhaustive_count_scan(

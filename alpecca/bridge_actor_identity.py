@@ -1,11 +1,13 @@
 """Model-free signed guest identity for one trusted Discord bridge boundary.
 
-The store instance is the issuer/verifier capability.  Its service, platform,
-adapter boundary, clock, policy, key version, database, and external monotonic
-anchor are fixed at construction.  Public issue and verify operations accept
-the actual bounded request bytes and server-derived Discord identifiers; they
-do not accept identity, service, platform, principal, timestamp, or digest
-assertions.
+The store instance is the issuer/verifier capability.  Its value configuration
+is snapshotted, and ordinary attribute assignment cannot rebind its database,
+clock, or monotonic anchor after construction.  The injected clock and anchor
+are nevertheless trusted mutable capabilities; their implementations and
+mutable state remain part of the trusted computing base.  Public issue and
+verify operations accept the actual bounded request bytes and server-derived
+Discord identifiers; they do not accept identity, service, platform,
+principal, timestamp, or digest assertions.
 
 Only domain-separated HMACs of request bytes and external identifiers cross the
 transport or persistence boundary.  Every verified actor is structurally a
@@ -33,6 +35,7 @@ ENVELOPE_VERSION = 2
 EVIDENCE_VERSION = 2
 SUPPORTED_POLICY_VERSION = 1
 MIN_KEY_BYTES = 32
+SQLITE_INT64_MAX = (1 << 63) - 1
 GUILD_PARTICIPATION_ENABLED = False
 VOICE_ENABLED = False
 
@@ -193,6 +196,7 @@ _ENVELOPE_FIELDS = frozenset(
         "seal",
     }
 )
+_MAX_ENVELOPE_FIELD_CHARS = max(len(field) for field in _ENVELOPE_FIELDS)
 
 
 class BridgeActorIdentityError(ValueError):
@@ -228,7 +232,7 @@ class BridgeActorFutureClockError(BridgeActorClockError):
 
 
 class BridgeActorNotReadyError(BridgeActorIntegrityError):
-    """The external anchor has not passed the recovery gate."""
+    """The injected anchor has not passed the recovery gate."""
 
     def __init__(self, reason: str) -> None:
         self.reason = reason
@@ -241,6 +245,23 @@ class BridgeActorQuarantinedError(BridgeActorIntegrityError):
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason.replace("_", " "))
+
+
+def _sqlite_text(value: object, name: str) -> str:
+    if type(value) is not str:
+        raise BridgeActorIdentityError(f"{name} must use SQLite TEXT storage")
+    return value
+
+
+def _sqlite_integer(
+    value: object,
+    name: str,
+    *,
+    positive: bool = False,
+) -> int:
+    if type(value) is not int:
+        raise BridgeActorIdentityError(f"{name} must use SQLite INTEGER storage")
+    return _nonnegative_int(value, name, positive=positive)
 
 
 def _schema_fingerprint(sql: object) -> str:
@@ -264,19 +285,55 @@ def _verify_schema_manifest(
         f"WHERE name IN ({placeholders})",
         names,
     ).fetchall()
-    found = {str(row["name"]): row for row in rows}
+    try:
+        found = {_sqlite_text(row["name"], "schema object name"): row for row in rows}
+    except (KeyError, BridgeActorIdentityError) as exc:
+        raise BridgeActorSchemaError("schema_definition_mismatch") from exc
     for name, (expected_type, expected_table, expected_fingerprint) in manifest.items():
         row = found.get(name)
         if row is None:
             if allow_missing:
                 continue
             raise BridgeActorSchemaError("schema_object_missing")
+        try:
+            actual_type = _sqlite_text(row["type"], "schema object type")
+            actual_table = _sqlite_text(row["tbl_name"], "schema table name")
+        except (KeyError, BridgeActorIdentityError) as exc:
+            raise BridgeActorSchemaError("schema_definition_mismatch") from exc
         if (
-            str(row["type"]) != expected_type
-            or str(row["tbl_name"]) != expected_table
+            actual_type != expected_type
+            or actual_table != expected_table
             or _schema_fingerprint(row["sql"]) != expected_fingerprint
         ):
             raise BridgeActorSchemaError("schema_definition_mismatch")
+
+    protected_tables = tuple(
+        name for name, (object_type, _table, _fingerprint) in manifest.items()
+        if object_type == "table"
+    )
+    expected_behavior = {
+        name for name, (object_type, table, _fingerprint) in manifest.items()
+        if object_type in {"index", "trigger"} and table in protected_tables
+    }
+    table_placeholders = ",".join("?" for _table in protected_tables)
+    behavior_rows = conn.execute(
+        "SELECT type,name,tbl_name FROM sqlite_master "
+        "WHERE type IN ('index','trigger') AND sql IS NOT NULL "
+        f"AND tbl_name IN ({table_placeholders})",
+        protected_tables,
+    ).fetchall()
+    try:
+        actual_behavior = {
+            _sqlite_text(row["name"], "schema behavior object name")
+            for row in behavior_rows
+        }
+        for row in behavior_rows:
+            _sqlite_text(row["type"], "schema behavior object type")
+            _sqlite_text(row["tbl_name"], "schema behavior table name")
+    except (KeyError, BridgeActorIdentityError) as exc:
+        raise BridgeActorSchemaError("schema_definition_mismatch") from exc
+    if actual_behavior - expected_behavior:
+        raise BridgeActorSchemaError("schema_extra_behavior_object")
 
 
 def _schema_manifest_has_objects(
@@ -367,7 +424,11 @@ class AnchorState:
 
 
 class MonotonicAnchor(Protocol):
-    """External rollback anchor. Implementations must provide atomic CAS."""
+    """Trusted mutable rollback anchor with atomic compare-and-swap.
+
+    Production implementations must persist in a failure domain independent
+    from the actor database and its backup/restore mechanism.
+    """
 
     def read(self, namespace: str) -> AnchorState | None:
         ...
@@ -382,12 +443,17 @@ class MonotonicAnchor(Protocol):
 
 
 class SQLiteMonotonicAnchor:
-    """Multi-process-safe external anchor in a separate SQLite database."""
+    """Development-only rollback detector in a separate SQLite file.
+
+    This implementation is multi-process safe, but a coordinated restore of
+    both SQLite files is undetectable.  Production must inject a
+    :class:`MonotonicAnchor` backed by a separate failure domain.
+    """
 
     __slots__ = ("_db_path",)
 
     def __setattr__(self, name: str, value: object) -> None:
-        raise AttributeError("SQLite monotonic anchor dependencies are immutable")
+        raise AttributeError("SQLite monotonic anchor path rejects reassignment")
 
     def __init__(self, db_path: str | Path) -> None:
         object.__setattr__(self, "_db_path", Path(db_path))
@@ -442,10 +508,16 @@ class SQLiteMonotonicAnchor:
             ).fetchone()
         if row is None:
             return None
-        return AnchorState(
-            revision=_nonnegative_int(row["revision"], "anchor revision"),
-            chain_head=_hmac_value(row["chain_head"], "anchor chain head"),
-        )
+        try:
+            return AnchorState(
+                revision=_sqlite_integer(row["revision"], "anchor revision"),
+                chain_head=_hmac_value(
+                    _sqlite_text(row["chain_head"], "anchor chain head"),
+                    "anchor chain head",
+                ),
+            )
+        except (KeyError, BridgeActorIdentityError) as exc:
+            raise BridgeActorSchemaError("anchor_storage_class_mismatch") from exc
 
     def compare_and_swap(
         self,
@@ -477,7 +549,16 @@ class SQLiteMonotonicAnchor:
                 return True
             if row is None:
                 return False
-            current = AnchorState(int(row["revision"]), str(row["chain_head"]))
+            try:
+                current = AnchorState(
+                    _sqlite_integer(row["revision"], "anchor revision"),
+                    _hmac_value(
+                        _sqlite_text(row["chain_head"], "anchor chain head"),
+                        "anchor chain head",
+                    ),
+                )
+            except (KeyError, BridgeActorIdentityError) as exc:
+                raise BridgeActorSchemaError("anchor_storage_class_mismatch") from exc
             if current != expected or replacement.revision <= current.revision:
                 return False
             updated = conn.execute(
@@ -509,32 +590,46 @@ def _canonical(value: object) -> str:
 
 
 def _public_label(value: object, name: str) -> str:
-    if not isinstance(value, str) or _LABEL_RE.fullmatch(value) is None:
+    if (
+        type(value) is not str
+        or not 1 <= len(value) <= 64
+        or _LABEL_RE.fullmatch(value) is None
+    ):
         raise BridgeActorIdentityError(f"{name} must be a bounded public label")
     return value
 
 
 def _hmac_value(value: object, name: str) -> str:
-    if not isinstance(value, str) or _HMAC_RE.fullmatch(value) is None:
+    if (
+        type(value) is not str
+        or len(value) != 64
+        or _HMAC_RE.fullmatch(value) is None
+    ):
         raise BridgeActorIdentityError(f"{name} must be a keyed HMAC")
     return value
 
 
 def _nonnegative_int(value: object, name: str, *, positive: bool = False) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
+    if type(value) is not int:
         raise BridgeActorIdentityError(f"{name} must be an integer")
     minimum = 1 if positive else 0
-    if value < minimum:
+    if value < minimum or value > SQLITE_INT64_MAX:
         raise BridgeActorIdentityError(f"{name} is out of range")
     return value
 
 
 def _body_bytes(value: object, maximum: int) -> bytes:
-    if not isinstance(value, (bytes, bytearray, memoryview)):
+    if type(value) not in {bytes, bytearray, memoryview}:
         raise BridgeActorIdentityError("request_body must be bytes-like")
-    body = bytes(value)
-    if len(body) > maximum:
+    size = value.nbytes if isinstance(value, memoryview) else len(value)
+    if size > maximum:
         raise BridgeActorIdentityError("request_body exceeds the bounded byte limit")
+    try:
+        body = value if type(value) is bytes else bytes(value)
+    except (BufferError, TypeError, ValueError) as exc:
+        raise BridgeActorIdentityError("request_body must be bytes-like") from exc
+    if len(body) != size:
+        raise BridgeActorIdentityError("request_body has an invalid buffer shape")
     return body
 
 
@@ -549,17 +644,25 @@ def _external_id(
         if optional:
             return False, ""
         raise BridgeActorIdentityError(f"{name} is required")
-    if isinstance(value, bool):
-        raise BridgeActorIdentityError(f"{name} is invalid")
-    if isinstance(value, int):
+    if type(value) is int:
         if value < 0:
             raise BridgeActorIdentityError(f"{name} is invalid")
-        text = str(value)
-    elif isinstance(value, str):
+        if value.bit_length() > maximum * 4:
+            raise BridgeActorIdentityError(f"{name} is invalid")
+        try:
+            text = str(value)
+        except ValueError as exc:
+            raise BridgeActorIdentityError(f"{name} is invalid") from exc
+    elif type(value) is str:
         text = value
     else:
         raise BridgeActorIdentityError(f"{name} is invalid")
-    encoded = text.encode("utf-8")
+    if len(text) > maximum:
+        raise BridgeActorIdentityError(f"{name} is invalid")
+    try:
+        encoded = text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise BridgeActorIdentityError(f"{name} is invalid") from exc
     if (
         not encoded
         or len(encoded) > maximum
@@ -849,31 +952,52 @@ def _parse_envelope(
     *,
     max_transport_bytes: int,
 ) -> BridgeActorEnvelope:
-    if isinstance(value, BridgeActorEnvelope):
+    if type(value) is BridgeActorEnvelope:
         data = value.as_dict()
-    elif isinstance(value, str):
-        if len(value.encode("utf-8")) > max_transport_bytes:
+    elif type(value) is str:
+        if len(value) > max_transport_bytes:
             raise BridgeActorIdentityError("actor envelope is malformed")
         try:
+            encoded = value.encode("utf-8")
+            if len(encoded) > max_transport_bytes:
+                raise BridgeActorIdentityError("actor envelope is malformed")
             parsed = json.loads(value, object_pairs_hook=_without_duplicate_keys)
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        except (
+            RecursionError,
+            TypeError,
+            ValueError,
+            UnicodeError,
+            json.JSONDecodeError,
+        ) as exc:
             raise BridgeActorIdentityError("actor envelope is malformed") from exc
         if not isinstance(parsed, dict):
             raise BridgeActorIdentityError("actor envelope is malformed")
         data = parsed
     elif isinstance(value, Mapping):
         try:
-            data = dict(value)
-        except (TypeError, ValueError) as exc:
+            if len(value) != len(_ENVELOPE_FIELDS):
+                raise BridgeActorIdentityError("actor envelope is malformed")
+            data: dict[str, object] = {}
+            for index, key in enumerate(value):
+                if (
+                    index >= len(_ENVELOPE_FIELDS)
+                    or type(key) is not str
+                    or len(key) > _MAX_ENVELOPE_FIELD_CHARS
+                ):
+                    raise BridgeActorIdentityError("actor envelope is malformed")
+                if key in data:
+                    raise BridgeActorIdentityError("actor envelope is malformed")
+                data[key] = value[key]
+        except Exception as exc:
+            if isinstance(exc, BridgeActorIdentityError):
+                raise
             raise BridgeActorIdentityError("actor envelope is malformed") from exc
-        if len(_canonical(data).encode("utf-8")) > max_transport_bytes:
-            raise BridgeActorIdentityError("actor envelope is malformed")
     else:
         raise BridgeActorIdentityError("actor envelope is malformed")
     if set(data) != _ENVELOPE_FIELDS:
         raise BridgeActorIdentityError("actor envelope is malformed")
     try:
-        return BridgeActorEnvelope(
+        envelope = BridgeActorEnvelope(
             envelope_version=_nonnegative_int(
                 data["envelope_version"], "envelope version", positive=True
             ),
@@ -905,12 +1029,21 @@ def _parse_envelope(
             envelope_id=_hmac_value(data["envelope_id"], "envelope id"),
             seal=_hmac_value(data["seal"], "envelope seal"),
         )
+        if len(_canonical(envelope.as_dict()).encode("utf-8")) > max_transport_bytes:
+            raise BridgeActorIdentityError("actor envelope is malformed")
+        return envelope
     except (KeyError, TypeError, ValueError, BridgeActorIdentityError) as exc:
         raise BridgeActorIdentityError("actor envelope is malformed") from exc
 
 
 class BridgeActorIdentityStore:
-    """Constructor-bound issuer/verifier with durable rollback detection."""
+    """Constructor-bound issuer/verifier with anchor-backed rollback detection.
+
+    Policy and boundary values are copied.  The injected clock and anchor are
+    trusted mutable capabilities whose bindings reject ordinary attribute
+    reassignment.  Rollback detection is only as independent as the injected
+    anchor's failure domain.
+    """
 
     __slots__ = (
         "_db_path",
@@ -929,9 +1062,9 @@ class BridgeActorIdentityStore:
         "_boundary_hmac",
         "_genesis_head",
         "_anchor_namespace",
-        "_dependencies_frozen",
+        "_bindings_frozen",
     )
-    _FROZEN_DEPENDENCY_SLOTS = frozenset(
+    _FROZEN_BINDING_SLOTS = frozenset(
         {
             "_db_path",
             "_key",
@@ -943,7 +1076,7 @@ class BridgeActorIdentityStore:
             "_boundary_hmac",
             "_genesis_head",
             "_anchor_namespace",
-            "_dependencies_frozen",
+            "_bindings_frozen",
         }
     )
     guild_participation_enabled = False
@@ -951,10 +1084,10 @@ class BridgeActorIdentityStore:
 
     def __setattr__(self, name: str, value: object) -> None:
         if (
-            name in self._FROZEN_DEPENDENCY_SLOTS
-            and getattr(self, "_dependencies_frozen", False)
+            name in self._FROZEN_BINDING_SLOTS
+            and getattr(self, "_bindings_frozen", False)
         ):
-            raise AttributeError("bridge actor constructor dependencies are immutable")
+            raise AttributeError("bridge actor constructor bindings cannot be rebound")
         object.__setattr__(self, name, value)
 
     def __init__(
@@ -968,7 +1101,7 @@ class BridgeActorIdentityStore:
         clock: TrustedClock,
         monotonic_anchor: MonotonicAnchor,
     ) -> None:
-        object.__setattr__(self, "_dependencies_frozen", False)
+        object.__setattr__(self, "_bindings_frozen", False)
         self._db_path = Path(db_path)
         if not isinstance(seal_key, (bytes, bytearray, memoryview)):
             raise TypeError("seal_key must be bytes-like key material")
@@ -1005,7 +1138,7 @@ class BridgeActorIdentityStore:
         self._anchor_ref = monotonic_anchor
         if isinstance(monotonic_anchor, SQLiteMonotonicAnchor):
             if monotonic_anchor.db_path.resolve() == self._db_path.resolve():
-                raise ValueError("monotonic anchor must be external to the actor database")
+                raise ValueError("monotonic anchor must not share the actor database file")
         self._schema_lock = threading.Lock()
         self._schema_ready = False
         self._status_lock = threading.Lock()
@@ -1045,7 +1178,7 @@ class BridgeActorIdentityStore:
                 "boundary_hmac": self._boundary_hmac,
             },
         )
-        object.__setattr__(self, "_dependencies_frozen", True)
+        object.__setattr__(self, "_bindings_frozen", True)
         try:
             self._ensure_schema()
         except BridgeActorSchemaError as exc:
@@ -1137,7 +1270,7 @@ class BridgeActorIdentityStore:
         except Exception as exc:
             raise BridgeActorClockError("trusted clock unavailable") from exc
         milliseconds = _nonnegative_int(value, "trusted clock timestamp")
-        if milliseconds > 9_223_372_036_854_775_807:
+        if milliseconds > SQLITE_INT64_MAX - self._policy.envelope_ttl_ms:
             raise BridgeActorClockError("trusted clock timestamp is out of range")
         return milliseconds
 
@@ -1391,20 +1524,30 @@ class BridgeActorIdentityStore:
         if row is None:
             raise BridgeActorIntegrityError("bridge actor state is missing")
         try:
+            if _sqlite_integer(row["singleton"], "state singleton", positive=True) != 1:
+                raise BridgeActorIdentityError("state singleton is invalid")
             state = _StoreState(
-                schema_version=int(row["schema_version"]),
-                policy_version=int(row["policy_version"]),
-                key_version=int(row["key_version"]),
-                service=str(row["service"]),
-                platform=str(row["platform"]),
-                boundary_hmac=str(row["boundary_hmac"]),
-                revision=int(row["revision"]),
-                chain_head=str(row["chain_head"]),
-                envelope_count=int(row["envelope_count"]),
-                evidence_count=int(row["evidence_count"]),
-                consumed_count=int(row["consumed_count"]),
-                high_water_ms=int(row["high_water_ms"]),
-                state_seal=str(row["state_seal"]),
+                schema_version=_sqlite_integer(row["schema_version"], "schema version"),
+                policy_version=_sqlite_integer(row["policy_version"], "policy version"),
+                key_version=_sqlite_integer(row["key_version"], "key version"),
+                service=_sqlite_text(row["service"], "stored service"),
+                platform=_sqlite_text(row["platform"], "stored platform"),
+                boundary_hmac=_sqlite_text(row["boundary_hmac"], "stored boundary HMAC"),
+                revision=_sqlite_integer(row["revision"], "stored revision"),
+                chain_head=_sqlite_text(row["chain_head"], "stored chain head"),
+                envelope_count=_sqlite_integer(
+                    row["envelope_count"], "stored envelope count"
+                ),
+                evidence_count=_sqlite_integer(
+                    row["evidence_count"], "stored evidence count"
+                ),
+                consumed_count=_sqlite_integer(
+                    row["consumed_count"], "stored consumed count"
+                ),
+                high_water_ms=_sqlite_integer(
+                    row["high_water_ms"], "stored clock high-water mark"
+                ),
+                state_seal=_sqlite_text(row["state_seal"], "stored state seal"),
             )
             _public_label(state.service, "stored service")
             _public_label(state.platform, "stored platform")
@@ -1478,13 +1621,22 @@ class BridgeActorIdentityStore:
         ).fetchone()
         if row is None:
             raise BridgeActorIntegrityError("bridge actor count evidence is missing")
-        actual = (
-            int(row["envelopes"]),
-            int(row["evidence"]),
-            int(row["audit_rows"]),
-            int(row["consumed"]),
-            int(row["accepts"]),
-        )
+        try:
+            actual = (
+                _sqlite_integer(row["envelopes"], "envelope row count"),
+                _sqlite_integer(row["evidence"], "evidence row count"),
+                _sqlite_integer(row["audit_rows"], "audit row count"),
+                _sqlite_integer(row["consumed"], "consumed row count"),
+                _sqlite_integer(row["accepts"], "accepted row count"),
+            )
+            consumed_without_accept = _sqlite_integer(
+                row["consumed_without_accept"], "unmatched consumed row count"
+            )
+            accept_without_consumed = _sqlite_integer(
+                row["accept_without_consumed"], "unmatched accepted row count"
+            )
+        except (KeyError, BridgeActorIdentityError) as exc:
+            raise BridgeActorIntegrityError("bridge actor count evidence is malformed") from exc
         expected = (
             state.envelope_count,
             state.evidence_count,
@@ -1492,9 +1644,7 @@ class BridgeActorIdentityStore:
             state.consumed_count,
             state.consumed_count,
         )
-        if actual != expected or int(row["consumed_without_accept"]) or int(
-            row["accept_without_consumed"]
-        ):
+        if actual != expected or consumed_without_accept or accept_without_consumed:
             raise BridgeActorIntegrityError("bridge actor database was truncated or diverged")
 
     def _check_bounded_state(
@@ -1512,10 +1662,23 @@ class BridgeActorIdentityStore:
                     "bridge actor audit exists before the first revision"
                 )
             return
+        try:
+            latest_revision = (
+                None
+                if latest is None
+                else _sqlite_integer(latest["revision"], "latest audit revision")
+            )
+            latest_head = (
+                None
+                if latest is None
+                else _sqlite_text(latest["chain_head"], "latest audit chain head")
+            )
+        except (KeyError, BridgeActorIdentityError) as exc:
+            raise BridgeActorIntegrityError("latest audit state is malformed") from exc
         if (
-            latest is None
-            or int(latest["revision"]) != state.revision
-            or not hmac.compare_digest(str(latest["chain_head"]), state.chain_head)
+            latest_revision != state.revision
+            or latest_head is None
+            or not hmac.compare_digest(latest_head, state.chain_head)
         ):
             raise BridgeActorIntegrityError(
                 "bridge actor latest audit state does not match"
@@ -1543,10 +1706,8 @@ class BridgeActorIdentityStore:
         replacement: AnchorState,
     ) -> bool:
         try:
-            return bool(
-                self._anchor_ref.compare_and_swap(
-                    self._anchor_namespace, expected, replacement
-                )
+            result = self._anchor_ref.compare_and_swap(
+                self._anchor_namespace, expected, replacement
             )
         except BridgeActorSchemaError as exc:
             raise BridgeActorQuarantinedError(
@@ -1554,6 +1715,9 @@ class BridgeActorIdentityStore:
             ) from exc
         except Exception as exc:
             raise BridgeActorNotReadyError("monotonic_anchor_unavailable") from exc
+        if type(result) is not bool:
+            raise BridgeActorNotReadyError("monotonic_anchor_invalid")
+        return result
 
     def _automatic_recovery_gate(self) -> None:
         if self.quarantined:
@@ -1645,7 +1809,13 @@ class BridgeActorIdentityStore:
         ).fetchone()
         if first is None:
             raise BridgeActorIntegrityError("incremental audit row is missing")
-        previous = _hmac_value(first["previous_head"], "audit previous head")
+        try:
+            previous = _hmac_value(
+                _sqlite_text(first["previous_head"], "audit previous head"),
+                "audit previous head",
+            )
+        except (KeyError, BridgeActorIdentityError) as exc:
+            raise BridgeActorIntegrityError("incremental audit row is malformed") from exc
         self._verify_chain_range(
             conn,
             start_revision=start,
@@ -1671,15 +1841,21 @@ class BridgeActorIdentityStore:
     def _row_audit(self, row: sqlite3.Row) -> _AuditRow:
         try:
             audit = _AuditRow(
-                revision=int(row["revision"]),
-                previous_head=str(row["previous_head"]),
-                operation=str(row["operation"]),
-                object_id=str(row["object_id"]),
-                envelope_id=str(row["envelope_id"]),
-                record_hmac=str(row["record_hmac"]),
-                occurred_at_ms=int(row["occurred_at_ms"]),
-                chain_head=str(row["chain_head"]),
-                audit_seal=str(row["audit_seal"]),
+                revision=_sqlite_integer(
+                    row["revision"], "audit revision", positive=True
+                ),
+                previous_head=_sqlite_text(
+                    row["previous_head"], "audit previous head"
+                ),
+                operation=_sqlite_text(row["operation"], "audit operation"),
+                object_id=_sqlite_text(row["object_id"], "audit object id"),
+                envelope_id=_sqlite_text(row["envelope_id"], "audit envelope id"),
+                record_hmac=_sqlite_text(row["record_hmac"], "audit record HMAC"),
+                occurred_at_ms=_sqlite_integer(
+                    row["occurred_at_ms"], "audit timestamp"
+                ),
+                chain_head=_sqlite_text(row["chain_head"], "audit chain head"),
+                audit_seal=_sqlite_text(row["audit_seal"], "audit seal"),
             )
             _nonnegative_int(audit.revision, "audit revision", positive=True)
             _hmac_value(audit.previous_head, "audit previous head")
@@ -1870,7 +2046,7 @@ class BridgeActorIdentityStore:
                 if current is None:
                     raise BridgeActorQuarantinedError("monotonic_anchor_missing")
                 if current.revision > target.revision:
-                    return
+                    raise BridgeActorQuarantinedError("database_snapshot_rollback")
                 if current.revision == target.revision:
                     if not hmac.compare_digest(current.chain_head, target.chain_head):
                         raise BridgeActorQuarantinedError(
@@ -2168,42 +2344,76 @@ class BridgeActorIdentityStore:
         self,
         value: BridgeActorEnvelope | Mapping[str, object] | str,
     ) -> str:
-        try:
-            if isinstance(value, BridgeActorEnvelope):
-                payload = value.encode().encode("utf-8")
-            elif isinstance(value, str):
-                payload = value.encode("utf-8")
-            elif isinstance(value, Mapping):
-                payload = _canonical(dict(value)).encode("utf-8")
-            else:
-                payload = type(value).__name__.encode("ascii", errors="replace")
-        except (TypeError, ValueError, BridgeActorIdentityError):
-            payload = b"unserializable"
+        maximum = self._policy.max_transport_bytes
+        if type(value) is str:
+            bounded = value[: maximum + 1]
+            payload = b"string\x00" + bounded.encode(
+                "utf-8", errors="backslashreplace"
+            )
+        elif type(value) is BridgeActorEnvelope:
+            payload = b"malformed-envelope-object"
+        elif isinstance(value, Mapping):
+            try:
+                size = len(value)
+            except Exception:
+                size = -1
+            payload = f"malformed-mapping:{size}".encode("ascii", errors="replace")
+        else:
+            type_name = type(value).__name__[:128]
+            payload = type_name.encode("ascii", errors="replace")
         if len(payload) > self._policy.max_transport_bytes:
             payload = payload[: self._policy.max_transport_bytes]
+        return self._hmac_bytes(_CANDIDATE_DOMAIN, payload)
+
+    def _parsed_candidate_reference(self, envelope: BridgeActorEnvelope) -> str:
+        payload = envelope.encode().encode("ascii")
         return self._hmac_bytes(_CANDIDATE_DOMAIN, payload)
 
     def _row_envelope(self, row: sqlite3.Row) -> BridgeActorEnvelope:
         try:
             envelope = BridgeActorEnvelope(
-                envelope_version=int(row["envelope_version"]),
-                schema_version=int(row["schema_version"]),
-                policy_version=int(row["policy_version"]),
-                key_version=int(row["key_version"]),
-                service=str(row["service"]),
-                platform=str(row["platform"]),
-                boundary_hmac=str(row["boundary_hmac"]),
-                actor_subject_hmac=str(row["actor_subject_hmac"]),
-                guild_scope_hmac=str(row["guild_scope_hmac"]),
-                channel_scope_hmac=str(row["channel_scope_hmac"]),
-                thread_scope_hmac=str(row["thread_scope_hmac"]),
-                event_id_hmac=str(row["event_id_hmac"]),
-                body_hmac=str(row["body_hmac"]),
-                nonce_hmac=str(row["nonce_hmac"]),
-                issued_at_ms=int(row["issued_at_ms"]),
-                expires_at_ms=int(row["expires_at_ms"]),
-                envelope_id=str(row["envelope_id"]),
-                seal=str(row["envelope_seal"]),
+                envelope_version=_sqlite_integer(
+                    row["envelope_version"], "stored envelope version", positive=True
+                ),
+                schema_version=_sqlite_integer(
+                    row["schema_version"], "stored schema version", positive=True
+                ),
+                policy_version=_sqlite_integer(
+                    row["policy_version"], "stored policy version", positive=True
+                ),
+                key_version=_sqlite_integer(
+                    row["key_version"], "stored key version", positive=True
+                ),
+                service=_sqlite_text(row["service"], "stored envelope service"),
+                platform=_sqlite_text(row["platform"], "stored envelope platform"),
+                boundary_hmac=_sqlite_text(
+                    row["boundary_hmac"], "stored envelope boundary HMAC"
+                ),
+                actor_subject_hmac=_sqlite_text(
+                    row["actor_subject_hmac"], "stored actor subject HMAC"
+                ),
+                guild_scope_hmac=_sqlite_text(
+                    row["guild_scope_hmac"], "stored guild scope HMAC"
+                ),
+                channel_scope_hmac=_sqlite_text(
+                    row["channel_scope_hmac"], "stored channel scope HMAC"
+                ),
+                thread_scope_hmac=_sqlite_text(
+                    row["thread_scope_hmac"], "stored thread scope HMAC"
+                ),
+                event_id_hmac=_sqlite_text(
+                    row["event_id_hmac"], "stored event id HMAC"
+                ),
+                body_hmac=_sqlite_text(row["body_hmac"], "stored body HMAC"),
+                nonce_hmac=_sqlite_text(row["nonce_hmac"], "stored nonce HMAC"),
+                issued_at_ms=_sqlite_integer(
+                    row["issued_at_ms"], "stored issued timestamp"
+                ),
+                expires_at_ms=_sqlite_integer(
+                    row["expires_at_ms"], "stored expiry timestamp", positive=True
+                ),
+                envelope_id=_sqlite_text(row["envelope_id"], "stored envelope id"),
+                seal=_sqlite_text(row["envelope_seal"], "stored envelope seal"),
             )
             _parse_envelope(
                 envelope, max_transport_bytes=self._policy.max_transport_bytes
@@ -2215,7 +2425,7 @@ class BridgeActorIdentityStore:
         consumed = row["consumed_at_ms"]
         if consumed is not None:
             try:
-                consumed_at = _nonnegative_int(consumed, "consumed timestamp")
+                consumed_at = _sqlite_integer(consumed, "consumed timestamp")
             except BridgeActorIdentityError as exc:
                 raise BridgeActorIntegrityError("stored nonce state is malformed") from exc
             if consumed_at < envelope.issued_at_ms:
@@ -2321,30 +2531,65 @@ class BridgeActorIdentityStore:
 
     def _row_evidence(self, row: sqlite3.Row) -> ActorDecisionEvidence:
         try:
+            _sqlite_integer(row["evidence_seq"], "evidence sequence", positive=True)
             evidence = ActorDecisionEvidence(
                 _factory=_FACTORY,
-                evidence_id=str(row["evidence_id"]),
-                evidence_version=int(row["evidence_version"]),
-                schema_version=int(row["schema_version"]),
-                policy_version=int(row["policy_version"]),
-                key_version=int(row["key_version"]),
-                decision=str(row["decision"]),
-                reason=str(row["reason"]),
-                service=str(row["service"]),
-                platform=str(row["platform"]),
-                boundary_hmac=str(row["boundary_hmac"]),
-                envelope_id=str(row["envelope_id"]),
-                actor_subject_hmac=str(row["actor_subject_hmac"]),
-                guild_scope_hmac=str(row["guild_scope_hmac"]),
-                channel_scope_hmac=str(row["channel_scope_hmac"]),
-                thread_scope_hmac=str(row["thread_scope_hmac"]),
-                event_id_hmac=str(row["event_id_hmac"]),
-                body_hmac=str(row["body_hmac"]),
-                expires_at_ms=int(row["expires_at_ms"]),
-                occurred_at_ms=int(row["occurred_at_ms"]),
-                seal=str(row["evidence_seal"]),
+                evidence_id=_sqlite_text(row["evidence_id"], "stored evidence id"),
+                evidence_version=_sqlite_integer(
+                    row["evidence_version"], "stored evidence version", positive=True
+                ),
+                schema_version=_sqlite_integer(
+                    row["schema_version"], "stored evidence schema version", positive=True
+                ),
+                policy_version=_sqlite_integer(
+                    row["policy_version"], "stored evidence policy version", positive=True
+                ),
+                key_version=_sqlite_integer(
+                    row["key_version"], "stored evidence key version", positive=True
+                ),
+                decision=_sqlite_text(row["decision"], "stored evidence decision"),
+                reason=_sqlite_text(row["reason"], "stored evidence reason"),
+                service=_sqlite_text(row["service"], "stored evidence service"),
+                platform=_sqlite_text(row["platform"], "stored evidence platform"),
+                boundary_hmac=_sqlite_text(
+                    row["boundary_hmac"], "stored evidence boundary HMAC"
+                ),
+                envelope_id=_sqlite_text(
+                    row["envelope_id"], "stored evidence envelope id"
+                ),
+                actor_subject_hmac=_sqlite_text(
+                    row["actor_subject_hmac"], "stored evidence subject HMAC"
+                ),
+                guild_scope_hmac=_sqlite_text(
+                    row["guild_scope_hmac"], "stored evidence guild HMAC"
+                ),
+                channel_scope_hmac=_sqlite_text(
+                    row["channel_scope_hmac"], "stored evidence channel HMAC"
+                ),
+                thread_scope_hmac=_sqlite_text(
+                    row["thread_scope_hmac"], "stored evidence thread HMAC"
+                ),
+                event_id_hmac=_sqlite_text(
+                    row["event_id_hmac"], "stored evidence event HMAC"
+                ),
+                body_hmac=_sqlite_text(
+                    row["body_hmac"], "stored evidence body HMAC"
+                ),
+                expires_at_ms=_sqlite_integer(
+                    row["expires_at_ms"], "stored evidence expiry"
+                ),
+                occurred_at_ms=_sqlite_integer(
+                    row["occurred_at_ms"], "stored evidence timestamp"
+                ),
+                seal=_sqlite_text(row["evidence_seal"], "stored evidence seal"),
             )
-        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            BridgeActorIdentityError,
+        ) as exc:
             raise BridgeActorIntegrityError("stored bridge actor evidence is malformed") from exc
         self._validate_evidence(evidence)
         return evidence
@@ -2521,7 +2766,6 @@ class BridgeActorIdentityStore:
             channel_id=channel_id,
             thread_id=thread_id,
         )
-        candidate_reference = self._candidate_reference(envelope)
         try:
             parsed = _parse_envelope(
                 envelope, max_transport_bytes=self._policy.max_transport_bytes
@@ -2529,9 +2773,10 @@ class BridgeActorIdentityStore:
         except BridgeActorIdentityError:
             return self._deny_untrusted(
                 reason="malformed_envelope",
-                candidate_reference=candidate_reference,
+                candidate_reference=self._candidate_reference(envelope),
                 bindings=bindings,
             )
+        candidate_reference = self._parsed_candidate_reference(parsed)
         authenticity_reason = self._authenticity_reason(parsed)
         if authenticity_reason is not None:
             return self._deny_untrusted(
@@ -2723,9 +2968,17 @@ class BridgeActorIdentityStore:
                             raise BridgeActorIntegrityError(
                                 "anchored audit revision is missing"
                             )
-                        anchored_head = _hmac_value(
-                            anchored_row["chain_head"], "anchored audit head"
-                        )
+                        try:
+                            anchored_head = _hmac_value(
+                                _sqlite_text(
+                                    anchored_row["chain_head"], "anchored audit head"
+                                ),
+                                "anchored audit head",
+                            )
+                        except (KeyError, BridgeActorIdentityError) as exc:
+                            raise BridgeActorIntegrityError(
+                                "anchored audit row is malformed"
+                            ) from exc
                     if not hmac.compare_digest(anchor.chain_head, anchored_head):
                         reason = "database_snapshot_divergence"
                     elif reconcile_anchor:
@@ -2751,8 +3004,12 @@ class BridgeActorIdentityStore:
         if ok:
             self._set_ready()
         elif reason in {
+            "anchor_schema_definition_mismatch",
             "database_snapshot_rollback",
             "database_snapshot_divergence",
+            "schema_definition_mismatch",
+            "schema_extra_behavior_object",
+            "schema_object_missing",
             "sealed_state_integrity_failure",
             "monotonic_anchor_missing",
         }:
@@ -2796,6 +3053,7 @@ __all__ = [
     "MIN_KEY_BYTES",
     "MonotonicAnchor",
     "SCHEMA_VERSION",
+    "SQLITE_INT64_MAX",
     "SQLiteMonotonicAnchor",
     "SUPPORTED_POLICY_VERSION",
     "SystemTrustedClock",
