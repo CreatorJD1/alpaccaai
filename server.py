@@ -2412,7 +2412,11 @@ async def _auth_gate(request: Request, call_next):
                 origin,
             )
         return _with_cors(
-            _JSON({"detail": "authorization required"}, status_code=401),
+            _JSON(
+                {"detail": "authorization required"},
+                status_code=401,
+                headers={"Cache-Control": "no-store"},
+            ),
             origin,
         )
 
@@ -2435,7 +2439,11 @@ async def _auth_gate(request: Request, call_next):
             remote_addr=client_host,
         )
         return _with_cors(
-            _JSON({"detail": "same-origin request required"}, status_code=403),
+            _JSON(
+                {"detail": "same-origin request required"},
+                status_code=403,
+                headers={"Cache-Control": "no-store"},
+            ),
             origin,
         )
 
@@ -2950,9 +2958,17 @@ def growth() -> dict:
 def _require_creator_request(req: Request) -> auth_mod.AuthDecision:
     decision = getattr(req.state, "authorization", None)
     if not isinstance(decision, auth_mod.AuthDecision) or not decision.allowed:
-        raise HTTPException(status_code=401, detail="authorization required")
+        raise HTTPException(
+            status_code=401,
+            detail="authorization required",
+            headers={"Cache-Control": "no-store"},
+        )
     if decision.principal != "creator":
-        raise HTTPException(status_code=403, detail="creator authorization required")
+        raise HTTPException(
+            status_code=403,
+            detail="creator authorization required",
+            headers={"Cache-Control": "no-store"},
+        )
     return decision
 
 
@@ -3081,6 +3097,105 @@ def behavior_trial_creator_approve(trial_id: int, req: Request) -> JSONResponse:
         pass
     return JSONResponse(
         {"approved": True, "trial": summary},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/behavior-trials/{trial_id}/start")
+def behavior_trial_creator_start(trial_id: int, req: Request) -> JSONResponse:
+    """Start one already approved, creator-bound behavior trial.
+
+    This requires a fresh protected creator request and a recovered controller.
+    The route takes no browser-supplied runtime values or timestamps. A retry
+    of the same running trial is idempotent and re-verifies its binding; no
+    other state is eligible. It cannot approve, complete, or register a trial.
+    """
+    decision = _require_creator_request(req)
+    if not _behavior_trial_recovery_ready.is_set():
+        return _behavior_trial_recovery_response()
+    try:
+        current = behavior_trial_controller.get(trial_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="invalid behavior trial",
+            headers={"Cache-Control": "no-store"},
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial storage unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    if current is None:
+        raise HTTPException(
+            status_code=404,
+            detail="behavior trial not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    current_state = current.get("state")
+    if current_state not in {"approved", "running"}:
+        raise HTTPException(
+            status_code=409,
+            detail="only an approved behavior trial or its running retry can be started",
+            headers={"Cache-Control": "no-store"},
+        )
+    already_running = current_state == "running"
+    try:
+        updated = behavior_trial_controller.start(trial_id)
+    except ValueError as exc:
+        # The controller verifies the approval binding, exact preimage, and
+        # runtime readback. A rejected start cannot fall back to a mutation.
+        raise HTTPException(
+            status_code=409,
+            detail="behavior trial cannot be started",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial start unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    summary = _behavior_trial_public_summary(updated)
+    try:
+        started_at = float(updated["started_at"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial start result unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    if not already_running:
+        try:
+            cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                source="behavior_trial_creator_start",
+                content=(
+                    f"Creator started Alpecca behavior trial {summary['id']} for "
+                    "bounded evaluation."
+                ),
+                confidence=1.0,
+                privacy_class="local",
+                metadata={
+                    "trial_id": summary["id"],
+                    "scope": summary["scope"],
+                    "parameter": summary["parameter"],
+                    "metric": summary["metric"],
+                    "authorization": decision.mechanism,
+                    "started_at": started_at,
+                    "started": True,
+                },
+            ))
+        except Exception:
+            # Start is already durable; an auxiliary audit failure must not
+            # retry, complete, or roll back the behavior trial.
+            pass
+    return JSONResponse(
+        {
+            "running": True,
+            "already_running": already_running,
+            "trial": summary,
+        },
         headers={"Cache-Control": "no-store"},
     )
 

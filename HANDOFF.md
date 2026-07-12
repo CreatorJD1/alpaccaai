@@ -42,10 +42,16 @@ retained below as historical implementation evidence.
   action for an already registered trial. It accepts no browser-supplied proof,
   timestamp, or authorization mechanism: the server derives those facts from
   its protected authorization decision and returns only a sanitized summary.
-  Approval does not start, complete, or otherwise apply a runtime override.
-  There are no behavior-trial registration, start, completion, rollback, or
-  generic mutation routes, and no real trial. Phase 8C2 now has server-owned durable
-  `qualified_response_rate` outcomes before any start route: a typed chatter
+  Approval is separate from activation. Phase 8C6 adds the one creator-only,
+  recovery-gated `POST /behavior-trials/{trial_id}/start` action for an
+  approved trial, with an idempotent retry for that same running trial. It
+  accepts no browser-supplied runtime values or timestamp;
+  server time and the controller's binding, preimage, runtime-readback, and
+  one-active-trial checks govern activation. There are no behavior-trial
+  registration, completion, rollback, or generic mutation routes, and no trial
+  is running by default. Phase 8C2 now has server-owned durable
+  `qualified_response_rate` outcomes established before C6 added the
+  creator-triggered start route: a typed chatter
   candidate plus allowed initiative reserves a provisional row before a live
   creator portal send; only confirmed portal delivery enters the denominator;
   one authenticated, contentful, non-background creator WebSocket turn may
@@ -54,8 +60,8 @@ retained below as historical implementation evidence.
   sends are cancelled; confirmed expiry becomes unanswered; status exposes
   aggregate-only baseline/trial evidence through the existing protected
   `no-store` endpoint. No trial is running, so all evidence is baseline-only.
-  Phase 8C still needs a controlled start plus wired metric completion and
-  creator UI before any real behavior trial. Phase 8C3 now has a pure per-trial evaluation
+  Phase 8C still needs wired metric completion and creator UI before any real
+  behavior trial. Phase 8C3 now has a pure per-trial evaluation
   contract: aggregate outcome evidence is scoped by server-owned trial id and
   validated against the exact spec SHA-256, baseline, and sample threshold. It
   reports collecting/awaiting-settlement/creator-review readiness plus an
@@ -67,7 +73,8 @@ retained below as historical implementation evidence.
   `qualified_response_rate` at the same server-owned dispatch timestamp. Any
   recovery gap, expiry, tampering, missing override, or other metric records a
   baseline row instead. C4 itself added no approval, start, completion, or
-  mutation route; C5 separately adds approval-only, not trial activation.
+  mutation route; C5 separately adds approval-only and C6 adds only an
+  explicit creator start, with a binding-reverified running retry.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A rejects orthogonal and negative semantic matches. Phase 6B
   adds bounded sidecar Mindpage content-term indexing: new pages index after a
@@ -249,11 +256,12 @@ records `qualified_response_rate` outcomes only for confirmed typed chatter
 deliveries to a creator portal and matching authenticated creator WebSocket
 turns in the same scope/surface. It stores no message content, client scores,
 or caller-provided timestamps and exposes only aggregate evidence. No real trial
-is running, every row is baseline-only, and no start/completion/runtime-mutation
-route exists. Phase 8C5 now provides the server-derived authenticated creator
-approval action bound to an already validated specification; fixed metric
-collection/completion and creator UI are still required for a real behavior
-trial. Code, files,
+is running, every row is baseline-only, and no completion/runtime-mutation
+route exists beyond C5 approval and C6 explicit start. C6 accepts no client
+runtime values and calls the controller for an approved, creator-bound trial
+or an idempotent retry of that same running trial. Fixed metric
+collection/completion and creator UI are
+still required for a real behavior trial. Code, files,
 accounts, and operating-system changes remain outside the self-improvement
 surface.
 

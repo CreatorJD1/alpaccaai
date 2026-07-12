@@ -47,9 +47,14 @@ labels retained in historical plans and handoffs.
   action for an already registered trial. It accepts no browser-supplied proof,
   timestamp, or authorization mechanism: the server derives those facts from
   its protected authorization decision and returns only a sanitized summary.
-  Approval does not start, complete, or otherwise apply a runtime override.
-  There are no behavior-trial registration, start, completion, rollback, or
-  generic mutation routes, and no real trial. Phase 8C2 now provides the server-owned durable
+  Approval is separate from activation. Phase 8C6 adds the one creator-only,
+  recovery-gated `POST /behavior-trials/{trial_id}/start` action for an
+  approved trial, with an idempotent retry for that same running trial. It
+  accepts no browser-supplied runtime values or timestamp;
+  server time and the controller's binding, preimage, runtime-readback, and
+  one-active-trial checks govern activation. There are no behavior-trial
+  registration, completion, rollback, or generic mutation routes, and no trial
+  is running by default. Phase 8C2 now provides the server-owned durable
   `qualified_response_rate` evidence layer: only a typed `chatter` candidate
   with an allowed initiative that is confirmed delivered to the creator's live
   WebSocket/House HQ portal can enter the denominator. The ledger reserves a
@@ -59,10 +64,9 @@ labels retained in historical plans and handoffs.
   request identifiers, credentials, or client scores; failed sends are
   cancelled, expired confirmed sends become unanswered, and status exposes
   aggregate baseline/trial evidence only through the existing creator-only,
-  read-only, `no-store` endpoint. No real trial exists, so all current outcome
-  evidence is baseline-only. The broader Phase 8C plan still requires a
-  controlled start flow, wired metric collection/completion, and creator UI
-  before any real trial.
+  read-only, `no-store` endpoint. No trial is currently running, so all current
+  outcome evidence is baseline-only. The broader Phase 8C plan still requires a
+  wired metric collection/completion and creator UI before any real trial.
   Phase 8C3 now supplies the fixed, pure evaluation contract for a future
   `qualified_response_rate` trial: per-trial aggregate evidence is isolated by
   server-owned trial id and classified only as collecting, awaiting settlement,
@@ -76,7 +80,8 @@ labels retained in historical plans and handoffs.
   Only a valid running `qualified_response_rate` trial id is attached; recovery
   not ready, a missing/expired/tampered override, or another metric remains
   baseline-only. C4 itself adds no approval, start, completion, mutation, or
-  trial-management route; C5 separately adds approval-only, not activation.
+  trial-management route; C5 separately adds approval-only and C6 adds only an
+  explicit creator start, with a binding-reverified running retry.
 
   Phase 8C5 now exposes the approval-only action. It is creator-only,
   recovery-gated, and `no-store`; it derives principal, authorization
@@ -84,6 +89,15 @@ labels retained in historical plans and handoffs.
   accepting them from the browser. It logs a content-free CognitionObservation
   after durable approval and cannot register, start, complete, roll back, or
   change Alpecca's runtime behavior.
+
+  Phase 8C6 now exposes the separate start-only action. It is creator-only,
+  recovery-gated, and `no-store`; it accepts no browser-provided runtime value
+  or timestamp and starts only an approved trial. A repeat call for that same
+  running trial is idempotent and re-verifies its binding without a duplicate
+  audit observation. The controller must verify the creator binding, immutable
+  preimage, one-active-trial policy, and runtime readback. It logs a
+  content-free CognitionObservation after durable start and cannot approve,
+  complete, roll back, or register a trial.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A semantic-negative/orthogonal recall abstention and Phase 6B
   bounded sidecar content-term indexing are implemented and covered by focused

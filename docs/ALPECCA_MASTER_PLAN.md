@@ -163,7 +163,7 @@ They are not fixed Alpecca hardware.
 | Proactive/living behavior | BASELINE COMPLETE | Living ticks, proactive speech, and routines share one scoped budget; ignored outreach backs off and each proactive event selects one delivery surface |
 | Routines and watchers | PARTIAL | Empty/off by default; routine deletion and unified scheduling remain |
 | Background work coordination | PARTIAL | Timeouts do not cancel worker threads; optional jobs can overlap |
-| Recursive self-improvement | PARTIAL | Phase 8A contains legacy `selfmod` autonomy: idle lessons remain evidence and create/refresh a bounded creator-review card, while CoreMind starts/evaluates no `selfmod` trial. Phase 8B has an **INTERNAL** approval-proof-backed `BehaviorTrialController` only for `creator-personal` / `chatter_chance`: the database permits at most one active `approved` or `running` trial, and its runtime-only SQLite override has apply/readback/rollback, automatic expiry rollback, and startup recovery before CoreMind consumes it. Phase 8C1 makes the generic ledger retain immutable specs and the exact SHA-256 of each raw persisted spec, requires a creator-only `chatter_chance` binding sidecar HMAC-sealed in memory with the existing protected server authorization secret before runtime consumption, uses a read-only fail-closed chatter supplier plus recovery-gated off-`mind_lock` maintenance for expiry/integrity receipts, and exposes creator-only, read-only, `no-store` `GET /behavior-trials/status` only after recovery. Phase 8C2 records durable aggregate-only `qualified_response_rate` evidence from confirmed typed chatter portal deliveries and matching authenticated creator WebSocket turns; it stores no message content or client scores, and current evidence is baseline-only. Phase 8C5 adds one creator-only, recovery-gated, `no-store` approval action for an already registered trial, deriving authorization facts server-side and returning a sanitized summary. Approval does not start or apply an override. There are no registration, start, completion, rollback, or generic mutation routes, no real trial, and no automated behavior change. |
+| Recursive self-improvement | PARTIAL | Phase 8A contains legacy `selfmod` autonomy: idle lessons remain evidence and create/refresh a bounded creator-review card, while CoreMind starts/evaluates no `selfmod` trial. Phase 8B has an **INTERNAL** approval-proof-backed `BehaviorTrialController` only for `creator-personal` / `chatter_chance`: the database permits at most one active `approved` or `running` trial, and its runtime-only SQLite override has apply/readback/rollback, automatic expiry rollback, and startup recovery before CoreMind consumes it. Phase 8C1 makes the generic ledger retain immutable specs and the exact SHA-256 of each raw persisted spec, requires a creator-only `chatter_chance` binding sidecar HMAC-sealed in memory with the existing protected server authorization secret before runtime consumption, uses a read-only fail-closed chatter supplier plus recovery-gated off-`mind_lock` maintenance for expiry/integrity receipts, and exposes creator-only, read-only, `no-store` `GET /behavior-trials/status` only after recovery. Phase 8C2 records durable aggregate-only `qualified_response_rate` evidence from confirmed typed chatter portal deliveries and matching authenticated creator WebSocket turns; it stores no message content or client scores, and current evidence is baseline-only. Phase 8C5 adds server-derived, creator-only approval for an already registered trial. Phase 8C6 adds a separate creator-only start action for an approved trial, with an idempotent running retry that re-verifies the binding. There are no registration, completion, rollback, or generic mutation routes, no trial is running by default, and no automated behavior change. |
 | External action approvals | BLOCKED | Creator-only scoped approval works for read-only `self_status`; external or mutating action classes remain blocked |
 | MCP federation | PARKED | Largest external surface; no current companion-value need |
 
@@ -510,10 +510,10 @@ C4 itself does not create an approval, start, completion, evaluation-action, or
 mutation route. It only ensures that a later controlled running trial will not
 mix its evidence with baseline rows or an unrelated metric.
 
-#### Phase 8C5: Creator-triggered approval - COMPLETE, NO START ROUTE
+#### Phase 8C5: Creator-triggered approval - COMPLETE, APPROVAL ONLY
 
-`POST /behavior-trials/{trial_id}/approve` is the sole behavior-trial mutation
-route. It is creator-only, recovery-gated, and `Cache-Control: no-store`; it
+`POST /behavior-trials/{trial_id}/approve` was the first public behavior-trial
+mutation route. It is creator-only, recovery-gated, and `Cache-Control: no-store`; it
 has no request body and accepts no browser-provided proof, principal,
 authorization mechanism, or timestamp. The server derives all approval facts
 from its protected `AuthDecision` and its own clock, then calls the existing
@@ -527,14 +527,30 @@ requests fail closed. This route cannot register, start, complete, roll back,
 or apply a runtime override; a creator's approval alone changes no live
 Alpecca behavior.
 
-The broader Phase 8C plan remains incomplete: add a controlled start plus wired
-metric collection/completion path and creator UI before any real behavior trial.
-Any real trial must be
+#### Phase 8C6: Creator-triggered start - COMPLETE, NO COMPLETION ROUTE
+
+`POST /behavior-trials/{trial_id}/start` is creator-only, recovery-gated, and
+`Cache-Control: no-store`. It starts an already approved trial; a retry for the
+same running trial is idempotent and re-verifies its binding. It has no request
+body, ignores browser-provided timing or runtime values, and uses only server
+time. The underlying controller verifies the HMAC-backed
+creator binding, exact immutable preimage, one-active-trial policy, runtime
+apply/readback, and approved-to-running transition atomically.
+
+After a new durable start the server writes a content-free
+`CognitionObservation`; an idempotent running retry writes none. Missing,
+invalid, registered, terminal, unrecovered, or storage-failed requests fail
+closed. This route cannot register, approve, complete, roll back, or pass
+arbitrary runtime values. A C6 start is explicit; approval alone never
+activates a trial and no background path can start one.
+
+The broader Phase 8C plan remains incomplete: add wired metric
+collection/completion and creator UI before any real behavior trial. Any real
+trial must be
 reviewable against its hypothesis, exposure window, evidence, end time, and
 exact rollback. Code or system changes remain reviewable handoff proposals only.
 
-Exit gate remains unmet: it requires server-derived authenticated creator
-identity and approval bound to the exact validated specification, fixed metric
+Exit gate remains unmet: it requires a registered fixed hypothesis, fixed metric
 collection through a completion/evaluation loop, evidence, end time, and exact
 rollback; worsening trials must revert exactly; startup must recover interrupted
 runtime-only state; and source, shell, accounts, files, and OS must remain

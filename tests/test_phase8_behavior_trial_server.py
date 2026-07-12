@@ -135,6 +135,12 @@ class _CreatorApprovalController:
             raise ValueError("missing trial")
         return {**self.record, "state": "approved"}
 
+    def start(self, trial_id: int):
+        self.calls.append(("start", trial_id))
+        if trial_id != self.record["id"]:
+            raise ValueError("missing trial")
+        return {**self.record, "state": "running", "started_at": 175.0}
+
 
 class _DirectRequest:
     def __init__(self, authorization: object | None = None) -> None:
@@ -558,6 +564,187 @@ def test_creator_approval_asgi_rejects_anonymous_and_public_identity_spoof(monke
     assert controller.calls == []
 
 
+def test_creator_start_route_uses_server_time_after_explicit_creator_action(monkeypatch):
+    controller = _CreatorApprovalController(_trial_record(state="approved"))
+    observations: list[object] = []
+    decision = server.auth_mod.AuthDecision(
+        True,
+        "session_cookie",
+        "accepted",
+        principal="creator",
+        issued_at=100,
+        expires_at=200,
+    )
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(
+        server.cognition_mod, "record_observation", lambda observation: observations.append(observation)
+    )
+    server._behavior_trial_recovery_ready.set()
+
+    response = server.behavior_trial_creator_start(9, _DirectRequest(decision))
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert json.loads(response.body) == {
+        "running": True,
+        "already_running": False,
+        "trial": {
+            "id": 9,
+            "scope": "creator-personal",
+            "proposal_id": 51,
+            "state": "running",
+            "parameter": "chatter_chance",
+            "metric": "qualified_response_rate",
+            "spec_sha256": "a" * 64,
+        },
+    }
+    assert controller.calls == [
+        ("get", 9),
+        ("start", 9),
+    ]
+    assert len(observations) == 1
+    assert observations[0].source == "behavior_trial_creator_start"
+    assert observations[0].metadata == {
+        "trial_id": 9,
+        "scope": "creator-personal",
+        "parameter": "chatter_chance",
+        "metric": "qualified_response_rate",
+        "authorization": "session_cookie",
+        "started_at": 175.0,
+        "started": True,
+    }
+    assert "must-not-leak" not in response.body.decode("utf-8")
+
+
+def test_creator_start_route_retries_a_running_trial_without_duplicate_audit(monkeypatch):
+    controller = _CreatorApprovalController(_trial_record(state="running"))
+    observations: list[object] = []
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(
+        server.cognition_mod, "record_observation", lambda observation: observations.append(observation)
+    )
+    server._behavior_trial_recovery_ready.set()
+
+    response = server.behavior_trial_creator_start(9, _creator_request())
+
+    assert response.status_code == 200
+    assert json.loads(response.body)["already_running"] is True
+    assert controller.calls == [("get", 9), ("start", 9)]
+    assert observations == []
+
+
+def test_creator_start_route_is_unavailable_until_recovery(monkeypatch):
+    controller = _CreatorApprovalController(_trial_record(state="approved"))
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+
+    response = server.behavior_trial_creator_start(9, _creator_request())
+
+    assert response.status_code == 503
+    assert response.headers["cache-control"] == "no-store"
+    assert controller.calls == []
+
+
+def test_creator_start_route_requires_an_approved_trial(monkeypatch):
+    missing = _CreatorApprovalController(_trial_record(state="approved"))
+    monkeypatch.setattr(server, "behavior_trial_controller", missing)
+    server._behavior_trial_recovery_ready.set()
+
+    with pytest.raises(server.HTTPException) as missing_error:
+        server.behavior_trial_creator_start(99, _creator_request())
+
+    assert missing_error.value.status_code == 404
+    assert missing.calls == [("get", 99)]
+
+    registered = _CreatorApprovalController(_trial_record(state="registered"))
+    monkeypatch.setattr(server, "behavior_trial_controller", registered)
+    with pytest.raises(server.HTTPException) as registered_error:
+        server.behavior_trial_creator_start(9, _creator_request())
+
+    assert registered_error.value.status_code == 409
+    assert registered.calls == [("get", 9)]
+
+    for terminal_state in ("completed", "rolled_back"):
+        terminal = _CreatorApprovalController(_trial_record(state=terminal_state))
+        monkeypatch.setattr(server, "behavior_trial_controller", terminal)
+        with pytest.raises(server.HTTPException) as terminal_error:
+            server.behavior_trial_creator_start(9, _creator_request())
+
+        assert terminal_error.value.status_code == 409
+        assert terminal.calls == [("get", 9)]
+
+
+def test_creator_start_route_hides_controller_validation_detail(monkeypatch):
+    class _RejectingController(_CreatorApprovalController):
+        def start(self, trial_id: int):
+            self.calls.append(("start", trial_id))
+            raise ValueError("private binding state must not reach the browser")
+
+    controller = _RejectingController(_trial_record(state="approved"))
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    server._behavior_trial_recovery_ready.set()
+
+    with pytest.raises(server.HTTPException) as error:
+        server.behavior_trial_creator_start(9, _creator_request())
+
+    assert error.value.status_code == 409
+    assert error.value.detail == "behavior trial cannot be started"
+    assert "private binding" not in error.value.detail
+    assert error.value.headers == {"Cache-Control": "no-store"}
+
+
+def test_creator_start_asgi_requires_creator_and_ignores_browser_runtime_values(monkeypatch):
+    controller = _CreatorApprovalController(_trial_record(state="approved"))
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server.cognition_mod, "record_observation", lambda _observation: None)
+    server._behavior_trial_recovery_ready.set()
+    client = TestClient(server.app)
+    try:
+        anonymous = client.post("/behavior-trials/9/start")
+        spoofed = client.post(
+            "/behavior-trials/9/start",
+            headers={"X-Alpecca-Identity": PUBLIC_IDENTITY},
+        )
+        started = client.post(
+            "/behavior-trials/9/start",
+            headers={
+                server.auth_mod.AUTHORIZATION_HEADER: f"Bearer {server._AUTH_SECRET}",
+            },
+            json={"started_at": 999999.0, "parameter": "not-accepted"},
+        )
+    finally:
+        client.close()
+
+    assert anonymous.status_code == 401
+    assert spoofed.status_code == 401
+    assert anonymous.headers["cache-control"] == "no-store"
+    assert spoofed.headers["cache-control"] == "no-store"
+    assert started.status_code == 200
+    assert started.headers["cache-control"] == "no-store"
+    assert started.json()["trial"]["state"] == "running"
+    assert controller.calls == [
+        ("get", 9),
+        ("start", 9),
+    ]
+
+
+def test_creator_start_asgi_rejects_allowed_non_creator_before_controller_access(monkeypatch):
+    controller = _CreatorApprovalController(_trial_record(state="approved"))
+    authority = _AllowedNonCreatorAuthority()
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server, "_AUTHORITY", authority)
+    server._behavior_trial_recovery_ready.set()
+    client = TestClient(server.app)
+    try:
+        response = client.post("/behavior-trials/9/start")
+    finally:
+        client.close()
+
+    assert authority.calls == 1
+    assert response.status_code == 403
+    assert response.headers["cache-control"] == "no-store"
+    assert controller.calls == []
+
+
 def test_behavior_trial_status_asgi_rejects_anonymous_and_public_identity_spoof(
     monkeypatch,
 ):
@@ -621,7 +808,7 @@ def test_behavior_trial_status_asgi_rejects_allowed_non_creator_before_controlle
     assert controller.calls == []
 
 
-def test_behavior_trial_route_inventory_has_only_status_and_creator_approval():
+def test_behavior_trial_route_inventory_has_only_status_creator_approval_and_start():
     behavior_trial_routes = {
         (route.path, method)
         for route in server.app.routes
@@ -633,14 +820,26 @@ def test_behavior_trial_route_inventory_has_only_status_and_creator_approval():
         for route in server.app.routes
         if getattr(route, "path", "") == "/behavior-trials/status"
     )
+    start_route = next(
+        route
+        for route in server.app.routes
+        if getattr(route, "path", "") == "/behavior-trials/{trial_id}/start"
+    )
 
     assert behavior_trial_routes == {
         ("/behavior-trials/status", "GET"),
         ("/behavior-trials/{trial_id}/approve", "POST"),
+        ("/behavior-trials/{trial_id}/start", "POST"),
     }
     assert status_route.dependant.query_params == []
     assert status_route.dependant.body_params == []
-    assert not any(path.endswith("/start") for path, _method in behavior_trial_routes)
+    assert start_route.dependant.query_params == []
+    assert start_route.dependant.body_params == []
+    assert not any(
+        path.endswith(suffix)
+        for path, _method in behavior_trial_routes
+        for suffix in ("/register", "/complete", "/rollback")
+    )
 
 
 def test_server_exposes_no_self_improvement_trial_routes():
