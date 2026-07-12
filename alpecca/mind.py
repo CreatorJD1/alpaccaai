@@ -23,7 +23,9 @@ import re
 import threading
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from numbers import Number
+from typing import Literal
 
 from config import (
     OLLAMA_MODEL,
@@ -121,6 +123,14 @@ _PHASE5_AFFECT_POSTURES = {
     "question": "prioritize a direct answer grounded in available evidence",
     "action_intent": "separate the requested action from approval and execution state",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class ProactiveCandidate:
+    """One eligible proactive utterance with its selection provenance."""
+
+    origin: Literal["chatter", "mood_speech"]
+    reason: str
 
 
 def strip_think(text: str) -> str:
@@ -3197,7 +3207,7 @@ class CoreMind:
 
     # --- Proactive speech: she starts the conversation ---------------------
 
-    def volunteer_reason(self) -> str | None:
+    def volunteer_candidate(self) -> ProactiveCandidate | None:
         """Check (cheaply, under the caller's lock) whether something is worth
         voicing unprompted -- a real mood shift first, otherwise maybe plain
         conversation during a quiet stretch. Claims the cooldown slot on a hit
@@ -3211,7 +3221,7 @@ class CoreMind:
         )
         if reason:
             self._last_volunteer_ts = now
-            return reason
+            return ProactiveCandidate(origin="mood_speech", reason=reason)
         # No mood shift -- but she can still just start a conversation. The LLM
         # may judge the final fire/seed choice once deterministic eligibility
         # passes; random chance remains the offline/parse fallback.
@@ -3243,13 +3253,20 @@ class CoreMind:
                         return None
                     pick = int(decision.get("pick", 0))
                     self._last_volunteer_ts = now
-                    return seeds[pick]
+                    return ProactiveCandidate(origin="chatter", reason=seeds[pick])
             if proactive_mod.should_chatter(now, self._last_user_ts,
                                             self._last_volunteer_ts, random.random(),
                                             **chatter_chance_kwargs):
                 self._last_volunteer_ts = now
-                return random.choice(seeds)
+                return ProactiveCandidate(
+                    origin="chatter", reason=random.choice(seeds)
+                )
         return None
+
+    def volunteer_reason(self) -> str | None:
+        """Compatibility wrapper for callers that expect only proactive text."""
+        candidate = self.volunteer_candidate()
+        return candidate.reason if candidate is not None else None
 
     @staticmethod
     def _initiative_decision_payload(

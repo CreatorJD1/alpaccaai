@@ -229,6 +229,7 @@ def test_optional_deferral_preserves_routine_budget_for_retry(monkeypatch):
     monkeypatch.setattr(server, "active_chat_turns", 0)
     monkeypatch.setattr(server, "active_tts_requests", 0)
     monkeypatch.setattr(server, "last_chat_turn_started", 0.0)
+    monkeypatch.setattr(server, "_host_pressure_optional_work_deferral", lambda _category: None)
     monkeypatch.setattr(server, "_bounded_thread", _run_immediately)
     monkeypatch.setattr(server, "_proactive_turn_context", lambda: proactive_turn)
     monkeypatch.setattr(server.routines_mod, "run_key", lambda: "2026-07-10")

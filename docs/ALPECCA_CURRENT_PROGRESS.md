@@ -1,6 +1,6 @@
 ﻿# Alpecca Current Progress
 
-Last updated: **2026-07-10**
+Last updated: **2026-07-11**
 
 Use this as the short active status pointer.
 
@@ -45,11 +45,20 @@ labels retained in historical plans and handoffs.
   `no-store`, and unavailable before recovery. There are no behavior-trial
   start, approval, or mutation routes, no metric collector/completion loop, and
   no real trial. It is not creator-approved and does not satisfy the Phase 8
-  exit gate. Phase 8C2 must add server-owned durable
-  `qualified_response_rate` outcomes before any start route. The broader Phase
-  8C plan still requires server-derived authenticated creator identity, approval
-  bound to the exact validated specification, metric collection and completion,
-  and creator UI for a real behavior trial.
+  exit gate. Phase 8C2 now provides the server-owned durable
+  `qualified_response_rate` evidence layer: only a typed `chatter` candidate
+  with an allowed initiative that is confirmed delivered to the creator's live
+  WebSocket/House HQ portal can enter the denominator. The ledger reserves a
+  provisional row before send, confirms it only after portal delivery, and
+  matches at most one server-authenticated, contentful, non-background creator
+  WebSocket turn in the same scope and surface. It retains no message text,
+  request identifiers, credentials, or client scores; failed sends are
+  cancelled, expired confirmed sends become unanswered, and status exposes
+  aggregate baseline/trial evidence only through the existing creator-only,
+  read-only, `no-store` endpoint. No real trial exists, so all current outcome
+  evidence is baseline-only. The broader Phase 8C plan still requires a
+  server-derived approval flow bound to the exact validated specification,
+  fixed metric evaluation/completion, and creator UI before any real trial.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A semantic-negative/orthogonal recall abstention and Phase 6B
   bounded sidecar content-term indexing are implemented and covered by focused

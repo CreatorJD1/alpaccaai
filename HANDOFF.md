@@ -1,4 +1,4 @@
-# Alpecca — Handoff (updated 2026-07-10)
+# Alpecca — Handoff (updated 2026-07-11)
 
 ## Current Active Handoff: Phase 6 Mindpage And Resource Coordination
 
@@ -40,11 +40,19 @@ retained below as historical implementation evidence.
   `no-store`, and unavailable before recovery. There are no behavior-trial
   start, approval, or mutation routes, no metric collector/completion loop, and
   no real trial. It is not creator-approved and does not satisfy the Phase 8
-  exit gate. Phase 8C2 must add server-owned durable
-  `qualified_response_rate` outcomes before any start route. The broader Phase
-  8C plan still requires server-derived authenticated creator identity, approval
-  bound to the exact validated specification, metric collection and completion,
-  and creator UI for a real behavior trial.
+  exit gate. Phase 8C2 now has server-owned durable
+  `qualified_response_rate` outcomes before any start route: a typed chatter
+  candidate plus allowed initiative reserves a provisional row before a live
+  creator portal send; only confirmed portal delivery enters the denominator;
+  one authenticated, contentful, non-background creator WebSocket turn may
+  match the oldest unexpired same-scope/surface row. The ledger holds no message
+  content, client score, request ID, or credential. Failed and stale provisional
+  sends are cancelled; confirmed expiry becomes unanswered; status exposes
+  aggregate-only baseline/trial evidence through the existing protected
+  `no-store` endpoint. No trial is running, so all evidence is baseline-only.
+  Phase 8C still needs server-derived creator approval bound to the exact
+  validated specification, fixed metric completion/evaluation, and creator UI
+  before any real behavior trial.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A rejects orthogonal and negative semantic matches. Phase 6B
   adds bounded sidecar Mindpage content-term indexing: new pages index after a
@@ -221,12 +229,17 @@ are no behavior-trial start, approval, or mutation routes, no metric collector
 or completion loop, and no real trial is running. The controller's internal
 creator-binding method is not an HTTP approval flow.
 
-All Phase 8 remains partial. Before any behavior-trial start route, Phase 8C2
-must add server-owned durable `qualified_response_rate` outcomes. The broader
-Phase 8C plan still requires server-derived authenticated creator identity,
-approval bound to the exact validated specification, metric collection and
-completion, and creator UI for a real behavior trial. Code, files, accounts,
-and operating-system changes remain outside the self-improvement surface.
+Phase 8C2 is complete as an observational-only evidence layer. It durably
+records `qualified_response_rate` outcomes only for confirmed typed chatter
+deliveries to a creator portal and matching authenticated creator WebSocket
+turns in the same scope/surface. It stores no message content, client scores,
+or caller-provided timestamps and exposes only aggregate evidence. No real trial
+is running, every row is baseline-only, and no start/approval/mutation route
+exists. The broader Phase 8C plan still requires server-derived authenticated
+creator approval bound to the exact validated specification, fixed metric
+collection/completion, and creator UI for a real behavior trial. Code, files,
+accounts, and operating-system changes remain outside the self-improvement
+surface.
 
 ### Phase 9: multimodal and source perception
 

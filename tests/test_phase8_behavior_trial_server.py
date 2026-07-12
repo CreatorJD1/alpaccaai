@@ -95,6 +95,16 @@ class _ReadOnlyStatusController:
         return {}  # pragma: no cover - _unexpected_call always raises
 
 
+class _ReadOnlyOutcomeLedger:
+    def __init__(self, snapshot: dict[str, object]) -> None:
+        self.snapshot = snapshot
+        self.calls: list[str] = []
+
+    def summary(self) -> dict[str, object]:
+        self.calls.append("summary")
+        return self.snapshot
+
+
 class _DirectRequest:
     def __init__(self, authorization: object | None = None) -> None:
         self.state = SimpleNamespace()
@@ -294,15 +304,21 @@ def test_behavior_trial_status_handler_returns_snapshot_for_creator(monkeypatch)
         "recent": [],
     }
     controller = _ReadOnlyStatusController(snapshot)
+    outcome = _ReadOnlyOutcomeLedger({"metric": "qualified_response_rate", "completed": 0})
     monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server, "qualified_response_ledger", outcome)
     server._behavior_trial_recovery_ready.set()
 
     response = server.behavior_trial_status(_creator_request())
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
-    assert json.loads(response.body) == snapshot
+    assert json.loads(response.body) == {
+        **snapshot,
+        "outcome_evidence": outcome.snapshot,
+    }
     assert controller.calls == ["status_snapshot"]
+    assert outcome.calls == ["summary"]
 
 
 def test_behavior_trial_status_handler_rejects_anonymous_before_controller_access(monkeypatch):
@@ -343,13 +359,16 @@ def test_behavior_trial_status_handler_returns_503_until_recovery(monkeypatch):
 
 def test_behavior_trial_status_handler_never_calls_mutators(monkeypatch):
     controller = _ReadOnlyStatusController({"state": "ready", "recent": []})
+    outcome = _ReadOnlyOutcomeLedger({"metric": "qualified_response_rate", "completed": 0})
     monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server, "qualified_response_ledger", outcome)
     server._behavior_trial_recovery_ready.set()
 
     response = server.behavior_trial_status(_creator_request())
 
     assert response.status_code == 200
     assert controller.calls == ["status_snapshot"]
+    assert outcome.calls == ["summary"]
 
 
 def test_behavior_trial_status_asgi_rejects_anonymous_and_public_identity_spoof(
@@ -375,7 +394,9 @@ def test_behavior_trial_status_asgi_rejects_anonymous_and_public_identity_spoof(
 def test_behavior_trial_status_asgi_returns_snapshot_for_protected_bearer(monkeypatch):
     snapshot = {"state": "ready", "active_trial": None, "recent": []}
     controller = _ReadOnlyStatusController(snapshot)
+    outcome = _ReadOnlyOutcomeLedger({"metric": "qualified_response_rate", "completed": 0})
     monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server, "qualified_response_ledger", outcome)
     server._behavior_trial_recovery_ready.set()
     client = TestClient(server.app)
     try:
@@ -390,8 +411,9 @@ def test_behavior_trial_status_asgi_returns_snapshot_for_protected_bearer(monkey
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
-    assert response.json() == snapshot
+    assert response.json() == {**snapshot, "outcome_evidence": outcome.snapshot}
     assert controller.calls == ["status_snapshot"]
+    assert outcome.calls == ["summary"]
 
 
 def test_behavior_trial_status_asgi_rejects_allowed_non_creator_before_controller_access(

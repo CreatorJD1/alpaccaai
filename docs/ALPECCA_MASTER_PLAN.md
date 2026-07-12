@@ -163,7 +163,7 @@ They are not fixed Alpecca hardware.
 | Proactive/living behavior | BASELINE COMPLETE | Living ticks, proactive speech, and routines share one scoped budget; ignored outreach backs off and each proactive event selects one delivery surface |
 | Routines and watchers | PARTIAL | Empty/off by default; routine deletion and unified scheduling remain |
 | Background work coordination | PARTIAL | Timeouts do not cancel worker threads; optional jobs can overlap |
-| Recursive self-improvement | PARTIAL | Phase 8A contains legacy `selfmod` autonomy: idle lessons remain evidence and create/refresh a bounded creator-review card, while CoreMind starts/evaluates no `selfmod` trial. Phase 8B has an **INTERNAL** approval-proof-backed `BehaviorTrialController` only for `creator-personal` / `chatter_chance`: the database permits at most one active `approved` or `running` trial, and its runtime-only SQLite override has apply/readback/rollback, automatic expiry rollback, and startup recovery before CoreMind consumes it. Phase 8C1 makes the generic ledger retain immutable specs and the exact SHA-256 of each raw persisted spec, requires a creator-only `chatter_chance` binding sidecar HMAC-sealed in memory with the existing protected server authorization secret before runtime consumption, uses a read-only fail-closed chatter supplier plus recovery-gated off-`mind_lock` maintenance for expiry/integrity receipts, and exposes creator-only, read-only, `no-store` `GET /behavior-trials/status` only after recovery. There are no behavior-trial start, approval, or mutation routes, no metric collector/completion loop, and no real trial. All Phase 8 remains partial; Phase 8C2 still needs server-owned durable `qualified_response_rate` outcomes before any start route. |
+| Recursive self-improvement | PARTIAL | Phase 8A contains legacy `selfmod` autonomy: idle lessons remain evidence and create/refresh a bounded creator-review card, while CoreMind starts/evaluates no `selfmod` trial. Phase 8B has an **INTERNAL** approval-proof-backed `BehaviorTrialController` only for `creator-personal` / `chatter_chance`: the database permits at most one active `approved` or `running` trial, and its runtime-only SQLite override has apply/readback/rollback, automatic expiry rollback, and startup recovery before CoreMind consumes it. Phase 8C1 makes the generic ledger retain immutable specs and the exact SHA-256 of each raw persisted spec, requires a creator-only `chatter_chance` binding sidecar HMAC-sealed in memory with the existing protected server authorization secret before runtime consumption, uses a read-only fail-closed chatter supplier plus recovery-gated off-`mind_lock` maintenance for expiry/integrity receipts, and exposes creator-only, read-only, `no-store` `GET /behavior-trials/status` only after recovery. Phase 8C2 now records durable aggregate-only `qualified_response_rate` evidence from confirmed typed chatter portal deliveries and matching authenticated creator WebSocket turns; it stores no message content or client scores, and current evidence is baseline-only. There are still no behavior-trial start, approval, or mutation routes, no completion/evaluation loop, and no real trial. |
 | External action approvals | BLOCKED | Creator-only scoped approval works for read-only `self_status`; external or mutating action classes remain blocked |
 | MCP federation | PARKED | Largest external surface; no current companion-value need |
 
@@ -454,16 +454,34 @@ are no behavior-trial start, approval, or mutation routes, no metric collector
 or completion loop, and no real trial is running. The controller's internal
 creator-binding method is not an HTTP approval flow.
 
-#### Phase 8C2: Durable outcomes before any start route - REQUIRED
+#### Phase 8C2: Durable qualified-response outcomes - COMPLETE, OBSERVATIONAL ONLY
 
-Before any behavior-trial start route, Phase 8C2 must add server-owned durable
-`qualified_response_rate` outcomes. The broader Phase 8C plan still requires
-server-derived authenticated creator identity, approval bound to the exact
-validated specification, metric collection and completion, and creator UI for a
-real behavior trial. Phase 8C remains incomplete: a later scope must still make
-any real behavioral trial reviewable against its hypothesis, exposure window,
-evidence, end time, and exact rollback. Code or system changes remain
-reviewable handoff proposals only.
+`alpecca.qualified_response_ledger` now records the server-owned
+`qualified_response_rate` evidence contract before any behavior-trial start
+route exists. A row starts as a provisional dispatch before a portal send. It
+becomes an eligible exposure only after the WebSocket/House HQ portal confirms
+delivery. Only a typed `ProactiveCandidate(origin="chatter")` with an allowed
+initiative can request that path; mood speech, routines, channel delivery,
+queues, failed sends, and direct replies do not enter the denominator.
+
+An authenticated, contentful, non-background creator WebSocket turn can match
+only the oldest unexpired provisional or pending exposure in its exact durable
+scope and surface. A response racing the send remains provisional until the
+send is confirmed. Confirmed unanswered rows expire to `unanswered`; stale
+provisional rows expire to `cancelled` and never count. The ledger stores
+server-generated IDs and timestamps only, not message text, file data,
+credentials, request IDs, client timestamps, or caller-provided scores.
+
+`GET /behavior-trials/status` exposes aggregate-only baseline/trial outcome
+evidence after recovery. No behavior trial has started, so all collected rows
+are baseline evidence. This does not authorize a start route, approval route,
+behavior mutation, autonomous completion, or evaluation.
+
+The broader Phase 8C plan remains incomplete: add server-derived approval bound
+to the exact validated specification, a fixed metric completion/evaluation
+contract, and creator UI before any real behavior trial. Any real trial must be
+reviewable against its hypothesis, exposure window, evidence, end time, and
+exact rollback. Code or system changes remain reviewable handoff proposals only.
 
 Exit gate remains unmet: it requires server-derived authenticated creator
 identity and approval bound to the exact validated specification, fixed metric

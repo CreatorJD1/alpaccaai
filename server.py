@@ -45,9 +45,10 @@ from config import (HOME, HOST, PORT, DEEP_BACKEND, OLLAMA_HOST,
                     MINDSCAPE_SYNC_TIMEOUT, MINDSCAPE_AUTO_SYNC_INTERVAL,
                     MINDSCAPE_EVENT_SYNC_MIN_INTERVAL, PUBLIC_URL, EMBED_BACKFILL,
                     CORE_MEMORY_LEARN_ONLY, DISCORD_CLIENT_ID,
-                    CLOUDFLARE_HOSTNAME, OLLAMA_TIMEOUT_SECONDS, STREAM_CHAT)
+                    CLOUDFLARE_HOSTNAME, OLLAMA_TIMEOUT_SECONDS, STREAM_CHAT,
+                    DB_PATH)
 from config import Automation as AutomationCfg
-from alpecca.mind import CoreMind
+from alpecca.mind import CoreMind, ProactiveCandidate
 from alpecca.sensory import WindowSensor
 from alpecca.voice import VoiceSensor
 from alpecca import vision
@@ -74,6 +75,7 @@ from alpecca import turn_context as turn_context_mod
 from alpecca import commitments as commitments_mod
 from alpecca import commitment_executor as commitment_executor_mod
 from alpecca.behavior_trial_controller import BehaviorTrialController
+from alpecca.qualified_response_ledger import QualifiedResponseLedger
 
 ROOT_DIR = Path(__file__).parent
 WEB_DIR = ROOT_DIR / "web"
@@ -84,6 +86,9 @@ HOUSE_HQ_PUBLIC = HOUSE_HQ_DIR / "public"
 # One shared mind for the session. A background sensor lets the mood drift even
 # while you're not typing, by folding in a fresh observation on every tick.
 behavior_trial_controller = BehaviorTrialController()
+# Outcome rows remain server-owned. The only public view is aggregate evidence
+# in the existing creator-only behavior-trial status response.
+qualified_response_ledger = QualifiedResponseLedger(DB_PATH)
 
 # A persisted runtime override is not trusted until startup has closed any
 # interrupted trial. This event starts unset deliberately and is reset for
@@ -464,6 +469,145 @@ async def _broadcast(payload: dict,
     return delivered
 
 
+async def _expire_due_qualified_response_outcomes_once(
+    *, now: float | None = None,
+) -> list[dict]:
+    """Close durable response windows without holding the in-memory mind lock."""
+    stamp = _time.time() if now is None else now
+    try:
+        closed = await asyncio.to_thread(
+            qualified_response_ledger.expire_due,
+            now=stamp,
+        )
+    except Exception:
+        # Ledger maintenance is best-effort. It must not interrupt chat,
+        # delivery, or the independent initiative backoff timer.
+        return []
+    if not closed:
+        return []
+
+    terminal_counts = {"unanswered": 0, "cancelled": 0}
+    for row in closed:
+        state = str(row.get("state") or "") if isinstance(row, Mapping) else ""
+        if state in terminal_counts:
+            terminal_counts[state] += 1
+    try:
+        cognition_mod.record_observation(cognition_mod.CognitionObservation(
+            source="qualified_response_outcome_maintenance",
+            content=(
+                f"Closed {len(closed)} qualified response outcome(s) after their "
+                "response window."
+            ),
+            confidence=1.0,
+            privacy_class="local",
+            metadata={
+                "closure_count": len(closed),
+                "unanswered": terminal_counts["unanswered"],
+                "cancelled": terminal_counts["cancelled"],
+            },
+        ))
+    except Exception:
+        # Closure is already durable. Failing to add a local observation does
+        # not reopen it or change the metric.
+        pass
+    return closed
+
+
+def _qualified_response_outcome_eligible(
+    candidate: object | None,
+    initiative: dict | None,
+    proactive_turn: turn_context_mod.TurnContext | None,
+) -> bool:
+    """Restrict qualified-response exposure to typed chatter on a live portal."""
+    return (
+        isinstance(candidate, ProactiveCandidate)
+        and candidate.origin == "chatter"
+        and isinstance(initiative, dict)
+        and initiative.get("allowed") is True
+        and isinstance(proactive_turn, turn_context_mod.TurnContext)
+        and proactive_turn.principal == "creator"
+        and proactive_turn.surface in {"websocket", "house-hq"}
+    )
+
+
+async def _begin_qualified_response_dispatch(
+    turn: turn_context_mod.TurnContext,
+) -> str | None:
+    """Reserve a provisional portal exposure before the transport await."""
+    delivery_id = uuid.uuid4().hex
+    try:
+        await asyncio.to_thread(
+            qualified_response_ledger.begin_dispatch,
+            delivery_id=delivery_id,
+            scope_key=turn.scope_key,
+            surface=turn.surface,
+            proactive_turn_id=turn.turn_id,
+            response_window_seconds=INITIATIVE_RESPONSE_WINDOW_SECONDS,
+            dispatched_at=_time.time(),
+        )
+    except Exception:
+        return None
+    return delivery_id
+
+
+async def _confirm_qualified_response_dispatch(delivery_id: str) -> bool:
+    """Count an exposure only after a portal confirms delivery."""
+    try:
+        row = await asyncio.to_thread(
+            qualified_response_ledger.confirm_delivery,
+            delivery_id,
+            delivered_at=_time.time(),
+        )
+    except Exception:
+        return False
+    return (
+        isinstance(row, Mapping)
+        and str(row.get("state") or "") in {"pending", "responded"}
+    )
+
+
+async def _cancel_qualified_response_dispatch(delivery_id: str) -> None:
+    """Keep failed, queued, and unconfirmed sends outside the denominator."""
+    try:
+        await asyncio.to_thread(
+            qualified_response_ledger.cancel_dispatch,
+            delivery_id,
+            cancelled_at=_time.time(),
+        )
+    except Exception:
+        # A later idempotent expiry pass will still cancel any surviving
+        # dispatching row. Do not let a ledger failure affect delivery.
+        pass
+
+
+async def _record_qualified_creator_response(
+    turn: turn_context_mod.TurnContext,
+    user_text: str,
+    source: str,
+) -> bool:
+    """Match one authenticated, contentful portal turn without retaining text."""
+    if (
+        not isinstance(turn, turn_context_mod.TurnContext)
+        or turn.principal != "creator"
+        or not isinstance(user_text, str)
+        or not user_text.strip()
+        or _ws_background_source(source)
+    ):
+        return False
+    try:
+        row = await asyncio.to_thread(
+            qualified_response_ledger.record_creator_response,
+            scope_key=turn.scope_key,
+            surface=turn.surface,
+            response_turn_id=turn.turn_id,
+            received_at=_time.time(),
+        )
+    except Exception:
+        # Evidence collection must never block the authenticated chat turn.
+        return False
+    return isinstance(row, Mapping)
+
+
 def _schedule_ignored_outreach(initiative: dict | None) -> bool:
     """Arm backoff only after verified delivery and a real response window."""
     if not isinstance(initiative, dict) or not initiative.get("allowed"):
@@ -475,6 +619,9 @@ def _schedule_ignored_outreach(initiative: dict | None) -> bool:
 
     async def observe_response_window() -> None:
         await asyncio.sleep(INITIATIVE_RESPONSE_WINDOW_SECONDS)
+        # Durable outcome closure precedes the in-memory backoff so the same
+        # response window is resolved in a stable server-owned ledger first.
+        await _expire_due_qualified_response_outcomes_once(now=_time.time())
         await asyncio.to_thread(
             mind.mark_initiative_ignored,
             scope,
@@ -487,18 +634,38 @@ def _schedule_ignored_outreach(initiative: dict | None) -> bool:
     return True
 
 
-async def _deliver_proactive_once(text: str, initiative: dict | None = None) -> dict:
+async def _deliver_proactive_once(
+    text: str,
+    initiative: dict | None = None,
+    *,
+    proactive_turn: turn_context_mod.TurnContext | None = None,
+    outcome_candidate: object | None = None,
+) -> dict:
     """Deliver one proactive event to exactly one currently reachable surface."""
     if ws_clients:
-        delivered = await _broadcast({
-            "type": "proactive", "reply": text,
-            "mood": mind.state.mood_label(),
-            "state": mind.state.as_dict(),
-            "appearance": mind.current_appearance().as_dict(),
-        })
+        delivery_id = None
+        if _qualified_response_outcome_eligible(
+            outcome_candidate,
+            initiative,
+            proactive_turn,
+        ):
+            delivery_id = await _begin_qualified_response_dispatch(proactive_turn)
+        try:
+            delivered = await _broadcast({
+                "type": "proactive", "reply": text,
+                "mood": mind.state.mood_label(),
+                "state": mind.state.as_dict(),
+                "appearance": mind.current_appearance().as_dict(),
+            })
+        except Exception:
+            delivered = 0
         if delivered:
+            if delivery_id and not await _confirm_qualified_response_dispatch(delivery_id):
+                await _cancel_qualified_response_dispatch(delivery_id)
             _schedule_ignored_outreach(initiative)
             return {"surface": "portal", "delivered": True, "count": delivered}
+        if delivery_id:
+            await _cancel_qualified_response_dispatch(delivery_id)
 
     from alpecca import openclaw_bridge
     result = await _bounded_thread(
@@ -1589,6 +1756,9 @@ async def lifespan(app: FastAPI):
     We keep a reference to the task so it isn't silently garbage-collected.
     """
     _behavior_trial_recovery_ready.clear()
+    # This durable maintenance is idempotent and stays outside `mind_lock`.
+    # It closes only already-due response windows; it starts no trial or send.
+    await _expire_due_qualified_response_outcomes_once()
     try:
         recovered_trials = await asyncio.to_thread(
             behavior_trial_controller.recover_interrupted,
@@ -1660,17 +1830,21 @@ async def lifespan(app: FastAPI):
         # She may wander to whichever room of her home is calling her strongest
         # right now -- grounded movement, the same way her mood drifts.
         roamed = mind.maybe_roam()
-        # Cheap check: did her introspection notice something worth voicing?
-        reason = mind.volunteer_reason()
+        # Preserve the typed source through delivery. Only a chatter candidate
+        # may request a qualified-response outcome exposure.
+        candidate = mind.volunteer_candidate()
         # If she has nothing to say, the quiet may still be hers to use.
-        reflect_now = (reason is None) and mind.reflection_due()
-        return roamed, reason, reflect_now
+        reflect_now = (candidate is None) and mind.reflection_due()
+        return roamed, candidate, reflect_now
 
     async def loop() -> None:
         last_living_tick = 0.0
         while True:
             await asyncio.sleep(DRIFT_INTERVAL)
             try:
+                # Outcome maintenance is independent of speech eligibility and
+                # deliberately runs outside `mind_lock`.
+                await _expire_due_qualified_response_outcomes_once()
                 # This is independent of speech eligibility and stays outside
                 # `mind_lock`, so a due rollback cannot queue behind chat.
                 await _expire_due_behavior_trials_once()
@@ -1683,10 +1857,10 @@ async def lifespan(app: FastAPI):
                     )
                     if not drift:
                         continue
-                    roamed, reason, reflect_now = drift
+                    roamed, candidate, reflect_now = drift
                     now = _time.time()
                     living_due = (
-                        reason is None
+                        candidate is None
                         and now - last_living_tick >= BACKGROUND_LIVING_INTERVAL
                     )
                     if living_due:
@@ -1729,7 +1903,7 @@ async def lifespan(app: FastAPI):
                 if chat_priority:
                     reflect_now = False
                     living_due = False
-                    reason = None
+                    candidate = None
                 if reflect_now:
                     # Off the lock: her Soul drives one self-directed act (reflect,
                     # self-improve, or recursive self-question) -- slow, entirely
@@ -1779,7 +1953,7 @@ async def lifespan(app: FastAPI):
                             "living_loop": living,
                             "cognition": mind.cognition_state(),
                         })
-                if reason:
+                if candidate is not None:
                     from alpecca import openclaw_bridge
                     from config import OpenClaw as OpenClawCfg
                     reachable = bool(ws_clients) or (
@@ -1791,7 +1965,7 @@ async def lifespan(app: FastAPI):
                         event = await _bounded_thread(
                             "compose_volunteer",
                             mind.compose_volunteer_event,
-                            reason,
+                            candidate.reason,
                             turn=proactive_turn,
                             timeout=BACKGROUND_VOLUNTEER_TIMEOUT,
                         )
@@ -1800,6 +1974,8 @@ async def lifespan(app: FastAPI):
                             delivery = await _deliver_proactive_once(
                                 text,
                                 (event or {}).get("initiative"),
+                                proactive_turn=proactive_turn,
+                                outcome_candidate=candidate,
                             )
                             if delivery.get("delivered"):
                                 await asyncio.to_thread(
@@ -2771,8 +2947,10 @@ def behavior_trial_status(req: Request) -> JSONResponse:
             status_code=503,
             headers={"Cache-Control": "no-store"},
         )
+    snapshot = dict(behavior_trial_controller.status_snapshot())
+    snapshot["outcome_evidence"] = qualified_response_ledger.summary()
     return JSONResponse(
-        behavior_trial_controller.status_snapshot(),
+        snapshot,
         headers={"Cache-Control": "no-store"},
     )
 
@@ -4840,6 +5018,11 @@ async def ws(socket: WebSocket) -> None:
             )
             if not _begin_ws_portal_turn(socket, active_turn):
                 return
+            await _record_qualified_creator_response(
+                active_turn,
+                user_text,
+                source,
+            )
             mind.note_initiative_user_activity(active_turn.scope_key)
 
             # If an image rode along, let her actually look at it first. The
