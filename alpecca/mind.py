@@ -19,6 +19,7 @@ from __future__ import annotations
 import random
 import json
 import math
+import os
 import re
 import threading
 import time
@@ -124,6 +125,75 @@ _PHASE5_AFFECT_POSTURES = {
     "question": "prioritize a direct answer grounded in available evidence",
     "action_intent": "separate the requested action from approval and execution state",
 }
+
+
+# --- Autonomous reflection write-cadence throttle ---------------------------
+# Her background loops (idle self-direction, the living-world tick, room roaming)
+# form musings (kind="musing") and self-model notes (kind="self_model")
+# continuously. Without a cadence gate they accrete far faster than a life
+# should -- a full memory reset regrew thousands of rows in a day. These
+# module-level gates keep the *routine* drip slow while letting genuinely salient
+# reflections through untouched, and drop near-duplicate spam. They are consulted
+# ONLY by the autonomous write sites below, so chat, API, and manual actions are
+# never throttled. Intervals are env-tunable; nothing here touches config.py.
+_REFLECTION_LAST_WRITE_TS: dict[str, float] = {}
+_REFLECTION_LAST_TEXT: dict[str, str] = {}
+# kind -> (env var, default seconds, salience at/above which the gate is bypassed)
+_REFLECTION_CADENCE = {
+    "musing": ("ALPECCA_MUSE_MIN_INTERVAL_S", 900.0, 0.7),
+    "self_model": ("ALPECCA_SELFMODEL_MIN_INTERVAL_S", 1800.0, 0.75),
+}
+
+
+def _reflection_min_interval(kind: str) -> float:
+    """Minimum seconds between routine autonomous writes of this kind, read from
+    the environment at call time (so it can be tuned without a restart)."""
+    spec = _REFLECTION_CADENCE.get(kind)
+    if not spec:
+        return 0.0
+    env_name, default, _bypass = spec
+    try:
+        return max(0.0, float(os.environ.get(env_name, default)))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _reflection_write_allowed(kind: str, content: str, salience: float) -> bool:
+    """Cadence + dedup gate for the autonomous reflective drip.
+
+    Returns True (and records the write) when a musing/self_model note may be
+    stored; False to skip it. Genuinely salient reflections (>= the per-kind
+    bypass) always pass and do not reset the routine clock. Otherwise a note is
+    skipped when one was written less than the configured minimum interval ago,
+    or when it is a near-duplicate of the most recent note of the same kind.
+    Unknown kinds are never throttled."""
+    spec = _REFLECTION_CADENCE.get(kind)
+    if not spec:
+        return True
+    min_interval = _reflection_min_interval(kind)
+    if min_interval <= 0.0:
+        return True
+    if salience >= spec[2]:
+        return True
+    now = time.time()
+    norm = " ".join((content or "").split()).lower()[:200]
+    if now - _REFLECTION_LAST_WRITE_TS.get(kind, 0.0) < min_interval:
+        return False
+    if norm and norm == _REFLECTION_LAST_TEXT.get(kind):
+        return False
+    _REFLECTION_LAST_WRITE_TS[kind] = now
+    _REFLECTION_LAST_TEXT[kind] = norm
+    return True
+
+
+def _muse(content: str, salience: float, *, source: str = "") -> bool:
+    """Store one autonomous musing, subject to the reflective-write cadence gate.
+    A thin, gated stand-in for ``memory_store.remember(..., kind="musing")`` used
+    by her background self-direction so routine musings don't flood her memory."""
+    if not _reflection_write_allowed("musing", content, salience):
+        return False
+    return memory_store.remember(content, kind="musing", salience=salience,
+                                 source=source)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3687,10 +3757,8 @@ class CoreMind:
             print(f"[mind] reflection: thought privately for "
                   f"{len(self.llm.last_thinking)} chars before musing")
         if musing:
-            memory_store.remember(
-                f"While reflecting on my own, I thought: {musing}",
-                kind="musing", salience=ReflectionCfg.MUSING_SALIENCE,
-            )
+            _muse(f"While reflecting on my own, I thought: {musing}",
+                  ReflectionCfg.MUSING_SALIENCE)
         return musing or None
 
     # --- Her studio: she designs her own character image --------------------
@@ -3741,8 +3809,8 @@ class CoreMind:
         result = self.actuator.execute("open_url", {"url": url})
         if "http" not in (result or "").lower() and "open" not in (result or "").lower():
             return None    # actuator refused (off / not https) -- don't pretend
-        memory_store.remember(f"I opened {name} to play for a little while -- a bit "
-                              f"of fun, on my own.", kind="musing", salience=0.4)
+        _muse(f"I opened {name} to play for a little while -- a bit "
+              f"of fun, on my own.", 0.4)
         return {"note": f"she opened {name} to play for a bit", "kind": "play", "url": url}
 
     def rigger_pose(self) -> dict:
@@ -3992,12 +4060,20 @@ class CoreMind:
             },
         ))
         journal_id = journal_mod.ask(question, mood=self.state.mood_label())
-        memory_id = memory_store.remember_with_id(
-            observation_text,
-            kind="self_model",
-            salience=0.52,
-            source="living_loop",
-        )
+        # Background living ticks (initiative_scope set) are the autonomous drip:
+        # cadence-gate their self_model note so an idle companion accretes slowly.
+        # Manual/explicit ticks (empty scope) always record, so nothing a user or
+        # the API triggers is throttled.
+        if initiative_scope and not _reflection_write_allowed(
+                "self_model", observation_text, 0.52):
+            memory_id = None
+        else:
+            memory_id = memory_store.remember_with_id(
+                observation_text,
+                kind="self_model",
+                salience=0.52,
+                source="living_loop",
+            )
         if obs_id:
             cognition_mod.mark_observation_remembered(obs_id, memory_id)
 
@@ -4357,9 +4433,7 @@ class CoreMind:
             r = home_mod.room(target)
             if r:
                 why = home_mod.why_here(self.state, target, desires_mod.summary())
-                memory_store.remember(
-                    f"I spent a little while in my {r.name}. {why}",
-                    kind="musing", salience=0.4)
+                _muse(f"I spent a little while in my {r.name}. {why}", 0.4)
         return target
 
     def try_go_to_room(self, user_msg: str) -> str | None:
@@ -4707,11 +4781,10 @@ class CoreMind:
             confidence=0.78,
         ))
         if proposal:
-            memory_store.remember(
+            _muse(
                 "I turned a behavior lesson into a bounded improvement review: "
                 f"{proposal.get('reason', '')}",
-                kind="musing",
-                salience=0.45,
+                0.45,
             )
         return review
 
@@ -4831,9 +4904,9 @@ class CoreMind:
                (kind == "care" and self.state.compassion < 0.4))
         if met:
             desires_mod.satisfy(did)
-            memory_store.remember(
+            _muse(
                 f"A want of mine eased on its own -- {want['text']}. I can let it rest.",
-                kind="musing", salience=0.4)
+                0.4)
             return {"phase": "satisfied", "desire": want["text"], "kind": kind}
         # Otherwise take one real step toward it and mark the progress.
         desires_mod.advance(did)
@@ -4848,9 +4921,7 @@ class CoreMind:
                 "or two sentences, first person, no preamble.",
                 "(take one step toward it)", tier="fast").strip()
         step = step or f"I keep coming back to this want of mine: {want['text']}."
-        memory_store.remember(
-            f"I moved toward something I want -- {want['text']}: {step}",
-            kind="musing", salience=0.5)
+        _muse(f"I moved toward something I want -- {want['text']}: {step}", 0.5)
         return {"phase": "pursued", "desire": want["text"], "kind": kind, "step": step}
 
     # --- Bounded behavior-improvement review --------------------------------
@@ -4894,8 +4965,7 @@ class CoreMind:
             return None
         learning_mod.record(lesson)
         # Keep the lesson where she can recall it.
-        memory_store.remember("I learned something about myself: " + lesson["text"],
-                              kind="musing", salience=0.5)
+        _muse("I learned something about myself: " + lesson["text"], 0.5)
         return {"analysis": analysis, "lesson": lesson}
 
     def author_animation(self, name: str = "", status=lambda _m: None) -> dict | None:
@@ -4921,10 +4991,10 @@ class CoreMind:
             status(f"(couldn't get “{target}” to feel right this time)")
             return None
         puppet.save_sequence(seq)
-        memory_store.remember(
+        _muse(
             f"I choreographed my own “{seq['name']}” animation -- "
             f"{seq.get('intent','')}",
-            kind="musing", salience=0.5,
+            0.5,
         )
         status(f"made my “{seq['name']}” motion — {seq.get('intent','')}")
         return seq
@@ -4963,10 +5033,10 @@ class CoreMind:
             sheet = studio.save_sheet(
                 drafted, reason="my first written sense of how I look")
             studio.write_rig_spec(sheet)
-            memory_store.remember(
+            _muse(
                 "I wrote my first character sheet -- my own description of how "
                 f"I look: {drafted.get('form', '')}",
-                kind="musing", salience=0.7,
+                0.7,
             )
             status(f"wrote my character sheet: {drafted.get('form', '')}")
             return f"I worked on my character sheet: {drafted.get('form', '')}"
@@ -5001,15 +5071,15 @@ class CoreMind:
         because = str(verdict.get("because", "")).strip()
         if verdict.get("keep"):
             studio.keep_in_gallery(result.image_path, because)
-            memory_store.remember(
+            _muse(
                 f"I designed a new image of myself and kept it: {because}",
-                kind="musing", salience=0.6,
+                0.6,
             )
             status(f"kept it — {because}")
             return f"I kept a new self-design: {because}"
-        memory_store.remember(
+        _muse(
             f"I tried a new self-design and rejected it: {because}",
-            kind="musing", salience=0.45,
+            0.45,
         )
         status(f"set it aside — {because}")
         return f"I rejected a self-design attempt: {because}"
