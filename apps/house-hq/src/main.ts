@@ -897,6 +897,7 @@ type AlpeccaSystemId =
   | "growth"
   | "files"
   | "games"
+  | "mindscape"
   | "runtime";
 type AlpeccaRouteGuide = {
   hall: THREE.Vector3;
@@ -963,6 +964,12 @@ hud.innerHTML = `
       <button type="button" data-feature="journal">Journal</button>
       <button type="button" data-feature="studio">Studio</button>
       <button type="button" data-feature="home">Home</button>
+    </div>
+    <div class="source-actions source-nav">
+      <button type="button" data-nav="mindscape">Mindscape</button>
+      <button type="button" data-nav="voice">Voice</button>
+      <button type="button" data-nav="journal">Journal</button>
+      <button type="button" data-nav="tools">Tools</button>
     </div>
     <button id="openAlpeccaSource" class="source-open" type="button">Open Systems</button>
   </div>
@@ -1119,6 +1126,7 @@ hud.innerHTML = `
     <strong>Alpecca Void</strong>
     <span class="master-plan-status">Void Prototype: embodied home and systems</span>
     <span id="environmentModeLabel">Environment: Void Prototype</span>
+    <button id="environmentModeToggle" type="button">Enter the AI Office HQ</button>
     <span id="masterPlanStageLabel" class="master-plan-status">Master plan: Phase 5 baseline complete, Phase 6 active</span>
     <span id="alpeccaAssetModeLabel" class="master-plan-status">Art assets: Local fallback</span>
     <span>WASD move</span>
@@ -1220,6 +1228,17 @@ const alpeccaMemoryPressureBar = hud.querySelector<HTMLElement>("#alpeccaMemoryP
 const menu = hud.querySelector<HTMLDivElement>("#menu")!;
 const menuButton = hud.querySelector<HTMLButtonElement>("#menuButton")!;
 const environmentModeLabel = hud.querySelector<HTMLSpanElement>("#environmentModeLabel")!;
+const environmentModeToggle = hud.querySelector<HTMLButtonElement>("#environmentModeToggle")!;
+environmentModeToggle.textContent = isPrototypeMode() ? "Enter the AI Office HQ" : "Return to the Void";
+environmentModeToggle.addEventListener("click", (event) => {
+  event.stopPropagation();
+  // Void <-> Office HQ is a navigation so the scene rebuilds with the right
+  // rooms; ?environment=hq enters the office, no param returns to the void.
+  const target = new URL(window.location.href);
+  if (isPrototypeMode()) target.searchParams.set("environment", "hq");
+  else target.searchParams.delete("environment");
+  window.location.assign(target.toString());
+});
 const masterPlanStageLabel = hud.querySelector<HTMLSpanElement>("#masterPlanStageLabel")!;
 const alpeccaAssetModeLabel = hud.querySelector<HTMLSpanElement>("#alpeccaAssetModeLabel")!;
 const calmModeToggle = hud.querySelector<HTMLButtonElement>("#calmModeToggle")!;
@@ -1257,7 +1276,17 @@ const embodimentToggle = hud.querySelector<HTMLButtonElement>("#embodimentToggle
 const embodimentStatus = hud.querySelector<HTMLSpanElement>("#embodimentStatus")!;
 const topbarEl = hud.querySelector<HTMLDivElement>(".topbar")!;
 
-const currentEnvironmentMode = "prototype" as const;
+// The Void is the default primary surface; ?environment=hq enters the AI Office
+// HQ (a place inside her void). Selected at load so the scene builds the right
+// room set (see the officeRooms branch); switching is a navigation, not a live
+// scene-swap, which keeps it robust.
+const currentEnvironmentMode: "prototype" | "hq" = (() => {
+  try {
+    return new URL(window.location.href).searchParams.get("environment") === "hq" ? "hq" : "prototype";
+  } catch {
+    return "prototype";
+  }
+})();
 
 function isPrototypeMode() {
   return currentEnvironmentMode === "prototype";
@@ -3524,7 +3553,10 @@ function activeEnvironmentObjective() {
 }
 
 function updateEnvironmentModeUi() {
-  environmentModeLabel.textContent = "Environment: Alpecca Void Prototype";
+  environmentModeLabel.textContent = isPrototypeMode()
+    ? "Environment: Alpecca Void (core)"
+    : "Environment: AI Office HQ (in the void)";
+  environmentModeToggle.textContent = isPrototypeMode() ? "Enter the AI Office HQ" : "Return to the Void";
   masterPlanStageLabel.textContent = "Master plan: Phase 5 baseline complete, Phase 6 active";
   alpeccaAssetModeLabel.textContent = `Art assets: ${alpeccaArtAssetMode === "huggingface-runtime" ? "Hugging Face runtime" : "Local fallback"}`;
   alpeccaAssetModeLabel.dataset.status = alpeccaArtAssetMode === "huggingface-runtime" ? "live" : "offline";
@@ -3914,6 +3946,7 @@ const alpeccaSystemEndpoints: Record<AlpeccaSystemId, string> = {
   growth: "/growth",
   files: "/desktop",
   games: "/games",
+  mindscape: "/mindscape/state",
   runtime: "/system/status",
 };
 
@@ -3931,12 +3964,14 @@ const alpeccaSystemLabels: Record<AlpeccaSystemId, string> = {
   growth: "Growth",
   files: "Files",
   games: "Games",
+  mindscape: "Mindscape",
   runtime: "Runtime",
 };
 
 function alpeccaSystemFromPath(path: string): AlpeccaSystemId {
   const normalized = String(path || "").toLowerCase().split("?")[0];
   if (normalized.includes("observatory")) return "observatory";
+  if (normalized.includes("mindscape")) return "mindscape";
   if (normalized.includes("memor")) return "memory";
   if (normalized.includes("journal")) return "journal";
   if (normalized.includes("soul")) return "soul";
@@ -14133,10 +14168,28 @@ alpeccaSourcePanel.addEventListener("pointerdown", (event) => {
 });
 
 alpeccaSourcePanel.addEventListener("click", (event) => {
+  const navButton = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-nav]");
+  if (navButton?.dataset.nav) {
+    runAlpeccaSourceNav(navButton.dataset.nav);
+    return;
+  }
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-feature]");
   if (!button?.dataset.feature) return;
   runAlpeccaFeature(button.dataset.feature);
 });
+
+// Every source-panel destination opens IN her own systems overlay (same app,
+// no new window): each id maps to a section that fetches its backend endpoint
+// and renders in-place. "tools" maps to her Soul deliberation surface.
+function runAlpeccaSourceNav(nav: string) {
+  const section: AlpeccaSystemId =
+    nav === "mindscape" ? "mindscape"
+    : nav === "voice" ? "voice"
+    : nav === "journal" ? "journal"
+    : nav === "tools" ? "soul"
+    : "overview";
+  openAlpeccaSystems(section, true);
+}
 
 openAlpeccaSourceButton.addEventListener("click", () => {
   openAlpeccaTerminal(true);
