@@ -4,16 +4,11 @@ She runs as a proper Discord **bot** (never a self-bot). A message she is allowe
 to hear is forwarded to `POST /channel/inbound` -> her normal chat path (mood +
 memory + people + affect) -> her reply is posted back in her own voice.
 
-Phase 1 scope = reactive only, with the locked safety rails from
+Current Phase 10 scope = creator-allowlisted DMs only, with the locked safety rails from
 `docs/ALPECCA_DISCORD_PRESENCE.md`:
 
-  - **Channels:** she replies when *addressed* -- @mentioned, replied-to, or called
-    by name -- and then stays "in the conversation" for a short window so follow-ups
-    need no re-mention (natural back-and-forth, not an answering machine). She may
-    also **chime in unprompted**, but only on relevant openings (a question or a
-    substantive message), only sometimes, and behind a long per-channel cooldown
-    that *backs off further whenever a chime-in is ignored* -- so butting in stays
-    natural, never spammy. An anti-flood cooldown caps her rate per channel.
+  - **Guilds/threads:** all messages hard-return before media or backend work until
+    signed actor identity and scoped conversation wiring are live.
   - **DMs:** allowlist only. She answers DMs *only* from CreatorJD
     (`ALPECCA_DISCORD_DM_ALLOW` = comma-separated Discord user ids or unique
     usernames). Empty = no DMs. One byte-validated image can enter her vision;
@@ -102,6 +97,10 @@ IMAGE_INBOUND_TIMEOUT = max(
     float(os.environ.get("ALPECCA_DISCORD_IMAGE_TIMEOUT", "300")),
 )
 MAX_DISCORD_CHARS = 2000
+# Phase 10 stays closed until the signed actor envelope is wired end to end.
+# These are code locks, not deployment knobs: environment flags cannot widen
+# Discord into guild participation, autonomous speech, recursion, or voice.
+PHASE10_GUILD_MODES_LOCKED = True
 # How long she stays "in conversation" in a channel after being addressed, so
 # follow-ups don't need a re-mention (natural back-and-forth).
 ENGAGE_WINDOW = float(os.environ.get("ALPECCA_DISCORD_ENGAGE_WINDOW", "90"))
@@ -112,14 +111,14 @@ CHANNEL_MIN_INTERVAL = float(os.environ.get("ALPECCA_DISCORD_MIN_INTERVAL", "1.5
 # sometimes, and with a long per-channel cooldown that backs off further whenever
 # a chime-in goes unanswered -- so it reads as a person occasionally joining, not
 # a bot reacting to everything.
-PROACTIVE_ENABLED = os.environ.get("ALPECCA_DISCORD_PROACTIVE", "0") not in ("", "0", "false", "False")
+PROACTIVE_ENABLED = False
 PROACTIVE_COOLDOWN = float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_COOLDOWN", "480"))
 PROACTIVE_CHANCE = float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_CHANCE", "0.3"))
 PROACTIVE_MIN_LEN = int(os.environ.get("ALPECCA_DISCORD_PROACTIVE_MIN_LEN", "40"))
 # Recursive self-continuation: when the room goes quiet after SHE spoke, she may
 # continue her own train of thought a little deeper -- bounded, paced, and it
 # yields the instant any human speaks, so it never becomes a monologue/spam.
-RECURSIVE_ENABLED = os.environ.get("ALPECCA_DISCORD_RECURSIVE", "0") not in ("", "0", "false", "False")
+RECURSIVE_ENABLED = False
 RECURSIVE_MAX = int(os.environ.get("ALPECCA_DISCORD_RECURSIVE_MAX", "2"))       # self-steps before waiting for a human
 RECURSIVE_DELAY = float(os.environ.get("ALPECCA_DISCORD_RECURSIVE_DELAY", "75"))  # quiet seconds before she continues
 RECURSIVE_SWEEP = float(os.environ.get("ALPECCA_DISCORD_RECURSIVE_SWEEP", "20"))  # how often the loop checks
@@ -127,12 +126,12 @@ DEBUG = os.environ.get("ALPECCA_DISCORD_DEBUG", "1") not in ("", "0", "false", "
 # Contextual participation: she reads the recent channel conversation and may
 # speak WITHOUT being mentioned -- but she decides per message whether she has
 # something worth adding (she can choose "(pass)"), throttled so it isn't spam.
-PARTICIPATE = os.environ.get("ALPECCA_DISCORD_PARTICIPATE", "0") not in ("", "0", "false", "False")
+PARTICIPATE = False
 PARTICIPATE_COOLDOWN = float(os.environ.get("ALPECCA_DISCORD_PARTICIPATE_COOLDOWN", "45"))  # min secs between unprompted weigh-ins
 CONTEXT_MESSAGES = int(os.environ.get("ALPECCA_DISCORD_CONTEXT", "8"))                        # recent msgs given as context
 # Voice chat: she can join a voice channel (on request) and SPEAK her replies with
 # her real TTS voice. Bots stream audio (supported); video/camera is not possible.
-VOICE_ENABLED = os.environ.get("ALPECCA_DISCORD_VOICE", "0") not in ("", "0", "false", "False")
+VOICE_ENABLED = False
 
 
 def _is_reply_to_me(message: "discord.Message", client: "discord.Client") -> bool:
@@ -153,14 +152,16 @@ def _ask_alpecca(text: str, sender: str, channel: str,
     not part of this bridge contract. Blocking (urllib); callers run it off the
     event loop via asyncio.to_thread.
     """
+    # Sender labels and caller-supplied roles are presentation data, never
+    # authority. Until signed actor wiring lands, every Discord turn is guest.
     body_obj = {
         "text": text,
-        "sender": sender,
+        "sender": "Discord guest",
         "channel": channel,
         "situation": context,
         "context": context,
         "room": room,
-        "speaker": speaker if speaker in {"creator", "guest"} else "guest",
+        "speaker": "guest",
     }
     if image:
         body_obj["image"] = image
@@ -207,6 +208,8 @@ def _synth_voice_wav(text: str) -> "bytes | None":
 
     Blocking (urllib); callers run it off the event loop via asyncio.to_thread.
     """
+    if not VOICE_ENABLED:
+        return None
     body = json.dumps({"text": text}).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
@@ -227,28 +230,29 @@ def _synth_voice_wav(text: str) -> "bytes | None":
 def build_client() -> discord.Client:
     intents = discord.Intents.default()
     intents.message_content = True   # needed to read message text (also enable in the portal)
-    intents.voice_states = True      # needed to see which voice channel a member is in
+    intents.voice_states = False
     client = discord.Client(intents=intents)
 
     @client.event
     async def on_ready() -> None:
-        try:
-            if VOICE_ENABLED and not discord.opus.is_loaded():
-                discord.opus._load_default()
-        except Exception as exc:
-            print(f"[discord] opus load failed (voice off): {exc}", file=sys.stderr)
-        try:
-            import discord.voice_client as _vc
+        if VOICE_ENABLED:
             try:
-                import davey as _davey
-                _davey_ok = getattr(_davey, "__version__", "yes")
-            except Exception:
-                _davey_ok = "MISSING"
-            print(f"[discord] voice caps: has_nacl={_vc.has_nacl}, "
-                  f"opus_loaded={discord.opus.is_loaded()}, davey={_davey_ok}",
-                  file=sys.stderr, flush=True)
-        except Exception as exc:
-            print(f"[discord] voice caps check failed: {exc}", file=sys.stderr, flush=True)
+                if not discord.opus.is_loaded():
+                    discord.opus._load_default()
+            except Exception as exc:
+                print(f"[discord] opus load failed (voice off): {exc}", file=sys.stderr)
+            try:
+                import discord.voice_client as _vc
+                try:
+                    import davey as _davey
+                    _davey_ok = getattr(_davey, "__version__", "yes")
+                except Exception:
+                    _davey_ok = "MISSING"
+                print(f"[discord] voice caps: has_nacl={_vc.has_nacl}, "
+                      f"opus_loaded={discord.opus.is_loaded()}, davey={_davey_ok}",
+                      file=sys.stderr, flush=True)
+            except Exception as exc:
+                print(f"[discord] voice caps check failed: {exc}", file=sys.stderr, flush=True)
         # Resolve username allowlist entries to ids up front so DM permission
         # does not depend on the member cache. A non-empty query does not need
         # the privileged members intent; failure just leaves lazy resolution.
@@ -267,7 +271,7 @@ def build_client() -> discord.Client:
         print(f"[discord] online as {client.user} in {len(client.guilds)} server(s); "
               f"backend={BACKEND_URL}; "
               f"dm_allow={sorted(DM_ALLOW_IDS | DM_ALLOW_NAMES) or 'none'}", flush=True)
-        if not _sweeper_started["on"]:
+        if RECURSIVE_ENABLED and not _sweeper_started["on"]:
             _sweeper_started["on"] = True
             client.loop.create_task(recursive_sweeper())
 
@@ -291,7 +295,8 @@ def build_client() -> discord.Client:
 
     async def _speak_in_voice(guild, text: str) -> None:
         """Speak `text` in the guild's connected voice channel using her TTS voice."""
-        if not (VOICE_ENABLED and guild and guild.voice_client
+        if not (VOICE_ENABLED and not PHASE10_GUILD_MODES_LOCKED
+                and guild and guild.voice_client
                 and guild.voice_client.is_connected()):
             return
         vc = guild.voice_client
@@ -326,7 +331,10 @@ def build_client() -> discord.Client:
             return
 
         is_dm = message.guild is None
-        sender = f"{message.author.name} (discord:{message.author.id})"
+        if PHASE10_GUILD_MODES_LOCKED and not is_dm:
+            return
+
+        sender = "Discord guest"
         now = time.monotonic()
         mode = "reply"
         if DEBUG:
@@ -546,7 +554,7 @@ def build_client() -> discord.Client:
                     text,
                     sender,
                     channel_label,
-                    "creator" if is_dm else "guest",
+                    "guest",
                     context=context,
                     room="discord",
                     image=image_dataurl,

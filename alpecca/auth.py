@@ -24,6 +24,12 @@ CREDENTIAL_TARGET = "Alpecca/ServerAuthorization"
 BRIDGE_AUTH_ENV_NAME = "ALPECCA_DISCORD_BRIDGE_SECRET"
 BRIDGE_AUTHORIZATION_HEADER = "X-Alpecca-Bridge-Authorization"
 BRIDGE_CREDENTIAL_TARGET = "Alpecca/DiscordBridgeAuthorization"
+BRIDGE_ACTOR_IDENTITY_SEAL_ENV_NAME = (
+    "ALPECCA_DISCORD_ACTOR_IDENTITY_SEAL_SECRET"
+)
+BRIDGE_ACTOR_IDENTITY_SEAL_CREDENTIAL_TARGET = (
+    "Alpecca/DiscordActorIdentitySeal"
+)
 CREATOR_PASSWORD_ENV_NAME = "ALPECCA_CREATOR_PASSWORD"
 CREATOR_PASSWORD_CREDENTIAL_TARGET = "Alpecca/CreatorPassword"
 AUTHORIZATION_HEADER = "X-Alpecca-Authorization"
@@ -33,9 +39,11 @@ _SESSION_VERSION = 1
 _MAX_BOOTSTRAP_CODES = 32
 _MAX_CREDENTIAL_CHARS = 4096
 _MAX_PASSWORD_ATTEMPTS = 5
+_MIN_BRIDGE_ACTOR_IDENTITY_SEAL_BYTES = 32
 PASSWORD_WINDOW_SECONDS = 60
 _PROCESS_SECRET: str | None = None
 _PROCESS_BRIDGE_SECRET: str | None = None
+_PROCESS_BRIDGE_ACTOR_IDENTITY_SEAL_SECRET: str | None = None
 _PROCESS_SECRET_LOCK = threading.Lock()
 
 _PUBLIC_IDENTITY_HEADERS = frozenset(
@@ -69,6 +77,30 @@ def _process_bridge_authorization_secret() -> str:
         if _PROCESS_BRIDGE_SECRET is None:
             _PROCESS_BRIDGE_SECRET = _new_secret()
         return _PROCESS_BRIDGE_SECRET
+
+
+def _process_bridge_actor_identity_seal_secret() -> str:
+    global _PROCESS_BRIDGE_ACTOR_IDENTITY_SEAL_SECRET
+    with _PROCESS_SECRET_LOCK:
+        if _PROCESS_BRIDGE_ACTOR_IDENTITY_SEAL_SECRET is None:
+            _PROCESS_BRIDGE_ACTOR_IDENTITY_SEAL_SECRET = _new_secret()
+        return _PROCESS_BRIDGE_ACTOR_IDENTITY_SEAL_SECRET
+
+
+def _validate_bridge_actor_identity_seal_secret(
+    value: object,
+    *,
+    source: str,
+) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{source} must not be empty.")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"{source} must be valid UTF-8.") from exc
+    if len(encoded) < _MIN_BRIDGE_ACTOR_IDENTITY_SEAL_BYTES:
+        raise ValueError(f"{source} must contain at least 32 UTF-8 bytes.")
+    return value
 
 
 def _credential_error_code(exc: BaseException) -> int | None:
@@ -265,6 +297,36 @@ def load_or_create_bridge_authorization_secret(
             comment="Alpecca Discord bridge service credential",
         )
     return _process_bridge_authorization_secret()
+
+
+def load_or_create_bridge_actor_identity_seal_secret(
+    home: Path,
+    environ: MutableMapping[str, str] | None = None,
+) -> str:
+    """Load the key material reserved for Discord actor-identity seals.
+
+    This credential cannot authorize a creator or bridge-service request and
+    is not the Discord bot token. Existing credentials are only read; an
+    absent dedicated Windows target may be initialized by the shared helper.
+    """
+
+    Path(home)
+    env = os.environ if environ is None else environ
+    if BRIDGE_ACTOR_IDENTITY_SEAL_ENV_NAME in env:
+        return _validate_bridge_actor_identity_seal_secret(
+            env[BRIDGE_ACTOR_IDENTITY_SEAL_ENV_NAME],
+            source=BRIDGE_ACTOR_IDENTITY_SEAL_ENV_NAME,
+        )
+    if os.name == "nt" and not _test_environment(env):
+        stored = _load_or_create_named_windows_credential(
+            BRIDGE_ACTOR_IDENTITY_SEAL_CREDENTIAL_TARGET,
+            comment="Alpecca Discord actor-identity seal credential",
+        )
+        return _validate_bridge_actor_identity_seal_secret(
+            stored,
+            source=BRIDGE_ACTOR_IDENTITY_SEAL_CREDENTIAL_TARGET,
+        )
+    return _process_bridge_actor_identity_seal_secret()
 
 
 @dataclass(frozen=True, slots=True)
@@ -816,6 +878,8 @@ class SessionAuthority:
 __all__ = [
     "AUTH_ENV_NAME",
     "AUTHORIZATION_HEADER",
+    "BRIDGE_ACTOR_IDENTITY_SEAL_CREDENTIAL_TARGET",
+    "BRIDGE_ACTOR_IDENTITY_SEAL_ENV_NAME",
     "BRIDGE_AUTH_ENV_NAME",
     "BRIDGE_AUTHORIZATION_HEADER",
     "BRIDGE_CREDENTIAL_TARGET",
@@ -829,6 +893,7 @@ __all__ = [
     "SessionCookie",
     "is_loopback_address",
     "load_creator_password",
+    "load_or_create_bridge_actor_identity_seal_secret",
     "load_or_create_bridge_authorization_secret",
     "load_or_create_authorization_secret",
     "set_windows_creator_password",

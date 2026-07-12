@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,6 +16,8 @@ from alpecca import openclaw_bridge
 
 ROOT_SECRET = "creator-root-secret-with-enough-entropy-for-tests"
 BRIDGE_SECRET = "discord-service-secret-with-enough-entropy-for-tests"
+ACTOR_SEAL_SECRET = "discord-actor-seal-secret-with-enough-entropy-for-tests"
+BOT_TOKEN = "discord-bot-token-kept-separate-from-actor-seals"
 
 
 def test_bridge_service_credential_is_separate_and_guest_only() -> None:
@@ -46,19 +49,124 @@ def test_bridge_service_credential_is_separate_and_guest_only() -> None:
         )
 
 
-def test_bridge_secret_loader_does_not_reuse_creator_secret(tmp_path) -> None:
+def test_discord_authorization_and_actor_credentials_remain_distinct(tmp_path) -> None:
+    environ = {
+        auth_mod.AUTH_ENV_NAME: ROOT_SECRET,
+        auth_mod.BRIDGE_AUTH_ENV_NAME: BRIDGE_SECRET,
+        auth_mod.BRIDGE_ACTOR_IDENTITY_SEAL_ENV_NAME: ACTOR_SEAL_SECRET,
+        "DISCORD_BOT_TOKEN": BOT_TOKEN,
+    }
     creator = auth_mod.load_or_create_authorization_secret(
         tmp_path,
-        {auth_mod.AUTH_ENV_NAME: ROOT_SECRET},
+        environ,
     )
     bridge = auth_mod.load_or_create_bridge_authorization_secret(
         tmp_path,
-        {auth_mod.BRIDGE_AUTH_ENV_NAME: BRIDGE_SECRET},
+        environ,
+    )
+    actor_seal = auth_mod.load_or_create_bridge_actor_identity_seal_secret(
+        tmp_path,
+        environ,
     )
 
     assert creator == ROOT_SECRET
     assert bridge == BRIDGE_SECRET
-    assert bridge != creator
+    assert actor_seal == ACTOR_SEAL_SECRET
+    assert len({creator, bridge, actor_seal, environ["DISCORD_BOT_TOKEN"]}) == 4
+
+
+def test_actor_identity_seal_requires_32_explicit_utf8_bytes(tmp_path) -> None:
+    for short_value in ("x" * 31, "\u00e9" * 15 + "x"):
+        with pytest.raises(ValueError, match="at least 32 UTF-8 bytes"):
+            auth_mod.load_or_create_bridge_actor_identity_seal_secret(
+                tmp_path,
+                {auth_mod.BRIDGE_ACTOR_IDENTITY_SEAL_ENV_NAME: short_value},
+            )
+
+    exact_multibyte_value = "\u00e9" * 16
+    assert auth_mod.load_or_create_bridge_actor_identity_seal_secret(
+        tmp_path,
+        {auth_mod.BRIDGE_ACTOR_IDENTITY_SEAL_ENV_NAME: exact_multibyte_value},
+    ) == exact_multibyte_value
+
+
+def test_actor_seal_validation_does_not_change_existing_loader_contracts(
+    tmp_path,
+) -> None:
+    assert auth_mod.load_or_create_authorization_secret(
+        tmp_path,
+        {auth_mod.AUTH_ENV_NAME: "root"},
+    ) == "root"
+    assert auth_mod.load_or_create_bridge_authorization_secret(
+        tmp_path,
+        {auth_mod.BRIDGE_AUTH_ENV_NAME: "bridge"},
+    ) == "bridge"
+
+
+def test_actor_identity_seal_process_fallback_is_stable_and_process_only(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        auth_mod,
+        "_PROCESS_BRIDGE_ACTOR_IDENTITY_SEAL_SECRET",
+        None,
+    )
+    monkeypatch.setattr(auth_mod, "_new_secret", lambda: ACTOR_SEAL_SECRET)
+    environ = {
+        "PYTEST_CURRENT_TEST": "actor seal process fallback",
+        "DISCORD_BOT_TOKEN": BOT_TOKEN,
+    }
+
+    first = auth_mod.load_or_create_bridge_actor_identity_seal_secret(
+        tmp_path,
+        environ,
+    )
+    second = auth_mod.load_or_create_bridge_actor_identity_seal_secret(
+        tmp_path,
+        environ,
+    )
+
+    assert first == second == ACTOR_SEAL_SECRET
+    assert first != environ["DISCORD_BOT_TOKEN"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_actor_identity_seal_uses_only_its_windows_credential_target(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_load(target: str, *, comment: str) -> str:
+        calls.append((target, comment))
+        return ACTOR_SEAL_SECRET
+
+    monkeypatch.setattr(auth_mod, "os", SimpleNamespace(name="nt", environ={}))
+    monkeypatch.setattr(auth_mod, "_test_environment", lambda _env: False)
+    monkeypatch.setattr(
+        auth_mod,
+        "_load_or_create_named_windows_credential",
+        fake_load,
+    )
+
+    loaded = auth_mod.load_or_create_bridge_actor_identity_seal_secret(
+        tmp_path,
+        {},
+    )
+
+    assert loaded == ACTOR_SEAL_SECRET
+    assert calls == [
+        (
+            auth_mod.BRIDGE_ACTOR_IDENTITY_SEAL_CREDENTIAL_TARGET,
+            "Alpecca Discord actor-identity seal credential",
+        )
+    ]
+    assert auth_mod.BRIDGE_ACTOR_IDENTITY_SEAL_CREDENTIAL_TARGET not in {
+        auth_mod.CREDENTIAL_TARGET,
+        auth_mod.BRIDGE_CREDENTIAL_TARGET,
+        auth_mod.CREATOR_PASSWORD_CREDENTIAL_TARGET,
+    }
 
 
 def test_discord_route_rejects_creator_bearer_and_runs_service_as_guest(
