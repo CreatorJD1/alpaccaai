@@ -207,23 +207,27 @@ def _kokoro_dynamics(state):
     if reference:
         expressivity = 1.18
     if KOKORO_IDENTITY_LOCK:
-        pitch = base * (1.0 + float(markup.get("pitch_semitones", 0)) * 0.0105 * expressivity)
-        pitch += (arousal - 0.5) * 0.012 * expressivity
+        # Subtle emotion-driven pitch that still reads as af_heart. Widened from
+        # the prior +-6% so mood is actually audible (Jason: more expressive +
+        # a little pitch), while the clamp keeps her identity recognizable.
+        pitch = base * (1.0 + float(markup.get("pitch_semitones", 0)) * 0.0155 * expressivity)
+        pitch += (arousal - 0.5) * 0.022 * expressivity
+        pitch += valence * 0.018 * expressivity
         pitch += {
-            "joyful": 0.018,
-            "playful": 0.018,
-            "curious": 0.006,
-            "content": -0.020,
-            "affectionate": -0.026,
-            "tender": -0.048,
-            "wistful": -0.046,
-            "lonely": -0.038,
-            "withdrawn": -0.032,
-            "sleepy": -0.042,
-            "worried": -0.018,
-            "anxious": -0.012,
+            "joyful": 0.030,
+            "playful": 0.030,
+            "curious": 0.012,
+            "content": -0.026,
+            "affectionate": -0.034,
+            "tender": -0.060,
+            "wistful": -0.058,
+            "lonely": -0.050,
+            "withdrawn": -0.042,
+            "sleepy": -0.056,
+            "worried": -0.026,
+            "anxious": -0.018,
         }.get(primary, 0.0)
-        pitch = max(0.94, min(1.06, pitch))
+        pitch = max(0.915, min(1.085, pitch))
     else:
         pitch = base * (1.0 + (arousal - 0.5) * 0.10 + valence * 0.05)
         pitch = max(0.88, min(1.30, pitch))
@@ -239,11 +243,15 @@ def _kokoro_dynamics(state):
         # push the range enough to be audible.
         speed -= 0.028
         breath = max(breath, 0.34)
+    # Wider pacing swing so her emotional state carries in the delivery, not
+    # just a near-flat tempo.
     if primary in {"anxious", "worried"}:
-        speed += 0.035
+        speed += 0.055
     elif primary in {"tender", "wistful", "sleepy", "lonely"}:
-        speed -= 0.045
-    speed = max(0.68, min(1.20, speed))
+        speed -= 0.065
+    elif primary in {"joyful", "playful"}:
+        speed += 0.030
+    speed = max(0.66, min(1.22, speed))
     gain = max(0.52, min(1.10, 0.66 + float(markup.get("volume", 0.8)) * 0.36))
     return {
         "pitch": pitch,
