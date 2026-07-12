@@ -8,23 +8,35 @@ retained below as historical implementation evidence.
 - Phase 9 is materially advanced but remains **PARTIAL**. Creator chat can now
   reach `source_inspect` through the smart tool gate; repository reads are
   read-only, explicitly rooted, creator-only, and require a verified loopback
-  Ollama target with a non-cloud model. Image and push-to-talk ingress now use
-  strict pre-model byte/MIME/container/dimension/duration gates, server-derived
-  SHA-256 provenance, exact turn/request scopes, metadata-only responses, and
-  local-only/cloud-denied envelopes. Screen, camera, microphone, and voice
-  enrollment uses are recorded through the capability audit path. House HQ
-  auto-stops microphone capture at 60 seconds and cancels stale recording or
-  transcription work on disconnect.
+  Ollama target with a non-cloud model. Image and push-to-talk ingress retain
+  their strict pre-model byte/MIME/container/dimension/duration gates,
+  server-derived SHA-256 provenance, exact turn/request scopes, metadata-only
+  responses, and local-only/cloud-denied envelopes. Screen, camera, microphone,
+  and voice enrollment uses are recorded through the capability audit path.
+  House HQ auto-stops microphone capture at 60 seconds and cancels stale
+  recording or transcription work on disconnect.
+- Trusted House text attachments are now implemented for the creator-only House
+  route. The client supplies only a bounded root id and relative path; the server
+  resolves that reference against its allowed roots, records the file-access
+  audit before reading, and binds locally derived MIME/SHA-256 provenance to the
+  exact server-issued turn scope. The legacy raw/base64 `file_name`/`file_data`
+  path is rejected, and the serialized attachment record contains provenance
+  metadata rather than the ingested excerpt or raw bytes. The live file-derived
+  answer is ephemeral: it cannot confirm/create commitments, enter recent-reply
+  memory, persist as content-bearing history/cognition, reach Mindscape, or use
+  the OpenClaw delivery bridge. Follow-ups must reattach the file.
 - Private image descriptions, microphone-derived text, source-tool turns,
-  retained private history, and paged private evidence force verified local
-  inference. A remote `OLLAMA_HOST`, HF primary backend, or cloud-tagged model
-  receives no private request and produces the honest local-unavailable
-  fallback instead. The normal non-private hosted-chat paths remain unchanged.
-- Phase 9 is not DONE: channel file ingestion still lacks the common trusted
-  envelope; camera/screen/microphone grants are not server-issued expiring
-  leases; a provider-specific egress consent broker is absent; and Discord
-  guild actors still need signed guest subjects so bridge authentication cannot
-  become creator authority. Keep Phase 10 Discord participation/voice blocked.
+  House file excerpts, retained private history, and paged private evidence
+  force verified local inference. File attachment context is isolated as
+  untrusted prompt data and suppresses tool schemas for that turn. A remote
+  `OLLAMA_HOST`, HF primary backend, or cloud-tagged model receives no private
+  request and produces the honest local-unavailable fallback instead. Normal
+  non-private hosted-chat paths remain unchanged.
+- Phase 9 is not DONE: camera/screen/microphone/file grants are not server-issued
+  expiring capability leases; a provider/model-specific egress consent broker
+  is absent; and Discord guild actors still need signed guest subjects so bridge
+  authentication cannot become creator authority. Keep Phase 10 Discord
+  participation/voice blocked.
 
 - `/house-hq` now serves the **Void Prototype**, including a native categorized
   **Alpecca Systems** center and an orthographic view.
@@ -316,17 +328,30 @@ surface.
 
 **PARTIAL as of 2026-07-12.** Scoped read-only repository browsing, strict
 image/audio ingress, derived provenance, verified-local sensor inference,
-capability-use audit records, and bounded House microphone lifecycle are now
-implemented. Focused tests cover malformed/oversized payloads, MIME/magic
-mismatch, dimensions, duration, scope, provenance, authorization-before-read,
-local-only model routing, and House/WebSocket integration.
+capability-use audit records, bounded House microphone lifecycle, and trusted
+creator-only House text attachments are implemented. The House attachment path
+accepts only a server-resolved allowed-root id plus relative path, audits before
+the read, derives MIME and SHA-256 locally, binds metadata to the exact turn
+scope, forces local-only inference, and suppresses tools while the untrusted
+file excerpt is in prompt context. The serialized attachment record contains
+provenance metadata, not the excerpt or raw bytes. Legacy raw/base64
+`file_name`/`file_data` input is retired. Existing source inspection and
+image/audio behavior remain unchanged. File-derived answers are shown live but
+stored only as a redacted omission marker; they cannot mutate commitments,
+seed later tool-bearing turns, sync through Mindscape, or auto-deliver through
+OpenClaw.
 
-Still required: replace legacy channel `file_data` extraction with the common
-trusted envelope and a server-resolved House attach flow; add expiring,
-connection-bound capability leases with disconnect revocation; add the exact
-provider/model egress consent broker and immutable grant/deny/stop receipts;
-and partition Discord bridge service authentication from signed guest actor
-identity. Do not mark Phase 9 complete or unblock Phase 10 before those gates.
+Focused tests cover malformed/oversized payloads, MIME/magic mismatch,
+dimensions, duration, scope, provenance, creator authorization, audit-before-
+read, local-only model routing, tool suppression, raw file-payload rejection,
+derived-output non-retention, commitment blocking, and House/WebSocket
+integration.
+
+Still required: add expiring, connection-bound capability leases with
+disconnect revocation; add the exact provider/model egress consent broker and
+immutable grant/deny/stop receipts; and partition Discord bridge service
+authentication from signed guest actor identity. Do not mark Phase 9 complete
+or unblock Phase 10 before those gates.
 
 ### Phase 10: Discord presence and voice - BLOCKED
 

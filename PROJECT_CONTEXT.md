@@ -23,10 +23,15 @@ retained elsewhere for historical context.
   one proactive event uses one delivery surface; and eligible cue evidence
   changes response strategy without claiming a literal feeling change.
 - Phase 9 multimodal/source perception is the active slice. Source inspection,
-  bounded image/audio ingress, scoped provenance, audited sensor use, and
-  verified-local private inference are implemented. Trusted file ingress,
-  expiring capability leases, provider-specific egress consent, and signed
-  Discord guest identity remain incomplete; Phase 10 stays blocked.
+  bounded image/audio ingress, scoped provenance, audited sensor use,
+  verified-local private inference, and the creator-only server-resolved House
+  text attachment path are implemented. House sends only allowed-root
+  `{root, rel}` references; the server performs bounded text ingress and returns
+  metadata-only provenance. File-derived replies are live but ephemeral: they
+  cannot create commitments and are redacted from durable chat/history so they
+  cannot seed later tool turns or Mindscape sync. Phase 9 remains **PARTIAL**:
+  expiring capability leases, the provider-specific egress consent broker, and
+  signed Discord guest identity remain unfinished; Phase 10 stays blocked.
 
 ## Identity
 
@@ -56,9 +61,10 @@ observe -> interpret -> retrieve memory -> update self-state -> choose intent ->
 
 Important current priorities:
 
-- Continue Phase 9 through trusted file ingress and server-issued sensor leases
-  without widening Phase 4 execution or bypassing the Phase 5 initiative
-  boundary. Phase 6 resource measurement remains separately gated.
+- Continue Phase 9 through server-issued sensor leases, the provider-specific
+  egress consent broker, and signed Discord guest identity without widening
+  Phase 4 execution or bypassing the Phase 5 initiative boundary. Phase 6
+  resource measurement remains separately gated.
 - Natural replies through the live backend, not event echoes or copied user text.
 - Stable local model path uses the currently approved Ollama model from `ALPECCA_MODEL`; do not revive retired legacy model paths.
 - Voice should use her personality and modulation system, with Kokoro `af_heart` as the intended voice profile.

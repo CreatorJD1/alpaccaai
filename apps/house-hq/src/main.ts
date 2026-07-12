@@ -412,6 +412,10 @@ type AlpeccaMindpageState = {
   turns_until_history_eviction?: number;
   unsummarized_eviction_backlog?: number;
 };
+type AlpeccaSourceRef = {
+  root: string;
+  rel: string;
+};
 type AlpeccaAiMessage = {
   type?: string;
   request_id?: string;
@@ -1583,6 +1587,7 @@ let alpeccaAiSlowReplyNoticeShown = false;
 let alpeccaAiPendingPlayerRequestId = "";
 let alpeccaAiRequestSequence = 0;
 let alpeccaAiLastPlayerMessage = "";
+let alpeccaPendingSourceRef: AlpeccaSourceRef | null = null;
 const ALPECCA_AI_SLOW_REPLY_MS = 12000;
 const ALPECCA_AI_PLAYER_REPLY_TIMEOUT_MS = 35000;
 const ALPECCA_AI_CHANNEL_INBOUND_TIMEOUT_MS = 25000;
@@ -4645,6 +4650,8 @@ function openAlpeccaChat() {
 function closeAlpeccaChat() {
   cancelAlpeccaPushToTalk();
   closeAlpeccaCamera();
+  alpeccaPendingSourceRef = null;
+  alpeccaChatInput.placeholder = "Message Alpecca...";
   alpeccaChat.classList.add("hidden");
   alpeccaChatInput.blur();
   renderer.domElement.focus();
@@ -4904,7 +4911,7 @@ function boundedAlpeccaChatRejectionField(value: unknown) {
   return value.replace(/\s+/g, " ").trim().slice(0, ALPECCA_CHAT_REJECTION_FIELD_MAX_CHARS);
 }
 
-async function readAlpeccaChatRejection(response: Response) {
+async function readAlpeccaChatRejection(response: Response, attachmentKind: "" | "image" | "file" = "") {
   let detailText = "";
   let code = "";
   let reason = "";
@@ -4913,6 +4920,7 @@ async function readAlpeccaChatRejection(response: Response) {
     if (body.length <= ALPECCA_CHAT_REJECTION_BODY_MAX_CHARS) {
       const payload = JSON.parse(body) as Record<string, unknown>;
       code = boundedAlpeccaChatRejectionField(payload.code);
+      reason = boundedAlpeccaChatRejectionField(payload.reason);
       const detail = payload.detail;
       if (typeof detail === "string") {
         detailText = boundedAlpeccaChatRejectionField(detail);
@@ -4928,6 +4936,24 @@ async function readAlpeccaChatRejection(response: Response) {
   }
 
   if (code === "attachment_rejected") {
+    if (attachmentKind === "file") {
+      const attachmentMessage: Record<string, string> = {
+        "invalid-source-ref": "That server file reference was rejected.",
+        "raw-file-payload-disabled": "Raw file data is disabled; attach the server file reference instead.",
+        "source-ref-house-only": "Server file references are only available through House HQ.",
+        "traversal": "That file is outside the allowed file rooms.",
+        "root-not-allowed": "That file room is not allowed.",
+        "file-not-found": "That server file reference is no longer available.",
+        "multiple-attachments": "Send either a file or an image in one message, not both.",
+        "binary": "Only readable text files can be attached.",
+        "unsupported-mime": "That file type is not supported.",
+        "size-limit": "That file is too large to attach.",
+      };
+      return {
+        message: attachmentMessage[reason] || "That file attachment was rejected by the backend.",
+        code: reason ? `${code}:${reason}` : code,
+      };
+    }
     const attachmentMessage: Record<string, string> = {
       "size-limit": "That image is too large to send.",
       "unsupported-mime": "That image format is not supported.",
@@ -4952,11 +4978,90 @@ async function readAlpeccaChatRejection(response: Response) {
   };
 }
 
-async function sendAlpeccaChat(text: string, image = "", privatePerception = "") {
+function alpeccaSourceRefLabel(sourceRef: AlpeccaSourceRef) {
+  return `${sourceRef.root}/${sourceRef.rel.replace(/^\/+/, "")}`;
+}
+
+function alpeccaSourceRefFileName(sourceRef: AlpeccaSourceRef) {
+  const fileName = sourceRef.rel.replace(/\\/g, "/").split("/").filter(Boolean).pop() || sourceRef.rel;
+  return fileName.length > 96 ? `...${fileName.slice(-93)}` : fileName;
+}
+
+const ALPECCA_ATTACHABLE_TEXT_EXTENSIONS = new Set([
+  "cfg", "conf", "csv", "css", "html", "ini", "js", "json", "log", "md",
+  "py", "toml", "ts", "txt", "xml", "yaml", "yml",
+]);
+
+function isAlpeccaAttachableTextFile(relativePath: string) {
+  const fileName = relativePath.replace(/\\/g, "/").split("/").filter(Boolean).pop() || "";
+  const extension = fileName.includes(".") ? fileName.split(".").pop()?.toLowerCase() || "" : "";
+  return ALPECCA_ATTACHABLE_TEXT_EXTENSIONS.has(extension);
+}
+
+function compactAlpeccaAttachmentProvenance(value: unknown) {
+  const provenance = boundedAlpeccaChatRejectionField(value);
+  const sha256 = provenance.match(/^(?:sha256:)?([a-f0-9]{64})$/i);
+  return sha256 ? `sha256:${sha256[1].slice(0, 12)}...` : provenance.slice(0, 56);
+}
+
+function showAlpeccaAttachmentReceipt(payload: Record<string, unknown>, sourceRef: AlpeccaSourceRef) {
+  const receipt = systemRecord(payload.attachment);
+  const source = systemRecord(receipt.source);
+  const envelope = systemRecord(receipt.envelope);
+  const status = boundedAlpeccaChatRejectionField(receipt.status);
+  const encoding = boundedAlpeccaChatRejectionField(receipt.encoding);
+  const provenance = compactAlpeccaAttachmentProvenance(
+    envelope.provenance || source.sha256,
+  );
+  if (!status && !provenance) return;
+  const summary = [
+    status || "resolved",
+    encoding,
+    receipt.excerpt_truncated === true ? "excerpt truncated" : "",
+    provenance,
+  ].filter(Boolean).join(" / ");
+  const returnedSourceRef = {
+    root: boundedAlpeccaChatRejectionField(source.root_id) || sourceRef.root,
+    rel: typeof source.relative_path === "string" && source.relative_path.trim()
+      ? source.relative_path.trim()
+      : sourceRef.rel,
+  };
+  appendAlpeccaLog("System", `Attachment: ${summary}`);
+  alpeccaProfileSeenEl.textContent = `${alpeccaSourceRefFileName(returnedSourceRef)}: ${summary}`;
+}
+
+function finishAlpeccaChatFailure(
+  requestId: string,
+  message: string,
+  attachmentLabel = "",
+  attachmentStatus = "failed",
+) {
+  if (alpeccaAiPendingPlayerRequestId !== requestId) return;
+  alpeccaAiAwaitingReply = false;
+  alpeccaAiReplyStartedAt = 0;
+  alpeccaAiSlowReplyNoticeShown = false;
+  alpeccaAiPendingPlayerRequestId = "";
+  alpeccaAiLastPlayerMessage = "";
+  appendAlpeccaLog("System", message);
+  showAlpeccaProfileLine(message, "listening");
+  if (attachmentLabel) alpeccaProfileSeenEl.textContent = `${attachmentLabel}: ${attachmentStatus}`;
+  showMessage(message, 5);
+}
+
+async function sendAlpeccaChat(
+  text: string,
+  image = "",
+  privatePerception = "",
+  sourceRef: AlpeccaSourceRef | null = null,
+) {
   const trimmed = text.trim();
-  if (!trimmed && !image) return;
-  const promptText = trimmed || "I'm showing you something through the camera right now.";
-  const logText = image ? (trimmed ? `${trimmed} [camera frame]` : "Shared a camera frame.") : trimmed;
+  if (!trimmed && !image && !sourceRef) return;
+  const promptText = trimmed || (sourceRef ? "Please inspect this attached file." : "I'm showing you something through the camera right now.");
+  const logText = sourceRef
+    ? `${promptText} [attached ${alpeccaSourceRefLabel(sourceRef)}]`
+    : image
+      ? (trimmed ? `${trimmed} [camera frame]` : "Shared a camera frame.")
+      : trimmed;
 
   focusAlpecca(4.2, "idleDown");
   alpecca.expressiveTimer = 0;
@@ -4994,6 +5099,7 @@ async function sendAlpeccaChat(text: string, image = "", privatePerception = "")
     request_id: requestId,
     ...(image ? { image } : {}),
     ...(privatePerception ? { private_perception: privatePerception } : {}),
+    ...(sourceRef ? { source_ref: { root: sourceRef.root, rel: sourceRef.rel } } : {}),
   };
   const inboundUrl = alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/channel/house-hq`);
   if (alpeccaAiBaseUrl && inboundUrl) {
@@ -5018,30 +5124,50 @@ async function sendAlpeccaChat(text: string, image = "", privatePerception = "")
           ...(payload && typeof payload === "object" ? payload : {}),
         } as AlpeccaAiMessage;
         handleAlpeccaAiMessage(JSON.stringify(replyPayload));
+        if (sourceRef) showAlpeccaAttachmentReceipt(payload, sourceRef);
         return;
       }
       if (response.status >= 400 && response.status < 500) {
-        const rejection = await readAlpeccaChatRejection(response);
+        const rejection = await readAlpeccaChatRejection(response, sourceRef ? "file" : image ? "image" : "");
         appendAlpeccaLog(
           "System",
           `House live chat request rejected (${response.status}${rejection.code ? `, ${rejection.code}` : ""}).`,
         );
-        if (alpeccaAiPendingPlayerRequestId === requestId) {
-          alpeccaAiAwaitingReply = false;
-          alpeccaAiReplyStartedAt = 0;
-          alpeccaAiSlowReplyNoticeShown = false;
-          alpeccaAiPendingPlayerRequestId = "";
-          alpeccaAiLastPlayerMessage = "";
-          appendAlpeccaLog("System", rejection.message);
-          showAlpeccaProfileLine(rejection.message, "listening");
-          showMessage(rejection.message, 5);
-        }
+        const attachmentLabel = sourceRef
+          ? alpeccaSourceRefFileName(sourceRef)
+          : "";
+        finishAlpeccaChatFailure(requestId, rejection.message, attachmentLabel, "rejected");
+        return;
+      }
+      if (sourceRef) {
+        finishAlpeccaChatFailure(
+          requestId,
+          `The attachment request failed (HTTP ${response.status}).`,
+          alpeccaSourceRefFileName(sourceRef),
+        );
         return;
       }
       appendAlpeccaLog("System", `House live chat channel returned ${response.status}. Falling back to websocket.`);
     } catch {
+      if (sourceRef) {
+        finishAlpeccaChatFailure(
+          requestId,
+          "The attachment request could not reach the live backend.",
+          alpeccaSourceRefFileName(sourceRef),
+        );
+        return;
+      }
       appendAlpeccaLog("System", "House live chat channel failed; trying websocket fallback.");
     }
+  }
+
+  if (sourceRef) {
+    finishAlpeccaChatFailure(
+      requestId,
+      "The attachment request requires the live House backend.",
+      alpeccaSourceRefFileName(sourceRef),
+    );
+    return;
   }
 
   if (alpeccaAiStatus === "live" && alpeccaSocket?.readyState === WebSocket.OPEN) {
@@ -13528,7 +13654,10 @@ for (const hudEventName of ["pointerdown", "click", "touchstart"]) {
 
 alpeccaChat.addEventListener("submit", (event) => {
   event.preventDefault();
-  void sendAlpeccaChat(alpeccaChatInput.value);
+  const sourceRef = alpeccaPendingSourceRef;
+  alpeccaPendingSourceRef = null;
+  alpeccaChatInput.placeholder = "Message Alpecca...";
+  void sendAlpeccaChat(alpeccaChatInput.value, "", "", sourceRef);
 });
 
 alpeccaChat.addEventListener("pointerdown", (event) => {
@@ -13716,6 +13845,17 @@ async function searchAlpeccaSystem(kind: "memory" | "files") {
     setAlpeccaSystemResults(`<section><h3>Search results</h3>${items.map((item) => {
       const title = systemString(item.kind || item.name || item.root, kind === "memory" ? "memory" : "file");
       const detail = systemString(item.content || item.body || item.path || item.rel || item.name);
+      if (kind === "files") {
+        const root = systemString(item.root, "");
+        const rel = systemString(item.rel, "");
+        const kindLabel = systemString(item.kind || item.type, "").toLowerCase();
+        const isDirectory = item.is_dir === true || kindLabel === "directory" || kindLabel === "folder";
+        if (!isDirectory && root && rel && isAlpeccaAttachableTextFile(rel)) {
+          const encodedRoot = escapeHudText(encodeURIComponent(root));
+          const encodedRel = escapeHudText(encodeURIComponent(rel));
+          return `<div class="systems-row systems-game"><span class="systems-badge">${escapeHudText(root)}</span><div><strong>${escapeHudText(title)}</strong><p>${escapeHudText(detail)}</p></div><div><button type="button" data-file-attach data-file-root="${encodedRoot}" data-file-rel="${encodedRel}" aria-label="Attach ${escapeHudText(title)}">Attach</button></div></div>`;
+        }
+      }
       return systemRow(title, detail, systemString(item.recall_method || item.root, ""));
     }).join("") || systemEmpty("No matching result.")}</section>`);
     setAlpeccaSystemsNotice("");
@@ -13908,6 +14048,38 @@ alpeccaSystems.addEventListener("click", (event) => {
   const actionButton = target.closest<HTMLButtonElement>("button[data-system-action]");
   if (actionButton?.dataset.systemAction) {
     void handleAlpeccaSystemAction(actionButton.dataset.systemAction);
+    return;
+  }
+  const fileAttachButton = target.closest<HTMLButtonElement>("button[data-file-attach]");
+  if (fileAttachButton) {
+    if (alpeccaAiAwaitingReply) {
+      setAlpeccaSystemsNotice("Wait for the current reply before attaching another file.");
+      return;
+    }
+    let root = "";
+    let rel = "";
+    try {
+      root = decodeURIComponent(fileAttachButton.dataset.fileRoot || "");
+      rel = decodeURIComponent(fileAttachButton.dataset.fileRel || "");
+    } catch {
+      setAlpeccaSystemsNotice("That file reference could not be selected.");
+      return;
+    }
+    if (!root || !rel) {
+      setAlpeccaSystemsNotice("That file reference is incomplete.");
+      return;
+    }
+    const sourceRef = { root, rel };
+    closeAlpeccaSystems();
+    openAlpeccaChat();
+    alpeccaPendingSourceRef = sourceRef;
+    alpeccaChatInput.value = "Please inspect this file.";
+    const fileName = alpeccaSourceRefFileName(sourceRef);
+    alpeccaChatInput.placeholder = `Ask about ${fileName}`;
+    showAlpeccaProfileLine(`${fileName} from ${root} is ready to attach by server reference.`, "listening", "files");
+    appendAlpeccaLog("System", `Selected ${alpeccaSourceRefLabel(sourceRef)} by server reference.`);
+    alpeccaChatInput.focus();
+    alpeccaChatInput.select();
     return;
   }
   const commitmentButton = target.closest<HTMLButtonElement>("button[data-commitment-action]");

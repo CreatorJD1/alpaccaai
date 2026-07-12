@@ -6,6 +6,22 @@ Stage 0 is complete. Phone and communication-channel security is intentionally
 deferred until the post-stage hardening pass; no phone identifier or channel is
 changed by the current rollout.
 
+## Active Phase 9 Checkpoint
+
+Phase 9 remains **PARTIAL**. Trusted creator-only House text attachments now use
+a server-resolved allowed-root id and relative path, audit file access before
+the read, derive MIME and SHA-256 locally, bind provenance to the exact turn
+scope, force local-only inference, and suppress tools while bounded file text is
+present. The serialized attachment record retains metadata-only provenance, and
+the legacy raw/base64 `file_name`/`file_data` path is retired. File-derived
+answers are live but ephemeral: commitment mutation, durable content retention,
+Mindscape sync, and automatic OpenClaw delivery are blocked. Existing source,
+image, and audio perception behavior remains as documented.
+
+Expiring connection-bound capability leases, provider/model-specific egress
+consent and receipts, and signed Discord guest identity are still unfinished.
+Do not use this checkpoint to mark Phase 9 complete or unblock Phase 10.
+
 ## Canonical Sources
 
 For implementation and behavior decisions, use:

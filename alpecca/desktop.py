@@ -120,6 +120,15 @@ def sandbox_status() -> dict:
     }
 
 
+def inspection_roots() -> dict[str, Path]:
+    """Return the server-owned read roots after preparing the default sandbox.
+
+    Callers still have to resolve a relative path through a bounded inspector;
+    this function exposes no client-controlled root or filesystem mutation.
+    """
+    return dict(_active_roots(None))
+
+
 @dataclass
 class Entry:
     name: str
@@ -160,8 +169,21 @@ def list_room(root: str, rel: str = "", roots: dict | None = None) -> dict:
         return {"ok": False, "error": "that path is outside the room."}
     if not target.exists():
         return {"ok": True, "root": root, "rel": rel, "entries": []}
+    try:
+        base_resolved = Path(base).resolve()
+    except Exception:
+        return {"ok": False, "error": "couldn't open that room."}
     entries = []
-    for p in sorted(target.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+    for p in sorted(
+        target.iterdir(),
+        key=lambda x: (x.is_symlink() or not x.is_dir(), x.name.lower()),
+    ):
+        try:
+            if p.is_symlink():
+                continue
+            p.resolve().relative_to(base_resolved)
+        except Exception:
+            continue
         try:
             size = p.stat().st_size if p.is_file() else 0
         except Exception:
@@ -301,13 +323,31 @@ def summarize(root: str, roots: dict | None = None) -> dict:
     by_kind: dict[str, int] = {}
     if base_r.exists():
         for dirpath, dirnames, filenames in os.walk(base_r):
-            folders += len(dirnames)
+            safe_dirs = []
+            for dirname in dirnames:
+                candidate = Path(dirpath) / dirname
+                try:
+                    if candidate.is_symlink():
+                        continue
+                    candidate.resolve().relative_to(base_r)
+                except Exception:
+                    continue
+                safe_dirs.append(dirname)
+            dirnames[:] = safe_dirs
+            folders += len(safe_dirs)
             for fn in filenames:
+                candidate = Path(dirpath) / fn
+                try:
+                    if candidate.is_symlink():
+                        continue
+                    candidate.resolve().relative_to(base_r)
+                except Exception:
+                    continue
                 files += 1
                 ext = Path(fn).suffix.lower().lstrip(".") or "none"
                 by_kind[ext] = by_kind.get(ext, 0) + 1
                 try:
-                    total += (Path(dirpath) / fn).stat().st_size
+                    total += candidate.stat().st_size
                 except Exception:
                     pass
     top = dict(sorted(by_kind.items(), key=lambda kv: kv[1], reverse=True)[:8])

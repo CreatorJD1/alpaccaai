@@ -5052,6 +5052,27 @@ def test_desktop_summary_counts_by_kind():
         assert s["ok"] and s["files"] == 3
         assert s["by_kind"].get("pdf") == 2 and s["by_kind"].get("txt") == 1
 
+
+def test_desktop_metadata_views_skip_symlink_targets():
+    from alpecca import desktop
+    with tempfile.TemporaryDirectory() as d:
+        base = Path(d) / "allowed"; base.mkdir()
+        outside = Path(d) / "outside.txt"; outside.write_bytes(b"private" * 50)
+        link = base / "outside-link.txt"
+        try:
+            link.symlink_to(outside)
+        except OSError:
+            return
+
+        listing = desktop.list_room("general", roots={"general": base})
+        summary = desktop.summarize("general", roots={"general": base})
+
+        assert listing["ok"] is True
+        assert listing["entries"] == []
+        assert summary["ok"] is True
+        assert summary["files"] == 0
+        assert summary["total_bytes"] == 0
+
 def test_find_file_tool_offered_only_with_file_room_on():
     # The read-only file-finder is granted to her only when the file room is on;
     # off, she isn't handed it at all (owner control).
@@ -6500,30 +6521,6 @@ def test_launcher_zip_downloads_or_admits_it_is_missing():
         assert any(n.endswith("alpecca_launcher.py") for n in names)
     else:
         assert "launcher" in json.dumps(r.json()).lower()
-
-
-def test_channel_file_text_extraction_is_bounded_and_safe():
-    import base64 as b64mod
-
-    import server
-
-    # Plain text decodes and stays bounded at the excerpt cap.
-    long_text = "line of shared file content\n" * 5000
-    data = b64mod.b64encode(long_text.encode()).decode()
-    out = server._extract_channel_file_text("notes.txt", data)
-    assert out.startswith("line of shared file content")
-    assert len(out) <= 8000
-
-    # Garbage base64 never raises; it just yields nothing readable.
-    assert server._extract_channel_file_text("notes.txt", "!!!not-base64!!!") == ""
-
-    # A .pdf-named payload that is not a real PDF degrades to empty, not an error.
-    junk = b64mod.b64encode(b"not a pdf at all").decode()
-    assert server._extract_channel_file_text("doc.pdf", junk) == ""
-
-    # Oversized payloads are refused outright.
-    big = b64mod.b64encode(b"x" * 2_000_001).decode()
-    assert server._extract_channel_file_text("big.txt", big) == ""
 
 
 if __name__ == "__main__":

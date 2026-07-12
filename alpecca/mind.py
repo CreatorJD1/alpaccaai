@@ -1982,6 +1982,7 @@ class CoreMind:
 
     def chat(self, user_msg: str, situation: str = "",
              image_desc: str | None = None,
+             attachment_context: str = "",
              reply_tier: str = "reason",
              on_token=None,
              turn: turn_context_mod.TurnContext | None = None,
@@ -1997,6 +1998,10 @@ class CoreMind:
         forces this turn and its bounded follow-up history onto verified local
         inference; cloud consent requires a separate broker rather than a
         caller-provided model hint.
+
+        `attachment_context` is bounded, server-resolved file material. It is
+        prompt data for this turn only: it is excluded from cue parsing,
+        durable user memory, and tool authorization.
 
         `on_token` (optional) receives live text deltas of the FIRST draft so
         the UI can show her words as they form. The returned reply remains
@@ -2142,7 +2147,11 @@ class CoreMind:
                 abilities = abilities.rstrip(".") + "; " + self.toolkit.describe()
             else:
                 abilities = self.toolkit.describe()
-        tool_schema = self._tool_schema(low, turn=None if implicit_turn else turn)
+        tool_schema = (
+            None
+            if attachment_context
+            else self._tool_schema(low, turn=None if implicit_turn else turn)
+        )
         who_prompt = people_mod.who_prompt(speaker)
         core_block = core_mem.prompt_block(learning_only=CORE_MEMORY_LEARN_ONLY)
 
@@ -2175,6 +2184,7 @@ class CoreMind:
             who=who_prompt, inner="", core=core_block,
             current_message=user_msg, compact=True,
             response_strategy=response_strategy,
+            attachment_context=attachment_context,
         )
         history_window = history[-HISTORY_MESSAGES:]
         fitted = mindpage_mod.fit_context(
@@ -2216,6 +2226,7 @@ class CoreMind:
             core=core_block, current_message=user_msg, compact=True,
             working_memory=working_memory, paged_memory=paged_block,
             response_strategy=response_strategy,
+            attachment_context=attachment_context,
         )
         prompt_history, exact_ledger = mindpage_mod.fit_request(
             system_prompt, user_msg, fitted["history"], tools=tool_schema,
@@ -2247,6 +2258,7 @@ class CoreMind:
             working_memory=mindpage_mod.pressure_prompt(self._last_mindpage),
             paged_memory=paged_block,
             response_strategy=response_strategy,
+            attachment_context=attachment_context,
         )
         prompt_history, final_ledger = mindpage_mod.fit_request(
             system_prompt, user_msg, prompt_history, tools=tool_schema,
@@ -2278,6 +2290,7 @@ class CoreMind:
         )
         private_model_context = bool(
             private_context
+            or attachment_context
             or image_desc
             or (self._sight and not CLOUD_SEND_SENSES)
             or prompt_pages
@@ -2396,7 +2409,9 @@ class CoreMind:
             "error": "",
         }
         approved_commitment = None
-        if cue_envelope.confirmation.detected and implicit_turn:
+        if cue_envelope.confirmation.detected and attachment_context:
+            confirmation_metadata["outcome"] = "attachment-context-blocked"
+        elif cue_envelope.confirmation.detected and implicit_turn:
             confirmation_metadata["outcome"] = "unauthenticated"
         elif not implicit_turn:
             try:
@@ -2462,7 +2477,11 @@ class CoreMind:
         action_label = ""
         if future_claim is not None:
             action_label = self._phase4_action_label(future_claim)
-        if future_claim is not None and not cue_envelope.confirmation.detected:
+        if (
+            future_claim is not None
+            and not cue_envelope.confirmation.detected
+            and not attachment_context
+        ):
             try:
                 proposed_commitment = commitments_mod.create_commitment(
                     action_label,
@@ -2545,11 +2564,16 @@ class CoreMind:
             confidence=1.0,
             privacy_class=turn.memory_scope,
             scope=turn.memory_scope,
-            metadata={"has_image": bool(image_desc), **turn.audit_metadata()},
+            metadata={
+                "has_image": bool(image_desc),
+                "has_attachment": bool(attachment_context),
+                **turn.audit_metadata(),
+            },
         ))
 
         # Update Love from how the exchange felt, and persist.
-        self._note_reply(reply)
+        if not attachment_context:
+            self._note_reply(reply)
         self._last_memory_evidence = memory_evidence
         reward = prompts.estimate_reward(user_msg)
         self.state = pending_state.update_love(reward)
@@ -2612,8 +2636,14 @@ class CoreMind:
         history_metadata = (
             {"private_context": True} if private_model_context else {}
         )
+        persisted_reply = (
+            "[Ephemeral local file response omitted; reattach the file for a follow-up.]"
+            if attachment_context else reply
+        )
         history.append({"role": "user", "content": user_msg, **history_metadata})
-        history.append({"role": "assistant", "content": reply, **history_metadata})
+        history.append({
+            "role": "assistant", "content": persisted_reply, **history_metadata,
+        })
         # Keep the raw log bounded; only the last HISTORY_MESSAGES ride along
         # anyway, and long sessions shouldn't grow memory without limit.
         if len(history) > HISTORY_MESSAGES * 4:
@@ -2632,7 +2662,7 @@ class CoreMind:
         turn_model_use = {**self.llm.last_call(), "turn": turn.audit_metadata()}
         chat_turn_id = cognition_mod.record_chat_turn(cognition_mod.ChatTurn(
             user_text=user_msg,
-            reply=reply,
+            reply=persisted_reply,
             room=self._location,
             mood=self.state.mood_label(),
             intent="replying",

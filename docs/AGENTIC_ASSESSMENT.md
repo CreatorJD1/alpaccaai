@@ -1,6 +1,6 @@
 # Alpecca Agentic Assessment and Staged Upgrade Plan
 
-Last updated: 2026-07-08
+Last updated: 2026-07-12
 
 ## Audit Result
 
@@ -44,6 +44,34 @@ on parse/model failure, `CognitionObservation` logging for autonomous acts, and
 
 Current model note: do not revive retired legacy model paths. Runtime planning
 uses the configured local Ollama model from `ALPECCA_MODEL`.
+
+## Current Phase 9 Checkpoint - PARTIAL
+
+Trusted creator-only House text attachments are implemented. A House client
+provides only a bounded allowed-root id and relative path; the server resolves
+the root, commits the `file_access` capability audit before any read, and passes
+the reference through the shared source-perception and attachment-perception
+boundary. MIME and SHA-256 are derived locally, provenance is bound to the exact
+server-issued turn scope, and the serialized attachment record contains
+metadata rather than the file excerpt or raw bytes.
+
+The bounded excerpt is treated as untrusted prompt data. Its turn forces
+verified local-only inference and suppresses model tool schemas, so file text
+cannot grant authority or trigger a tool call. The legacy raw/base64
+`file_name`/`file_data` upload path is retired and rejected. Existing scoped
+`source_inspect`, image ingress, and audio ingress retain their previously
+documented local-only provenance and validation behavior.
+
+The answer is deliberately ephemeral. Attachment-derived text is not retained
+in recent replies, content-bearing history, cognition chat records, Mindpage,
+or Mindscape; a redacted omission marker is stored instead. Attachment turns
+cannot resolve or create commitments and cannot auto-deliver through OpenClaw.
+A follow-up that needs the file must attach it again.
+
+Phase 9 is not complete. Server-issued expiring capability leases with
+disconnect revocation, provider/model-specific egress consent and receipts,
+and signed Discord guest identity remain unfinished. Phase 10 Discord
+participation and voice stay blocked on those boundaries.
 
 ## Stage 3 - LLM-In-The-Loop Choice Points
 
