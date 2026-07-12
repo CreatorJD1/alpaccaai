@@ -390,6 +390,47 @@ def get_settlement(
     return None if row is None else _stored_settlement(row)
 
 
+def get_settlement_binding(
+    trial_id: int,
+    db_path: Path = DB_PATH,
+) -> dict[str, Any] | None:
+    """Return a digest-only binding for a later creator review receipt.
+
+    This intentionally omits the frozen outcome and review bodies. Callers can
+    bind a decision to the exact C7 snapshot without re-exposing its contents or
+    recalculating an evaluation.
+    """
+    trial_key = _positive_trial_id(trial_id)
+    path = Path(db_path)
+    database_uri = path.resolve().as_uri() + "?mode=ro"
+    try:
+        with sqlite3.connect(database_uri, uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                f"SELECT * FROM {SETTLEMENTS_TABLE} WHERE trial_id=?",
+                (trial_key,),
+            ).fetchone()
+    except sqlite3.OperationalError as exc:
+        raise BehaviorTrialSettlementError("settlement storage is unavailable") from exc
+    if row is None:
+        return None
+    stored = _stored_settlement(row)
+    return {
+        "contract_version": int(stored["contract_version"]),
+        "trial_id": int(stored["trial_id"]),
+        "scope": str(stored["scope"]),
+        "parameter": str(stored["parameter"]),
+        "metric": str(stored["metric"]),
+        "definition_version": int(stored["definition_version"]),
+        "spec_sha256": str(stored["spec_sha256"]),
+        "settled_at": float(stored["settled_at"]),
+        "status": str(stored["status"]),
+        "recommendation": str(stored["recommendation"]),
+        "evidence_sha256": str(row["evidence_sha256"]),
+        "review_sha256": str(row["review_sha256"]),
+    }
+
+
 def list_settlements(
     db_path: Path = DB_PATH,
     *,
@@ -420,6 +461,7 @@ __all__ = [
     "BehaviorTrialSettlementError",
     "CONTRACT_VERSION",
     "SETTLEMENTS_TABLE",
+    "get_settlement_binding",
     "get_settlement",
     "init_db",
     "list_settlements",

@@ -1,6 +1,6 @@
 # Alpecca Master Architecture And Implementation Plan
 
-Last reviewed: **2026-07-10**
+Last reviewed: **2026-07-11**
 
 This is the dependency-ordered plan for developing Alpecca into an advanced,
 proximal, local-first agentic companion. It reconciles the project skeleton,
@@ -561,8 +561,9 @@ Settlement runs outside `mind_lock`, records a content-free
 rollback, approve, or retune a trial. `GET /behavior-trials/{trial_id}/review`
 is creator-only, recovery-gated, and `no-store`; it returns the frozen evidence
 only. `GET /behavior-trials/status` lists recent settlements, and the Workshop
-shows baseline observation plus the latest settled result with no behavior
-change control.
+shows baseline observation plus the latest settled result. C9 may later record
+one receipt that the restored baseline remains in effect, but offers no control
+that applies, retries, or retunes behavior.
 
 #### Phase 8C8: Sealed proposal-to-trial registration - COMPLETE, REGISTRATION ONLY
 
@@ -589,16 +590,33 @@ trial` as separate controls with separate confirmations. Generic proposal
 acceptance is not treated as behavior-trial approval. C5 approval and C6 start
 remain the only later activation steps; no trial is running by default.
 
-The remaining Phase 8C gap is a separate creator decision after frozen review.
-Any real trial must be reviewable against its hypothesis, exposure window,
-evidence, end time, and exact rollback. Code or system changes remain reviewable
-handoff proposals only.
+#### Phase 8C9: Frozen-review acknowledgement - COMPLETE, BASELINE ONLY
 
-Exit gate remains unmet: it requires a registered fixed hypothesis from a
-bounded proposal path and a separate creator decision after the frozen review;
-worsening or inconclusive results must leave the baseline unchanged; startup
-must recover interrupted runtime-only state; and source, shell, accounts,
-files, and OS must remain outside the self-modification set.
+`POST /behavior-trials/{trial_id}/review/retain-baseline` records one explicit,
+creator-only acknowledgement after a valid C7 frozen settlement. It is
+recovery-gated, `no-store`, and accepts neither a request body nor query
+parameters. The server derives identity, authorization facts, and time; then a
+separate SQLite receipt binds only `retain_baseline` to the exact frozen
+settlement/spec/evidence/review SHA-256 digests and an HMAC using the protected
+server authorization secret. Retries return the original immutable receipt and
+write no second CognitionObservation.
+
+The route validates the rolled-back trial and matching frozen settlement before
+the receipt store verifies its own binding. `GET /behavior-trials/{trial_id}/review`
+and `/behavior-trials/status` expose only sanitized acknowledgement metadata.
+The Workshop makes the acknowledgement explicit and says that it leaves the
+baseline active. C9 cannot issue another candidate, approve, start, retry,
+apply, retune, or otherwise change runtime behavior. It also never writes a
+candidate or controller state, so frozen review evidence remains evidence.
+
+Phase 8C's bounded evidence, proposal registration, lifecycle, frozen-review,
+and acknowledgement trace is complete. Phase 8 remains **PARTIAL**: no trial is
+running by default, no actual qualified-response experiment has completed
+through the full lifecycle, and code, system, accounts, shell, files, and OS
+remain outside the self-modification set. Any real trial must be reviewable
+against its hypothesis, exposure window, evidence, end time, exact rollback,
+and the immutable C9 receipt. Worsening or inconclusive results retain the
+baseline.
 
 ### Phase 9: Multimodal and source perception - PARTIAL
 

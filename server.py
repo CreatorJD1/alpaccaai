@@ -75,6 +75,7 @@ from alpecca import turn_context as turn_context_mod
 from alpecca import commitments as commitments_mod
 from alpecca import commitment_executor as commitment_executor_mod
 from alpecca import behavior_trial_candidates as behavior_trial_candidates_mod
+from alpecca import behavior_trial_review_decisions as behavior_trial_review_decisions_mod
 from alpecca import behavior_trial_settlement as behavior_trial_settlement_mod
 from alpecca.behavior_trial_controller import BehaviorTrialController
 from alpecca.qualified_response_ledger import QualifiedResponseLedger
@@ -92,6 +93,11 @@ behavior_trial_controller = BehaviorTrialController()
 # sealed after authorization initializes below.  They do not alter runtime
 # behavior until the existing separate approval and start actions complete.
 behavior_trial_candidate_store = behavior_trial_candidates_mod.BehaviorTrialCandidateStore(DB_PATH)
+# A frozen review may be acknowledged once, but the decision remains separate
+# from behavior registration, approval, start, and every runtime write.
+behavior_trial_review_decision_store = (
+    behavior_trial_review_decisions_mod.BehaviorTrialReviewDecisionStore(DB_PATH)
+)
 # Outcome rows remain server-owned. The only public view is aggregate evidence
 # in the existing creator-only behavior-trial status response.
 qualified_response_ledger = QualifiedResponseLedger(DB_PATH)
@@ -2207,6 +2213,7 @@ _AUTH_SECRET = auth_mod.load_or_create_authorization_secret(HOME)
 # a separate credential.
 behavior_trial_controller.set_approval_seal_key(_AUTH_SECRET)
 behavior_trial_candidate_store.set_seal_key(_AUTH_SECRET)
+behavior_trial_review_decision_store.set_seal_key(_AUTH_SECRET)
 _CREATOR_PASSWORD = auth_mod.load_creator_password()
 _TRUSTED_DEVICE_DAYS = max(
     1,
@@ -3177,6 +3184,35 @@ def _behavior_trial_proposal_id(value: str) -> int:
     return int(value)
 
 
+def _behavior_trial_id(value: str) -> int:
+    if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{0,17}", value):
+        raise ValueError("invalid behavior trial")
+    return int(value)
+
+
+async def _require_bodyless_behavior_trial_request(req: Request, *, action: str) -> None:
+    """Reject browser-supplied trial data for one literal creator action."""
+    if req.query_params:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{action} does not accept query parameters",
+            headers={"Cache-Control": "no-store"},
+        )
+    if req.headers.get("transfer-encoding"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{action} does not accept a request body",
+            headers={"Cache-Control": "no-store"},
+        )
+    content_length = req.headers.get("content-length")
+    if content_length not in {None, "", "0"} or await req.body():
+        raise HTTPException(
+            status_code=400,
+            detail=f"{action} does not accept a request body",
+            headers={"Cache-Control": "no-store"},
+        )
+
+
 def _behavior_trial_recovery_response() -> JSONResponse:
     return JSONResponse(
         {"detail": "behavior trial recovery is not ready"},
@@ -3212,6 +3248,14 @@ def behavior_trial_status(req: Request) -> JSONResponse:
         # candidate state when its sealed source or storage cannot be read.
         snapshot["registration_candidate"] = None
         snapshot["registration_candidate_available"] = False
+    try:
+        snapshot["review_decisions"] = behavior_trial_review_decision_store.list(limit=5)
+        snapshot["review_decisions_available"] = True
+    except Exception:
+        # Frozen review evidence remains available even when the optional C9
+        # receipt reader cannot verify its own storage.
+        snapshot["review_decisions"] = []
+        snapshot["review_decisions_available"] = False
     return JSONResponse(
         snapshot,
         headers={"Cache-Control": "no-store"},
@@ -3636,8 +3680,191 @@ def behavior_trial_creator_review(trial_id: int, req: Request) -> JSONResponse:
             detail="behavior trial settlement is invalid",
             headers={"Cache-Control": "no-store"},
         ) from exc
+    decision_record = None
+    decision_available = True
+    try:
+        stored_decision = behavior_trial_review_decision_store.get(trial_id)
+        if stored_decision is not None:
+            if not isinstance(stored_decision, Mapping):
+                raise ValueError("review decision is not a mapping")
+            decision_record = {
+                "trial_id": int(stored_decision["trial_id"]),
+                "decision": str(stored_decision["decision"]),
+                "decided_at": float(stored_decision["decided_at"]),
+                "settlement_status": str(stored_decision["settlement_status"]),
+            }
+            if (
+                decision_record["trial_id"] != trial_id
+                or decision_record["decision"]
+                != behavior_trial_review_decisions_mod.RETAIN_BASELINE
+                or decision_record["settlement_status"] != review["status"]
+            ):
+                raise ValueError("review decision does not match frozen settlement")
+    except Exception:
+        # C9 acknowledgement storage is supplemental review metadata. A read
+        # failure must not fabricate an absent decision or hide the C7 snapshot.
+        decision_record = None
+        decision_available = False
     return JSONResponse(
-        {"trial": _behavior_trial_public_summary(current), "review": review},
+        {
+            "trial": _behavior_trial_public_summary(current),
+            "review": review,
+            "decision": decision_record,
+            "decision_available": decision_available,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/behavior-trials/{trial_id}/review/retain-baseline")
+async def behavior_trial_creator_retain_baseline(
+    trial_id: str,
+    req: Request,
+) -> JSONResponse:
+    """Seal one creator acknowledgement after a frozen review, without retuning."""
+    decision = _require_creator_request(req)
+    if not _behavior_trial_recovery_ready.is_set():
+        return _behavior_trial_recovery_response()
+    await _require_bodyless_behavior_trial_request(
+        req,
+        action="behavior trial review acknowledgement",
+    )
+    try:
+        trial_key = _behavior_trial_id(trial_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="invalid behavior trial",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    try:
+        current = behavior_trial_controller.get(trial_key)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="invalid behavior trial",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial storage unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    if current is None:
+        raise HTTPException(
+            status_code=404,
+            detail="behavior trial not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    if current.get("state") != "rolled_back":
+        raise HTTPException(
+            status_code=409,
+            detail="behavior trial has not reached a reviewable closure",
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        settlement = behavior_trial_settlement_mod.get_settlement(trial_key, DB_PATH)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial settlement unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    if settlement is None:
+        raise HTTPException(
+            status_code=409,
+            detail="behavior trial has not settled for creator review",
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        settlement_status = str(settlement["status"])
+        if (
+            settlement.get("trial_id") != trial_key
+            or settlement.get("spec_sha256") != current.get("spec_sha256")
+            or settlement.get("scope") != current.get("scope")
+            or settlement_status not in {
+                "ready_for_creator_review",
+                "inconclusive_insufficient_samples",
+            }
+        ):
+            raise ValueError("settlement does not match a reviewable trial")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="behavior trial review cannot be recorded",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    decided_at = _time.time()
+    try:
+        receipt, created = behavior_trial_review_decision_store.acknowledge(
+            trial_key,
+            principal=decision.principal,
+            authorization_mechanism=decision.mechanism,
+            authorization_issued_at=decision.issued_at,
+            authorization_expires_at=decision.expires_at,
+            decided_at=decided_at,
+        )
+        if not isinstance(receipt, Mapping) or not isinstance(created, bool):
+            raise ValueError("review decision storage returned an invalid receipt")
+        public_receipt = {
+            "trial_id": int(receipt["trial_id"]),
+            "decision": str(receipt["decision"]),
+            "decided_at": float(receipt["decided_at"]),
+            "settlement_status": str(receipt["settlement_status"]),
+        }
+        if (
+            public_receipt["trial_id"] != trial_key
+            or public_receipt["decision"]
+            != behavior_trial_review_decisions_mod.RETAIN_BASELINE
+            or public_receipt["settlement_status"] != settlement_status
+        ):
+            raise ValueError("review decision receipt does not match settlement")
+    except behavior_trial_review_decisions_mod.BehaviorTrialReviewDecisionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="behavior trial review cannot be recorded",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial review storage unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    summary = _behavior_trial_public_summary(current)
+    if created:
+        try:
+            cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                source="behavior_trial_creator_review_decision",
+                content=(
+                    f"Creator recorded baseline retention after frozen review of "
+                    f"Alpecca behavior trial {summary['id']}."
+                ),
+                confidence=1.0,
+                privacy_class="local",
+                metadata={
+                    "trial_id": summary["id"],
+                    "scope": summary["scope"],
+                    "parameter": summary["parameter"],
+                    "metric": summary["metric"],
+                    "settlement_status": settlement_status,
+                    "decision": behavior_trial_review_decisions_mod.RETAIN_BASELINE,
+                    "authorization": decision.mechanism,
+                    "runtime_change": False,
+                },
+            ))
+        except Exception:
+            # The acknowledgement is already durable. An auxiliary audit failure
+            # must not retry or create any behavior change.
+            pass
+    return JSONResponse(
+        {
+            "recorded": True,
+            "already_recorded": not created,
+            "decision": public_receipt,
+            "trial": summary,
+        },
         headers={"Cache-Control": "no-store"},
     )
 

@@ -540,6 +540,11 @@ def test_status_includes_read_only_aggregate_evidence_without_mutating_controlle
         def summary(self):
             return evidence
 
+    class _ReviewDecisionStore:
+        def list(self, *, limit: int):
+            assert limit == 5
+            return []
+
     request = SimpleNamespace(state=SimpleNamespace(
         authorization=server.auth_mod.AuthDecision(
             True, "test", "accepted", principal="creator"
@@ -547,6 +552,7 @@ def test_status_includes_read_only_aggregate_evidence_without_mutating_controlle
     ))
     monkeypatch.setattr(server, "behavior_trial_controller", _Controller())
     monkeypatch.setattr(server, "qualified_response_ledger", _StatusLedger())
+    monkeypatch.setattr(server, "behavior_trial_review_decision_store", _ReviewDecisionStore())
     server._behavior_trial_recovery_ready.set()
 
     response = server.behavior_trial_status(request)
@@ -559,5 +565,7 @@ def test_status_includes_read_only_aggregate_evidence_without_mutating_controlle
         "review_settlements_available": True,
         "registration_candidate": None,
         "registration_candidate_available": True,
+        "review_decisions": [],
+        "review_decisions_available": True,
     }
     assert snapshot == {"state": "ready", "active_trial": None}

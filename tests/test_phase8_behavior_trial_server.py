@@ -135,6 +135,40 @@ class _NoCandidateStore:
         return None
 
 
+class _NoReviewDecisionStore:
+    def __init__(self, record: dict[str, object] | None = None) -> None:
+        self.record = record
+        self.get_calls: list[int] = []
+        self.list_calls: list[int] = []
+
+    def get(self, trial_id: int):
+        self.get_calls.append(trial_id)
+        return self.record if self.record and trial_id == self.record["trial_id"] else None
+
+    def list(self, *, limit: int):
+        self.list_calls.append(limit)
+        return [] if self.record is None else [self.record]
+
+
+class _RecordingReviewDecisionStore(_NoReviewDecisionStore):
+    def __init__(self, *, created: list[bool] | None = None) -> None:
+        super().__init__()
+        self.created = [True] if created is None else list(created)
+        self.acknowledge_calls: list[tuple[int, dict[str, object]]] = []
+
+    def acknowledge(self, trial_id: int, **kwargs):
+        self.acknowledge_calls.append((trial_id, kwargs))
+        created = self.created.pop(0) if self.created else False
+        if self.record is None:
+            self.record = {
+                "trial_id": trial_id,
+                "decision": "retain_baseline",
+                "decided_at": float(kwargs["decided_at"]),
+                "settlement_status": "ready_for_creator_review",
+            }
+        return self.record, created
+
+
 def _registration_spec(proposal_id: int = 51):
     return experiment_trials.validate_trial_spec(
         experiment_trials.TrialSpecification(
@@ -359,6 +393,7 @@ def _restore_behavior_trial_recovery_gate(monkeypatch):
     originally_ready = server._behavior_trial_recovery_ready.is_set()
     server._behavior_trial_recovery_ready.clear()
     monkeypatch.setattr(server, "behavior_trial_candidate_store", _NoCandidateStore())
+    monkeypatch.setattr(server, "behavior_trial_review_decision_store", _NoReviewDecisionStore())
     yield
     if originally_ready:
         server._behavior_trial_recovery_ready.set()
@@ -533,6 +568,8 @@ def test_behavior_trial_status_handler_returns_snapshot_for_creator(monkeypatch)
         "review_settlements_available": True,
         "registration_candidate": None,
         "registration_candidate_available": True,
+        "review_decisions": [],
+        "review_decisions_available": True,
     }
     assert controller.calls == ["status_snapshot"]
     assert outcome.calls == ["summary"]
@@ -1206,6 +1243,8 @@ def test_creator_review_route_returns_only_a_frozen_sanitized_settlement(monkeyp
                 "comparison": "improved",
             },
         },
+        "decision": None,
+        "decision_available": True,
     }
     assert controller.calls == [("get", 9)]
     assert settlement.calls == [(9, server.DB_PATH)]
@@ -1272,6 +1311,170 @@ def test_creator_review_route_is_recovery_gated_and_protected(monkeypatch):
     assert settlement.calls == []
 
 
+def test_creator_review_retention_records_only_a_sealed_acknowledgement(monkeypatch):
+    controller = _CreatorApprovalController(_closed_trial_record())
+    settlement = _TrialSettlementStore(_settlement_snapshot())
+    receipt_store = _RecordingReviewDecisionStore()
+    observations: list[object] = []
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server, "behavior_trial_settlement_mod", settlement)
+    monkeypatch.setattr(server, "behavior_trial_review_decision_store", receipt_store)
+    monkeypatch.setattr(server._time, "time", lambda: 650.0)
+    monkeypatch.setattr(
+        server.cognition_mod,
+        "record_observation",
+        lambda observation: observations.append(observation),
+    )
+    server._behavior_trial_recovery_ready.set()
+    client = TestClient(server.app)
+    try:
+        response = client.post(
+            "/behavior-trials/9/review/retain-baseline",
+            headers={
+                server.auth_mod.AUTHORIZATION_HEADER: f"Bearer {server._AUTH_SECRET}",
+            },
+        )
+    finally:
+        client.close()
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "recorded": True,
+        "already_recorded": False,
+        "decision": {
+            "trial_id": 9,
+            "decision": "retain_baseline",
+            "decided_at": 650.0,
+            "settlement_status": "ready_for_creator_review",
+        },
+        "trial": {
+            "id": 9,
+            "scope": "creator-personal",
+            "proposal_id": 51,
+            "state": "rolled_back",
+            "parameter": "chatter_chance",
+            "metric": "qualified_response_rate",
+            "spec_sha256": "a" * 64,
+        },
+    }
+    assert controller.calls == [("get", 9)]
+    assert settlement.calls == [(9, server.DB_PATH)]
+    assert receipt_store.acknowledge_calls == [
+        (9, {
+            "principal": "creator",
+            "authorization_mechanism": "bearer",
+            "authorization_issued_at": None,
+            "authorization_expires_at": None,
+            "decided_at": 650.0,
+        }),
+    ]
+    assert len(observations) == 1
+    assert observations[0].source == "behavior_trial_creator_review_decision"
+    assert observations[0].metadata == {
+        "trial_id": 9,
+        "scope": "creator-personal",
+        "parameter": "chatter_chance",
+        "metric": "qualified_response_rate",
+        "settlement_status": "ready_for_creator_review",
+        "decision": "retain_baseline",
+        "authorization": "bearer",
+        "runtime_change": False,
+    }
+
+
+def test_creator_review_retention_is_bodyless_and_idempotent(monkeypatch):
+    controller = _CreatorApprovalController(_closed_trial_record())
+    settlement = _TrialSettlementStore(_settlement_snapshot())
+    receipt_store = _RecordingReviewDecisionStore(created=[True, False])
+    observations: list[object] = []
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server, "behavior_trial_settlement_mod", settlement)
+    monkeypatch.setattr(server, "behavior_trial_review_decision_store", receipt_store)
+    monkeypatch.setattr(server._time, "time", lambda: 650.0)
+    monkeypatch.setattr(
+        server.cognition_mod,
+        "record_observation",
+        lambda observation: observations.append(observation),
+    )
+    server._behavior_trial_recovery_ready.set()
+    headers = {server.auth_mod.AUTHORIZATION_HEADER: f"Bearer {server._AUTH_SECRET}"}
+    client = TestClient(server.app)
+    try:
+        anonymous = client.post("/behavior-trials/9/review/retain-baseline")
+        with_body = client.post(
+            "/behavior-trials/9/review/retain-baseline",
+            headers=headers,
+            json={"decision": "apply"},
+        )
+        with_query = client.post(
+            "/behavior-trials/9/review/retain-baseline?decision=apply",
+            headers=headers,
+        )
+        invalid = client.post(
+            "/behavior-trials/not-an-id/review/retain-baseline",
+            headers=headers,
+        )
+        first = client.post("/behavior-trials/9/review/retain-baseline", headers=headers)
+        retry = client.post("/behavior-trials/9/review/retain-baseline", headers=headers)
+    finally:
+        client.close()
+
+    assert anonymous.status_code == 401
+    assert with_body.status_code == 400
+    assert with_query.status_code == 400
+    assert invalid.status_code == 400
+    assert all(response.headers["cache-control"] == "no-store" for response in (
+        anonymous,
+        with_body,
+        with_query,
+        invalid,
+        first,
+        retry,
+    ))
+    assert first.status_code == 200
+    assert first.json()["already_recorded"] is False
+    assert retry.status_code == 200
+    assert retry.json()["already_recorded"] is True
+    assert controller.calls == [("get", 9), ("get", 9)]
+    assert settlement.calls == [(9, server.DB_PATH), (9, server.DB_PATH)]
+    assert len(receipt_store.acknowledge_calls) == 2
+    decision_observations = [
+        observation
+        for observation in observations
+        if observation.source == "behavior_trial_creator_review_decision"
+    ]
+    assert len(decision_observations) == 1
+
+
+def test_creator_review_retention_requires_closed_matching_frozen_review(monkeypatch):
+    controller = _CreatorApprovalController(_trial_record(state="running"))
+    settlement = _TrialSettlementStore(_settlement_snapshot())
+    receipt_store = _RecordingReviewDecisionStore()
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server, "behavior_trial_settlement_mod", settlement)
+    monkeypatch.setattr(server, "behavior_trial_review_decision_store", receipt_store)
+    server._behavior_trial_recovery_ready.set()
+    headers = {server.auth_mod.AUTHORIZATION_HEADER: f"Bearer {server._AUTH_SECRET}"}
+    client = TestClient(server.app)
+    try:
+        running = client.post("/behavior-trials/9/review/retain-baseline", headers=headers)
+        controller.record = _closed_trial_record()
+        settlement.settlement = None
+        missing = client.post("/behavior-trials/9/review/retain-baseline", headers=headers)
+        mismatched = _settlement_snapshot()
+        mismatched["spec_sha256"] = "b" * 64
+        settlement.settlement = mismatched
+        mismatch = client.post("/behavior-trials/9/review/retain-baseline", headers=headers)
+    finally:
+        client.close()
+
+    assert running.status_code == 409
+    assert missing.status_code == 409
+    assert mismatch.status_code == 409
+    assert receipt_store.acknowledge_calls == []
+
+
 def test_behavior_trial_status_asgi_rejects_anonymous_and_public_identity_spoof(
     monkeypatch,
 ):
@@ -1321,6 +1524,8 @@ def test_behavior_trial_status_asgi_returns_snapshot_for_protected_bearer(monkey
         "review_settlements_available": True,
         "registration_candidate": None,
         "registration_candidate_available": True,
+        "review_decisions": [],
+        "review_decisions_available": True,
     }
     assert controller.calls == ["status_snapshot"]
     assert outcome.calls == ["summary"]
@@ -1372,12 +1577,19 @@ def test_behavior_trial_route_inventory_has_only_bounded_creator_actions():
         for route in server.app.routes
         if getattr(route, "path", "") == "/behavior-trials/proposals/{proposal_id}/register"
     )
+    retention_route = next(
+        route
+        for route in server.app.routes
+        if getattr(route, "path", "")
+        == "/behavior-trials/{trial_id}/review/retain-baseline"
+    )
 
     assert behavior_trial_routes == {
         ("/behavior-trials/status", "GET"),
         ("/behavior-trials/{trial_id}/approve", "POST"),
         ("/behavior-trials/{trial_id}/start", "POST"),
         ("/behavior-trials/{trial_id}/review", "GET"),
+        ("/behavior-trials/{trial_id}/review/retain-baseline", "POST"),
         ("/behavior-trials/proposals/{proposal_id}/register", "POST"),
     }
     assert status_route.dependant.query_params == []
@@ -1388,6 +1600,8 @@ def test_behavior_trial_route_inventory_has_only_bounded_creator_actions():
     assert review_route.dependant.body_params == []
     assert registration_route.dependant.query_params == []
     assert registration_route.dependant.body_params == []
+    assert retention_route.dependant.query_params == []
+    assert retention_route.dependant.body_params == []
     assert not any(
         path.endswith(suffix)
         for path, _method in behavior_trial_routes

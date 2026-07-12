@@ -61,7 +61,13 @@ labels retained in historical plans and handoffs.
   proposal acceptance are not trial provenance; registration, approval, and
   start remain separate creator decisions. There are no generic behavior-trial
   registration, completion, rollback, or mutation routes, and no trial is
-  running by default. Phase 8C7 runs after outcome expiry and the existing
+  running by default. Phase 8C9 adds the one creator-only, recovery-gated,
+  bodyless and query-free `POST /behavior-trials/{trial_id}/review/retain-baseline`
+  acknowledgement. It binds one HMAC-sealed receipt to the exact frozen C7
+  settlement digests and can record only `retain_baseline`; it cannot issue a
+  candidate, approve, start, retry, apply, retune, or otherwise change runtime
+  behavior. Status and frozen review expose only sanitized receipt metadata.
+  Phase 8C7 runs after outcome expiry and the existing
   off-lock baseline restoration: only a valid planned-expiry rollback with no
   outstanding outcome windows can be sealed into a hashed aggregate settlement.
   A SQLite fence then rejects new trial outcomes. Creator-only `GET
@@ -79,9 +85,9 @@ labels retained in historical plans and handoffs.
   aggregate baseline/trial evidence only through the existing creator-only,
   read-only, `no-store` endpoint. No trial is currently running, so all current
   outcome evidence is baseline-only. C8 completes the bounded sealed
-  proposal-to-trial registration bridge; the remaining Phase 8C gap is a
-  separate creator decision after frozen review. C7 never changes behavior from
-  evidence.
+  proposal-to-trial registration bridge, and C9 completes the separate
+  retained-baseline acknowledgement after frozen review. C7 and C9 never change
+  behavior from evidence.
   Phase 8C3 now supplies the fixed, pure evaluation contract for a future
   `qualified_response_rate` trial: per-trial aggregate evidence is isolated by
   server-owned trial id and classified only as collecting, awaiting settlement,
@@ -120,7 +126,8 @@ labels retained in historical plans and handoffs.
   is created off `mind_lock`, logs a content-free settlement observation, and
   never starts, extends, rolls back, or retunes behavior. Creator-only review
   reads the frozen snapshot, and the Workshop renders baseline evidence plus
-  the latest settled review without an action control. C8 creates a visible
+  the latest settled review with only a separate C9 baseline-retention receipt;
+  it has no control that applies or retunes behavior. C8 creates a visible
   sealed candidate only from settled low-response baseline evidence; the
   Workshop keeps plan acceptance, registration, approval, and start as separate
   controls.

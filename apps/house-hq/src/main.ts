@@ -1043,6 +1043,7 @@ hud.innerHTML = `
           <strong>Workshop &middot; Improvement Queue</strong>
           <small id="workshopSummary">Loading proposals...</small>
           <small id="workshopTrialStatus" class="workshop-trial-status"></small>
+          <div id="workshopReviewDecision" class="workshop-review-decision hidden" aria-live="polite"></div>
         </div>
         <div class="workshop-head-actions">
           <button type="button" data-workshop-run title="Run runtime + behavior self-review">Run Review</button>
@@ -1231,6 +1232,7 @@ const alpeccaWorkshop = hud.querySelector<HTMLDivElement>("#alpeccaWorkshop")!;
 const workshopList = hud.querySelector<HTMLDivElement>("#workshopList")!;
 const workshopSummary = hud.querySelector<HTMLElement>("#workshopSummary")!;
 const workshopTrialStatus = hud.querySelector<HTMLElement>("#workshopTrialStatus")!;
+const workshopReviewDecision = hud.querySelector<HTMLDivElement>("#workshopReviewDecision")!;
 const alpeccaSystems = hud.querySelector<HTMLDivElement>("#alpeccaSystems")!;
 const alpeccaSystemsNav = hud.querySelector<HTMLElement>("#alpeccaSystemsNav")!;
 const alpeccaSystemsStatus = hud.querySelector<HTMLElement>("#alpeccaSystemsStatus")!;
@@ -5557,6 +5559,8 @@ async function loadWorkshopTrialStatus() {
   const sequence = ++workshopTrialStatusSequence;
   let status = "Behavior review: unavailable";
   workshopTrialStatus.textContent = "Behavior review: loading...";
+  workshopReviewDecision.replaceChildren();
+  workshopReviewDecision.classList.add("hidden");
   try {
     const response = await alpeccaBackendFetch(
       alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/behavior-trials/status`),
@@ -5574,6 +5578,8 @@ async function loadWorkshopTrialStatus() {
         outcome_evidence?: unknown;
         review_settlements?: unknown;
         review_settlements_available?: unknown;
+        review_decisions?: unknown;
+        review_decisions_available?: unknown;
         registration_candidate?: unknown;
         registration_candidate_available?: unknown;
       };
@@ -5599,6 +5605,7 @@ async function loadWorkshopTrialStatus() {
         }
       }
       let reviewText = "no settled trial review";
+      let latestReview: { trialId: number; status: string } | null = null;
       if (data?.review_settlements_available === false) {
         reviewText = "settled review history unavailable";
       } else if (Array.isArray(data?.review_settlements)) {
@@ -5606,12 +5613,39 @@ async function loadWorkshopTrialStatus() {
           trial_id?: unknown;
           status?: unknown;
         } | undefined;
-        if (latest && Number.isInteger(latest.trial_id)) {
-          if (latest.status === "ready_for_creator_review") {
-            reviewText = `trial #${latest.trial_id} is ready for creator review`;
-          } else if (latest.status === "inconclusive_insufficient_samples") {
-            reviewText = `trial #${latest.trial_id} concluded with insufficient evidence`;
+        const latestTrialId = Number(latest?.trial_id || 0);
+        const latestStatus = typeof latest?.status === "string" ? latest.status : "";
+        if (latestTrialId > 0 && Number.isInteger(latestTrialId) && latestStatus) {
+          latestReview = { trialId: latestTrialId, status: latestStatus };
+          if (latestStatus === "ready_for_creator_review") {
+            reviewText = `trial #${latestTrialId} is ready for creator review`;
+          } else if (latestStatus === "inconclusive_insufficient_samples") {
+            reviewText = `trial #${latestTrialId} concluded with insufficient evidence`;
           }
+        }
+      }
+      if (latestReview) {
+        const matchingDecision = Array.isArray(data?.review_decisions)
+          ? data.review_decisions.find((item) => {
+              if (!item || typeof item !== "object") return false;
+              const value = item as { trial_id?: unknown; decision?: unknown; settlement_status?: unknown };
+              return Number(value.trial_id || 0) === latestReview?.trialId
+                && value.decision === "retain_baseline"
+                && value.settlement_status === latestReview?.status;
+            })
+          : null;
+        if (matchingDecision) {
+          reviewText = `trial #${latestReview.trialId} review recorded; baseline retained`;
+          workshopReviewDecision.textContent = "Frozen review recorded. Baseline remains active.";
+          workshopReviewDecision.classList.remove("hidden");
+        } else if (
+          latestReview.status === "ready_for_creator_review"
+          && data?.review_decisions_available !== false
+        ) {
+          workshopReviewDecision.innerHTML = `<span>Frozen review ready. Baseline remains active.</span><button type="button" data-wc-review-trial-id="${latestReview.trialId}" data-wc-review-act="retain-baseline">Record review</button>`;
+          workshopReviewDecision.classList.remove("hidden");
+        } else if (data?.review_decisions_available === false) {
+          reviewText += "; review receipt status unavailable";
         }
       }
       status = `Behavior review: ${baselineText}. ${reviewText}.`;
@@ -5676,6 +5710,8 @@ function closeAlpeccaWorkshop() {
   workshopTrialStatusSequence += 1;
   workshopBehaviorCandidate = null;
   workshopTrialStatus.textContent = "";
+  workshopReviewDecision.replaceChildren();
+  workshopReviewDecision.classList.add("hidden");
   alpeccaWorkshop.classList.add("hidden");
 }
 
@@ -5714,6 +5750,35 @@ async function workshopBehaviorTrialAction(proposalId: number, action: string, t
         : `Started bounded behavior trial #${trialId}.`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Behavior trial action failed.";
+    appendAlpeccaLog("System", message);
+  } finally {
+    workshopBusy = false;
+    setWorkshopBusy(false);
+    await Promise.all([loadAlpeccaWorkshop(), loadWorkshopTrialStatus()]);
+  }
+}
+
+async function workshopReviewDecisionAction(trialId: number) {
+  if (workshopBusy || !Number.isInteger(trialId) || trialId <= 0) return;
+  const confirmation = "Record this frozen review? This acknowledges that the restored baseline remains in effect. It does not apply, retry, start, or otherwise change Alpecca's behavior.";
+  if (!window.confirm(confirmation)) return;
+  workshopBusy = true;
+  setWorkshopBusy(true);
+  try {
+    const response = await alpeccaBackendFetch(
+      alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/behavior-trials/${trialId}/review/retain-baseline`),
+      { method: "POST", cache: "no-store" },
+    );
+    if (!response.ok) {
+      const detail = await response.json().catch(() => null);
+      throw new Error(String(detail?.detail || `review acknowledgement ${response.status}`));
+    }
+    appendAlpeccaLog(
+      "System",
+      `Recorded frozen review for behavior trial #${trialId}; baseline remains in effect.`,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Review acknowledgement failed.";
     appendAlpeccaLog("System", message);
   } finally {
     workshopBusy = false;
@@ -13479,6 +13544,12 @@ alpeccaWorkshop.addEventListener("click", (event) => {
   if (target.closest("[data-workshop-refresh]")) {
     void loadAlpeccaWorkshop();
     void loadWorkshopTrialStatus();
+    return;
+  }
+  const reviewButton = target.closest<HTMLButtonElement>("button[data-wc-review-act]");
+  if (reviewButton?.dataset.wcReviewAct === "retain-baseline") {
+    const trialId = Number(reviewButton.dataset.wcReviewTrialId || 0);
+    void workshopReviewDecisionAction(trialId);
     return;
   }
   const trialButton = target.closest<HTMLButtonElement>("button[data-wc-trial-act]");

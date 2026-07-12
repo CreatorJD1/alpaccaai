@@ -56,7 +56,13 @@ retained below as historical implementation evidence.
   proposal acceptance are not trial provenance; registration, approval, and
   start remain separate creator decisions. There are no generic behavior-trial
   registration, completion, rollback, or mutation routes, and no trial is
-  running by default. Phase 8C7 runs after outcome expiry and the existing
+  running by default. Phase 8C9 adds the one creator-only, recovery-gated,
+  bodyless and query-free `POST /behavior-trials/{trial_id}/review/retain-baseline`
+  acknowledgement. It binds one HMAC-sealed receipt to the exact frozen C7
+  settlement digests and can record only `retain_baseline`; it cannot issue a
+  candidate, approve, start, retry, apply, retune, or otherwise change runtime
+  behavior. Status and frozen review expose only sanitized receipt metadata.
+  Phase 8C7 runs after outcome expiry and the existing
   off-lock baseline restoration: only a valid planned-expiry rollback with no
   outstanding outcome windows can be sealed into a hashed aggregate settlement.
   A SQLite fence then rejects new trial outcomes. Creator-only `GET
@@ -73,9 +79,10 @@ retained below as historical implementation evidence.
   sends are cancelled; confirmed expiry becomes unanswered; status exposes
   aggregate-only baseline/trial evidence through the existing protected
   `no-store` endpoint. No trial is running, so all evidence is baseline-only.
-  C8 completes the bounded sealed proposal-to-trial registration bridge; the
-  remaining Phase 8C gap is a separate creator decision after frozen review.
-  Settlement never changes the runtime value. Phase 8C3 now has a pure per-trial evaluation
+  C8 completes the bounded sealed proposal-to-trial registration bridge, and
+  C9 completes the separate retained-baseline acknowledgement after frozen
+  review. Settlement and acknowledgement never change the runtime value. Phase
+  8C3 now has a pure per-trial evaluation
   contract: aggregate outcome evidence is scoped by server-owned trial id and
   validated against the exact spec SHA-256, baseline, and sample threshold. It
   reports collecting/awaiting-settlement/creator-review readiness plus an

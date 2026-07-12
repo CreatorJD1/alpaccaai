@@ -2375,6 +2375,37 @@ body[data-view-mode="orthographic"] .living-state.hud-expanded {
   line-height: 1.35;
 }
 
+.workshop-review-decision {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 7px;
+  color: rgba(198, 244, 216, 0.86);
+  font-size: 0.67rem;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.workshop-review-decision button {
+  min-height: 27px;
+  padding: 0 9px;
+  border: 1px solid rgba(127, 230, 166, 0.48);
+  border-radius: 7px;
+  color: #c6f4d8;
+  background: rgba(127, 230, 166, 0.1);
+  font: inherit;
+  font-size: 0.65rem;
+  font-weight: 900;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.workshop-review-decision button:hover {
+  border-color: rgba(127, 230, 166, 0.78);
+  background: rgba(127, 230, 166, 0.18);
+}
+
 .workshop-head-actions {
   display: flex;
   flex-wrap: wrap;
