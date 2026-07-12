@@ -130,7 +130,7 @@ def _core_mind(monkeypatch, tmp_path, generate):
 def _turn(scope: str, conversation: str) -> turn_context.TurnContext:
     return turn_context.TurnContext.create(
         conversation,
-        principal="guest",
+        principal="creator",
         surface="websocket",
         privacy_scope=scope,
         portal_epoch="phase4-test-epoch",

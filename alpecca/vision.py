@@ -17,9 +17,9 @@ the vision model actually reported. If the model isn't pulled or the hardware
 is missing, each capability quietly reports nothing -- same degradation
 contract as every other sense.
 
-Privacy: local frames live in memory just long enough for one model call, then
-they're gone. The optional ZeroGPU adapter uses a short-lived local temporary
-file because its client requires a path, and removes it after the call.
+Privacy: every generic public wrapper requires a verified-local Ollama target.
+Private cloud-provider helpers remain available for a future exact-consent
+adapter, but configuration alone never routes pixels to them.
 """
 from __future__ import annotations
 
@@ -103,7 +103,7 @@ def _describe_ollama_cloud(image_bytes: bytes, prompt: str) -> Optional[str]:
     """Describe an image on a vision-capable Ollama *cloud* model, through the
     same signed-in local Ollama API as everything else. No ZeroGPU queue or
     quota, zero local VRAM -- pixels go to the account's hosted model and only
-    text comes back. None on any failure so callers can fall back."""
+    text comes back. Retained for a future exact-consent adapter."""
     if not VISION_CLOUD_MODEL:
         return None
     try:
@@ -122,7 +122,7 @@ def _describe_ollama_cloud(image_bytes: bytes, prompt: str) -> Optional[str]:
 def _describe_zerogpu(image_bytes: bytes, prompt: str) -> Optional[str]:
     """Describe an image on her ZeroGPU space's /vision endpoint -- the VL model
     runs on the Space's cloud GPU, so the local card is never touched. None on any
-    failure so callers can fall back to local."""
+    failure. Retained for a future exact-consent adapter."""
     from config import ZEROGPU_SPACE, ZEROGPU_TOKEN, ZEROGPU_VISION_API
     if not ZEROGPU_SPACE:
         return None
@@ -152,47 +152,13 @@ def describe_image_result(
     prompt: str = _DESCRIBE_PROMPT,
     ambient: bool = False,
 ) -> Optional[VisionDescription]:
-    """One vision call with truthful routing metadata, or None on failure.
+    """Run one verified-local vision call with truthful metadata.
 
-    Routing (config.VISION_BACKEND): 'auto' tries Ollama cloud sight first (big
-    hosted VL model, no queue/quota), then her ZeroGPU space, then local on
-    failure; 'ollama-cloud' Ollama cloud only; 'zerogpu' Space only; 'local'
-    local Ollama VL on CPU. Cloud keeps the heavy vision model off the small
-    laptop GPU, where it would OOM-crash Ollama.
-
-    `ambient=True` marks her background senses (screen glimpses, webcam reads):
-    those are periodic loops, so they must never drain metered cloud usage --
-    and screen/face pixels shouldn't leave the machine anyway. Ambient calls
-    are always local-only."""
-    from config import VISION_BACKEND
-    if ambient:
-        local = _describe_local(image_bytes, prompt)
-        return (
-            VisionDescription(local, "local-ollama", "local-only", "denied")
-            if local else None
-        )
-    if VISION_BACKEND in ("auto", "ollama-cloud"):
-        cloud = _describe_ollama_cloud(image_bytes, prompt)
-        if cloud:
-            return VisionDescription(
-                cloud,
-                "ollama-cloud",
-                "approved-remote",
-                "creator-approved",
-            )
-        if VISION_BACKEND != "auto":
-            return None            # cloud-only: never touch the local GPU
-    if VISION_BACKEND in ("auto", "zerogpu", "cloud"):
-        cloud = _describe_zerogpu(image_bytes, prompt)
-        if cloud:
-            return VisionDescription(
-                cloud,
-                "hugging-face-zerogpu",
-                "approved-remote",
-                "creator-approved",
-            )
-        if VISION_BACKEND != "auto":
-            return None            # cloud-only: never touch the local GPU
+    `ambient` remains accepted for compatibility with existing sensor callers.
+    Generic wrappers are local-only regardless of that flag or
+    ``config.VISION_BACKEND``. A future remote adapter must consume an exact
+    consent grant before it invokes either private provider helper.
+    """
     local = _describe_local(image_bytes, prompt)
     return (
         VisionDescription(local, "local-ollama", "local-only", "denied")
@@ -244,7 +210,8 @@ def describe_and_recognize(
     """One VL call that both describes an image AND flags whether it depicts
     Alpecca herself. Cheaper than two calls on a small GPU (each vision call
     evicts the chat model from VRAM), so this is what the chat/Discord path uses.
-    Returns an enriched description string, or None if she couldn't look."""
+    Returns an enriched description string, or None if she couldn't look.
+    ``local_only`` remains for compatibility; generic vision is always local."""
     raw = describe_image(
         image_bytes,
         prompt=_self_recognition_prompt(),
@@ -258,7 +225,7 @@ def describe_and_recognize(
 def describe_and_recognize_result(
     image_bytes: bytes, *, local_only: bool = False
 ) -> Optional[VisionDescription]:
-    """Description/self-recognition with the backend that processed the image."""
+    """Local description/self-recognition with truthful processing metadata."""
 
     result = describe_image_result(
         image_bytes,

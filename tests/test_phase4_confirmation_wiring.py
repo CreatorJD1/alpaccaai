@@ -85,10 +85,10 @@ def _core_mind(monkeypatch, generate):
     return mind, mind_mod
 
 
-def _turn(scope: str = "guest-confirmation") -> turn_context.TurnContext:
+def _turn(scope: str = "creator-confirmation") -> turn_context.TurnContext:
     return turn_context.TurnContext.create(
         "confirmation-chat",
-        principal="guest",
+        principal="creator",
         surface="app",
         privacy_scope=scope,
         portal_epoch="phase4-confirmation",

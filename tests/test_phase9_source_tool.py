@@ -99,7 +99,7 @@ def test_guest_is_denied_before_any_source_read(monkeypatch):
         "source_inspect", {"path": "cues.py"}, turn=_turn("guest")
     )
 
-    assert result == "error: source_inspect is available only to the creator"
+    assert result == toolkit_mod.CAPABILITY_DENIED
     assert calls == []
 
 

@@ -269,18 +269,14 @@ def _gradio_api_name(env_var: str, default: str) -> str:
 
 ZEROGPU_API = _gradio_api_name("ALPECCA_ZEROGPU_API", "/chat")
 ZEROGPU_TOKEN = os.environ.get("ALPECCA_ZEROGPU_TOKEN", HF_TOKEN)
-# Cloud vision: her ZeroGPU space's image-describe endpoint. On a small laptop
-# GPU the local vision model OOM-crashes Ollama, so image understanding is
-# offloaded to the Space's GPU. VISION_BACKEND: "auto" tries Ollama cloud sight
-# (below), then the ZeroGPU space, then falls back to local; "ollama-cloud"
-# Ollama cloud only; "zerogpu" Space only; "local" local Ollama VL (on CPU).
+# Generic vision is verified-local only. These provider settings are retained
+# for a future exact-route, one-shot consent adapter; configuration alone never
+# authorizes pixels to leave the laptop.
 ZEROGPU_VISION_API = _gradio_api_name("ALPECCA_ZEROGPU_VISION_API", "/vision")
-VISION_BACKEND = os.environ.get("ALPECCA_VISION_BACKEND", "auto").lower()
-# Ollama cloud sight: a vision-capable Ollama cloud model (same signed-in local
-# API as the deep tier). EMPTY by default so cloud sight is off without an
-# explicit choice. Jason's approved setup (2026-07-09) wires gemma4:cloud here
-# via START_HERE.bat (ALPECCA_VISION_CLOUD_MODEL=gemma4:cloud). Ambient senses
-# (screen glimpses, webcam) never leave the machine regardless (see vision.py).
+VISION_BACKEND = os.environ.get("ALPECCA_VISION_BACKEND", "local").lower()
+# A model identifier is not egress consent. The future adapter must additionally
+# bind an attestable provider, deployment, processing location, destination,
+# HTTPS route, exact payload, and one interactive creator decision.
 VISION_CLOUD_MODEL = os.environ.get("ALPECCA_VISION_CLOUD_MODEL", "")
 
 # --- Mindscape continuity -----------------------------------------------------

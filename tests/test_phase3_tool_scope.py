@@ -19,10 +19,10 @@ def _toolkit(monkeypatch):
 def test_scoped_retrieval_tools_exclude_shared_and_other_scopes(monkeypatch):
     toolkit = _toolkit(monkeypatch)
     turn = turn_context.TurnContext.create(
-        "guest-chat",
-        principal="guest",
+        "creator-chat",
+        principal="creator",
         surface="websocket",
-        privacy_scope="guest-private",
+        privacy_scope="creator-private",
     )
     memory_calls = []
     page_calls = []
@@ -62,11 +62,11 @@ def test_scoped_retrieval_tools_exclude_shared_and_other_scopes(monkeypatch):
     assert page_result["pages"][0]["content"] == "guest-only page body"
     assert memory_calls == [(
         "marker",
-        {"top_k": 3, "scope": "guest-private", "include_shared": False},
+        {"top_k": 3, "scope": "creator-private", "include_shared": False},
     )]
     assert page_calls == [(
         "marker",
-        {"limit": 3, "scope": "guest-private", "include_shared": False},
+        {"limit": 3, "scope": "creator-private", "include_shared": False},
     )]
 
 
@@ -78,7 +78,7 @@ def test_contextless_and_cancelled_calls_do_not_reach_tool_backends(monkeypatch)
         "recall",
         lambda *_args, **_kwargs: calls.append("memory") or [],
     )
-    turn = turn_context.TurnContext.create("cancelled", principal="guest")
+    turn = turn_context.TurnContext.create("cancelled", principal="creator")
     turn.cancel("timeout")
 
     assert toolkit.execute("memory_search", {"query": "secret"}) == (
@@ -94,9 +94,9 @@ def test_self_status_is_limited_to_the_current_turn_and_unscoped_tools_refuse(mo
     toolkit = _toolkit(monkeypatch)
     turn = turn_context.TurnContext.create(
         "app-chat",
-        principal="guest",
+        principal="creator",
         surface="app",
-        privacy_scope="guest-app-private",
+        privacy_scope="creator-app-private",
         portal_epoch="lease-4",
     )
 
@@ -106,9 +106,9 @@ def test_self_status_is_limited_to_the_current_turn_and_unscoped_tools_refuse(mo
         "turn": {
             "turn_id": turn.turn_id,
             "conversation_id": "app-chat",
-            "principal": "guest",
+            "principal": "creator",
             "surface": "app",
-            "privacy_scope": "guest-app-private",
+            "privacy_scope": "creator-app-private",
             "portal_epoch": "lease-4",
             "commit_state": "pending",
         }

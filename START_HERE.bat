@@ -43,17 +43,15 @@ set ALPECCA_DEEP_BACKEND=ollama-cloud
 set ALPECCA_OLLAMA_CLOUD_MODEL=gemma4:cloud
 set ALPECCA_REFLECT_MODEL=qwen3.5:9b
 
-REM --- Vision: gemma4:cloud first for image turns (same explicit pick), then
-REM his ZeroGPU Space if that fails, local 9B last. Ambient senses (screen/
-REM webcam) are hard-forced local and never leave this PC.
-set ALPECCA_VISION_BACKEND=auto
-set ALPECCA_VISION_CLOUD_MODEL=gemma4:cloud
+REM --- Vision: every generic image, screen, webcam, pose, and Studio path is
+REM verified-local. A future remote path requires a separate exact-route,
+REM one-shot CreatorJD consent; these flags cannot authorize cloud egress.
+set ALPECCA_VISION_BACKEND=local
+set ALPECCA_VISION_CLOUD_MODEL=
 set ALPECCA_VISION_MODEL=qwen3.5:9b
-REM CreatorJD explicitly enabled bounded Discord image seeing/sending. Discord
-REM attachments are locally validated first; creator DMs may then use the
-REM configured cloud vision model, with the actual backend recorded per turn.
+REM Discord image ingress remains opt-in and locally processed.
 set ALPECCA_DISCORD_MEDIA=1
-set ALPECCA_DISCORD_CLOUD_VISION=1
+set ALPECCA_DISCORD_CLOUD_VISION=
 
 REM --- Her voice: free + local. 'auto' blends her F5 clone (high-emotion
 REM moments) with Kokoro af_heart (calm/everyday), each the other's fallback,

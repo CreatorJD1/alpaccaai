@@ -88,9 +88,9 @@ def _core_mind(monkeypatch, generate):
 def _turn(name: str = "phase4") -> turn_context.TurnContext:
     return turn_context.TurnContext.create(
         name,
-        principal="guest",
+        principal="creator",
         surface="app",
-        privacy_scope="guest-private",
+        privacy_scope="creator-private",
     )
 
 
@@ -146,7 +146,7 @@ def test_parse_generate_commit_and_rewrite_order_is_transactional(monkeypatch):
     assert result["commitment"]["state"] == "proposed"
     assert result["commitment"]["id"] == 17
     assert result["cues"]["active_kinds"] == ["reference", "urgency", "action_intent"]
-    assert captured["scope"] == "guest-private"
+    assert captured["scope"] == "creator-private"
     assert captured["action"] == "inspect the requested source files"
     assert captured["evidence"]["source"] == "assistant_future_action"
     assert captured["evidence"]["turn"]["turn_id"] == active_turn.turn_id

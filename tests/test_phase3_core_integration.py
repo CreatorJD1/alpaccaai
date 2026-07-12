@@ -123,10 +123,10 @@ def test_explicit_turn_reaches_tool_callback_with_private_retrieval(monkeypatch)
     monkeypatch.setattr(mind_mod.memory_store, "recall", recall_memory)
     monkeypatch.setattr(mind_mod.mindpage_mod, "recall_page", recall_page)
     turn = turn_context.TurnContext.create(
-        "guest-chat",
-        principal="guest",
+        "creator-chat",
+        principal="creator",
         surface="websocket",
-        privacy_scope="guest-private",
+        privacy_scope="creator-private",
     )
 
     result = mind.chat("Use the scoped innate tools.", turn=turn)
@@ -138,12 +138,12 @@ def test_explicit_turn_reaches_tool_callback_with_private_retrieval(monkeypatch)
     assert all(seen_turn is turn for _tool_name, seen_turn in calls["tool_turns"])
     assert calls["memory"] == [{
         "top_k": 8,
-        "scope": "guest-private",
+        "scope": "creator-private",
         "include_shared": False,
     }]
     assert calls["pages"] == [(
         "tool-private-page",
-        {"limit": 3, "scope": "guest-private", "include_shared": False},
+        {"limit": 3, "scope": "creator-private", "include_shared": False},
     )]
 
 

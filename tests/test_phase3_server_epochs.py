@@ -204,7 +204,7 @@ def test_timeout_fallback_sends_once_without_cancelled_cognition_writes(monkeypa
     asyncio.run(exercise())
 
 
-def test_scoped_fallback_audit_passes_memory_scope_when_supported(monkeypatch):
+def test_creator_scoped_fallback_audit_passes_memory_scope_when_supported(monkeypatch):
     captured: dict = {}
 
     class ScopedChatTurn:
@@ -221,9 +221,9 @@ def test_scoped_fallback_audit_passes_memory_scope_when_supported(monkeypatch):
     monkeypatch.setattr(server.cognition_mod, "current_intent", lambda: {})
     turn = turn_context.TurnContext.create(
         "scoped-fallback",
-        principal="guest",
+        principal="creator",
         surface="websocket",
-        privacy_scope="guest-private-scope",
+        privacy_scope="creator-private-scope",
         portal_epoch="epoch-scope",
     )
 

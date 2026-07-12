@@ -192,29 +192,30 @@ def test_bridge_posts_only_image_field_and_uses_extended_image_timeout(monkeypat
     assert timeout > discord_bridge.INBOUND_TIMEOUT
 
 
-def test_vision_result_reports_the_backend_that_received_pixels(monkeypatch):
+def test_vision_result_reports_verified_local_metadata_when_cloud_is_configured(
+    monkeypatch,
+):
     import config
 
-    monkeypatch.setattr(config, "VISION_BACKEND", "auto")
-    monkeypatch.setattr(vision, "_describe_ollama_cloud", lambda *_args: "cloud view")
-    monkeypatch.setattr(vision, "_describe_zerogpu", lambda *_args: None)
+    def reject_cloud(*_args):
+        raise AssertionError("generic vision must not call a cloud provider")
+
+    monkeypatch.setattr(config, "VISION_BACKEND", "ollama-cloud")
+    monkeypatch.setattr(vision, "_describe_ollama_cloud", reject_cloud)
+    monkeypatch.setattr(vision, "_describe_zerogpu", reject_cloud)
     monkeypatch.setattr(vision, "_describe_local", lambda *_args: "local view")
 
-    remote = vision.describe_image_result(_png())
-    local = vision.describe_image_result(_png(), ambient=True)
+    default_result = vision.describe_image_result(_png())
+    ambient_result = vision.describe_image_result(_png(), ambient=True)
 
-    assert remote == vision.VisionDescription(
-        "cloud view",
-        "ollama-cloud",
-        "approved-remote",
-        "creator-approved",
-    )
-    assert local == vision.VisionDescription(
+    expected = vision.VisionDescription(
         "local view",
         "local-ollama",
         "local-only",
         "denied",
     )
+    assert default_result == expected
+    assert ambient_result == expected
 
 
 def test_creator_dm_username_check_never_trusts_spoofable_display_name(monkeypatch):

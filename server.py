@@ -48,7 +48,11 @@ from config import (HOME, HOST, PORT, DEEP_BACKEND, OLLAMA_HOST,
                     CLOUDFLARE_HOSTNAME, OLLAMA_TIMEOUT_SECONDS, STREAM_CHAT,
                     DB_PATH)
 from config import Automation as AutomationCfg
-from alpecca.mind import CoreMind, ProactiveCandidate
+from alpecca.mind import (
+    CoreMind,
+    ProactiveCandidate,
+    _server_validated_discord_perception,
+)
 from alpecca.sensory import WindowSensor
 from alpecca.voice import VoiceSensor
 from alpecca import vision
@@ -92,9 +96,6 @@ def _environment_enabled(name: str, default: str = "0") -> bool:
 
 
 DISCORD_MEDIA_ENABLED = _environment_enabled("ALPECCA_DISCORD_MEDIA")
-DISCORD_CLOUD_VISION_ENABLED = _environment_enabled(
-    "ALPECCA_DISCORD_CLOUD_VISION"
-)
 
 
 async def _read_bounded_body(req: Request, *, max_bytes: int) -> bytes:
@@ -1035,6 +1036,8 @@ def _ws_chat_timeout_result(user_text: str,
             "in grounded live mode for this turn. Try that again if you want me to "
             "send it through the full core."
         )
+    if turn.principal != "creator":
+        return {"reply": reply}
     model_use = {
         "requested_tier": "reason",
         "used_tier": "fallback",
@@ -1118,6 +1121,8 @@ def _repair_echo_reply(user_text: str, result: dict,
     # CoreMind has already committed the rejected draft. This is a
     # presentation-only repair, never another chat/cognition write.
     repaired = _ws_chat_timeout_result(user_text, turn=turn, record=False)
+    if turn is not None and turn.principal != "creator":
+        return {**result, **repaired}
     repaired["model_use"] = {
         **(result.get("model_use") or {}),
         "requested_tier": (result.get("model_use") or {}).get("requested_tier", "reason"),
@@ -1149,27 +1154,49 @@ async def _locked_ws_chat_turn(turn: turn_context_mod.TurnContext,
                                reply_tier: str = "reason",
                                on_token=None,
                                activity_recorded: bool = False,
-                               private_context: bool = False) -> dict:
+                               private_context: bool = False,
+                               _trusted_perception: object | None = None) -> dict:
     # Keep sensor state coherent, but never hold this state lock across a model
     # call. A synchronous worker is serialized below until it finishes even if
     # its caller has already timed out.
-    async with mind_lock:
-        obs = _observe()
-        mind.perceive(obs)
+    creator_authority = turn.principal == "creator"
     if not turn.allow_work():
-        return {"cancelled": True, "turn": turn.audit_metadata()}
-    if not activity_recorded:
-        mind.note_initiative_user_activity(turn.scope_key)
-    situation = situation_hint or obs.window_title or ""
-    kwargs = {"on_token": on_token} if on_token is not None else {}
-    if attachment_context:
-        kwargs["attachment_context"] = attachment_context
+        if creator_authority:
+            return {"cancelled": True, "turn": turn.audit_metadata()}
+        return {
+            "reply": "",
+            "cancelled": True,
+            "turn": {"commit_state": turn.barrier.state},
+        }
+    if creator_authority:
+        async with mind_lock:
+            if not turn.allow_work():
+                return {"cancelled": True, "turn": turn.audit_metadata()}
+            obs = _observe()
+            if not turn.allow_work():
+                return {"cancelled": True, "turn": turn.audit_metadata()}
+            mind.perceive(obs)
+        if not turn.allow_work():
+            return {"cancelled": True, "turn": turn.audit_metadata()}
+        if not activity_recorded:
+            mind.note_initiative_user_activity(turn.scope_key)
+        situation = situation_hint or obs.window_title or ""
+        kwargs = {"on_token": on_token} if on_token is not None else {}
+        if attachment_context:
+            kwargs["attachment_context"] = attachment_context
+        kwargs.update({
+            "image_desc": image_desc,
+            "private_context": private_context,
+        })
+    else:
+        situation = ""
+        kwargs = {}
+        if _trusted_perception is not None:
+            kwargs["_trusted_perception"] = _trusted_perception
     result = await asyncio.to_thread(
         mind.chat,
         user_text,
         situation=situation,
-        image_desc=image_desc,
-        private_context=private_context,
         reply_tier=reply_tier,
         turn=turn,
         **kwargs,
@@ -1194,7 +1221,8 @@ async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = No
                                      on_token=None,
                                      activity_recorded: bool = False,
                                      turn: turn_context_mod.TurnContext | None = None,
-                                     private_context: bool = False) -> dict:
+                                     private_context: bool = False,
+                                     _trusted_perception: object | None = None) -> dict:
     global active_chat_turns, last_chat_turn_started
     turn = turn or turn_context_mod.TurnContext.create(
         _server_conversation_id("creator", "direct"),
@@ -1218,6 +1246,7 @@ async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = No
             reply_tier=reply_tier,
             on_token=on_token,
             activity_recorded=activity_recorded,
+            _trusted_perception=_trusted_perception,
             **attachment_kwargs,
         )
     )
@@ -6463,9 +6492,11 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         surface=route_surface,
         portal_epoch=turn_portal_epoch,
     )
-    mind.note_initiative_user_activity(turn.scope_key)
+    if turn.principal == "creator":
+        mind.note_initiative_user_activity(turn.scope_key)
     attachment_context = ""
     file_attachment: dict[str, object] | None = None
+    trusted_perception: object | None = None
     if source_ref_value is not None:
         decision = _require_creator_request(req)
         root_id, relative_path = _parse_source_ref(source_ref_value)
@@ -6578,7 +6609,7 @@ async def channel_inbound(req: Request, response: Response) -> dict:
             vision_result = await asyncio.to_thread(
                 vision.describe_and_recognize_result,
                 inspected_image.image_bytes,
-                local_only=not DISCORD_CLOUD_VISION_ENABLED,
+                local_only=True,
             )
             image_desc = vision_result.text if vision_result else None
             if vision_result is not None:
@@ -6589,12 +6620,9 @@ async def channel_inbound(req: Request, response: Response) -> dict:
                 }
             else:
                 vision_processing = {
-                    "backend": "unavailable-after-configured-route",
+                    "backend": "local-ollama-unavailable",
                     "processing_location": "none",
-                    "cloud_egress": (
-                        "creator-approved-attempted"
-                        if DISCORD_CLOUD_VISION_ENABLED else "denied"
-                    ),
+                    "cloud_egress": "denied",
                 }
         else:
             image_desc = await asyncio.to_thread(
@@ -6612,13 +6640,21 @@ async def channel_inbound(req: Request, response: Response) -> dict:
             "the local vision model could not make the image out; no visual "
             "details were inferred"
         )
+        if route_surface == "discord":
+            trusted_perception = _server_validated_discord_perception(
+                turn,
+                image_desc,
+            )
         if not text:
             text = "(they sent an image without any words)"
 
-    if not situation_hint:
-        situation_hint = f"message from {sender or 'someone'} via {channel}"
-    if room:
-        situation_hint = f"{situation_hint} (room: {room})"
+    if principal == "creator":
+        if not situation_hint:
+            situation_hint = f"message from {sender or 'someone'} via {channel}"
+        if room:
+            situation_hint = f"{situation_hint} (room: {room})"
+    else:
+        situation_hint = "guest conversation"
 
     result = await _ws_chat_turn_with_timeout(
         text,
@@ -6637,6 +6673,7 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         reply_tier=_house_chat_reply_tier(text),
         activity_recorded=True,
         turn=turn,
+        _trusted_perception=trusted_perception,
     )
     reply = result.get("reply", "")
     # A local file attachment cannot authorize an outbound bridge delivery.
@@ -6647,10 +6684,23 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         if file_attachment is not None or route_surface == "discord"
         else openclaw_bridge.try_deliver(reply, reply_target=reply_target)
     )
-    _mindscape_request_event_sync("channel_inbound")
-    result = {**result, "delivered": delivered, "source": channel, "sender": sender}
+    if principal == "creator":
+        _mindscape_request_event_sync("channel_inbound")
+        result = {
+            **result,
+            "delivered": delivered,
+            "source": channel,
+            "sender": sender,
+        }
+    else:
+        result = {**result, "delivered": delivered, "source": route_surface}
     if image_perception is not None:
-        result["perception"] = image_perception
+        if principal == "creator":
+            result["perception"] = image_perception
+        else:
+            result["perception"] = {
+                "status": str(image_perception.get("status") or "unavailable")
+            }
     if file_attachment is not None:
         result["attachment"] = file_attachment
     return result
@@ -7082,7 +7132,8 @@ async def ws(socket: WebSocket) -> None:
             active_turn = None
             if not sent:
                 return
-            _mindscape_request_event_sync("chat_reply")
+            if turn_for_reply.principal == "creator":
+                _mindscape_request_event_sync("chat_reply")
     except WebSocketDisconnect:
         if active_turn is not None:
             active_turn.cancel("disconnect")

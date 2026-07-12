@@ -56,6 +56,8 @@ _SOURCE_BLOCKED_NAMES = {
     "id_rsa", "secrets.json", "token.json",
 }
 
+CAPABILITY_DENIED = "error: capability unavailable for this turn"
+
 
 def _coerce_room(text: str) -> str:
     return (text or "").strip().lower()
@@ -109,7 +111,9 @@ class InnateToolkit:
             "inspect a bounded repository source file when the creator asks",
         ]
 
-    def describe(self) -> str:
+    def describe(self, turn: TurnContext | None = None) -> str:
+        if turn is not None and turn.principal != "creator":
+            return ""
         if not self.enabled:
             return ""
         return (
@@ -117,7 +121,9 @@ class InnateToolkit:
             "or safety checks. Built-in options: " + ", ".join(self._describe()) + "."
         )
 
-    def schemas(self) -> list[dict]:
+    def schemas(self, turn: TurnContext | None = None) -> list[dict]:
+        if turn is not None and turn.principal != "creator":
+            return []
         if not self.enabled:
             return []
         tools = [
@@ -318,10 +324,14 @@ class InnateToolkit:
         than one privacy scope, so contextless calls fail closed until their
         caller supplies the authenticated turn envelope.
         """
+        if turn is None:
+            if not self.enabled:
+                return "innate tools are currently disabled"
+            return "error: innate tools require an active TurnContext"
+        if turn.principal != "creator":
+            return CAPABILITY_DENIED
         if not self.enabled:
             return "innate tools are currently disabled"
-        if turn is None:
-            return "error: innate tools require an active TurnContext"
         if not turn.allow_work():
             return "error: turn was cancelled before the innate tool could run"
         args = args or {}

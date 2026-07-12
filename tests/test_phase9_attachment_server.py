@@ -170,9 +170,9 @@ def test_bridge_authenticated_discord_image_has_guest_authority_and_truthful_met
         vision_calls.append((image_bytes, local_only))
         return server.vision.VisionDescription(
             "A creator-supplied Discord image.",
-            "ollama-cloud",
-            "approved-remote",
-            "creator-approved",
+            "local-ollama",
+            "local-only",
+            "denied",
         )
 
     async def fake_audit(capability: str, **kwargs: str) -> bool:
@@ -180,7 +180,6 @@ def test_bridge_authenticated_discord_image_has_guest_authority_and_truthful_met
         return True
 
     monkeypatch.setattr(server, "DISCORD_MEDIA_ENABLED", True)
-    monkeypatch.setattr(server, "DISCORD_CLOUD_VISION_ENABLED", True)
     monkeypatch.setattr(server.vision, "describe_and_recognize_result", fake_vision)
     monkeypatch.setattr(server, "_record_capability_use", fake_audit)
 
@@ -192,22 +191,13 @@ def test_bridge_authenticated_discord_image_has_guest_authority_and_truthful_met
 
     assert response.status_code == 200
     body = response.json()
-    assert vision_calls == [(payload, False)]
+    assert vision_calls == [(payload, True)]
     assert audit_calls == [(
         "discord_media",
         {"action": "observe", "principal": "guest", "source": "discord_bridge"},
     )]
     assert isolated_server[-1]["image_desc"] == "A creator-supplied Discord image."
-    assert body["perception"]["classification_scope"] == "local-ingress-validation"
-    assert body["perception"]["classification"] == {
-        "processing_location": "local-only",
-        "cloud_egress": "denied",
-    }
-    assert body["perception"]["vision_processing"] == {
-        "backend": "ollama-cloud",
-        "processing_location": "approved-remote",
-        "cloud_egress": "creator-approved",
-    }
+    assert body["perception"] == {"status": "described"}
 
 
 def test_discord_image_route_is_disabled_without_explicit_media_opt_in(
