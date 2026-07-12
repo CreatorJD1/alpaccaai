@@ -12370,7 +12370,18 @@ function updateAlpecca(dt: number) {
   else if (distanceToTarget > 0.12) faceAlpeccaToward(target);
   else faceAlpeccaToward(attentionTarget);
   updateAlpeccaHeadLook(distanceToPlayer, playerEngaged, dt);
-  alpecca.livePatrolSpeed = lively ? 0.22 : sleepy ? 0.12 : 0.18;
+  // Motion reads her whole emotional state, not three keyword buckets, so
+  // every mood -- content, unfulfilled, curious, tender -- gives a distinct
+  // pace. Energy sets the base tempo; positive valence adds a little lift;
+  // fear quickens it; the keyword moods still nudge on top.
+  const moodEnergy = Number.isFinite(alpeccaAiState.energy) ? THREE.MathUtils.clamp(alpeccaAiState.energy, 0, 1) : 0.5;
+  const moodLove = Number.isFinite(alpeccaAiState.love) ? THREE.MathUtils.clamp(alpeccaAiState.love, 0, 1) : 0.5;
+  const moodFear = Number.isFinite(alpeccaAiState.fear) ? THREE.MathUtils.clamp(alpeccaAiState.fear, 0, 1) : 0;
+  let patrolSpeed = 0.12 + moodEnergy * 0.13 + Math.max(0, moodLove - 0.5) * 0.05 + moodFear * 0.04;
+  if (lively) patrolSpeed += 0.02;
+  if (anxious) patrolSpeed += 0.02;
+  if (sleepy) patrolSpeed = Math.min(patrolSpeed, 0.13);
+  alpecca.livePatrolSpeed = THREE.MathUtils.clamp(patrolSpeed, 0.10, 0.30);
   const isWalking =
     !alpeccaAiAwaitingReply &&
     alpeccaLiveAttentionTimer <= 0 &&
