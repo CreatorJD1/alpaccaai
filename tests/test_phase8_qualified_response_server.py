@@ -557,5 +557,7 @@ def test_status_includes_read_only_aggregate_evidence_without_mutating_controlle
         "outcome_evidence": evidence,
         "review_settlements": [],
         "review_settlements_available": True,
+        "registration_candidate": None,
+        "registration_candidate_available": True,
     }
     assert snapshot == {"state": "ready", "active_trial": None}

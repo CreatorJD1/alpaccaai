@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import dataclasses
+import concurrent.futures
 import hashlib
 import json
 import sqlite3
+import threading
 
 import pytest
 
@@ -85,6 +87,28 @@ def test_registration_requires_validated_spec_and_replays_idempotently(tmp_path)
     forged = dataclasses.replace(normalized, consumer="forged.consumer")
     with pytest.raises(trial_ledger.UnvalidatedExperimentTrial):
         trial_ledger.register_trial(forged, scope=SCOPE, db_path=db_path)
+
+
+def test_concurrent_identical_registration_returns_one_durable_record(tmp_path):
+    db_path = tmp_path / "trials.db"
+    normalized = validated_trial()
+    trial_ledger.init_db(db_path)
+    barrier = threading.Barrier(2)
+
+    def register_once():
+        barrier.wait(timeout=5)
+        return trial_ledger.register_trial(normalized, scope=SCOPE, db_path=db_path)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        first, second = list(executor.map(lambda _index: register_once(), range(2)))
+
+    assert first == second
+    assert first["state"] == trial_ledger.REGISTERED
+    with connect(db_path) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) AS count FROM experiment_trial_ledger"
+        ).fetchone()["count"]
+    assert count == 1
 
 
 def test_spec_sha256_uses_exact_persisted_json_object_bytes(tmp_path):

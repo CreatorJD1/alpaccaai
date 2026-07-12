@@ -398,6 +398,10 @@ def register_trial(
     stamp = _timestamp(time.time() if created_at is None else created_at, name="created_at")
     init_db(db_path)
     with connect(db_path) as conn:
+        # Registration is an idempotent identity boundary. Serialize the
+        # read/insert pair so concurrent requests for one proposal both return
+        # the same durable record instead of leaking a uniqueness failure.
+        conn.execute("BEGIN IMMEDIATE")
         existing = conn.execute(
             "SELECT * FROM experiment_trial_ledger WHERE scope=? AND proposal_id=?",
             (clean_scope, spec.proposal_id),

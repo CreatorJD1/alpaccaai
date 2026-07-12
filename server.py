@@ -74,6 +74,7 @@ from alpecca import resource_coordinator as resource_coordinator_mod
 from alpecca import turn_context as turn_context_mod
 from alpecca import commitments as commitments_mod
 from alpecca import commitment_executor as commitment_executor_mod
+from alpecca import behavior_trial_candidates as behavior_trial_candidates_mod
 from alpecca import behavior_trial_settlement as behavior_trial_settlement_mod
 from alpecca.behavior_trial_controller import BehaviorTrialController
 from alpecca.qualified_response_ledger import QualifiedResponseLedger
@@ -87,6 +88,10 @@ HOUSE_HQ_PUBLIC = HOUSE_HQ_DIR / "public"
 # One shared mind for the session. A background sensor lets the mood drift even
 # while you're not typing, by folding in a fresh observation on every tick.
 behavior_trial_controller = BehaviorTrialController()
+# Candidate specifications are derived from server-owned baseline evidence and
+# sealed after authorization initializes below.  They do not alter runtime
+# behavior until the existing separate approval and start actions complete.
+behavior_trial_candidate_store = behavior_trial_candidates_mod.BehaviorTrialCandidateStore(DB_PATH)
 # Outcome rows remain server-owned. The only public view is aggregate evidence
 # in the existing creator-only behavior-trial status response.
 qualified_response_ledger = QualifiedResponseLedger(DB_PATH)
@@ -2201,6 +2206,7 @@ _AUTH_SECRET = auth_mod.load_or_create_authorization_secret(HOME)
 # or lifespan recovery can use a behavior trial. This does not create or rotate
 # a separate credential.
 behavior_trial_controller.set_approval_seal_key(_AUTH_SECRET)
+behavior_trial_candidate_store.set_seal_key(_AUTH_SECRET)
 _CREATOR_PASSWORD = auth_mod.load_creator_password()
 _TRUSTED_DEVICE_DAYS = max(
     1,
@@ -3090,6 +3096,87 @@ def _behavior_trial_settlement_public_summary(settlement: Mapping[str, object]) 
     }
 
 
+def _behavior_trial_candidate_public_summary() -> dict | None:
+    """Expose only a sealed candidate's lifecycle state to the creator UI."""
+    candidate = behavior_trial_candidate_store.public_status()
+    if candidate is None:
+        return None
+    summary = {
+        "proposal_id": int(candidate["proposal_id"]),
+        "state": str(candidate["state"]),
+    }
+    if summary["state"] != "registered":
+        return summary
+    trial_id = int(candidate["registered_trial_id"])
+    details = behavior_trial_candidate_store.registration_details(
+        summary["proposal_id"],
+        default_chatter_chance=behavior_trial_controller.default_chatter_chance,
+    )
+    current = behavior_trial_controller.get(trial_id)
+    if current is None or not behavior_trial_candidate_store.matches_trial(
+        current, details["spec"]
+    ):
+        raise behavior_trial_candidates_mod.CandidateIntegrityError(
+            "registered candidate does not match its behavior trial"
+        )
+    summary["trial"] = _behavior_trial_public_summary(current)
+    return summary
+
+
+def _issue_behavior_trial_candidate_from_baseline() -> dict:
+    """Turn settled low-response evidence into one reviewable candidate only."""
+    try:
+        existing = _behavior_trial_candidate_public_summary()
+    except Exception:
+        return {"issued": False, "reason": "candidate_unavailable"}
+    if existing is not None and existing.get("state") == "registered":
+        # C8 intentionally has no post-review decision path yet. Do not stack a
+        # new candidate while the previously registered trial is still the one
+        # waiting for approval, start, closure, or later creator review.
+        return {"issued": False, "reason": "registration_pending"}
+    evidence = qualified_response_ledger.summary()
+    baseline = evidence.get("baseline")
+    if not isinstance(baseline, Mapping):
+        return {"issued": False, "reason": "baseline_unavailable"}
+    result = behavior_trial_candidate_store.issue_from_baseline(
+        baseline,
+        preimage_value=behavior_trial_controller.default_chatter_chance,
+    )
+    if result.get("issued") and not result.get("reused"):
+        candidate = result.get("candidate") or {}
+        proposal = result.get("proposal") or {}
+        try:
+            cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                source="behavior_trial_candidate",
+                content=(
+                    "Recorded one bounded behavior-trial candidate from settled "
+                    "proactive response evidence."
+                ),
+                confidence=1.0,
+                privacy_class="local",
+                metadata={
+                    "proposal_id": int(proposal.get("id") or 0),
+                    "candidate_id": int(candidate.get("id") or 0),
+                    "scope": behavior_trial_candidates_mod.CREATOR_PERSONAL_SCOPE,
+                    "parameter": behavior_trial_candidates_mod.PROFILE_PARAMETER,
+                    "metric": behavior_trial_candidates_mod.PROFILE_METRIC,
+                    "registered": False,
+                    "started": False,
+                },
+            ))
+        except Exception:
+            # The candidate is already durable. Auxiliary observation failures
+            # must not create another candidate or change behavior.
+            pass
+    return result
+
+
+def _behavior_trial_proposal_id(value: str) -> int:
+    if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{0,17}", value):
+        raise ValueError("invalid behavior trial proposal")
+    return int(value)
+
+
 def _behavior_trial_recovery_response() -> JSONResponse:
     return JSONResponse(
         {"detail": "behavior trial recovery is not ready"},
@@ -3117,8 +3204,178 @@ def behavior_trial_status(req: Request) -> JSONResponse:
         # surface. Do not fabricate an empty successful review history.
         snapshot["review_settlements"] = []
         snapshot["review_settlements_available"] = False
+    try:
+        snapshot["registration_candidate"] = _behavior_trial_candidate_public_summary()
+        snapshot["registration_candidate_available"] = True
+    except Exception:
+        # A candidate is optional review context. Do not claim an empty, valid
+        # candidate state when its sealed source or storage cannot be read.
+        snapshot["registration_candidate"] = None
+        snapshot["registration_candidate_available"] = False
     return JSONResponse(
         snapshot,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/behavior-trials/proposals/{proposal_id}/register")
+async def behavior_trial_creator_register(
+    proposal_id: str,
+    req: Request,
+) -> JSONResponse:
+    """Register one sealed server-issued candidate without approving or starting it."""
+    decision = _require_creator_request(req)
+    if not _behavior_trial_recovery_ready.is_set():
+        return _behavior_trial_recovery_response()
+    content_length = req.headers.get("content-length")
+    if content_length not in {None, "", "0"}:
+        raise HTTPException(
+            status_code=400,
+            detail="behavior trial registration does not accept a request body",
+            headers={"Cache-Control": "no-store"},
+        )
+    if await req.body():
+        raise HTTPException(
+            status_code=400,
+            detail="behavior trial registration does not accept a request body",
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        proposal_key = _behavior_trial_proposal_id(proposal_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="invalid behavior trial proposal",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    try:
+        details = behavior_trial_candidate_store.registration_details(
+            proposal_key,
+            default_chatter_chance=behavior_trial_controller.default_chatter_chance,
+        )
+    except behavior_trial_candidates_mod.CandidateNotFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="behavior trial candidate not found",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except behavior_trial_candidates_mod.BehaviorTrialCandidateError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="behavior trial candidate cannot be registered",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial candidate storage unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+
+    candidate = details["candidate"]
+    spec = details["spec"]
+    existing_trial_id = candidate.get("registered_trial_id")
+    if isinstance(existing_trial_id, int) and not isinstance(existing_trial_id, bool):
+        try:
+            existing = behavior_trial_controller.get(existing_trial_id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="behavior trial storage unavailable",
+                headers={"Cache-Control": "no-store"},
+            ) from exc
+        if existing is None or not behavior_trial_candidate_store.matches_trial(existing, spec):
+            raise HTTPException(
+                status_code=409,
+                detail="behavior trial candidate cannot be registered",
+                headers={"Cache-Control": "no-store"},
+            )
+        return JSONResponse(
+            {
+                "registered": True,
+                "already_registered": True,
+                "trial": _behavior_trial_public_summary(existing),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    try:
+        registered = behavior_trial_controller.register(spec)
+    except ValueError as exc:
+        # The controller still owns the allowlist and immutable trial ledger.
+        # A registration failure cannot fall back to approval or a runtime write.
+        raise HTTPException(
+            status_code=409,
+            detail="behavior trial candidate cannot be registered",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial registration unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    if not behavior_trial_candidate_store.matches_trial(registered, spec):
+        raise HTTPException(
+            status_code=409,
+            detail="behavior trial candidate cannot be registered",
+            headers={"Cache-Control": "no-store"},
+        )
+    registered_at = _time.time()
+    try:
+        newly_registered = behavior_trial_candidate_store.mark_registered(
+            proposal_key,
+            trial_id=int(registered["id"]),
+            principal=decision.principal,
+            mechanism=decision.mechanism,
+            registered_at=registered_at,
+        )
+    except behavior_trial_candidates_mod.BehaviorTrialCandidateError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="behavior trial candidate cannot be registered",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial registration unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+
+    summary = _behavior_trial_public_summary(registered)
+    if newly_registered:
+        try:
+            cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                source="behavior_trial_registration",
+                content=(
+                    f"Creator registered Alpecca behavior trial {summary['id']} for "
+                    "bounded review."
+                ),
+                confidence=1.0,
+                privacy_class="local",
+                metadata={
+                    "trial_id": summary["id"],
+                    "proposal_id": summary["proposal_id"],
+                    "scope": summary["scope"],
+                    "parameter": summary["parameter"],
+                    "metric": summary["metric"],
+                    "authorization": decision.mechanism,
+                    "registered_at": registered_at,
+                    "approved": False,
+                    "started": False,
+                },
+            ))
+        except Exception:
+            # Registration is already durable. An auxiliary observation must
+            # not retry, approve, or start the newly registered trial.
+            pass
+    return JSONResponse(
+        {
+            "registered": True,
+            "already_registered": not newly_registered,
+            "trial": summary,
+        },
         headers={"Cache-Control": "no-store"},
     )
 
@@ -3906,7 +4163,26 @@ async def cognition_behavior_review() -> dict:
     """Review one behavior lesson and attach evidence to the improvement queue."""
     async with mind_lock:
         review = mind.review_behavior_improvement()
-    return {"review": review, **mind.proposal_state()}
+    try:
+        candidate_result = await asyncio.to_thread(
+            _issue_behavior_trial_candidate_from_baseline,
+        )
+    except Exception:
+        # The ordinary review remains useful even if optional candidate storage
+        # is unavailable. It never implies that a behavior change occurred.
+        candidate_result = {"issued": False, "reason": "candidate_unavailable"}
+    return {
+        "review": review,
+        "behavior_trial_candidate": _behavior_trial_candidate_public_summary()
+        if candidate_result.get("issued")
+        else None,
+        "behavior_trial_candidate_result": {
+            "issued": bool(candidate_result.get("issued")),
+            "reused": bool(candidate_result.get("reused")),
+            "reason": str(candidate_result.get("reason") or ""),
+        },
+        **mind.proposal_state(),
+    }
 
 
 @app.get("/observatory")

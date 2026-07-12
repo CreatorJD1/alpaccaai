@@ -52,9 +52,16 @@ labels retained in historical plans and handoffs.
   approved trial, with an idempotent retry for that same running trial. It
   accepts no browser-supplied runtime values or timestamp;
   server time and the controller's binding, preimage, runtime-readback, and
-  one-active-trial checks govern activation. There are no public behavior-trial
-  registration, completion, rollback, or generic mutation routes, and no trial
-  is running by default. Phase 8C7 runs after outcome expiry and the existing
+  one-active-trial checks govern activation. Phase 8C8 adds exactly one
+  creator-only, recovery-gated, bodyless proposal-namespaced registration action:
+  `POST /behavior-trials/proposals/{proposal_id}/register`. It accepts only a
+  server-issued, HMAC-sealed candidate from settled low-response baseline
+  evidence, validates a fixed `chatter_chance` / `qualified_response_rate`
+  profile, and records registration only. Generic Workshop payloads and generic
+  proposal acceptance are not trial provenance; registration, approval, and
+  start remain separate creator decisions. There are no generic behavior-trial
+  registration, completion, rollback, or mutation routes, and no trial is
+  running by default. Phase 8C7 runs after outcome expiry and the existing
   off-lock baseline restoration: only a valid planned-expiry rollback with no
   outstanding outcome windows can be sealed into a hashed aggregate settlement.
   A SQLite fence then rejects new trial outcomes. Creator-only `GET
@@ -71,9 +78,10 @@ labels retained in historical plans and handoffs.
   cancelled, expired confirmed sends become unanswered, and status exposes
   aggregate baseline/trial evidence only through the existing creator-only,
   read-only, `no-store` endpoint. No trial is currently running, so all current
-  outcome evidence is baseline-only. The broader Phase 8C plan still requires a
-  bounded registration bridge for a validated proposal and a separate creator
-  decision after review; C7 never changes behavior from evidence.
+  outcome evidence is baseline-only. C8 completes the bounded sealed
+  proposal-to-trial registration bridge; the remaining Phase 8C gap is a
+  separate creator decision after frozen review. C7 never changes behavior from
+  evidence.
   Phase 8C3 now supplies the fixed, pure evaluation contract for a future
   `qualified_response_rate` trial: per-trial aggregate evidence is isolated by
   server-owned trial id and classified only as collecting, awaiting settlement,
@@ -112,7 +120,10 @@ labels retained in historical plans and handoffs.
   is created off `mind_lock`, logs a content-free settlement observation, and
   never starts, extends, rolls back, or retunes behavior. Creator-only review
   reads the frozen snapshot, and the Workshop renders baseline evidence plus
-  the latest settled review without an action control.
+  the latest settled review without an action control. C8 creates a visible
+  sealed candidate only from settled low-response baseline evidence; the
+  Workshop keeps plan acceptance, registration, approval, and start as separate
+  controls.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A semantic-negative/orthogonal recall abstention and Phase 6B
   bounded sidecar content-term indexing are implemented and covered by focused

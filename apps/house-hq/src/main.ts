@@ -5390,6 +5390,8 @@ async function inspectAlpeccaImprovementQueue() {
 
 let workshopBusy = false;
 let workshopTrialStatusSequence = 0;
+let workshopProposalData: any = null;
+let workshopBehaviorCandidate: any = null;
 
 const WORKSHOP_STATUS_LABEL: Record<string, string> = {
   noticed: "Noticed",
@@ -5443,13 +5445,32 @@ function workshopCardHtml(proposal: any, evals: Map<number, any>): string {
     ? `<div class="wc-controls">
         <button type="button" data-wc-id="${id}" data-wc-act="planned"${status === "planned" ? " disabled" : ""}>Plan</button>
         <button type="button" data-wc-id="${id}" data-wc-act="testing"${status === "testing" ? " disabled" : ""}>Mark Tested</button>
-        <button type="button" class="wc-accept" data-wc-id="${id}" data-wc-act="accepted">${needsApproval ? "Accept with approval" : "Accept"}</button>
+        <button type="button" class="wc-accept" data-wc-id="${id}" data-wc-act="accepted">${needsApproval ? "Accept plan" : "Accept"}</button>
         <button type="button" class="wc-reject" data-wc-id="${id}" data-wc-act="rejected">Reject</button>
       </div>`
     : `<div class="wc-controls wc-controls-closed">
         <span class="wc-closed-note">${result ? `Closed: ${result}` : "Closed decision."}</span>
         <button type="button" data-wc-id="${id}" data-wc-act="testing">Reopen</button>
       </div>`;
+
+  const candidate = workshopBehaviorCandidate;
+  const candidateMatches = Number(candidate?.proposal_id || 0) === id;
+  const candidateState = String(candidate?.state || "");
+  const trial = candidate?.trial && typeof candidate.trial === "object" ? candidate.trial : null;
+  const trialState = String(trial?.state || "");
+  let trialControls = "";
+  if (candidateMatches && candidateState === "ready_for_registration") {
+    trialControls = `<div class="wc-controls"><button type="button" data-wc-id="${id}" data-wc-trial-act="register">Register trial</button></div>`;
+  } else if (candidateMatches && candidateState === "registered" && trial) {
+    const trialId = Number(trial?.id || 0);
+    if (trialId > 0 && trialState === "registered") {
+      trialControls = `<div class="wc-controls"><button type="button" data-wc-id="${id}" data-wc-trial-id="${trialId}" data-wc-trial-act="approve">Approve trial</button></div>`;
+    } else if (trialId > 0 && trialState === "approved") {
+      trialControls = `<div class="wc-controls"><button type="button" data-wc-id="${id}" data-wc-trial-id="${trialId}" data-wc-trial-act="start">Start trial</button></div>`;
+    } else if (trialState === "running") {
+      trialControls = `<div class="wc-controls wc-controls-closed"><span class="wc-closed-note">Bounded trial running.</span></div>`;
+    }
+  }
 
   return `<div class="workshop-card wc-card-${status}" data-proposal-id="${id}">
     <div class="wc-top">
@@ -5465,6 +5486,7 @@ function workshopCardHtml(proposal: any, evals: Map<number, any>): string {
     ${test ? `<div class="wc-line"><b>Test</b> ${test}</div>` : ""}
     ${outcome ? `<div class="wc-line"><b>Outcome</b> ${outcome}</div>` : ""}
     ${controls}
+    ${trialControls}
   </div>`;
 }
 
@@ -5520,9 +5542,11 @@ async function loadAlpeccaWorkshop() {
     const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/proposals`));
     if (!response.ok) throw new Error(`proposal queue ${response.status}`);
     const data = await response.json();
+    workshopProposalData = data;
     renderWorkshopProposals(data);
     return data;
   } catch {
+    workshopProposalData = null;
     workshopSummary.textContent = "Queue unavailable";
     workshopList.innerHTML = `<div class="workshop-empty">The improvement queue is unavailable right now. Check that the Alpecca core is running.</div>`;
     return null;
@@ -5550,6 +5574,8 @@ async function loadWorkshopTrialStatus() {
         outcome_evidence?: unknown;
         review_settlements?: unknown;
         review_settlements_available?: unknown;
+        registration_candidate?: unknown;
+        registration_candidate_available?: unknown;
       };
       const activeTrial = data?.active_trial;
       let baselineText = "baseline observation awaiting settled deliveries";
@@ -5606,15 +5632,38 @@ async function loadWorkshopTrialStatus() {
             : " Active trial approval is not bound.";
         }
       }
+      const candidate = data?.registration_candidate;
+      if (candidate && typeof candidate === "object") {
+        const candidateRecord = candidate as { proposal_id?: unknown; state?: unknown };
+        const proposalId = Number(candidateRecord.proposal_id || 0);
+        const candidateState = String(candidateRecord.state || "");
+        workshopBehaviorCandidate = candidateRecord;
+        if (proposalId > 0 && candidateState === "ready_for_registration") {
+          status += " A plan is ready for creator registration.";
+        } else if (proposalId > 0 && candidateState === "pending_creator_plan") {
+          status += " A behavior candidate is awaiting plan acceptance.";
+        } else if (proposalId > 0 && candidateState === "registered") {
+          status += " A registered trial is awaiting its separate decision.";
+        }
+      } else {
+        workshopBehaviorCandidate = null;
+        if (data?.registration_candidate_available === false) {
+          status += " Candidate status unavailable.";
+        }
+      }
     }
   } catch {
     // Status is advisory only; failures must not imply that no trial is active.
   }
-  if (sequence === workshopTrialStatusSequence) workshopTrialStatus.textContent = status;
+  if (sequence === workshopTrialStatusSequence) {
+    workshopTrialStatus.textContent = status;
+    if (workshopProposalData) renderWorkshopProposals(workshopProposalData);
+  }
 }
 
 function openAlpeccaWorkshop() {
   alpeccaWorkshop.classList.remove("hidden");
+  workshopBehaviorCandidate = null;
   workshopSummary.textContent = "Loading...";
   workshopList.innerHTML = `<div class="workshop-empty">Loading the queue...</div>`;
   appendAlpeccaLog("System", "Opening the improvement Workshop.");
@@ -5625,8 +5674,52 @@ function openAlpeccaWorkshop() {
 
 function closeAlpeccaWorkshop() {
   workshopTrialStatusSequence += 1;
+  workshopBehaviorCandidate = null;
   workshopTrialStatus.textContent = "";
   alpeccaWorkshop.classList.add("hidden");
+}
+
+async function workshopBehaviorTrialAction(proposalId: number, action: string, trialId = 0) {
+  if (workshopBusy || !proposalId) return;
+  let path = "";
+  let confirmation = "";
+  if (action === "register") {
+    path = `/behavior-trials/proposals/${proposalId}/register`;
+    confirmation = "Register this sealed proposal as a trial? This does not change Alpecca's behavior. Approval and start remain separate decisions.";
+  } else if (action === "approve" && trialId > 0) {
+    path = `/behavior-trials/${trialId}/approve`;
+    confirmation = "Approve this registered trial? This records approval only and does not start it.";
+  } else if (action === "start" && trialId > 0) {
+    path = `/behavior-trials/${trialId}/start`;
+    confirmation = "Start this time-bounded behavior trial? It will automatically roll back after its planned exposure.";
+  } else {
+    return;
+  }
+  if (!window.confirm(confirmation)) return;
+  workshopBusy = true;
+  setWorkshopBusy(true);
+  try {
+    const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}${path}`), {
+      method: "POST",
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => null);
+      throw new Error(String(detail?.detail || `behavior trial ${response.status}`));
+    }
+    appendAlpeccaLog("System", action === "register"
+      ? `Registered behavior trial from proposal #${proposalId}; no behavior changed.`
+      : action === "approve"
+        ? `Approved behavior trial #${trialId}; it has not started.`
+        : `Started bounded behavior trial #${trialId}.`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Behavior trial action failed.";
+    appendAlpeccaLog("System", message);
+  } finally {
+    workshopBusy = false;
+    setWorkshopBusy(false);
+    await Promise.all([loadAlpeccaWorkshop(), loadWorkshopTrialStatus()]);
+  }
 }
 
 async function workshopProposalDecision(proposalId: number, status: string) {
@@ -5635,7 +5728,7 @@ async function workshopProposalDecision(proposalId: number, status: string) {
   let result = "";
   if (status === "accepted") {
     const ok = window.confirm(
-      "Accept this proposal with your approval?\n\n" +
+      "Accept this plan with your approval?\n\n" +
       "This records your explicit approval. A never-auto card is approved as a plan only — " +
       "Alpecca will not act on it unassisted, and makes no autonomous code edits."
     );
@@ -13386,6 +13479,13 @@ alpeccaWorkshop.addEventListener("click", (event) => {
   if (target.closest("[data-workshop-refresh]")) {
     void loadAlpeccaWorkshop();
     void loadWorkshopTrialStatus();
+    return;
+  }
+  const trialButton = target.closest<HTMLButtonElement>("button[data-wc-trial-act]");
+  if (trialButton?.dataset.wcTrialAct) {
+    const proposalId = Number(trialButton.dataset.wcId || 0);
+    const trialId = Number(trialButton.dataset.wcTrialId || 0);
+    void workshopBehaviorTrialAction(proposalId, trialButton.dataset.wcTrialAct, trialId);
     return;
   }
   const actButton = target.closest<HTMLButtonElement>("button[data-wc-act]");

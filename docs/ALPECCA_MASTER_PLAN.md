@@ -163,7 +163,7 @@ They are not fixed Alpecca hardware.
 | Proactive/living behavior | BASELINE COMPLETE | Living ticks, proactive speech, and routines share one scoped budget; ignored outreach backs off and each proactive event selects one delivery surface |
 | Routines and watchers | PARTIAL | Empty/off by default; routine deletion and unified scheduling remain |
 | Background work coordination | PARTIAL | Timeouts do not cancel worker threads; optional jobs can overlap |
-| Recursive self-improvement | PARTIAL | Phase 8A legacy `selfmod` remains evidence-only. Phase 8B provides an internal, approval-proof-backed controller for only `creator-personal` / `chatter_chance`, with exact apply/readback/rollback and startup recovery. C1 protects immutable specs and creator binding; C2-C4 provide aggregate-only attributed response evidence; C5/C6 provide explicit creator approval and start. C7 seals only a valid planned-expiry rollback after every trial outcome settles, fingerprints the aggregate evidence/evaluation, blocks later trial outcomes, and exposes frozen review read-only through protected status/review surfaces and the Workshop. No public registration, completion, rollback, or generic mutation route exists, no trial runs by default, and evidence never triggers an automated behavior change. |
+| Recursive self-improvement | PARTIAL | Phase 8A legacy `selfmod` remains evidence-only. Phase 8B provides an internal, approval-proof-backed controller for only `creator-personal` / `chatter_chance`, with exact apply/readback/rollback and startup recovery. C1 protects immutable specs and creator binding; C2-C4 provide aggregate-only attributed response evidence; C5/C6 provide explicit creator approval and start; C7 freezes planned-expiry evidence for read-only review. C8 adds one creator-only, bodyless proposal-namespaced registration action backed by a server-issued HMAC-sealed candidate from settled low-response baseline evidence. Registration cannot approve, start, or change behavior; generic Workshop payloads are not trial provenance. No trial runs by default, and evidence never triggers an automated behavior change. |
 | External action approvals | BLOCKED | Creator-only scoped approval works for read-only `self_status`; external or mutating action classes remain blocked |
 | MCP federation | PARKED | Largest external surface; no current companion-value need |
 
@@ -564,11 +564,35 @@ only. `GET /behavior-trials/status` lists recent settlements, and the Workshop
 shows baseline observation plus the latest settled result with no behavior
 change control.
 
-The broader Phase 8C plan remains incomplete: add a bounded creator-approved
-proposal-to-trial registration bridge and a separate creator decision after
-review. Any real trial must be
-reviewable against its hypothesis, exposure window, evidence, end time, and
-exact rollback. Code or system changes remain reviewable handoff proposals only.
+#### Phase 8C8: Sealed proposal-to-trial registration - COMPLETE, REGISTRATION ONLY
+
+The server may issue one visible candidate only after settled baseline evidence
+has at least five completed outcomes, no outstanding delivery windows, a
+non-zero qualified-response rate below the fixed low-response threshold, and a
+valid current `chatter_chance` preimage. The candidate is created alongside its
+Workshop proposal in one SQLite transaction. It snapshots the baseline rate,
+preimage, and bounded trial value, binds an immutable proposal snapshot, and
+HMAC-seals both with the protected server authorization secret. It never reads
+the generic Workshop proposal payload as a trial specification.
+
+`POST /behavior-trials/proposals/{proposal_id}/register` is creator-only,
+recovery-gated, bodyless, and `no-store`. It validates the sealed candidate into
+the one supported `creator-personal` / `chatter_chance` /
+`qualified_response_rate` specification and calls only registration. The
+candidate stores a separate creator-authenticated registration receipt; repeated
+calls return the same immutable ledger record. Concurrent identical ledger
+registrations serialize to that same record. Registration cannot approve, start,
+complete, roll back, or apply a runtime override.
+
+The Workshop keeps `Accept plan`, `Register trial`, `Approve trial`, and `Start
+trial` as separate controls with separate confirmations. Generic proposal
+acceptance is not treated as behavior-trial approval. C5 approval and C6 start
+remain the only later activation steps; no trial is running by default.
+
+The remaining Phase 8C gap is a separate creator decision after frozen review.
+Any real trial must be reviewable against its hypothesis, exposure window,
+evidence, end time, and exact rollback. Code or system changes remain reviewable
+handoff proposals only.
 
 Exit gate remains unmet: it requires a registered fixed hypothesis from a
 bounded proposal path and a separate creator decision after the frozen review;
