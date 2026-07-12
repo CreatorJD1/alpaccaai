@@ -416,6 +416,26 @@ type AlpeccaSourceRef = {
   root: string;
   rel: string;
 };
+type AlpeccaCapabilityPurpose =
+  | "camera_frame"
+  | "push_to_talk"
+  | "screen_share"
+  | "voice_enrollment"
+  | "file_source_ref";
+type AlpeccaCapabilityConnection = {
+  id: string;
+  surface: "house-hq";
+  principal: "creator";
+};
+type AlpeccaCapabilityLease = {
+  leaseId: string;
+  token: string;
+  purpose: AlpeccaCapabilityPurpose;
+  connectionId: string;
+  expiresAt: number;
+  expiryTimer: number | null;
+  stopped: boolean;
+};
 type AlpeccaAiMessage = {
   type?: string;
   request_id?: string;
@@ -429,6 +449,11 @@ type AlpeccaAiMessage = {
   content?: string;
   mood?: string;
   state?: Record<string, number>;
+  capability_connection?: {
+    id?: string;
+    surface?: string;
+    principal?: string;
+  };
   llm_online?: boolean;
   model_use?: AlpeccaModelUse;
   memory_evidence?: AlpeccaMemoryEvidence[];
@@ -464,6 +489,8 @@ type AlpeccaAiMessage = {
   summary?: string;
   error?: string;
   detail?: string;
+  code?: string;
+  reason?: string;
 };
 type AlpeccaAutonomyState = {
   enabled?: boolean;
@@ -1617,6 +1644,10 @@ let alpeccaAiPendingPlayerRequestId = "";
 let alpeccaAiRequestSequence = 0;
 let alpeccaAiLastPlayerMessage = "";
 let alpeccaPendingSourceRef: AlpeccaSourceRef | null = null;
+let alpeccaCapabilityConnection: AlpeccaCapabilityConnection | null = null;
+const alpeccaCapabilityLeases = new Map<AlpeccaCapabilityPurpose, AlpeccaCapabilityLease>();
+let alpeccaAiPendingCapabilityLease: { requestId: string; lease: AlpeccaCapabilityLease } | null = null;
+let alpeccaCapabilityChannelRequest: AbortController | null = null;
 const ALPECCA_AI_SLOW_REPLY_MS = 12000;
 const ALPECCA_AI_PLAYER_REPLY_TIMEOUT_MS = 35000;
 const ALPECCA_AI_CHANNEL_INBOUND_TIMEOUT_MS = 25000;
@@ -1638,6 +1669,7 @@ let alpeccaPushToTalkSequence = 0;
 let alpeccaPushToTalkStopTimer: number | null = null;
 let alpeccaPushToTalkRequest: AbortController | null = null;
 let alpeccaCameraStream: MediaStream | null = null;
+let alpeccaCameraSequence = 0;
 let alpeccaVoiceEngine = "";
 let alpeccaVoiceName = "af_heart";
 let alpeccaVoiceProfile = "af_heart_original_modulated";
@@ -1688,6 +1720,13 @@ function startAlpeccaVoiceLivePoll() {
 let alpeccaScreenShareStream: MediaStream | null = null;
 let alpeccaScreenShareVideo: HTMLVideoElement | null = null;
 let alpeccaScreenShareTimer: number | null = null;
+let alpeccaScreenShareRequest: AbortController | null = null;
+let alpeccaScreenShareSequence = 0;
+let alpeccaVoiceEnrollmentStream: MediaStream | null = null;
+let alpeccaVoiceEnrollmentRecorder: MediaRecorder | null = null;
+let alpeccaVoiceEnrollmentTimer: number | null = null;
+let alpeccaVoiceEnrollmentRequest: AbortController | null = null;
+let alpeccaVoiceEnrollmentSequence = 0;
 let alpeccaPreloadTimer = 0;
 let alpeccaExpressionProjector: AlpeccaExpressionProjector | null = null;
 let alpeccaAvatarStation: AlpeccaAvatarStation | null = null;
@@ -3962,6 +4001,231 @@ function alpeccaBackendFetch(url: string, init: RequestInit = {}) {
   });
 }
 
+const ALPECCA_CAPABILITY_LEASE_HEADER = "X-Alpecca-Capability-Lease";
+const ALPECCA_CAPABILITY_PURPOSE_HEADER = "X-Alpecca-Capability-Purpose";
+const ALPECCA_CAPABILITY_CONNECTION_HEADER = "X-Alpecca-Capability-Connection";
+
+function alpeccaCapabilityLabel(purpose: AlpeccaCapabilityPurpose) {
+  if (purpose === "camera_frame") return "Camera";
+  if (purpose === "push_to_talk") return "Microphone";
+  if (purpose === "screen_share") return "Screen sharing";
+  if (purpose === "voice_enrollment") return "Voice enrollment";
+  return "File attachment";
+}
+
+function stopAlpeccaLocalCapabilityMedia() {
+  void cancelAlpeccaPushToTalk(false);
+  void closeAlpeccaCamera(false);
+  void stopAlpeccaScreenShare({ notifyBackend: false, stopLease: false, notice: false });
+  void cancelAlpeccaVoiceEnrollment(false);
+}
+
+function setAlpeccaCapabilityConnection(value: AlpeccaAiMessage["capability_connection"]) {
+  const next = value
+    && typeof value.id === "string"
+    && value.id.trim()
+    && value.surface === "house-hq"
+    && value.principal === "creator"
+    ? { id: value.id.trim(), surface: "house-hq" as const, principal: "creator" as const }
+    : null;
+  if (!next) {
+    if (alpeccaCapabilityConnection) stopAlpeccaLocalCapabilityMedia();
+    clearAlpeccaCapabilityLeases();
+    alpeccaCapabilityConnection = null;
+    return;
+  }
+  if (alpeccaCapabilityConnection && alpeccaCapabilityConnection.id !== next.id) {
+    stopAlpeccaLocalCapabilityMedia();
+    clearAlpeccaCapabilityLeases();
+  }
+  alpeccaCapabilityConnection = next;
+}
+
+function clearAlpeccaCapabilityLeases() {
+  alpeccaCapabilityChannelRequest?.abort();
+  alpeccaCapabilityChannelRequest = null;
+  for (const lease of alpeccaCapabilityLeases.values()) {
+    if (lease.expiryTimer !== null) window.clearTimeout(lease.expiryTimer);
+    lease.expiryTimer = null;
+    lease.token = "";
+    lease.stopped = true;
+  }
+  alpeccaCapabilityLeases.clear();
+  if (alpeccaAiPendingCapabilityLease) {
+    alpeccaAiPendingCapabilityLease.lease.token = "";
+    alpeccaAiPendingCapabilityLease.lease.stopped = true;
+  }
+  alpeccaAiPendingCapabilityLease = null;
+}
+
+async function stopAlpeccaCapabilityLease(
+  leaseOrPurpose: AlpeccaCapabilityLease | AlpeccaCapabilityPurpose,
+) {
+  const lease = typeof leaseOrPurpose === "string"
+    ? alpeccaCapabilityLeases.get(leaseOrPurpose)
+    : leaseOrPurpose;
+  if (!lease || lease.stopped) return;
+  lease.stopped = true;
+  if (alpeccaCapabilityLeases.get(lease.purpose) === lease) {
+    alpeccaCapabilityLeases.delete(lease.purpose);
+  }
+  if (alpeccaAiPendingCapabilityLease?.lease === lease) alpeccaAiPendingCapabilityLease = null;
+  if (lease.expiryTimer !== null) window.clearTimeout(lease.expiryTimer);
+  lease.expiryTimer = null;
+  const leaseId = lease.leaseId;
+  const connectionId = lease.connectionId;
+  lease.token = "";
+  if (!alpeccaAiBaseUrl || !leaseId || !connectionId) return;
+  try {
+    await alpeccaBackendFetch(
+      alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/security/capability-leases/${encodeURIComponent(leaseId)}/stop`),
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ connection_id: connectionId }),
+      },
+    );
+  } catch {
+    // Disconnect revocation and server expiry remain authoritative if this best-effort stop cannot arrive.
+  }
+}
+
+function expireAlpeccaCapabilityLease(lease: AlpeccaCapabilityLease) {
+  if (alpeccaCapabilityLeases.get(lease.purpose) !== lease) return;
+  void stopAlpeccaCapabilityLease(lease);
+  if (lease.purpose === "camera_frame") void closeAlpeccaCamera(false);
+  else if (lease.purpose === "push_to_talk") void cancelAlpeccaPushToTalk(false);
+  else if (lease.purpose === "screen_share") {
+    void stopAlpeccaScreenShare({ notifyBackend: true, stopLease: false, notice: true });
+  } else if (lease.purpose === "voice_enrollment") void cancelAlpeccaVoiceEnrollment(false);
+  else alpeccaCapabilityChannelRequest?.abort();
+}
+
+function alpeccaCapabilityLeaseIsUsable(
+  lease: AlpeccaCapabilityLease | null | undefined,
+  purpose: AlpeccaCapabilityPurpose,
+): lease is AlpeccaCapabilityLease {
+  if (
+    !lease
+    || lease.stopped
+    || !lease.token
+    || lease.purpose !== purpose
+    || alpeccaCapabilityLeases.get(purpose) !== lease
+    || alpeccaCapabilityConnection?.id !== lease.connectionId
+  ) return false;
+  if (lease.expiresAt * 1000 <= Date.now()) {
+    expireAlpeccaCapabilityLease(lease);
+    return false;
+  }
+  return true;
+}
+
+function alpeccaCapabilityLeaseHeaders(lease: AlpeccaCapabilityLease, initial?: HeadersInit) {
+  const purpose = lease.purpose;
+  if (!alpeccaCapabilityLeaseIsUsable(lease, purpose)) {
+    throw new Error(`${alpeccaCapabilityLabel(purpose)} permission expired.`);
+  }
+  const headers = new Headers(initial);
+  headers.set(ALPECCA_CAPABILITY_LEASE_HEADER, lease.token);
+  headers.set(ALPECCA_CAPABILITY_PURPOSE_HEADER, lease.purpose);
+  headers.set(ALPECCA_CAPABILITY_CONNECTION_HEADER, lease.connectionId);
+  return headers;
+}
+
+async function acquireAlpeccaCapabilityLease(
+  purpose: AlpeccaCapabilityPurpose,
+  sourceRef: AlpeccaSourceRef | null = null,
+) {
+  const connection = alpeccaCapabilityConnection;
+  if (
+    !connection
+    || alpeccaSocket?.readyState !== WebSocket.OPEN
+    || !alpeccaAiBaseUrl
+  ) {
+    throw new Error(`Live House connection is not ready for ${alpeccaCapabilityLabel(purpose).toLowerCase()}.`);
+  }
+  const conflicts: AlpeccaCapabilityPurpose[] = purpose === "push_to_talk" || purpose === "voice_enrollment"
+    ? ["push_to_talk", "voice_enrollment"]
+    : [purpose];
+  for (const conflict of conflicts) await stopAlpeccaCapabilityLease(conflict);
+
+  const response = await alpeccaBackendFetch(
+    alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/security/capability-leases`),
+    {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        connection_id: connection.id,
+        purpose,
+        ...(purpose === "file_source_ref" && sourceRef
+          ? { source_ref: { root: sourceRef.root, rel: sourceRef.rel } }
+          : {}),
+      }),
+    },
+  );
+  if (!response.ok) {
+    let reason = "";
+    try {
+      const payload = await response.json() as { detail?: { reason?: unknown } };
+      reason = typeof payload.detail?.reason === "string" ? payload.detail.reason : "";
+    } catch {}
+    if (reason === "capability_disabled") {
+      throw new Error(`${alpeccaCapabilityLabel(purpose)} is not enabled.`);
+    }
+    throw new Error(`${alpeccaCapabilityLabel(purpose)} permission was not granted.`);
+  }
+  const payload = await response.json() as Record<string, unknown>;
+  const leaseId = typeof payload.lease_id === "string" ? payload.lease_id : "";
+  let token = typeof payload.token === "string" ? payload.token : "";
+  const expiresAt = typeof payload.expires_at === "number" ? payload.expires_at : Number.NaN;
+  if (
+    !leaseId
+    || !token
+    || !Number.isFinite(expiresAt)
+    || expiresAt * 1000 <= Date.now()
+  ) {
+    if (leaseId) {
+      await stopAlpeccaCapabilityLease({
+        leaseId,
+        token: "",
+        purpose,
+        connectionId: connection.id,
+        expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
+        expiryTimer: null,
+        stopped: false,
+      });
+    }
+    token = "";
+    throw new Error(`${alpeccaCapabilityLabel(purpose)} permission response was invalid.`);
+  }
+  const lease: AlpeccaCapabilityLease = {
+    leaseId,
+    token,
+    purpose,
+    connectionId: connection.id,
+    expiresAt,
+    expiryTimer: null,
+    stopped: false,
+  };
+  if (alpeccaCapabilityConnection?.id !== connection.id || alpeccaSocket?.readyState !== WebSocket.OPEN) {
+    await stopAlpeccaCapabilityLease(lease);
+    throw new Error("Live House connection changed before permission was ready.");
+  }
+  alpeccaCapabilityLeases.set(purpose, lease);
+  const expiresInMs = Math.max(0, Math.min(2_147_000_000, expiresAt * 1000 - Date.now()));
+  lease.expiryTimer = window.setTimeout(() => expireAlpeccaCapabilityLease(lease), expiresInMs);
+  return lease;
+}
+
+function releaseAlpeccaPendingCapabilityLease(requestId = "") {
+  const pending = alpeccaAiPendingCapabilityLease;
+  if (!pending || (requestId && pending.requestId !== requestId)) return;
+  alpeccaAiPendingCapabilityLease = null;
+  void stopAlpeccaCapabilityLease(pending.lease);
+}
+
 const alpeccaSystemEndpoints: Record<AlpeccaSystemId, string> = {
   overview: "/home/state",
   self: "/introspect",
@@ -4364,6 +4628,9 @@ function openAlpeccaSystems(systemId: AlpeccaSystemId = "overview", rememberEntr
 }
 
 function closeAlpeccaSystems() {
+  void cancelAlpeccaVoiceEnrollment();
+  const screenWasActive = Boolean(alpeccaScreenShareStream || alpeccaCapabilityLeases.has("screen_share"));
+  void stopAlpeccaScreenShare({ notifyBackend: screenWasActive, stopLease: true, notice: false });
   alpeccaSystems.classList.add("hidden");
   document.body.classList.remove("alpecca-systems-open");
   alpeccaSystemLoadSequence += 1;
@@ -4566,7 +4833,9 @@ function connectAlpeccaAi() {
     });
 
     alpeccaSocket.addEventListener("close", (event) => {
-      cancelAlpeccaPushToTalk();
+      stopAlpeccaLocalCapabilityMedia();
+      clearAlpeccaCapabilityLeases();
+      alpeccaCapabilityConnection = null;
       alpeccaSocket = null;
       alpeccaAiAwaitingReply = false;
       alpeccaAiReplyStartedAt = 0;
@@ -4604,6 +4873,8 @@ function handleAlpeccaAiMessage(raw: string) {
     return;
   }
   const responseText = (message.reply || message.text || message.message || message.content || "").trim();
+
+  if (message.type === "state") setAlpeccaCapabilityConnection(message.capability_connection);
 
   if (typeof message.llm_online === "boolean") alpeccaAiLlmOnline = message.llm_online;
   if (message.model_use) alpeccaAiModelUse = message.model_use;
@@ -4664,6 +4935,7 @@ function handleAlpeccaAiMessage(raw: string) {
       setAlpeccaActivity("Alpecca filed a background core event.", "observe", 2.2);
       return;
     }
+    releaseAlpeccaPendingCapabilityLease(replyRequestId);
     alpeccaAiAwaitingReply = false;
     alpeccaAiReplyStartedAt = 0;
     alpeccaAiSlowReplyNoticeShown = false;
@@ -4699,6 +4971,25 @@ function handleAlpeccaAiMessage(raw: string) {
     alpeccaChatLine.textContent = replyText;
     showAlpeccaProfileLine(replyText, alpeccaSpokenRepliesEnabled ? "talking" : "listening", alpeccaActiveProfileFeature);
     showMessage(replyText, 7);
+    return;
+  }
+
+  if (message.type === "error") {
+    const requestId = message.request_id || "";
+    const matchesPending = !requestId || requestId === alpeccaAiPendingPlayerRequestId;
+    if (!matchesPending) return;
+    releaseAlpeccaPendingCapabilityLease(requestId);
+    alpeccaAiAwaitingReply = false;
+    alpeccaAiReplyStartedAt = 0;
+    alpeccaAiSlowReplyNoticeShown = false;
+    alpeccaAiPendingPlayerRequestId = "";
+    alpeccaAiLastPlayerMessage = "";
+    const errorText = message.code === "capability_lease_denied"
+      ? "Camera permission was rejected or expired."
+      : (message.error || message.detail || "Alpecca could not process that attachment.");
+    appendAlpeccaLog("System", errorText);
+    showAlpeccaProfileLine(errorText, "listening");
+    showMessage(errorText, 5);
     return;
   }
 
@@ -4763,8 +5054,11 @@ function openAlpeccaChat() {
 }
 
 function closeAlpeccaChat() {
-  cancelAlpeccaPushToTalk();
-  closeAlpeccaCamera();
+  alpeccaCapabilityChannelRequest?.abort();
+  releaseAlpeccaPendingCapabilityLease();
+  void stopAlpeccaCapabilityLease("file_source_ref");
+  void cancelAlpeccaPushToTalk();
+  void closeAlpeccaCamera();
   alpeccaPendingSourceRef = null;
   alpeccaChatInput.placeholder = "Message Alpecca...";
   alpeccaChat.classList.add("hidden");
@@ -4801,7 +5095,10 @@ function setAlpeccaPushToTalkState(state: "idle" | "recording" | "processing") {
 }
 
 function stopAlpeccaPushToTalkStream() {
-  alpeccaPushToTalkStream?.getTracks().forEach((track) => track.stop());
+  alpeccaPushToTalkStream?.getTracks().forEach((track) => {
+    track.onended = null;
+    track.stop();
+  });
   alpeccaPushToTalkStream = null;
 }
 
@@ -4811,7 +5108,7 @@ function clearAlpeccaPushToTalkStopTimer() {
   alpeccaPushToTalkStopTimer = null;
 }
 
-function cancelAlpeccaPushToTalk() {
+async function cancelAlpeccaPushToTalk(stopLease = true) {
   alpeccaPushToTalkSequence += 1;
   clearAlpeccaPushToTalkStopTimer();
   alpeccaPushToTalkRequest?.abort();
@@ -4827,13 +5124,22 @@ function cancelAlpeccaPushToTalk() {
   }
   stopAlpeccaPushToTalkStream();
   setAlpeccaPushToTalkState("idle");
+  if (stopLease) await stopAlpeccaCapabilityLease("push_to_talk");
 }
 
-async function transcribeAlpeccaPushToTalk(blob: Blob, sequence: number) {
-  if (sequence !== alpeccaPushToTalkSequence || alpeccaChat.classList.contains("hidden")) return;
+async function transcribeAlpeccaPushToTalk(
+  blob: Blob,
+  sequence: number,
+  lease: AlpeccaCapabilityLease,
+) {
+  if (sequence !== alpeccaPushToTalkSequence || alpeccaChat.classList.contains("hidden")) {
+    await stopAlpeccaCapabilityLease(lease);
+    return;
+  }
   if (!blob.size || !alpeccaAiBaseUrl) {
     showAlpeccaProfileLine("Voice input needs the live local backend.", "listening");
     setAlpeccaPushToTalkState("idle");
+    await stopAlpeccaCapabilityLease(lease);
     return;
   }
   const request = new AbortController();
@@ -4843,12 +5149,16 @@ async function transcribeAlpeccaPushToTalk(blob: Blob, sequence: number) {
   try {
     const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/listen`), {
       method: "POST",
-      headers: blob.type ? { "Content-Type": blob.type } : undefined,
+      headers: alpeccaCapabilityLeaseHeaders(
+        lease,
+        blob.type ? { "Content-Type": blob.type } : undefined,
+      ),
       body: blob,
       signal: request.signal,
     });
     if (!response.ok) throw new Error(`voice input returned ${response.status}`);
     const data = await response.json() as Record<string, unknown>;
+    void stopAlpeccaCapabilityLease(lease);
     if (sequence !== alpeccaPushToTalkSequence || alpeccaChat.classList.contains("hidden")) return;
     const heard = data.heard === true ? systemString(data.text, "") : "";
     if (!heard) {
@@ -4864,6 +5174,7 @@ async function transcribeAlpeccaPushToTalk(blob: Blob, sequence: number) {
   } finally {
     if (alpeccaPushToTalkRequest === request) alpeccaPushToTalkRequest = null;
     if (sequence === alpeccaPushToTalkSequence) setAlpeccaPushToTalkState("idle");
+    await stopAlpeccaCapabilityLease(lease);
   }
 }
 
@@ -4880,12 +5191,22 @@ async function toggleAlpeccaPushToTalk() {
     showAlpeccaProfileLine("This browser does not provide microphone recording.", "listening");
     return;
   }
-  closeAlpeccaCamera();
+  await closeAlpeccaCamera();
+  await cancelAlpeccaVoiceEnrollment();
+  if (alpeccaChat.classList.contains("hidden")) return;
   const sequence = ++alpeccaPushToTalkSequence;
+  let lease: AlpeccaCapabilityLease | null = null;
   try {
+    lease = await acquireAlpeccaCapabilityLease("push_to_talk");
+    const recorderLease = lease;
+    if (sequence !== alpeccaPushToTalkSequence || alpeccaChat.classList.contains("hidden")) {
+      await stopAlpeccaCapabilityLease(recorderLease);
+      return;
+    }
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     if (sequence !== alpeccaPushToTalkSequence || alpeccaChat.classList.contains("hidden")) {
       stream.getTracks().forEach((track) => track.stop());
+      await stopAlpeccaCapabilityLease(recorderLease);
       return;
     }
     alpeccaPushToTalkStream = stream;
@@ -4903,7 +5224,7 @@ async function toggleAlpeccaPushToTalk() {
     };
     recorder.onerror = () => {
       if (sequence !== alpeccaPushToTalkSequence || alpeccaPushToTalkRecorder !== recorder) return;
-      cancelAlpeccaPushToTalk();
+      void cancelAlpeccaPushToTalk();
       showAlpeccaProfileLine("Microphone recording stopped unexpectedly.", "listening");
     };
     recorder.onstop = () => {
@@ -4917,8 +5238,13 @@ async function toggleAlpeccaPushToTalk() {
       alpeccaPushToTalkRecorder = null;
       alpeccaPushToTalkChunks = [];
       stopAlpeccaPushToTalkStream();
-      void transcribeAlpeccaPushToTalk(new Blob(chunks, { type: mimeType }), sequence);
+      void transcribeAlpeccaPushToTalk(new Blob(chunks, { type: mimeType }), sequence, recorderLease);
     };
+    stream.getAudioTracks().forEach((track) => {
+      track.onended = () => {
+        if (alpeccaPushToTalkStream === stream) void cancelAlpeccaPushToTalk();
+      };
+    });
     recorder.start();
     const stopTimer = window.setTimeout(() => {
       if (alpeccaPushToTalkStopTimer !== stopTimer) return;
@@ -4929,20 +5255,31 @@ async function toggleAlpeccaPushToTalk() {
     alpeccaPushToTalkStopTimer = stopTimer;
     setAlpeccaPushToTalkState("recording");
     showAlpeccaProfileLine("Listening - tap the microphone again to send.", "listening");
-  } catch {
-    if (sequence !== alpeccaPushToTalkSequence) return;
-    cancelAlpeccaPushToTalk();
-    showAlpeccaProfileLine("Microphone access was unavailable or denied.", "listening");
+  } catch (error) {
+    if (sequence !== alpeccaPushToTalkSequence) {
+      if (lease) await stopAlpeccaCapabilityLease(lease);
+      return;
+    }
+    await cancelAlpeccaPushToTalk();
+    const detail = error instanceof Error && /^(Live House|Microphone)/.test(error.message)
+      ? error.message
+      : "Microphone access was unavailable or denied.";
+    showAlpeccaProfileLine(detail, "listening");
   }
 }
 
-function closeAlpeccaCamera() {
-  alpeccaCameraStream?.getTracks().forEach((track) => track.stop());
+async function closeAlpeccaCamera(stopLease = true) {
+  alpeccaCameraSequence += 1;
+  alpeccaCameraStream?.getTracks().forEach((track) => {
+    track.onended = null;
+    track.stop();
+  });
   alpeccaCameraStream = null;
   alpeccaCameraVideo.pause();
   alpeccaCameraVideo.srcObject = null;
   alpeccaCameraPreview.classList.add("hidden");
   alpeccaCameraOpenButton.setAttribute("aria-pressed", "false");
+  if (stopLease) await stopAlpeccaCapabilityLease("camera_frame");
 }
 
 async function openAlpeccaCamera() {
@@ -4950,32 +5287,56 @@ async function openAlpeccaCamera() {
     showAlpeccaProfileLine("This browser does not provide camera access.", "listening");
     return;
   }
-  cancelAlpeccaPushToTalk();
-  closeAlpeccaCamera();
+  await cancelAlpeccaPushToTalk();
+  await closeAlpeccaCamera();
+  if (alpeccaChat.classList.contains("hidden")) return;
+  const sequence = ++alpeccaCameraSequence;
+  let lease: AlpeccaCapabilityLease | null = null;
   try {
+    lease = await acquireAlpeccaCapabilityLease("camera_frame");
+    if (sequence !== alpeccaCameraSequence || alpeccaChat.classList.contains("hidden")) {
+      await stopAlpeccaCapabilityLease(lease);
+      return;
+    }
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 1280 }, facingMode: { ideal: "environment" } },
       audio: false,
     });
-    if (alpeccaChat.classList.contains("hidden")) {
+    if (sequence !== alpeccaCameraSequence || alpeccaChat.classList.contains("hidden")) {
       stream.getTracks().forEach((track) => track.stop());
+      await stopAlpeccaCapabilityLease(lease);
       return;
     }
     alpeccaCameraStream = stream;
     alpeccaCameraVideo.srcObject = stream;
     alpeccaCameraPreview.classList.remove("hidden");
     alpeccaCameraOpenButton.setAttribute("aria-pressed", "true");
-    stream.getVideoTracks()[0].onended = closeAlpeccaCamera;
+    stream.getVideoTracks()[0].onended = () => {
+      if (alpeccaCameraStream === stream) void closeAlpeccaCamera();
+    };
     await alpeccaCameraVideo.play();
-  } catch {
-    closeAlpeccaCamera();
-    showAlpeccaProfileLine("Camera access was unavailable or denied.", "listening");
+  } catch (error) {
+    if (sequence !== alpeccaCameraSequence) {
+      if (lease) await stopAlpeccaCapabilityLease(lease);
+      return;
+    }
+    await closeAlpeccaCamera();
+    const detail = error instanceof Error && /^(Live House|Camera)/.test(error.message)
+      ? error.message
+      : "Camera access was unavailable or denied.";
+    showAlpeccaProfileLine(detail, "listening");
   }
 }
 
 async function sendAlpeccaCameraFrame() {
   if (!alpeccaCameraStream || !alpeccaCameraVideo.videoWidth || !alpeccaCameraVideo.videoHeight) {
     showAlpeccaProfileLine("The camera is still preparing a frame.", "listening");
+    return;
+  }
+  const lease = alpeccaCapabilityLeases.get("camera_frame");
+  if (!alpeccaCapabilityLeaseIsUsable(lease, "camera_frame")) {
+    await closeAlpeccaCamera();
+    showAlpeccaProfileLine("Camera permission expired. Open the camera again.", "listening");
     return;
   }
   const scale = Math.min(1, 768 / Math.max(alpeccaCameraVideo.videoWidth, alpeccaCameraVideo.videoHeight));
@@ -4985,8 +5346,8 @@ async function sendAlpeccaCameraFrame() {
   canvas.getContext("2d")?.drawImage(alpeccaCameraVideo, 0, 0, canvas.width, canvas.height);
   const image = canvas.toDataURL("image/jpeg", 0.82);
   const message = alpeccaChatInput.value.trim();
-  closeAlpeccaCamera();
-  await sendAlpeccaChat(message, image);
+  await closeAlpeccaCamera(false);
+  await sendAlpeccaChat(message, image, "", null, lease);
 }
 
 updateAlpeccaSpokenRepliesButton();
@@ -5168,9 +5529,42 @@ async function sendAlpeccaChat(
   image = "",
   privatePerception = "",
   sourceRef: AlpeccaSourceRef | null = null,
+  providedLease: AlpeccaCapabilityLease | null = null,
 ) {
   const trimmed = text.trim();
   if (!trimmed && !image && !sourceRef) return;
+  const capabilityPurpose: AlpeccaCapabilityPurpose | null = sourceRef
+    ? "file_source_ref"
+    : image
+      ? "camera_frame"
+      : null;
+  let capabilityLease = providedLease;
+  if (capabilityPurpose) {
+    try {
+      capabilityLease = capabilityLease || await acquireAlpeccaCapabilityLease(capabilityPurpose, sourceRef);
+      if (!alpeccaCapabilityLeaseIsUsable(capabilityLease, capabilityPurpose)) {
+        throw new Error(`${alpeccaCapabilityLabel(capabilityPurpose)} permission expired.`);
+      }
+      if (alpeccaChat.classList.contains("hidden")) {
+        await stopAlpeccaCapabilityLease(capabilityLease);
+        return;
+      }
+    } catch (error) {
+      if (capabilityLease) await stopAlpeccaCapabilityLease(capabilityLease);
+      if (sourceRef && !alpeccaChat.classList.contains("hidden")) {
+        alpeccaPendingSourceRef = sourceRef;
+        alpeccaChatInput.placeholder = `Ask about ${alpeccaSourceRefFileName(sourceRef)}`;
+      }
+      const detail = error instanceof Error ? error.message : "Permission was not granted.";
+      showAlpeccaProfileLine(detail, "listening");
+      return;
+    }
+  }
+  const releaseCapabilityLease = async () => {
+    const lease = capabilityLease;
+    capabilityLease = null;
+    if (lease) await stopAlpeccaCapabilityLease(lease);
+  };
   const promptText = trimmed || (sourceRef ? "Please inspect this attached file." : "I'm showing you something through the camera right now.");
   const logText = sourceRef
     ? `${promptText} [attached ${alpeccaSourceRefLabel(sourceRef)}]`
@@ -5218,20 +5612,30 @@ async function sendAlpeccaChat(
   };
   const inboundUrl = alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/channel/house-hq`);
   if (alpeccaAiBaseUrl && inboundUrl) {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const headers = capabilityLease
+      ? alpeccaCapabilityLeaseHeaders(capabilityLease, { "Content-Type": "application/json" })
+      : new Headers({ "Content-Type": "application/json" });
+    const controller = new AbortController();
+    const timeoutMs = ALPECCA_AI_CHANNEL_INBOUND_TIMEOUT_MS;
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    if (capabilityLease) alpeccaCapabilityChannelRequest = controller;
     try {
-      const controller = new AbortController();
-      const timeoutMs = ALPECCA_AI_CHANNEL_INBOUND_TIMEOUT_MS;
-      const timer = window.setTimeout(() => controller.abort(), timeoutMs);
       const response = await alpeccaBackendFetch(inboundUrl, {
         method: "POST",
         headers,
         body: JSON.stringify(inboundPrompt),
         signal: controller.signal,
       });
-      window.clearTimeout(timer);
       if (response.ok) {
-        const payload = (await response.json()) as Record<string, unknown>;
+        let payload: Record<string, unknown>;
+        try {
+          payload = (await response.json()) as Record<string, unknown>;
+        } catch {
+          await releaseCapabilityLease();
+          finishAlpeccaChatFailure(requestId, "The live House response was invalid.");
+          return;
+        }
+        await releaseCapabilityLease();
         const replyPayload = {
           type: "reply",
           request_id: requestId,
@@ -5244,6 +5648,7 @@ async function sendAlpeccaChat(
       }
       if (response.status >= 400 && response.status < 500) {
         const rejection = await readAlpeccaChatRejection(response, sourceRef ? "file" : image ? "image" : "");
+        await releaseCapabilityLease();
         appendAlpeccaLog(
           "System",
           `House live chat request rejected (${response.status}${rejection.code ? `, ${rejection.code}` : ""}).`,
@@ -5255,6 +5660,7 @@ async function sendAlpeccaChat(
         return;
       }
       if (sourceRef) {
+        await releaseCapabilityLease();
         finishAlpeccaChatFailure(
           requestId,
           `The attachment request failed (HTTP ${response.status}).`,
@@ -5264,7 +5670,12 @@ async function sendAlpeccaChat(
       }
       appendAlpeccaLog("System", `House live chat channel returned ${response.status}. Falling back to websocket.`);
     } catch {
+      if (controller.signal.aborted && alpeccaChat.classList.contains("hidden")) {
+        await releaseCapabilityLease();
+        return;
+      }
       if (sourceRef) {
+        await releaseCapabilityLease();
         finishAlpeccaChatFailure(
           requestId,
           "The attachment request could not reach the live backend.",
@@ -5273,10 +5684,14 @@ async function sendAlpeccaChat(
         return;
       }
       appendAlpeccaLog("System", "House live chat channel failed; trying websocket fallback.");
+    } finally {
+      window.clearTimeout(timer);
+      if (alpeccaCapabilityChannelRequest === controller) alpeccaCapabilityChannelRequest = null;
     }
   }
 
   if (sourceRef) {
+    await releaseCapabilityLease();
     finishAlpeccaChatFailure(
       requestId,
       "The attachment request requires the live House backend.",
@@ -5286,14 +5701,39 @@ async function sendAlpeccaChat(
   }
 
   if (alpeccaAiStatus === "live" && alpeccaSocket?.readyState === WebSocket.OPEN) {
-    alpeccaSocket.send(JSON.stringify({
+    const socketMessage = {
       text: promptText,
       context: alpeccaContextPrefix(),
       source: "house-chat",
       request_id: requestId,
       ...(image ? { image } : {}),
       ...(privatePerception ? { private_perception: privatePerception } : {}),
-    }));
+      ...(capabilityLease ? {
+        capability_lease: capabilityLease.token,
+        capability_purpose: capabilityLease.purpose,
+        capability_connection: capabilityLease.connectionId,
+      } : {}),
+    };
+    const wsLease = capabilityLease;
+    if (wsLease) {
+      alpeccaAiPendingCapabilityLease = { requestId, lease: wsLease };
+      capabilityLease = null;
+    }
+    try {
+      alpeccaSocket.send(JSON.stringify(socketMessage));
+      return;
+    } catch {
+      if (wsLease && alpeccaAiPendingCapabilityLease?.lease === wsLease) {
+        alpeccaAiPendingCapabilityLease = null;
+        capabilityLease = wsLease;
+      }
+    }
+  }
+
+  await releaseCapabilityLease();
+
+  if (image) {
+    finishAlpeccaChatFailure(requestId, "The camera frame requires the live House connection.");
     return;
   }
 
@@ -13353,6 +13793,7 @@ function updateHud(dt: number) {
     }
     if (waitingMs > ALPECCA_AI_PLAYER_REPLY_TIMEOUT_MS) {
       const timedOutRequestId = alpeccaAiPendingPlayerRequestId;
+      releaseAlpeccaPendingCapabilityLease(timedOutRequestId);
       alpeccaAiAwaitingReply = false;
       alpeccaAiReplyStartedAt = 0;
       alpeccaAiSlowReplyNoticeShown = false;
@@ -13940,11 +14381,16 @@ alpeccaWorkshop.addEventListener("click", (event) => {
   }
 });
 
-async function postAlpeccaSystem(path: string, body?: Record<string, unknown>) {
+async function postAlpeccaSystem(
+  path: string,
+  body?: Record<string, unknown>,
+  lease: AlpeccaCapabilityLease | null = null,
+) {
   if (!alpeccaAiBaseUrl) throw new Error("Live backend URL missing");
+  const initialHeaders = body ? { "Content-Type": "application/json" } : undefined;
   const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}${path}`), {
     method: "POST",
-    headers: body ? { "Content-Type": "application/json" } : undefined,
+    headers: lease ? alpeccaCapabilityLeaseHeaders(lease, initialHeaders) : initialHeaders,
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!response.ok) throw new Error(`${path} returned ${response.status}`);
@@ -13990,27 +14436,49 @@ async function searchAlpeccaSystem(kind: "memory" | "files") {
   }
 }
 
-async function pushAlpeccaScreenFrame() {
+async function pushAlpeccaScreenFrame(sequence: number, lease: AlpeccaCapabilityLease) {
   const video = alpeccaScreenShareVideo;
-  if (!video || !alpeccaAiBaseUrl || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth) return;
+  if (
+    sequence !== alpeccaScreenShareSequence
+    || alpeccaScreenShareRequest
+    || !video
+    || !alpeccaAiBaseUrl
+    || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+    || !video.videoWidth
+  ) return;
   const scale = Math.min(1, 960 / video.videoWidth);
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
   canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
   canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.72));
-  if (!blob) return;
-  const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/sight/push`), {
-    method: "POST",
-    headers: { "Content-Type": "image/jpeg" },
-    body: blob,
-  });
-  if (!response.ok) throw new Error(`screen sight returned ${response.status}`);
+  if (!blob || sequence !== alpeccaScreenShareSequence) return;
+  const request = new AbortController();
+  alpeccaScreenShareRequest = request;
+  try {
+    const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/sight/push`), {
+      method: "POST",
+      headers: alpeccaCapabilityLeaseHeaders(lease, { "Content-Type": "image/jpeg" }),
+      body: blob,
+      signal: request.signal,
+    });
+    if (!response.ok) throw new Error(`screen sight returned ${response.status}`);
+  } finally {
+    if (alpeccaScreenShareRequest === request) alpeccaScreenShareRequest = null;
+  }
 }
 
-async function stopAlpeccaScreenShare(notifyBackend = true) {
+async function stopAlpeccaScreenShare(options: {
+  notifyBackend?: boolean;
+  stopLease?: boolean;
+  notice?: boolean;
+} = {}) {
+  const { notifyBackend = true, stopLease = true, notice = true } = options;
+  alpeccaScreenShareSequence += 1;
   if (alpeccaScreenShareTimer !== null) window.clearInterval(alpeccaScreenShareTimer);
   alpeccaScreenShareTimer = null;
+  alpeccaScreenShareRequest?.abort();
+  alpeccaScreenShareRequest = null;
   const stream = alpeccaScreenShareStream;
   alpeccaScreenShareStream = null;
   alpeccaScreenShareVideo = null;
@@ -14023,7 +14491,8 @@ async function stopAlpeccaScreenShare(notifyBackend = true) {
       await postAlpeccaSystem("/observatory/screen/stop");
     } catch {}
   }
-  setAlpeccaSystemsNotice("Screen sharing stopped.");
+  if (stopLease) await stopAlpeccaCapabilityLease("screen_share");
+  if (notice) setAlpeccaSystemsNotice("Screen sharing stopped.");
   if (alpeccaActiveSystem === "senses" || alpeccaActiveSystem === "observatory") void loadAlpeccaSystem(alpeccaActiveSystem);
 }
 
@@ -14032,27 +14501,83 @@ async function startAlpeccaScreenShare() {
     setAlpeccaSystemsNotice("This browser does not provide screen sharing.");
     return;
   }
-  await stopAlpeccaScreenShare(false);
+  await stopAlpeccaScreenShare({ notifyBackend: false, stopLease: true, notice: false });
+  if (alpeccaSystems.classList.contains("hidden")) return;
+  const sequence = ++alpeccaScreenShareSequence;
+  let lease: AlpeccaCapabilityLease | null = null;
+  let backendStarted = false;
   try {
+    lease = await acquireAlpeccaCapabilityLease("screen_share");
+    const screenLease = lease;
+    if (sequence !== alpeccaScreenShareSequence) {
+      await stopAlpeccaCapabilityLease(screenLease);
+      return;
+    }
     const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    if (sequence !== alpeccaScreenShareSequence) {
+      stream.getTracks().forEach((track) => track.stop());
+      await stopAlpeccaCapabilityLease(screenLease);
+      return;
+    }
     const video = document.createElement("video");
     video.muted = true;
     video.playsInline = true;
     video.srcObject = stream;
-    await video.play();
     alpeccaScreenShareStream = stream;
     alpeccaScreenShareVideo = video;
-    stream.getVideoTracks()[0].onended = () => void stopAlpeccaScreenShare(true);
-    await postAlpeccaSystem("/observatory/screen/start");
-    await pushAlpeccaScreenFrame();
+    stream.getVideoTracks()[0].onended = () => {
+      if (alpeccaScreenShareStream === stream) void stopAlpeccaScreenShare();
+    };
+    await video.play();
+    if (sequence !== alpeccaScreenShareSequence) return;
+    await postAlpeccaSystem("/observatory/screen/start", undefined, screenLease);
+    backendStarted = true;
+    if (sequence !== alpeccaScreenShareSequence) {
+      try {
+        await postAlpeccaSystem("/observatory/screen/stop");
+      } catch {}
+      return;
+    }
+    await pushAlpeccaScreenFrame(sequence, screenLease);
+    if (sequence !== alpeccaScreenShareSequence) return;
     alpeccaScreenShareTimer = window.setInterval(() => {
-      void pushAlpeccaScreenFrame().catch(() => setAlpeccaSystemsNotice("Screen description update failed."));
+      void pushAlpeccaScreenFrame(sequence, screenLease).catch(async () => {
+        if (sequence !== alpeccaScreenShareSequence) return;
+        await stopAlpeccaScreenShare();
+        setAlpeccaSystemsNotice("Screen sharing stopped because permission expired or a frame failed.");
+      });
     }, 10000);
     setAlpeccaSystemsNotice("Screen sharing is active. Alpecca receives throttled descriptions, not stored frames.");
   } catch (error) {
-    await stopAlpeccaScreenShare(false);
+    if (sequence !== alpeccaScreenShareSequence) {
+      if (lease) await stopAlpeccaCapabilityLease(lease);
+      return;
+    }
+    await stopAlpeccaScreenShare({ notifyBackend: backendStarted, stopLease: true, notice: false });
     setAlpeccaSystemsNotice(error instanceof Error ? error.message : "Screen sharing was not started.");
   }
+}
+
+async function cancelAlpeccaVoiceEnrollment(stopLease = true) {
+  alpeccaVoiceEnrollmentSequence += 1;
+  if (alpeccaVoiceEnrollmentTimer !== null) window.clearTimeout(alpeccaVoiceEnrollmentTimer);
+  alpeccaVoiceEnrollmentTimer = null;
+  alpeccaVoiceEnrollmentRequest?.abort();
+  alpeccaVoiceEnrollmentRequest = null;
+  const recorder = alpeccaVoiceEnrollmentRecorder;
+  alpeccaVoiceEnrollmentRecorder = null;
+  if (recorder && recorder.state !== "inactive") {
+    try {
+      recorder.stop();
+    } catch {}
+  }
+  const stream = alpeccaVoiceEnrollmentStream;
+  alpeccaVoiceEnrollmentStream = null;
+  stream?.getTracks().forEach((track) => {
+    track.onended = null;
+    track.stop();
+  });
+  if (stopLease) await stopAlpeccaCapabilityLease("voice_enrollment");
 }
 
 async function enrollAlpeccaCreatorVoice() {
@@ -14060,30 +14585,107 @@ async function enrollAlpeccaCreatorVoice() {
     setAlpeccaSystemsNotice("Voice enrollment is not available in this browser.");
     return;
   }
-  setAlpeccaSystemsNotice("Recording five seconds for the local creator voice embedding...");
+  await cancelAlpeccaPushToTalk();
+  await cancelAlpeccaVoiceEnrollment();
+  if (alpeccaSystems.classList.contains("hidden")) return;
+  const sequence = ++alpeccaVoiceEnrollmentSequence;
+  let lease: AlpeccaCapabilityLease | null = null;
+  let stream: MediaStream | null = null;
+  let recorder: MediaRecorder | null = null;
+  setAlpeccaSystemsNotice("Requesting microphone permission...");
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const recorder = new MediaRecorder(stream);
-    const chunks: Blob[] = [];
-    recorder.ondataavailable = (event) => {
-      if (event.data.size) chunks.push(event.data);
-    };
-    const stopped = new Promise<void>((resolve) => {
-      recorder.onstop = () => resolve();
+    lease = await acquireAlpeccaCapabilityLease("voice_enrollment");
+    if (sequence !== alpeccaVoiceEnrollmentSequence) {
+      await stopAlpeccaCapabilityLease(lease);
+      return;
+    }
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (sequence !== alpeccaVoiceEnrollmentSequence) {
+      stream.getTracks().forEach((track) => track.stop());
+      await stopAlpeccaCapabilityLease(lease);
+      return;
+    }
+    alpeccaVoiceEnrollmentStream = stream;
+    stream.getAudioTracks().forEach((track) => {
+      track.onended = () => {
+        if (alpeccaVoiceEnrollmentStream === stream) void cancelAlpeccaVoiceEnrollment();
+      };
     });
-    recorder.start();
-    window.setTimeout(() => recorder.state !== "inactive" && recorder.stop(), 5000);
-    await stopped;
-    stream.getTracks().forEach((track) => track.stop());
+    recorder = new MediaRecorder(stream);
+    alpeccaVoiceEnrollmentRecorder = recorder;
+    const chunks: Blob[] = [];
+    const mimeType = recorder.mimeType || "audio/webm";
+    const audio = await new Promise<Blob>((resolve, reject) => {
+      recorder!.ondataavailable = (event) => {
+        if (event.data.size) chunks.push(event.data);
+      };
+      recorder!.onerror = () => reject(new Error("Voice recording stopped unexpectedly."));
+      recorder!.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
+      recorder!.start();
+      const timer = window.setTimeout(() => {
+        if (alpeccaVoiceEnrollmentTimer !== timer) return;
+        alpeccaVoiceEnrollmentTimer = null;
+        if (sequence === alpeccaVoiceEnrollmentSequence && recorder?.state === "recording") recorder.stop();
+      }, 5000);
+      alpeccaVoiceEnrollmentTimer = timer;
+    });
+    if (sequence !== alpeccaVoiceEnrollmentSequence) return;
+    if (alpeccaVoiceEnrollmentTimer !== null) window.clearTimeout(alpeccaVoiceEnrollmentTimer);
+    alpeccaVoiceEnrollmentTimer = null;
+    alpeccaVoiceEnrollmentRecorder = null;
+    recorder.ondataavailable = null;
+    recorder.onstop = null;
+    recorder.onerror = null;
+    stream.getTracks().forEach((track) => {
+      track.onended = null;
+      track.stop();
+    });
+    alpeccaVoiceEnrollmentStream = null;
+    setAlpeccaSystemsNotice("Creating the local creator voice embedding...");
+    const request = new AbortController();
+    alpeccaVoiceEnrollmentRequest = request;
     const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/people/enroll_voice`), {
       method: "POST",
-      headers: { "Content-Type": recorder.mimeType || "audio/webm" },
-      body: new Blob(chunks, { type: recorder.mimeType || "audio/webm" }),
+      headers: alpeccaCapabilityLeaseHeaders(lease, { "Content-Type": mimeType }),
+      body: audio,
+      signal: request.signal,
     });
+    if (!response.ok) throw new Error(`voice enrollment returned ${response.status}`);
     const data = await response.json() as Record<string, unknown>;
+    if (sequence !== alpeccaVoiceEnrollmentSequence) return;
     setAlpeccaSystemsNotice(data.ok ? "Creator voice enrolled locally." : "The voice embedding backend is unavailable.");
   } catch (error) {
-    setAlpeccaSystemsNotice(error instanceof Error ? error.message : "Voice enrollment failed.");
+    if (sequence === alpeccaVoiceEnrollmentSequence) {
+      const detail = error instanceof Error && /^(Live House|Voice enrollment)/.test(error.message)
+        ? error.message
+        : "Voice enrollment failed or microphone access was denied.";
+      setAlpeccaSystemsNotice(detail);
+    }
+  } finally {
+    if (alpeccaVoiceEnrollmentTimer !== null && sequence === alpeccaVoiceEnrollmentSequence) {
+      window.clearTimeout(alpeccaVoiceEnrollmentTimer);
+      alpeccaVoiceEnrollmentTimer = null;
+    }
+    if (alpeccaVoiceEnrollmentRequest && sequence === alpeccaVoiceEnrollmentSequence) {
+      alpeccaVoiceEnrollmentRequest = null;
+    }
+    if (alpeccaVoiceEnrollmentRecorder === recorder) alpeccaVoiceEnrollmentRecorder = null;
+    if (alpeccaVoiceEnrollmentStream === stream) alpeccaVoiceEnrollmentStream = null;
+    if (recorder) {
+      recorder.ondataavailable = null;
+      recorder.onstop = null;
+      recorder.onerror = null;
+      if (recorder.state !== "inactive") {
+        try {
+          recorder.stop();
+        } catch {}
+      }
+    }
+    stream?.getTracks().forEach((track) => {
+      track.onended = null;
+      track.stop();
+    });
+    if (lease) await stopAlpeccaCapabilityLease(lease);
   }
 }
 
@@ -14093,7 +14695,7 @@ async function handleAlpeccaSystemAction(action: string) {
     if (action === "memory-search") return void searchAlpeccaSystem("memory");
     if (action === "file-search") return void searchAlpeccaSystem("files");
     if (action === "screen-start") return void startAlpeccaScreenShare();
-    if (action === "screen-stop") return void stopAlpeccaScreenShare(true);
+    if (action === "screen-stop") return void stopAlpeccaScreenShare();
     if (action === "enroll-voice") return void enrollAlpeccaCreatorVoice();
     if (action === "voice-preview") {
       alpeccaVoiceLastText = "";

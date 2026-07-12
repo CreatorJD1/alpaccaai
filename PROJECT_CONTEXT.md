@@ -29,9 +29,13 @@ retained elsewhere for historical context.
   `{root, rel}` references; the server performs bounded text ingress and returns
   metadata-only provenance. File-derived replies are live but ephemeral: they
   cannot create commitments and are redacted from durable chat/history so they
-  cannot seed later tool turns or Mindscape sync. Phase 9 remains **PARTIAL**:
-  expiring capability leases, the provider-specific egress consent broker, and
-  signed Discord guest identity remain unfinished; Phase 10 stays blocked.
+  cannot seed later tool turns or Mindscape sync. Server-issued, expiring
+  capability leases now gate camera frames, screen sharing, push-to-talk, voice
+  enrollment, and exact file references. They bind to the live portal and fail
+  closed on expiry, replay, disconnect, replacement, or restart, with sealed
+  content-free transition receipts. Phase 9 remains **PARTIAL**: the
+  provider/model-specific egress consent broker and signed Discord guest
+  identity remain unfinished; Phase 10 stays blocked.
 
 ## Identity
 
@@ -61,10 +65,10 @@ observe -> interpret -> retrieve memory -> update self-state -> choose intent ->
 
 Important current priorities:
 
-- Continue Phase 9 through server-issued sensor leases, the provider-specific
-  egress consent broker, and signed Discord guest identity without widening
-  Phase 4 execution or bypassing the Phase 5 initiative boundary. Phase 6
-  resource measurement remains separately gated.
+- Continue Phase 9 through the provider/model-specific egress consent broker
+  and signed Discord guest identity without widening Phase 4 execution or
+  bypassing the Phase 5 initiative boundary. Phase 6 resource measurement
+  remains separately gated.
 - Natural replies through the live backend, not event echoes or copied user text.
 - Stable local model path uses the currently approved Ollama model from `ALPECCA_MODEL`; do not revive retired legacy model paths.
 - Voice should use her personality and modulation system, with Kokoro `af_heart` as the intended voice profile.

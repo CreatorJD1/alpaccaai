@@ -1,6 +1,6 @@
 ﻿# Alpecca Current Progress
 
-Last updated: **2026-07-11**
+Last updated: **2026-07-12**
 
 Use this as the short active status pointer.
 
@@ -180,10 +180,14 @@ labels retained in historical plans and handoffs.
   talk, and voice-enrollment ingress now fail closed on byte/MIME/container/
   dimension/duration violations, derive SHA-256 server-side, return metadata-
   only scoped provenance, and keep private perception on verified loopback
-  Ollama inference. House microphone capture auto-stops at 60 seconds and stale
-  work cancels on disconnect. Remaining gates are trusted file ingress, expiring
-  capability leases, provider-specific egress consent/receipts, and signed
-  Discord guest subjects; Phase 10 stays blocked.
+  Ollama inference. Creator-only, server-resolved House text attachments use
+  bounded exact references and remain ephemeral after the live answer. Expiring
+  portal-bound leases now gate camera, screen, microphone, voice enrollment,
+  and exact file-reference use with fixed caps, disconnect/restart revocation,
+  and sealed content-free evidence. House microphone capture auto-stops at 60
+  seconds and stale work cancels on disconnect. Remaining gates are wiring the
+  provider/model-specific egress consent broker and signed Discord guest
+  subjects; Phase 10 stays blocked.
 - Phase 6 remains partial. The next gated action is to clear resources and
   re-run preflight, then separately authorize one 8,192 measurement; no direct
   pagefile mutation is authorized. See `docs/CONTEXT_TIER_MEASUREMENT.md` for

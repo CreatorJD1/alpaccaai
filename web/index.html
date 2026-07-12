@@ -337,6 +337,138 @@ if(location.protocol === 'file:'){
 }
 
 let ws, wsTries = 0;
+const CAPABILITY_LEASE_HEADER = 'X-Alpecca-Capability-Lease';
+const CAPABILITY_PURPOSE_HEADER = 'X-Alpecca-Capability-Purpose';
+const CAPABILITY_CONNECTION_HEADER = 'X-Alpecca-Capability-Connection';
+let capabilityConnection = null;
+const capabilityLeases = new Map();
+
+function capabilityLabel(purpose){
+  return purpose === 'push_to_talk' ? 'Microphone' : 'Camera';
+}
+
+function releaseCapabilityLease(lease){
+  if(!lease) return;
+  if(capabilityLeases.get(lease.purpose) === lease) capabilityLeases.delete(lease.purpose);
+  if(lease.expiryTimer !== null) clearTimeout(lease.expiryTimer);
+  lease.expiryTimer = null;
+  lease.token = '';
+  lease.leaseId = '';
+  lease.connectionId = '';
+}
+
+async function stopCapabilityLease(leaseOrPurpose){
+  const lease = typeof leaseOrPurpose === 'string'
+    ? capabilityLeases.get(leaseOrPurpose)
+    : leaseOrPurpose;
+  if(!lease) return;
+  if(capabilityLeases.get(lease.purpose) === lease) capabilityLeases.delete(lease.purpose);
+  if(lease.expiryTimer !== null) clearTimeout(lease.expiryTimer);
+  lease.expiryTimer = null;
+  const leaseId = lease.leaseId;
+  const connectionId = lease.connectionId;
+  lease.token = '';
+  lease.leaseId = '';
+  lease.connectionId = '';
+  if(!leaseId || !connectionId) return;
+  try {
+    await fetch(`/security/capability-leases/${encodeURIComponent(leaseId)}/stop`, {
+      method: 'POST', cache: 'no-store',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({connection_id: connectionId}),
+    });
+  } catch(e){
+    // Socket revocation and server expiry remain authoritative if this cannot arrive.
+  }
+}
+
+function stopAllCapabilityLeases(){
+  for(const lease of Array.from(capabilityLeases.values())) void stopCapabilityLease(lease);
+}
+
+function expireCapabilityLease(lease){
+  if(capabilityLeases.get(lease.purpose) !== lease) return;
+  void stopCapabilityLease(lease);
+  if(lease.purpose === 'push_to_talk') cancelMicrophone(false);
+  else closeCam(false);
+  statusEl.textContent = `${capabilityLabel(lease.purpose)} permission expired - try again.`;
+}
+
+function capabilityLeaseIsUsable(lease, purpose){
+  if(!lease || !lease.token || lease.purpose !== purpose ||
+     capabilityLeases.get(purpose) !== lease ||
+     capabilityConnection?.id !== lease.connectionId) return false;
+  if(lease.expiresAt * 1000 <= Date.now()){
+    expireCapabilityLease(lease);
+    return false;
+  }
+  return true;
+}
+
+function capabilityLeaseHeaders(lease){
+  if(!capabilityLeaseIsUsable(lease, lease?.purpose)){
+    throw new Error('Capability permission expired.');
+  }
+  const headers = new Headers();
+  headers.set(CAPABILITY_LEASE_HEADER, lease.token);
+  headers.set(CAPABILITY_PURPOSE_HEADER, lease.purpose);
+  headers.set(CAPABILITY_CONNECTION_HEADER, lease.connectionId);
+  return headers;
+}
+
+async function acquireCapabilityLease(purpose){
+  const connection = capabilityConnection;
+  if(!connection || connection.surface !== 'websocket' || connection.principal !== 'creator' ||
+     !ws || ws.readyState !== WebSocket.OPEN){
+    throw new Error(`Live connection is not ready for ${capabilityLabel(purpose).toLowerCase()}.`);
+  }
+  await stopCapabilityLease(purpose);
+  if(capabilityConnection?.id !== connection.id || !ws || ws.readyState !== WebSocket.OPEN){
+    throw new Error('Live connection changed before permission could be requested.');
+  }
+  const response = await fetch('/security/capability-leases', {
+    method: 'POST', cache: 'no-store',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({connection_id: connection.id, purpose}),
+  });
+  if(!response.ok) throw new Error(`${capabilityLabel(purpose)} permission was not granted.`);
+  const payload = await response.json();
+  const leaseId = typeof payload.lease_id === 'string' ? payload.lease_id : '';
+  const token = typeof payload.token === 'string' ? payload.token : '';
+  const expiresAt = typeof payload.expires_at === 'number' ? payload.expires_at : NaN;
+  if(!leaseId || !token || !Number.isFinite(expiresAt) || expiresAt * 1000 <= Date.now()){
+    if(leaseId) await stopCapabilityLease({
+      leaseId, token: '', purpose, connectionId: connection.id, expiryTimer: null,
+    });
+    throw new Error(`${capabilityLabel(purpose)} permission response was invalid.`);
+  }
+  const lease = {
+    leaseId, token, purpose, connectionId: connection.id, expiresAt, expiryTimer: null,
+  };
+  if(capabilityConnection?.id !== connection.id || !ws || ws.readyState !== WebSocket.OPEN){
+    await stopCapabilityLease(lease);
+    throw new Error('Live connection changed before permission was ready.');
+  }
+  capabilityLeases.set(purpose, lease);
+  const expiresInMs = Math.max(0, Math.min(2147000000, expiresAt * 1000 - Date.now()));
+  lease.expiryTimer = setTimeout(()=>expireCapabilityLease(lease), expiresInMs);
+  return lease;
+}
+
+function setCapabilityConnection(value){
+  const next = value && typeof value.id === 'string' && value.id.trim() &&
+    value.surface === 'websocket' && value.principal === 'creator'
+    ? {id: value.id.trim(), surface: 'websocket', principal: 'creator'}
+    : null;
+  if(!next){
+    clearLocalCapabilityState();
+    capabilityConnection = null;
+    return;
+  }
+  if(capabilityConnection && capabilityConnection.id !== next.id) clearLocalCapabilityState();
+  capabilityConnection = next;
+}
+
 function connect(){
   if(location.protocol === 'file:') return;   // nothing to connect to
   ws = new WebSocket(`ws://${location.host}/ws`);
@@ -344,6 +476,7 @@ function connect(){
   ws.onmessage = (ev)=>{
     const m = JSON.parse(ev.data);
     if(m.type === 'state'){
+      setCapabilityConnection(m.capability_connection);
       render(m.state, m.mood, m.appearance);
       if(typeof playSequence === 'function' && !window.__greeted){ window.__greeted = true; playSequence('greet', 1600); }
       statusEl.textContent = m.llm_online ? '' : 'Ollama offline — replies are stubbed. Start Ollama for real conversation.';
@@ -370,9 +503,17 @@ function connect(){
                            : ('I stopped: ' + (m.error || m.summary || 'unable to finish.'));
       log.appendChild(d); log.scrollTop = log.scrollHeight;
       setAvatarState('idle');
+    } else if(m.type === 'error'){
+      const leaseFailure = m.code === 'capability_lease_denied';
+      statusEl.textContent = leaseFailure
+        ? 'image permission expired or was rejected - try the image again'
+        : (m.reason || m.error || 'Alpecca could not process that request');
+      setAvatarState('idle');
     }
   };
   ws.onclose = ()=>{
+    clearLocalCapabilityState();
+    capabilityConnection = null;
     wsTries++;
     moodLabel.textContent = 'reconnecting…';
     if(wsTries >= 2)
@@ -693,119 +834,402 @@ async function speak(text){
 
 // --- your voice: push-to-talk, transcribed locally on the server --------------
 const micBtn = document.getElementById('micBtn');
-let recorder = null, chunks = [];
-micBtn.addEventListener('click', async ()=>{
-  if(recorder && recorder.state === 'recording'){
-    recorder.stop();   // -> onstop sends it
+let recorder = null, chunks = [], micStream = null, micRequest = null, micSequence = 0;
+
+function resetMicrophoneUi(){
+  micBtn.textContent = '\uD83C\uDFA4';
+  micBtn.style.background = 'var(--bg-2)';
+  micBtn.disabled = false;
+}
+
+function stopMicrophoneStream(){
+  if(!micStream) return;
+  for(const track of micStream.getTracks()){
+    track.onended = null;
+    track.stop();
+  }
+  micStream = null;
+}
+
+function cancelMicrophone(stopLease = true){
+  micSequence++;
+  if(micRequest){ micRequest.abort(); micRequest = null; }
+  const activeRecorder = recorder;
+  recorder = null;
+  chunks = [];
+  if(activeRecorder){
+    activeRecorder.ondataavailable = null;
+    activeRecorder.onstop = null;
+    activeRecorder.onerror = null;
+    if(activeRecorder.state !== 'inactive'){
+      try { activeRecorder.stop(); } catch(e){}
+    }
+  }
+  stopMicrophoneStream();
+  resetMicrophoneUi();
+  if(stopLease) void stopCapabilityLease('push_to_talk');
+  setAvatarState('idle');
+}
+
+async function transcribeMicrophone(blob, lease, sequence){
+  if(sequence !== micSequence){
+    await stopCapabilityLease(lease);
     return;
   }
+  if(!blob.size){
+    await stopCapabilityLease(lease);
+    statusEl.textContent = "couldn't hear any audio - try again";
+    setAvatarState('idle');
+    resetMicrophoneUi();
+    return;
+  }
+  const request = new AbortController();
+  micRequest = request;
+  let leaseUsed = false;
+  statusEl.textContent = 'listening to what you said...';
+  setAvatarState('thinking');
   try {
+    const headers = capabilityLeaseHeaders(lease);
+    if(blob.type) headers.set('Content-Type', blob.type);
+    const r = await fetch('/listen', {
+      method: 'POST', headers, body: blob, signal: request.signal,
+    });
+    if(!r.ok) throw new Error('transcription rejected');
+    releaseCapabilityLease(lease);
+    leaseUsed = true;
+    const d = await r.json();
+    if(sequence !== micSequence) return;
+    statusEl.textContent = '';
+    if(d.heard && d.text){
+      // Send the words through the exact same path as typed chat.
+      addMsg(d.text, 'me');
+      if(ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({
+        text: d.text,
+        private_perception: 'microphone',
+      }));
+      else setAvatarState('idle');
+    } else {
+      setAvatarState('idle');
+      statusEl.textContent = "couldn't make that out - try again a little closer to the mic";
+    }
+  } catch(e){
+    if(!leaseUsed) await stopCapabilityLease(lease);
+    if(sequence !== micSequence || request.signal.aborted) return;
+    setAvatarState('idle');
+    statusEl.textContent = 'transcription failed - is the server running?';
+  } finally {
+    if(micRequest === request) micRequest = null;
+    if(sequence === micSequence) resetMicrophoneUi();
+  }
+}
+
+micBtn.addEventListener('click', async ()=>{
+  if(recorder){
+    if(recorder.state === 'recording'){
+      micBtn.disabled = true;
+      recorder.stop();   // -> onstop sends it
+    }
+    return;
+  }
+  if(micBtn.disabled) return;
+  if(!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined'){
+    statusEl.textContent = 'microphone recording is not available in this browser';
+    return;
+  }
+  const sequence = ++micSequence;
+  micBtn.disabled = true;
+  let lease = null;
+  try {
+    lease = await acquireCapabilityLease('push_to_talk');
+    if(sequence !== micSequence){ await stopCapabilityLease(lease); return; }
     const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    if(sequence !== micSequence || !capabilityLeaseIsUsable(lease, 'push_to_talk')){
+      stream.getTracks().forEach(track=>track.stop());
+      await stopCapabilityLease(lease);
+      return;
+    }
+    micStream = stream;
     chunks = [];
-    recorder = new MediaRecorder(stream);
-    recorder.ondataavailable = e => { if(e.data.size) chunks.push(e.data); };
-    recorder.onstop = async ()=>{
-      stream.getTracks().forEach(t => t.stop());
-      micBtn.textContent = '🎤'; micBtn.style.background = 'var(--bg-2)';
-      const blob = new Blob(chunks, {type: recorder.mimeType});
-      statusEl.textContent = 'listening to what you said…';
-      setAvatarState('thinking');
-      try {
-        const r = await fetch('/listen', {method: 'POST', body: blob});
-        const d = await r.json();
-        statusEl.textContent = '';
-        if(d.heard && d.text){
-          // Send the words through the exact same path as typed chat.
-          addMsg(d.text, 'me');
-          if(ws.readyState === 1) ws.send(JSON.stringify({
-            text: d.text,
-            private_perception: 'microphone',
-          }));
-        } else {
-          setAvatarState('idle');
-          statusEl.textContent = "couldn't make that out — try again a little closer to the mic";
-        }
-      } catch(e){
-        setAvatarState('idle');
-        statusEl.textContent = 'transcription failed — is the server running?';
-      }
+    const activeRecorder = new MediaRecorder(stream);
+    recorder = activeRecorder;
+    activeRecorder.ondataavailable = e => {
+      if(sequence === micSequence && recorder === activeRecorder && e.data.size) chunks.push(e.data);
     };
-    recorder.start();
-    micBtn.textContent = '⏹'; micBtn.style.background = 'var(--alert)';
+    activeRecorder.onerror = ()=>{
+      if(sequence !== micSequence || recorder !== activeRecorder) return;
+      cancelMicrophone(true);
+      statusEl.textContent = 'microphone recording stopped unexpectedly';
+    };
+    activeRecorder.onstop = ()=>{
+      activeRecorder.ondataavailable = null;
+      activeRecorder.onstop = null;
+      activeRecorder.onerror = null;
+      if(sequence !== micSequence || recorder !== activeRecorder) return;
+      const recordedChunks = chunks;
+      const mimeType = activeRecorder.mimeType || 'audio/webm';
+      recorder = null;
+      chunks = [];
+      stopMicrophoneStream();
+      resetMicrophoneUi();
+      micBtn.disabled = true;
+      void transcribeMicrophone(new Blob(recordedChunks, {type: mimeType}), lease, sequence);
+    };
+    const audioTrack = stream.getAudioTracks()[0];
+    if(audioTrack) audioTrack.onended = ()=>{
+      if(sequence !== micSequence || recorder !== activeRecorder) return;
+      cancelMicrophone(true);
+      statusEl.textContent = 'microphone device became unavailable';
+    };
+    activeRecorder.start();
+    micBtn.disabled = false;
+    micBtn.textContent = '\u23F9'; micBtn.style.background = 'var(--alert)';
     setAvatarState('listening');
   } catch(e){
-    statusEl.textContent = 'microphone unavailable or permission denied';
+    if(lease) await stopCapabilityLease(lease);
+    if(sequence !== micSequence) return;
+    cancelMicrophone(false);
+    statusEl.textContent = 'microphone unavailable, permission denied, or capability not granted';
+  } finally {
+    if(sequence === micSequence && !recorder && !micRequest) micBtn.disabled = false;
   }
 });
 
 // --- camera mode: show her something live ------------------------------------
 const camOverlay = document.getElementById('camOverlay');
 const camVideo = document.getElementById('camVideo');
-let camStream = null;
-function closeCam(){
-  if(camStream){ camStream.getTracks().forEach(t => t.stop()); camStream = null; }
+const camBtn = document.getElementById('camBtn');
+let camStream = null, camSequence = 0, cameraStarting = false;
+function closeCam(stopLease = true){
+  camSequence++;
+  if(camStream){
+    for(const track of camStream.getTracks()){
+      track.onended = null;
+      track.stop();
+    }
+    camStream = null;
+  }
+  camVideo.pause();
   camVideo.srcObject = null;
   camOverlay.style.display = 'none';
+  return stopLease ? stopCapabilityLease('camera_frame') : Promise.resolve();
 }
-document.getElementById('camBtn').addEventListener('click', async ()=>{
+camBtn.addEventListener('click', async ()=>{
+  if(cameraStarting || imageSendInProgress) return;
+  if(!navigator.mediaDevices?.getUserMedia){
+    statusEl.textContent = 'camera access is not available in this browser';
+    return;
+  }
+  cameraStarting = true;
+  camBtn.disabled = true;
+  const closing = closeCam(true);
+  const sequence = camSequence;
+  let lease = null;
   try {
-    camStream = await navigator.mediaDevices.getUserMedia({video: {width: {ideal: 1280}}});
-    camVideo.srcObject = camStream;
+    await closing;
+    if(sequence !== camSequence) return;
+    lease = await acquireCapabilityLease('camera_frame');
+    if(sequence !== camSequence){ await stopCapabilityLease(lease); return; }
+    const stream = await navigator.mediaDevices.getUserMedia({video: {width: {ideal: 1280}}});
+    if(sequence !== camSequence || !capabilityLeaseIsUsable(lease, 'camera_frame')){
+      stream.getTracks().forEach(track=>track.stop());
+      await stopCapabilityLease(lease);
+      return;
+    }
+    camStream = stream;
+    camVideo.srcObject = stream;
     camOverlay.style.display = 'flex';
+    const videoTrack = stream.getVideoTracks()[0];
+    if(videoTrack) videoTrack.onended = ()=>{
+      if(sequence !== camSequence || camStream !== stream) return;
+      void closeCam(true);
+      statusEl.textContent = 'camera device became unavailable';
+    };
+    await camVideo.play();
   } catch(e){
-    statusEl.textContent = 'camera unavailable or permission denied';
+    if(lease) await stopCapabilityLease(lease);
+    if(sequence !== camSequence) return;
+    await closeCam(false);
+    statusEl.textContent = 'camera unavailable, permission denied, or capability not granted';
+  } finally {
+    cameraStarting = false;
+    camBtn.disabled = false;
   }
 });
-document.getElementById('camCancel').addEventListener('click', closeCam);
+document.getElementById('camCancel').addEventListener('click', ()=>void closeCam(true));
 document.getElementById('camSnap').addEventListener('click', ()=>{
-  if(!camStream || ws.readyState !== 1){ closeCam(); return; }
-  const canvas = document.createElement('canvas');
-  const scale = Math.min(1, 768 / Math.max(camVideo.videoWidth, camVideo.videoHeight));
-  canvas.width = Math.round(camVideo.videoWidth * scale);
-  canvas.height = Math.round(camVideo.videoHeight * scale);
-  canvas.getContext('2d').drawImage(camVideo, 0, 0, canvas.width, canvas.height);
-  const shot = canvas.toDataURL('image/jpeg', 0.85);
-  closeCam();
-  const input = document.getElementById('input');
-  const text = input.value.trim();
-  const d = document.createElement('div');
-  d.className = 'msg me';
-  if(text) d.textContent = text;
-  const im = document.createElement('img'); im.src = shot;
-  d.appendChild(im);
-  log.appendChild(d); log.scrollTop = log.scrollHeight;
-  ws.send(JSON.stringify({text, image: shot, source: 'camera'}));
-  input.value = '';
-  setAvatarState('thinking');
+  const lease = capabilityLeases.get('camera_frame');
+  let sent = false;
+  if(!camStream || !ws || ws.readyState !== WebSocket.OPEN){
+    void closeCam(true);
+    return;
+  }
+  if(!capabilityLeaseIsUsable(lease, 'camera_frame')){
+    void closeCam(true);
+    statusEl.textContent = 'camera permission expired - open the camera again';
+    return;
+  }
+  try {
+    if(!camVideo.videoWidth || !camVideo.videoHeight){
+      statusEl.textContent = 'camera is still preparing a frame';
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    const scale = Math.min(1, 768 / Math.max(camVideo.videoWidth, camVideo.videoHeight));
+    canvas.width = Math.round(camVideo.videoWidth * scale);
+    canvas.height = Math.round(camVideo.videoHeight * scale);
+    canvas.getContext('2d').drawImage(camVideo, 0, 0, canvas.width, canvas.height);
+    const shot = canvas.toDataURL('image/jpeg', 0.85);
+    void closeCam(false);
+    const input = document.getElementById('input');
+    const text = input.value.trim();
+    sendLeasedImage({text, image: shot, source: 'camera'}, lease);
+    sent = true;
+    const d = document.createElement('div');
+    d.className = 'msg me';
+    if(text) d.textContent = text;
+    const im = document.createElement('img'); im.src = shot;
+    d.appendChild(im);
+    log.appendChild(d); log.scrollTop = log.scrollHeight;
+    input.value = '';
+    setAvatarState('thinking');
+  } catch(e){
+    void closeCam(false);
+    if(!sent) void stopCapabilityLease(lease);
+    statusEl.textContent = 'camera frame could not be sent';
+  }
 });
 
 // --- showing her images ------------------------------------------------------
 // The file is downscaled in-browser (she doesn't need 12 megapixels to see a
-// photo) and rides along with the next message as a data URL.
-let pendingImage = null;
+// photo) and rides along with the next message as a data URL. The explicit Send
+// action acquires one camera_frame lease for that one image.
+let pendingImage = null, pendingImageSequence = 0, imageSendInProgress = false;
 const attachChip = document.getElementById('attachChip');
+const imageFile = document.getElementById('imageFile');
+const formEl = document.getElementById('form');
+const formSubmit = formEl.querySelector('button[type="submit"]');
+
+function clearPendingImage(){
+  pendingImageSequence++;
+  pendingImage = null;
+  attachChip.style.display = 'none';
+  attachChip.textContent = '';
+  imageFile.value = '';
+}
+
+function sendLeasedImage(payload, lease){
+  if(!capabilityLeaseIsUsable(lease, 'camera_frame') ||
+     !ws || ws.readyState !== WebSocket.OPEN ||
+     capabilityConnection?.id !== lease.connectionId){
+    throw new Error('Camera permission is no longer usable.');
+  }
+  const message = {
+    ...payload,
+    capability_lease: lease.token,
+    capability_purpose: 'camera_frame',
+    capability_connection: lease.connectionId,
+  };
+  ws.send(JSON.stringify(message));
+  // The server owns the one-shot lease after a successful WebSocket send.
+  releaseCapabilityLease(lease);
+}
 document.getElementById('attachBtn').addEventListener('click', ()=>
-  document.getElementById('imageFile').click());
-document.getElementById('imageFile').addEventListener('change', (e)=>{
+  imageFile.click());
+imageFile.addEventListener('change', (e)=>{
   const file = e.target.files[0];
   if(!file) return;
+  const sequence = ++pendingImageSequence;
+  pendingImage = null;
+  attachChip.style.display = 'none';
   const img = new Image();
+  const objectUrl = URL.createObjectURL(file);
   img.onload = ()=>{
-    const scale = Math.min(1, 768 / Math.max(img.width, img.height));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.round(img.width * scale);
-    canvas.height = Math.round(img.height * scale);
-    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-    pendingImage = canvas.toDataURL('image/jpeg', 0.85);
-    attachChip.style.display = 'block';
-    attachChip.textContent = '📎 image attached — it will go with your next message';
-    URL.revokeObjectURL(img.src);
+    try {
+      if(sequence !== pendingImageSequence) return;
+      const scale = Math.min(1, 768 / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      pendingImage = canvas.toDataURL('image/jpeg', 0.85);
+      attachChip.style.display = 'block';
+      attachChip.textContent = 'image attached - it will go with your next message';
+    } catch(err){
+      if(sequence === pendingImageSequence) statusEl.textContent = 'image could not be attached';
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
   };
-  img.src = URL.createObjectURL(file);
+  img.onerror = ()=>{
+    URL.revokeObjectURL(objectUrl);
+    if(sequence === pendingImageSequence) statusEl.textContent = 'image could not be read';
+  };
+  img.src = objectUrl;
   e.target.value = '';
 });
 
-document.getElementById('form').addEventListener('submit', (e)=>{
+async function sendPendingImage(text){
+  if(imageSendInProgress || !pendingImage || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if(cameraStarting){
+    statusEl.textContent = 'wait for the current camera request to finish';
+    return;
+  }
+  const image = pendingImage;
+  const sequence = pendingImageSequence;
+  imageSendInProgress = true;
+  formSubmit.disabled = true;
+  camBtn.disabled = true;
+  let lease = null, sent = false;
+  try {
+    await closeCam(true);
+    if(sequence !== pendingImageSequence || pendingImage !== image ||
+       !ws || ws.readyState !== WebSocket.OPEN) return;
+    statusEl.textContent = 'requesting image permission...';
+    lease = await acquireCapabilityLease('camera_frame');
+    if(sequence !== pendingImageSequence || pendingImage !== image){
+      await stopCapabilityLease(lease);
+      return;
+    }
+    sendLeasedImage({text, image}, lease);
+    sent = true;
+    statusEl.textContent = '';
+    const d = document.createElement('div');
+    d.className = 'msg me';
+    if(text) d.textContent = text;
+    const im = document.createElement('img'); im.src = image;
+    d.appendChild(im);
+    log.appendChild(d); log.scrollTop = log.scrollHeight;
+    pendingImage = null;
+    attachChip.style.display = 'none';
+    document.getElementById('input').value = '';
+    setAvatarState('thinking');
+  } catch(e){
+    if(lease && !sent) await stopCapabilityLease(lease);
+    if(sequence === pendingImageSequence){
+      statusEl.textContent = 'image permission was unavailable or the image could not be sent';
+      setAvatarState('idle');
+    }
+  } finally {
+    imageSendInProgress = false;
+    formSubmit.disabled = false;
+    camBtn.disabled = false;
+  }
+}
+
+function clearLocalCapabilityState(){
+  cancelMicrophone(true);
+  void closeCam(true);
+  clearPendingImage();
+  imageSendInProgress = false;
+  cameraStarting = false;
+  formSubmit.disabled = false;
+  camBtn.disabled = false;
+  stopAllCapabilityLeases();
+  statusEl.textContent = '';
+  setAvatarState('idle');
+}
+
+formEl.addEventListener('submit', (e)=>{
   e.preventDefault();
   const input = document.getElementById('input');
   const text = input.value.trim();
@@ -821,20 +1245,12 @@ document.getElementById('form').addEventListener('submit', (e)=>{
     return;
   }
   if((!text && !pendingImage) || ws.readyState !== 1) return;
-  const payload = {text};
   if(pendingImage){
-    payload.image = pendingImage;
-    const d = document.createElement('div');
-    d.className = 'msg me';
-    if(text) d.textContent = text;
-    const im = document.createElement('img'); im.src = pendingImage;
-    d.appendChild(im);
-    log.appendChild(d); log.scrollTop = log.scrollHeight;
-    pendingImage = null; attachChip.style.display = 'none';
-  } else {
-    addMsg(text, 'me');
+    void sendPendingImage(text);
+    return;
   }
-  ws.send(JSON.stringify(payload)); input.value = '';
+  addMsg(text, 'me');
+  ws.send(JSON.stringify({text})); input.value = '';
   setAvatarState('thinking');
 });
 </script>

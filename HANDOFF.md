@@ -15,8 +15,8 @@ retained below as historical implementation evidence.
   and voice enrollment uses are recorded through the capability audit path.
   House HQ auto-stops microphone capture at 60 seconds and cancels stale
   recording or transcription work on disconnect.
-- Trusted House text attachments are now implemented for the creator-only House
-  route. The client supplies only a bounded root id and relative path; the server
+- Creator-only, server-resolved House text attachments are implemented. The
+  client supplies only a bounded root id and relative path; the server
   resolves that reference against its allowed roots, records the file-access
   audit before reading, and binds locally derived MIME/SHA-256 provenance to the
   exact server-issued turn scope. The legacy raw/base64 `file_name`/`file_data`
@@ -25,6 +25,15 @@ retained below as historical implementation evidence.
   answer is ephemeral: it cannot confirm/create commitments, enter recent-reply
   memory, persist as content-bearing history/cognition, reach Mindscape, or use
   the OpenClaw delivery bridge. Follow-ups must reattach the file.
+- Server-issued capability leases now gate `camera_frame`, `screen_share`,
+  `push_to_talk`, `voice_enrollment`, and resource-bound `file_source_ref`.
+  Grants bind to the current creator portal, scope, surface, and purpose; file
+  grants also bind the exact `{root, rel}` reference. Fixed TTL, use, and byte
+  ceilings fail closed. Explicit stop, expiry, disconnect, portal replacement,
+  and restart revoke active grants. Tokens remain client-memory-only and only
+  HMACs plus uniquely sealed, content-free transition receipts persist. House
+  HQ and the secondary classic app acquire grants before opening browser media
+  devices; ordinary text chat remains lease-free.
 - Creator-DM Discord images are now implemented through a dedicated authenticated
   `/channel/discord` route. The bridge accepts one PNG/JPEG/GIF under 2 MiB,
   sniffs MIME/dimensions from bytes before forwarding, records content-free
@@ -47,15 +56,13 @@ retained below as historical implementation evidence.
   prompt data and suppresses tool schemas for that turn. A remote `OLLAMA_HOST`,
   HF primary backend, or cloud-tagged model receives no House/private sensor or
   source-file request. Normal non-private hosted-chat paths remain unchanged.
-- Verification for this checkpoint: `1186 passed, 2 skipped` under `tests/`,
-  `tests/test_core.py` green, and `npm.cmd run house:build` green. Repository-
-  wide collection still requires the optional VCS `emergentintegrations`
-  package; without that extra, collection stops before running tests.
-- Phase 9 is not DONE: camera/screen/microphone/file grants are not server-issued
-  expiring capability leases; a provider/model-specific egress consent broker
-  is absent; and Discord guild actors still need signed guest subjects so bridge
-  authentication cannot become creator authority. Keep Phase 10 Discord
-  participation/voice blocked.
+- Verification for this checkpoint: `1296 passed, 2 skipped` under `tests/`;
+  `tests/test_core.py` is green; the focused lease suites are green; House HQ
+  builds; and the classic inline JavaScript parses successfully.
+- Phase 9 is not DONE: a provider/model-specific egress consent broker is not
+  wired into perception, and Discord guild actors still need signed guest
+  subjects so bridge service authentication cannot become creator authority.
+  Keep Phase 10 Discord participation/voice blocked.
 
 - `/house-hq` now serves the **Void Prototype**, including a native categorized
   **Alpecca Systems** center and an orthographic view.
@@ -347,8 +354,9 @@ surface.
 
 **PARTIAL as of 2026-07-12.** Scoped read-only repository browsing, strict
 image/audio ingress, derived provenance, verified-local sensor inference,
-capability-use audit records, bounded House microphone lifecycle, and trusted
-creator-only House text attachments are implemented. The House attachment path
+capability-use audit records, bounded House microphone lifecycle, and
+creator-only, server-resolved House text attachments are implemented. The
+House attachment path
 accepts only a server-resolved allowed-root id plus relative path, audits before
 the read, derives MIME and SHA-256 locally, binds metadata to the exact turn
 scope, forces local-only inference, and suppresses tools while the untrusted
@@ -360,15 +368,21 @@ stored only as a redacted omission marker; they cannot mutate commitments,
 seed later tool-bearing turns, sync through Mindscape, or auto-deliver through
 OpenClaw.
 
+Server-issued expiring leases now gate camera frames, screen sharing,
+push-to-talk, voice enrollment, and exact House file references. Leases bind to
+the live portal and creator scope, enforce fixed use/byte/time ceilings, and
+stop on explicit cancellation, expiry, disconnect, portal replacement, or
+restart. Grant/deny/use/stop evidence is content-free and sealed; raw tokens,
+connection ids, and file references are not persisted.
+
 Focused tests cover malformed/oversized payloads, MIME/magic mismatch,
 dimensions, duration, scope, provenance, creator authorization, audit-before-
 read, local-only model routing, tool suppression, raw file-payload rejection,
 derived-output non-retention, commitment blocking, and House/WebSocket
 integration.
 
-Still required: add expiring, connection-bound capability leases with
-disconnect revocation; add the exact provider/model egress consent broker and
-immutable grant/deny/stop receipts; and partition Discord bridge service
+Still required: wire the exact provider/model egress consent broker into every
+private perception provider attempt and partition Discord bridge service
 authentication from signed guest actor identity. Do not mark Phase 9 complete
 or unblock Phase 10 before those gates.
 
@@ -424,8 +438,9 @@ claims only from evidence.
   `alpecca/creator_contact.py` / `alpecca/system_pressure.py` unless the active
   phase explicitly adopts them after its gate.
 - Before every checkpoint run `python -m pytest -q tests\test_core.py` and
-  `npm.cmd run house:build`. Current verified baseline: `352 passed`; House HQ
-  build passes with only its existing large-chunk advisory.
+  `npm.cmd run house:build`. Current verified baseline: `tests/test_core.py`
+  is green and the full suite reports `1296 passed, 2 skipped`; House HQ builds
+  with only its existing large-chunk advisory.
 
 ### Current checkpoint
 

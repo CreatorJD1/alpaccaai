@@ -101,10 +101,15 @@ def audio_models(monkeypatch):
         state["audit_calls"].append((capability, kwargs))
         return True
 
+    async def allow_capability_lease(*_args, **_kwargs):
+        return {"lease_id": "test-lease", "state": "active"}
+
     monkeypatch.setattr(server.hearing, "transcribe", fake_transcribe)
     monkeypatch.setattr(people, "identify_voice", fake_identify)
     monkeypatch.setattr(people, "enroll_creator_voice", fake_enroll)
     monkeypatch.setattr(server, "_record_capability_use", fake_audit)
+    monkeypatch.setattr(server, "_consume_request_capability_lease", allow_capability_lease)
+    monkeypatch.setattr(server, "_validate_request_capability_lease", allow_capability_lease)
     monkeypatch.setattr(
         server.mind,
         "set_speaker",

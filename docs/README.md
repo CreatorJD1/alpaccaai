@@ -8,8 +8,8 @@ changed by the current rollout.
 
 ## Active Phase 9 Checkpoint
 
-Phase 9 remains **PARTIAL**. Trusted creator-only House text attachments now use
-a server-resolved allowed-root id and relative path, audit file access before
+Phase 9 remains **PARTIAL**. Creator-only, server-resolved House text attachments
+use an allowed-root id and relative path, audit file access before
 the read, derive MIME and SHA-256 locally, bind provenance to the exact turn
 scope, force local-only inference, and suppress tools while bounded file text is
 present. The serialized attachment record retains metadata-only provenance, and
@@ -18,9 +18,12 @@ answers are live but ephemeral: commitment mutation, durable content retention,
 Mindscape sync, and automatic OpenClaw delivery are blocked. Existing source,
 image, and audio perception behavior remains as documented.
 
-Expiring connection-bound capability leases, provider/model-specific egress
-consent and receipts, and signed Discord guest identity are still unfinished.
-Do not use this checkpoint to mark Phase 9 complete or unblock Phase 10.
+Expiring connection-bound capability leases now gate browser camera, screen,
+microphone, voice-enrollment, and exact file-reference use. Their fixed caps,
+disconnect/restart revocation, and sealed content-free transition evidence are
+implemented for House HQ and the secondary classic app. Provider/model-specific
+egress consent is not yet wired into perception, and signed Discord guest
+identity is still unfinished. Do not mark Phase 9 complete or unblock Phase 10.
 
 ## Canonical Sources
 

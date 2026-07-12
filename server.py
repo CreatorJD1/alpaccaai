@@ -69,6 +69,7 @@ from alpecca import routines as routines_mod
 from alpecca import watchers as watchers_mod
 from alpecca import auth as auth_mod
 from alpecca import capabilities as capabilities_mod
+from alpecca import capability_leases as capability_leases_mod
 from alpecca import host_resources as host_resources_mod
 from alpecca import resource_coordinator as resource_coordinator_mod
 from alpecca import turn_context as turn_context_mod
@@ -189,6 +190,9 @@ behavior_trial_settlement_mod.init_db(DB_PATH)
 # interrupted trial. This event starts unset deliberately and is reset for
 # every lifespan entry.
 _behavior_trial_recovery_ready = threading.Event()
+# Private sensor/file grants fail closed until startup has revoked every lease
+# left active by a previous process. The rest of Alpecca can still start.
+_capability_lease_recovery_ready = threading.Event()
 
 
 def _behavior_trial_chatter_chance() -> float:
@@ -513,6 +517,18 @@ def _retire_ws_portal(socket: WebSocket, *, portal_epoch: str | None = None,
     ws_clients.discard(socket)
     if _active_ws_portal == (socket, current):
         _active_ws_portal = None
+    lease_store = globals().get("_capability_lease_store")
+    if isinstance(lease_store, capability_leases_mod.CapabilityLeaseStore):
+        try:
+            lease_store.stop_connection(current, reason=reason)
+        except Exception:
+            # The portal epoch is fenced in memory even if receipt storage is
+            # temporarily unavailable; no later request can treat it as live.
+            pass
+    # The inactive transition only clears one boolean and performs no model or
+    # disk work. Do it synchronously with portal fencing so a successor cannot
+    # inherit an Observatory pin from the disconnected screen-share lease.
+    mind.set_screen_sharing(False)
     return True
 
 
@@ -1932,6 +1948,15 @@ async def lifespan(app: FastAPI):
     We keep a reference to the task so it isn't silently garbage-collected.
     """
     _behavior_trial_recovery_ready.clear()
+    _capability_lease_recovery_ready.clear()
+    try:
+        await asyncio.to_thread(_capability_lease_store.recover_active)
+    except Exception:
+        # Sensor/file grants remain unavailable until a later clean restart.
+        # A storage failure must not make ordinary local chat unavailable.
+        pass
+    else:
+        _capability_lease_recovery_ready.set()
     # This durable maintenance is idempotent and stays outside `mind_lock`.
     # It closes only already-due response windows; it starts no trial or send.
     await _expire_due_qualified_response_outcomes_once()
@@ -2301,6 +2326,10 @@ app = FastAPI(title="Alpecca", lifespan=lifespan)
 from starlette.responses import JSONResponse as _JSON
 
 _AUTH_SECRET = auth_mod.load_or_create_authorization_secret(HOME)
+_capability_lease_store = capability_leases_mod.CapabilityLeaseStore(
+    DB_PATH,
+    seal_key=_AUTH_SECRET,
+)
 # The controller is constructed before protected authorization initializes, so
 # bind the already-loaded server secret as its approval seal before any request
 # or lifespan recovery can use a behavior trial. This does not create or rotate
@@ -2415,7 +2444,10 @@ def _with_cors(resp: Response, origin: str) -> Response:
     resp.headers["Access-Control-Allow-Credentials"] = "true"
     resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
     resp.headers["Access-Control-Allow-Headers"] = (
-        "Content-Type, X-Alpecca-Authorization, X-Alpecca-Identity"
+        "Content-Type, X-Alpecca-Authorization, X-Alpecca-Identity, "
+        f"{capability_leases_mod.TOKEN_HEADER}, "
+        f"{capability_leases_mod.PURPOSE_HEADER}, "
+        f"{capability_leases_mod.CONNECTION_HEADER}"
     )
     resp.headers["Access-Control-Expose-Headers"] = (
         "X-Alpecca-TTS-Engine, X-Alpecca-TTS-Status, X-Alpecca-TTS-Error, "
@@ -3132,6 +3164,336 @@ def _require_creator_request(req: Request) -> auth_mod.AuthDecision:
             headers={"Cache-Control": "no-store"},
         )
     return decision
+
+
+def _capability_lease_http_status(reason: str) -> int:
+    if reason == "lease_expired":
+        return 410
+    if reason == "byte_cap_exceeded":
+        return 413
+    if reason in {
+        "active_lease_exists", "lease_stopped", "use_cap_reached",
+    }:
+        return 409
+    if reason in {
+        "purpose_not_allowed", "resource_binding_required",
+        "resource_binding_not_allowed", "malformed_request",
+    }:
+        return 400
+    return 403
+
+
+def _raise_capability_lease_denied(reason: str) -> None:
+    raise HTTPException(
+        status_code=_capability_lease_http_status(str(reason or "lease_denied")),
+        detail={
+            "code": "capability_lease_denied",
+            "reason": str(reason or "lease_denied")[:80],
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _require_capability_lease_recovery() -> None:
+    if not _capability_lease_recovery_ready.is_set():
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "capability_lease_recovery_unavailable"},
+            headers={"Cache-Control": "no-store"},
+        )
+
+
+def _capability_connection_surface(connection_id: str) -> str:
+    active = _active_ws_portal
+    if active is None or not isinstance(connection_id, str) or not connection_id:
+        return ""
+    socket, epoch = active
+    if not (
+        _constant_time_text_equal(epoch, connection_id)
+        and _ws_portal_epochs.get(socket) == epoch
+    ):
+        return ""
+    surface = _websocket_route_surface(socket)
+    return surface if surface in {"house-hq", "websocket"} else ""
+
+
+def _constant_time_text_equal(left: str, right: str) -> bool:
+    """Constant-time compare for opaque server-issued connection ids."""
+    import hmac
+    try:
+        return hmac.compare_digest(str(left), str(right))
+    except TypeError:
+        return False
+
+
+def _source_ref_lease_binding(root_id: str, relative_path: str) -> str:
+    return json.dumps(
+        {"rel": relative_path, "root": root_id},
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _capability_lease_request_headers(
+    req: Request,
+    *,
+    purpose: str,
+    required_surface: str = "",
+) -> tuple[str, str, str]:
+    token = req.headers.get(capability_leases_mod.TOKEN_HEADER, "").strip()
+    claimed_purpose = req.headers.get(
+        capability_leases_mod.PURPOSE_HEADER, ""
+    ).strip()
+    connection_id = req.headers.get(
+        capability_leases_mod.CONNECTION_HEADER, ""
+    ).strip()
+    if not token or not claimed_purpose or not connection_id:
+        _raise_capability_lease_denied("lease_required")
+    if claimed_purpose != purpose:
+        _raise_capability_lease_denied("purpose_mismatch")
+    surface = _capability_connection_surface(connection_id)
+    if not surface or (required_surface and surface != required_surface):
+        try:
+            _capability_lease_store.stop_connection(
+                connection_id,
+                reason="connection_inactive",
+            )
+        except Exception:
+            pass
+        _raise_capability_lease_denied("connection_not_active")
+    return token, connection_id, surface
+
+
+async def _capability_lease_store_call(method, /, *args, **kwargs):
+    _require_capability_lease_recovery()
+    try:
+        return await asyncio.to_thread(method, *args, **kwargs)
+    except capability_leases_mod.CapabilityLeaseDenied as exc:
+        detail = {
+            "code": "capability_lease_denied",
+            "reason": str(exc.reason or "lease_denied")[:80],
+        }
+        receipt_id = getattr(exc, "receipt_id", None)
+        if isinstance(receipt_id, int) and receipt_id > 0:
+            detail["receipt_id"] = receipt_id
+        raise HTTPException(
+            status_code=_capability_lease_http_status(exc.reason),
+            detail=detail,
+            headers={"Cache-Control": "no-store"},
+        )
+    except capability_leases_mod.CapabilityLeaseIntegrityError:
+        _capability_lease_recovery_ready.clear()
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "capability_lease_integrity_unavailable"},
+            headers={"Cache-Control": "no-store"},
+        )
+    except capability_leases_mod.CapabilityLeaseError:
+        _raise_capability_lease_denied("malformed_request")
+    except Exception:
+        _capability_lease_recovery_ready.clear()
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "capability_lease_store_unavailable"},
+            headers={"Cache-Control": "no-store"},
+        )
+
+
+async def _consume_request_capability_lease(
+    req: Request,
+    *,
+    purpose: str,
+    bytes_used: int,
+    byte_accounting: str = "measured",
+    resource_binding: str | None = None,
+    required_surface: str = "",
+) -> dict[str, object]:
+    token, connection_id, surface = _capability_lease_request_headers(
+        req,
+        purpose=purpose,
+        required_surface=required_surface,
+    )
+    return await _capability_lease_store_call(
+        _capability_lease_store.consume,
+        token,
+        connection_id=connection_id,
+        principal="creator",
+        privacy_scope="creator-personal",
+        surface=surface,
+        purpose=purpose,
+        bytes_used=bytes_used,
+        byte_accounting=byte_accounting,
+        resource_binding=resource_binding,
+    )
+
+
+async def _validate_request_capability_lease(
+    req: Request,
+    *,
+    purpose: str,
+    required_surface: str = "",
+) -> dict[str, object]:
+    token, connection_id, surface = _capability_lease_request_headers(
+        req,
+        purpose=purpose,
+        required_surface=required_surface,
+    )
+    return await _capability_lease_store_call(
+        _capability_lease_store.validate_active,
+        token,
+        connection_id=connection_id,
+        principal="creator",
+        privacy_scope="creator-personal",
+        surface=surface,
+        purpose=purpose,
+    )
+
+
+async def _consume_ws_capability_lease(
+    message: Mapping[str, object],
+    *,
+    portal_epoch: str,
+    purpose: str,
+    bytes_used: int,
+) -> dict[str, object]:
+    token = message.get("capability_lease")
+    claimed_purpose = message.get("capability_purpose")
+    claimed_connection = message.get("capability_connection")
+    if (
+        not isinstance(token, str)
+        or not token.strip()
+        or claimed_purpose != purpose
+        or claimed_connection != portal_epoch
+    ):
+        _raise_capability_lease_denied("lease_required")
+    surface = _capability_connection_surface(portal_epoch)
+    if not surface:
+        _raise_capability_lease_denied("connection_not_active")
+    return await _capability_lease_store_call(
+        _capability_lease_store.consume,
+        token.strip(),
+        connection_id=portal_epoch,
+        principal="creator",
+        privacy_scope="creator-personal",
+        surface=surface,
+        purpose=purpose,
+        bytes_used=bytes_used,
+        byte_accounting="measured",
+    )
+
+
+async def _validate_ws_capability_lease(
+    message: Mapping[str, object],
+    *,
+    portal_epoch: str,
+    purpose: str,
+) -> dict[str, object]:
+    token = message.get("capability_lease")
+    claimed_purpose = message.get("capability_purpose")
+    claimed_connection = message.get("capability_connection")
+    if (
+        not isinstance(token, str)
+        or not token.strip()
+        or claimed_purpose != purpose
+        or claimed_connection != portal_epoch
+    ):
+        _raise_capability_lease_denied("lease_required")
+    surface = _capability_connection_surface(portal_epoch)
+    if not surface:
+        _raise_capability_lease_denied("connection_not_active")
+    return await _capability_lease_store_call(
+        _capability_lease_store.validate_active,
+        token.strip(),
+        connection_id=portal_epoch,
+        principal="creator",
+        privacy_scope="creator-personal",
+        surface=surface,
+        purpose=purpose,
+    )
+
+
+@app.post("/security/capability-leases")
+async def issue_capability_lease(req: Request, response: Response) -> dict:
+    """Issue one short-lived grant bound to the current House connection."""
+    decision = _require_creator_request(req)
+    _require_capability_lease_recovery()
+    response.headers["Cache-Control"] = "no-store"
+    body = await _read_bounded_json_object(req, max_bytes=4096)
+    purpose = body.get("purpose")
+    connection_id = body.get("connection_id")
+    if not isinstance(purpose, str) or not isinstance(connection_id, str):
+        _raise_capability_lease_denied("malformed_request")
+    purpose = purpose.strip()
+    connection_id = connection_id.strip()
+    surface = _capability_connection_surface(connection_id)
+    if not surface:
+        _raise_capability_lease_denied("connection_not_active")
+    try:
+        capability_leases_mod.policy_for(purpose)
+    except capability_leases_mod.CapabilityLeaseDenied as exc:
+        _raise_capability_lease_denied(exc.reason)
+    if purpose in {"file_source_ref", "screen_share"} and surface != "house-hq":
+        _raise_capability_lease_denied("surface_mismatch")
+
+    resource_binding = None
+    source_ref = body.get("source_ref")
+    if purpose == "file_source_ref":
+        root_id, relative_path = _parse_source_ref(source_ref)
+        resource_binding = _source_ref_lease_binding(root_id, relative_path)
+    elif source_ref is not None:
+        _raise_capability_lease_denied("resource_binding_not_allowed")
+
+    return await _capability_lease_store_call(
+        _capability_lease_store.issue,
+        connection_id=connection_id,
+        principal=decision.principal,
+        privacy_scope="creator-personal",
+        surface=surface,
+        purpose=purpose,
+        auth_mechanism=decision.mechanism,
+        auth_expires_at=decision.expires_at,
+        resource_binding=resource_binding,
+    )
+
+
+@app.post("/security/capability-leases/{lease_id}/stop")
+async def stop_capability_lease(
+    lease_id: str,
+    req: Request,
+    response: Response,
+) -> dict:
+    """Explicitly stop a grant; repeated creator stops are harmless."""
+    _require_creator_request(req)
+    response.headers["Cache-Control"] = "no-store"
+    body = await _read_bounded_json_object(req, max_bytes=1024)
+    connection_id = body.get("connection_id")
+    if not isinstance(connection_id, str) or not connection_id.strip():
+        _raise_capability_lease_denied("malformed_request")
+    public, stopped = await _capability_lease_store_call(
+        _capability_lease_store.stop,
+        lease_id,
+        connection_id=connection_id.strip(),
+        reason="client_stop",
+    )
+    return {"ok": True, "stopped": stopped, "lease": public}
+
+
+@app.get("/security/capability-leases")
+async def capability_lease_status(
+    req: Request,
+    response: Response,
+    receipt_limit: int = 50,
+) -> dict:
+    """Return verified content-free lease policy and receipt evidence."""
+    _require_creator_request(req)
+    response.headers["Cache-Control"] = "no-store"
+    if not 1 <= receipt_limit <= 100:
+        raise HTTPException(status_code=422, detail="receipt_limit must be 1..100")
+    return await _capability_lease_store_call(
+        _capability_lease_store.status,
+        receipt_limit=receipt_limit,
+    )
 
 
 def _behavior_trial_public_summary(record: Mapping[str, object]) -> dict:
@@ -4393,6 +4755,11 @@ async def sight_push(req: Request) -> dict:
     browser throttles how often it pushes (the vision model is heavy). Returns her
     short description of what's on your screen."""
     _require_creator_request(req)
+    await _validate_request_capability_lease(
+        req,
+        purpose="screen_share",
+        required_surface="house-hq",
+    )
     data = await _read_bounded_body(
         req, max_bytes=attachment_ingress_mod.DEFAULT_MAX_IMAGE_BYTES
     )
@@ -4410,6 +4777,12 @@ async def sight_push(req: Request) -> dict:
         )
     except attachment_ingress_mod.ImageIngressRejected as exc:
         _raise_image_rejection(exc)
+    lease_use = await _consume_request_capability_lease(
+        req,
+        purpose="screen_share",
+        bytes_used=len(inspected_image.image_bytes),
+        required_surface="house-hq",
+    )
     if not await _record_capability_use(
         "screen_sight", action="capture", principal="creator", source="api"
     ):
@@ -4425,6 +4798,9 @@ async def sight_push(req: Request) -> dict:
         screen_sight.latest = desc
         async with mind_lock:
             mind.see(desc)
+    if lease_use.get("state") != "active":
+        async with mind_lock:
+            mind.set_screen_sharing(False)
     return {
         "ok": bool(desc),
         "description": desc or "",
@@ -4593,11 +4969,17 @@ async def observatory_react(req: Request) -> dict:
 
 
 @app.post("/observatory/screen/start")
-async def observatory_screen_start() -> dict:
+async def observatory_screen_start(req: Request) -> dict:
     """You started sharing your screen with her. She settles into the Observatory
     to watch it with you (where she'll hold the live screen as a window) and stays
     there until you stop. If she had to walk there, broadcast it so any open home
     view follows her."""
+    _require_creator_request(req)
+    await _validate_request_capability_lease(
+        req,
+        purpose="screen_share",
+        required_surface="house-hq",
+    )
     async with mind_lock:
         moved = mind.set_screen_sharing(True)
         home = mind.home_state() if moved else None
@@ -4607,11 +4989,32 @@ async def observatory_screen_start() -> dict:
 
 
 @app.post("/observatory/screen/stop")
-async def observatory_screen_stop() -> dict:
+async def observatory_screen_stop(req: Request) -> dict:
     """You stopped sharing. She's free to roam her home again."""
+    _require_creator_request(req)
+    connection_id = req.headers.get(
+        capability_leases_mod.CONNECTION_HEADER, ""
+    ).strip()
+    if not connection_id:
+        active = _active_ws_portal
+        if active is not None and _websocket_route_surface(active[0]) == "house-hq":
+            connection_id = active[1]
+    lease_stopped = False
+    lease = None
+    if _capability_connection_surface(connection_id) == "house-hq":
+        lease, lease_stopped = await _capability_lease_store_call(
+            _capability_lease_store.stop_purpose,
+            connection_id,
+            purpose="screen_share",
+            reason="screen_share_stopped",
+        )
     async with mind_lock:
         mind.set_screen_sharing(False)
-    return {"ok": True}
+    return {
+        "ok": True,
+        "lease_stopped": lease_stopped,
+        **({"lease": lease} if lease is not None else {}),
+    }
 
 
 @app.get("/state")
@@ -5685,6 +6088,7 @@ async def listen(req: Request) -> dict:
     we transcribe it locally (faster-whisper) and hand the words back. The
     audio is never stored -- it exists exactly long enough to become text."""
     _require_creator_request(req)
+    await _validate_request_capability_lease(req, purpose="push_to_talk")
     audio = await _read_bounded_body(req, max_bytes=audio_ingress_mod.MAX_AUDIO_BYTES)
     if not audio:
         raise HTTPException(status_code=400, detail="no audio")
@@ -5700,6 +6104,11 @@ async def listen(req: Request) -> dict:
         )
     except audio_ingress_mod.AudioIngressRejected as exc:
         _raise_audio_rejection(exc)
+    await _consume_request_capability_lease(
+        req,
+        purpose="push_to_talk",
+        bytes_used=len(inspected_audio.audio_bytes),
+    )
     if not await _record_capability_use(
         "microphone", action="capture", principal="creator", source="api"
     ):
@@ -5733,6 +6142,7 @@ async def enroll_voice(req: Request) -> dict:
     audio. After this she can tell you from a guest by voice."""
     from alpecca import people
     _require_creator_request(req)
+    await _validate_request_capability_lease(req, purpose="voice_enrollment")
     audio = await _read_bounded_body(req, max_bytes=audio_ingress_mod.MAX_AUDIO_BYTES)
     if not audio:
         raise HTTPException(status_code=400, detail="no audio")
@@ -5748,6 +6158,11 @@ async def enroll_voice(req: Request) -> dict:
         )
     except audio_ingress_mod.AudioIngressRejected as exc:
         _raise_audio_rejection(exc)
+    await _consume_request_capability_lease(
+        req,
+        purpose="voice_enrollment",
+        bytes_used=len(inspected_audio.audio_bytes),
+    )
     if not await _record_capability_use(
         "microphone", action="capture", principal="creator", source="api"
     ):
@@ -5965,6 +6380,15 @@ async def channel_inbound(req: Request, response: Response) -> dict:
             },
             headers={"Cache-Control": "no-store"},
         )
+    if image_data and route_surface == "channel":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "attachment_rejected",
+                "reason": "image-route-not-authorized",
+            },
+            headers={"Cache-Control": "no-store"},
+        )
     if source_ref_value is not None and image_data:
         raise HTTPException(
             status_code=400,
@@ -5980,6 +6404,15 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     image_perception: dict[str, object] | None = None
     decision = getattr(req.state, "authorization", None)
     principal = getattr(decision, "principal", "guest") or "guest"
+    request_connection = req.headers.get(
+        capability_leases_mod.CONNECTION_HEADER, ""
+    ).strip()
+    turn_portal_epoch = (
+        request_connection
+        if route_surface == "house-hq"
+        and _capability_connection_surface(request_connection) == "house-hq"
+        else f"local-{route_surface}"
+    )
     turn = turn_context_mod.TurnContext.create(
         _server_conversation_id(
             principal,
@@ -5988,7 +6421,7 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         ),
         principal=principal,
         surface=route_surface,
-        portal_epoch=f"local-{route_surface}",
+        portal_epoch=turn_portal_epoch,
     )
     mind.note_initiative_user_activity(turn.scope_key)
     attachment_context = ""
@@ -5996,6 +6429,16 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     if source_ref_value is not None:
         decision = _require_creator_request(req)
         root_id, relative_path = _parse_source_ref(source_ref_value)
+        await _consume_request_capability_lease(
+            req,
+            purpose="file_source_ref",
+            bytes_used=capability_leases_mod.POLICIES[
+                "file_source_ref"
+            ].max_bytes_per_use,
+            byte_accounting="reserved",
+            resource_binding=_source_ref_lease_binding(root_id, relative_path),
+            required_surface="house-hq",
+        )
         if not await _record_capability_use(
             "file_access",
             action="read",
@@ -6055,6 +6498,14 @@ async def channel_inbound(req: Request, response: Response) -> dict:
                 source="discord_bridge",
             ):
                 _raise_capability_audit_unavailable()
+        elif route_surface == "house-hq":
+            decision = _require_creator_request(req)
+            principal = decision.principal
+            await _validate_request_capability_lease(
+                req,
+                purpose="camera_frame",
+                required_surface="house-hq",
+            )
         try:
             inspected_image = attachment_ingress_mod.ingest_image(
                 image_data,
@@ -6065,6 +6516,12 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         except attachment_ingress_mod.ImageIngressRejected as exc:
             _raise_image_rejection(exc)
         if route_surface == "house-hq":
+            await _consume_request_capability_lease(
+                req,
+                purpose="camera_frame",
+                bytes_used=len(inspected_image.image_bytes),
+                required_surface="house-hq",
+            )
             if not await _record_capability_use(
                 "webcam",
                 action="capture",
@@ -6295,6 +6752,11 @@ async def ws(socket: WebSocket) -> None:
              "appearance": mind.current_appearance().as_dict(),
              "llm_online": mind.llm.online,
              "cognition": mind.cognition_state(),
+             "capability_connection": {
+                 "id": portal_epoch,
+                 "surface": route_surface,
+                 "principal": decision.principal,
+             },
              "features": {"stream_chat": bool(STREAM_CHAT)}},
             portal_epoch=portal_epoch,
         ):
@@ -6381,6 +6843,38 @@ async def ws(socket: WebSocket) -> None:
             image_desc = None
             image_perception: dict[str, object] | None = None
             if image_url:
+                if route_surface in {"house-hq", "websocket"}:
+                    try:
+                        await _validate_ws_capability_lease(
+                            msg,
+                            portal_epoch=portal_epoch,
+                            purpose="camera_frame",
+                        )
+                    except HTTPException as exc:
+                        detail = exc.detail if isinstance(exc.detail, Mapping) else {}
+                        sent = await _send_ws_json(
+                            socket,
+                            {
+                                "type": "error",
+                                "request_id": request_id,
+                                "source": source,
+                                "code": str(
+                                    detail.get("code")
+                                    or "capability_lease_denied"
+                                ),
+                                "reason": str(
+                                    detail.get("reason")
+                                    or "lease_denied"
+                                ),
+                            },
+                            turn=active_turn,
+                        )
+                        active_turn.cancel("capability_lease_denied")
+                        _finish_ws_portal_turn(socket, active_turn)
+                        active_turn = None
+                        if not sent:
+                            return
+                        continue
                 try:
                     inspected_image = attachment_ingress_mod.ingest_image(
                         image_url,
@@ -6406,7 +6900,39 @@ async def ws(socket: WebSocket) -> None:
                     if not sent:
                         return
                     continue
-                if route_surface == "house-hq":
+                if route_surface in {"house-hq", "websocket"}:
+                    try:
+                        await _consume_ws_capability_lease(
+                            msg,
+                            portal_epoch=portal_epoch,
+                            purpose="camera_frame",
+                            bytes_used=len(inspected_image.image_bytes),
+                        )
+                    except HTTPException as exc:
+                        detail = exc.detail if isinstance(exc.detail, Mapping) else {}
+                        sent = await _send_ws_json(
+                            socket,
+                            {
+                                "type": "error",
+                                "request_id": request_id,
+                                "source": source,
+                                "code": str(
+                                    detail.get("code")
+                                    or "capability_lease_denied"
+                                ),
+                                "reason": str(
+                                    detail.get("reason")
+                                    or "lease_denied"
+                                ),
+                            },
+                            turn=active_turn,
+                        )
+                        active_turn.cancel("capability_lease_denied")
+                        _finish_ws_portal_turn(socket, active_turn)
+                        active_turn = None
+                        if not sent:
+                            return
+                        continue
                     audited = await _record_capability_use(
                         "webcam",
                         action="capture",

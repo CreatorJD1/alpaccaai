@@ -1,6 +1,6 @@
 # Alpecca Master Architecture And Implementation Plan
 
-Last reviewed: **2026-07-11**
+Last reviewed: **2026-07-12**
 
 This is the dependency-ordered plan for developing Alpecca into an advanced,
 proximal, local-first agentic companion. It reconciles the project skeleton,
@@ -10,7 +10,7 @@ Discord audit, CreatorJD contact audit, and V4 embodiment audit.
 `PROJECT_CONTEXT.md` and `HANDOFF.md` remain canonical for active implementation.
 This document is the current architecture and sequencing authority.
 
-## Current Implementation Checkpoint (2026-07-10)
+## Current Implementation Checkpoint (2026-07-12)
 
 This checkpoint supersedes older route, access, and phase-status language
 retained in the implementation sequence as historical planning context.
@@ -29,7 +29,7 @@ retained in the implementation sequence as historical planning context.
   share one per-scope initiative budget; ignored outreach backs off; proactive
   delivery selects one surface; and eligible cue evidence changes response
   strategy with traceable provenance.
-- Phase 6 Mindpage and resource coordination remains partial and active. Phase
+- Phase 6 Mindpage and resource coordination remains partial. Phase
   6A semantic-negative/orthogonal recall abstention and Phase 6B bounded
   sidecar content-term indexing are implemented and covered by focused tests.
   New pages index after durable commit; legacy pages support idempotent bounded
@@ -175,8 +175,8 @@ They are not fixed Alpecca hardware.
 | V4 VRM body and physics | PARTIAL | Loads with 74 spring joints; scale, sole grounding, collider use, and motion QA remain |
 | Facial expression and gesture control | PARTIAL | Expressions can latch; VRMAs loop; one-shot scheduler is declared but unfinished |
 | TTS voice stack | PARTIAL | Kokoro/F5 routes exist; cross-surface queueing and resource coordination remain |
-| Image/file perception | PARTIAL | Adapters exist; scope, privacy, MIME, cloud consent, and conversation isolation remain |
-| Audio perception | NOT STARTED | Discord audio and live voice receive/transcription are absent |
+| Image/file perception | PARTIAL | Strict scoped ingress, local routing, ephemeral server-resolved file answers, and expiring portal-bound leases are implemented; provider/model cloud consent remains unwired |
+| Audio perception | PARTIAL | Bounded local push-to-talk and creator voice enrollment are implemented; Discord audio and live voice remain absent |
 | Discord autonomy | BLOCKED | Guest tools, global context, proactive spam, and creator approval gaps |
 | Computer use | BLOCKED | Current remote auth and confirmation design makes activation unsafe |
 
@@ -635,13 +635,19 @@ local-only/cloud-denied classification. Private sensor descriptions,
 microphone-derived text, source-tool turns, retained private history, and paged
 private evidence force verified local generation. House push-to-talk stops at
 60 seconds and cancels stale capture/transcription on disconnect. Capability
-uses are audited without raw content.
+uses are audited without raw content. Creator-only House file attachments now
+use server-resolved `{root, rel}` references, bounded text ingress, exact-turn
+provenance, tool suppression, and ephemeral derived answers; legacy raw
+`file_data`/`file_name` input is rejected. Server-issued expiring leases gate
+camera frames, screen sharing, push-to-talk, voice enrollment, and exact file
+references. Fixed use/byte/time ceilings, explicit stop, disconnect, portal
+replacement, restart recovery, and sealed content-free transition evidence are
+implemented in House HQ and the secondary classic app.
 
-Remaining before DONE: replace legacy channel `file_data` parsing with the same
-trusted ingress/citation boundary; issue expiring connection-bound grants for
-camera, screen, microphone, and files; add provider/model-specific cloud consent
-and immutable egress/grant/stop receipts; and bind Discord service auth to
-server-signed guest actor subjects. Until then Phase 10 remains blocked.
+Remaining before DONE: wire provider/model-specific cloud consent and immutable
+egress evidence into each perception provider attempt, and bind Discord service
+authentication to server-signed guest actor subjects. Until then Phase 10
+remains blocked.
 
 Exit gate: Alpecca can cite viewed files/images/audio with provenance; malformed
 or oversized inputs fail closed; prompt injection cannot grant authority; no

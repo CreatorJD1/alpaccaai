@@ -47,7 +47,7 @@ uses the configured local Ollama model from `ALPECCA_MODEL`.
 
 ## Current Phase 9 Checkpoint - PARTIAL
 
-Trusted creator-only House text attachments are implemented. A House client
+Creator-only, server-resolved House text attachments are implemented. A House client
 provides only a bounded allowed-root id and relative path; the server resolves
 the root, commits the `file_access` capability audit before any read, and passes
 the reference through the shared source-perception and attachment-perception
@@ -68,10 +68,16 @@ or Mindscape; a redacted omission marker is stored instead. Attachment turns
 cannot resolve or create commitments and cannot auto-deliver through OpenClaw.
 A follow-up that needs the file must attach it again.
 
-Phase 9 is not complete. Server-issued expiring capability leases with
-disconnect revocation, provider/model-specific egress consent and receipts,
-and signed Discord guest identity remain unfinished. Phase 10 Discord
-participation and voice stay blocked on those boundaries.
+Server-issued expiring capability leases now gate camera frames, screen share,
+push-to-talk, voice enrollment, and exact file references. They bind to the
+live creator portal and fixed scope/surface/purpose, enforce byte/use/time caps,
+stop on disconnect, replacement, expiry, or restart, and persist only HMACs plus
+sealed content-free transition evidence. House HQ and the classic app acquire
+leases before browser media access; normal text chat is unchanged.
+
+Phase 9 is not complete. Provider/model-specific egress consent is not yet
+wired into perception, and signed Discord guest identity remains unfinished.
+Phase 10 Discord participation and voice stay blocked on those boundaries.
 
 ## Stage 3 - LLM-In-The-Loop Choice Points
 

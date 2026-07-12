@@ -89,9 +89,16 @@ def isolated_server(monkeypatch):
     async def ignore_capability_audit(*_args, **_kwargs):
         return True
 
+    async def allow_capability_lease(*_args, **_kwargs):
+        return {"lease_id": "test-lease", "state": "active"}
+
     monkeypatch.setattr(server, "_ws_chat_turn_with_timeout", fake_chat)
     monkeypatch.setattr(server, "_record_qualified_creator_response", ignore_qualified_response)
     monkeypatch.setattr(server, "_record_capability_use", ignore_capability_audit)
+    monkeypatch.setattr(server, "_consume_request_capability_lease", allow_capability_lease)
+    monkeypatch.setattr(server, "_validate_request_capability_lease", allow_capability_lease)
+    monkeypatch.setattr(server, "_consume_ws_capability_lease", allow_capability_lease)
+    monkeypatch.setattr(server, "_validate_ws_capability_lease", allow_capability_lease)
     monkeypatch.setattr(server, "_mindscape_request_event_sync", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server.mind, "note_initiative_user_activity", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server.mind, "see", lambda *_args, **_kwargs: None)
