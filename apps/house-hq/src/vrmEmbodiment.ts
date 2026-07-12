@@ -17,6 +17,34 @@ import type { VRMAnimation } from "@pixiv/three-vrm-animation";
 
 export type EmbodimentStatus = "idle" | "loading" | "active" | "failed";
 
+export const VRM_VOWELS = ["aa", "ih", "ou", "ee", "oh"] as const;
+export type VrmVowel = (typeof VRM_VOWELS)[number];
+
+export type VrmDebugPosition = Readonly<{ x: number; y: number; z: number }>;
+
+export type VrmEmbodimentDebug = Readonly<{
+  groundBase: number;
+  groundOffset: number;
+  lowestSoleY: number | null;
+  springJoints: number;
+  springColliders: number;
+  face: Record<string, number>;
+  vowels: Record<VrmVowel, number>;
+  mouthCorrections: Record<string, number>;
+  mouthCorrectionBindings: number;
+  activeClip: string;
+  activePose: string;
+  activeMotion: string;
+  activeMode: "procedural" | "loop" | "once" | "twice";
+  rootPosition: VrmDebugPosition | null;
+  rootLocalPosition: VrmDebugPosition | null;
+  hipsPosition: VrmDebugPosition | null;
+  hipsLocalPosition: VrmDebugPosition | null;
+  handContactDistance: number | null;
+  interactionPhase: "approach" | "reach" | "contact" | "retract";
+  interactionTargetReachable: boolean;
+}>;
+
 export interface VrmEmbodimentDeps {
   parent: THREE.Group;
   targetHeight: number;
@@ -44,12 +72,125 @@ export interface VrmEmbodiment {
   setSpriteState(name: string, moving: boolean, talking: boolean, forceOneShot?: boolean): void;
   setInteractionTarget(target: THREE.Vector3 | null, phase: "approach" | "reach" | "contact" | "retract"): void;
   update(dt: number, camera: THREE.Camera, engaged: boolean, distanceToPlayer?: number): void;
-  debug(): { groundBase: number; groundOffset: number; lowestSoleY: number | null; springJoints: number; springColliders: number };
+  debug(): VrmEmbodimentDebug;
 }
 
 type MoodDims = { love: number; compassion: number; fear: number; energy: number };
 
 const c01 = (v: number): number => Math.max(0, Math.min(1, v));
+
+type V4MoodExpression = "happy" | "sad" | "surprised" | "relaxed" | "angry";
+
+const V4_MOOD_MOUTH_PROFILES: Readonly<Record<V4MoodExpression, Readonly<{
+  all: string;
+  brow: string;
+  eye: string;
+  mouth: string;
+}>>> = {
+  happy: { all: "Fcl_ALL_Joy", brow: "Fcl_BRW_Joy", eye: "Fcl_EYE_Joy", mouth: "Fcl_MTH_Joy" },
+  sad: { all: "Fcl_ALL_Sorrow", brow: "Fcl_BRW_Sorrow", eye: "Fcl_EYE_Sorrow", mouth: "Fcl_MTH_Sorrow" },
+  surprised: { all: "Fcl_ALL_Surprised", brow: "Fcl_BRW_Surprised", eye: "Fcl_EYE_Surprised", mouth: "Fcl_MTH_Surprised" },
+  relaxed: { all: "Fcl_ALL_Fun", brow: "Fcl_BRW_Fun", eye: "Fcl_EYE_Fun", mouth: "Fcl_MTH_Fun" },
+  angry: { all: "Fcl_ALL_Angry", brow: "Fcl_BRW_Angry", eye: "Fcl_EYE_Angry", mouth: "Fcl_MTH_Angry" },
+};
+
+export function vowelWeightsForSpeech(
+  talking: boolean,
+  shape: VrmVowel,
+  weight: number,
+): Record<VrmVowel, number> {
+  const resolved = talking && Number.isFinite(weight) ? c01(weight) : 0;
+  return {
+    aa: shape === "aa" ? resolved : 0,
+    ih: shape === "ih" ? resolved : 0,
+    ou: shape === "ou" ? resolved : 0,
+    ee: shape === "ee" ? resolved : 0,
+    oh: shape === "oh" ? resolved : 0,
+  };
+}
+
+export function v4MoodMouthCorrectionWeights(
+  weights: Partial<Record<V4MoodExpression, number>>,
+): Record<string, number> {
+  const corrections: Record<string, number> = {};
+  for (const [emotion, profile] of Object.entries(V4_MOOD_MOUTH_PROFILES) as Array<
+    [V4MoodExpression, (typeof V4_MOOD_MOUTH_PROFILES)[V4MoodExpression]]
+  >) {
+    const weight = weights[emotion] ?? 0;
+    corrections[profile.mouth] = -(Number.isFinite(weight) ? c01(weight) : 0);
+  }
+  return corrections;
+}
+
+export function isRotationOnlyVrmTrack(trackName: string): boolean {
+  return trackName.endsWith(".quaternion");
+}
+
+export function shouldScheduleVrmPerformance(activeClip: string, finishedClip: string | null): boolean {
+  return activeClip !== finishedClip;
+}
+
+export type TwoBoneReachSolution = Readonly<{
+  valid: boolean;
+  reachable: boolean;
+  targetDistance: number;
+  solvedDistance: number;
+  minReach: number;
+  maxReach: number;
+  elbowAlong: number;
+  elbowOffset: number;
+}>;
+
+const IK_EPSILON = 1e-5;
+
+export function solveTwoBoneReach(
+  upperLength: number,
+  lowerLength: number,
+  targetDistance: number,
+): TwoBoneReachSolution {
+  const valid = Number.isFinite(upperLength)
+    && Number.isFinite(lowerLength)
+    && Number.isFinite(targetDistance)
+    && upperLength > IK_EPSILON
+    && lowerLength > IK_EPSILON
+    && targetDistance > IK_EPSILON;
+  if (!valid) {
+    return {
+      valid: false,
+      reachable: false,
+      targetDistance: Number.isFinite(targetDistance) ? Math.max(0, targetDistance) : 0,
+      solvedDistance: 0,
+      minReach: 0,
+      maxReach: 0,
+      elbowAlong: 0,
+      elbowOffset: 0,
+    };
+  }
+
+  const minReach = Math.abs(upperLength - lowerLength);
+  const maxReach = upperLength + lowerLength;
+  const reachable = targetDistance >= minReach - IK_EPSILON
+    && targetDistance <= maxReach + IK_EPSILON;
+  const lowerBound = Math.min(maxReach - IK_EPSILON, minReach + IK_EPSILON);
+  const upperBound = Math.max(lowerBound, maxReach - IK_EPSILON);
+  const solvedDistance = THREE.MathUtils.clamp(targetDistance, lowerBound, upperBound);
+  const elbowAlong = (
+    upperLength * upperLength
+    - lowerLength * lowerLength
+    + solvedDistance * solvedDistance
+  ) / (2 * solvedDistance);
+  const elbowOffset = Math.sqrt(Math.max(0, upperLength * upperLength - elbowAlong * elbowAlong));
+  return {
+    valid: true,
+    reachable,
+    targetDistance,
+    solvedDistance,
+    minReach,
+    maxReach,
+    elbowAlong,
+    elbowOffset,
+  };
+}
 
 // Ported verbatim from alpecca/vrm.py MOOD_CLIPS -- every mood label the mood
 // model can produce gets a clip, so her whole emotional range is embodied.
@@ -114,6 +255,17 @@ const nextFlourishDelay = (): number =>
 // How a .vrma action is scheduled: rest poses loop forever, idle flourishes
 // play once, mood performances get at most two passes then settle.
 type PlayMode = "loop" | "once" | "twice";
+type VrmMotionPlayback = Readonly<{ name: string; mode: PlayMode }>;
+
+export function resolveVrmMotionTelemetry(
+  active: VrmMotionPlayback | null,
+  fading: VrmMotionPlayback | null,
+  proceduralPose: string,
+): Pick<VrmEmbodimentDebug, "activeMotion" | "activeMode"> {
+  if (active) return { activeMotion: active.name, activeMode: active.mode };
+  if (fading) return { activeMotion: `fading:${fading.name}`, activeMode: fading.mode };
+  return { activeMotion: `procedural:${proceduralPose}`, activeMode: "procedural" };
+}
 
 // vrmAnimations.js CLIP_EXPRESSIONS: each clip's facial profile, layered
 // atLeast (max) over the mood-lerped weights every frame. A "blink" entry
@@ -162,8 +314,8 @@ const BONES: readonly VRMHumanBoneName[] = [
   "leftFoot", "rightFoot",
 ];
 
-const MOUTH = ["aa", "ih", "ou", "ee", "oh"] as const;
-type MouthShape = (typeof MOUTH)[number];
+const MOUTH = VRM_VOWELS;
+type MouthShape = VrmVowel;
 
 const LOAD_WATCHDOG_MS = 45_000;
 const MEASURE_SAMPLES = 1200;
@@ -173,13 +325,13 @@ const BLINK_INTERVAL_MIN = 2.8;
 const BLINK_INTERVAL_MAX = 6.5;
 const MAX_MOUTH_WEIGHT = 0.55;
 const INTERACTION_REACH_WEIGHT = {
-  approach: 0.22,
-  reach: 0.72,
-  contact: 0.9,
+  approach: 0.28,
+  reach: 1,
+  contact: 1,
   retract: 0,
 } as const;
-const MAX_REACH_ANGLE = 1.05;
-const MAX_ELBOW_BEND = 0.62;
+const MAX_SHOULDER_IK_DELTA = 1.75;
+const MAX_ELBOW_IK_DELTA = 2.45;
 const MAX_WRIST_TURN = 0.16;
 const INTERACTION_CONTACT_THRESHOLD = 0.2;
 
@@ -214,6 +366,33 @@ function withWatchdog<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   });
 }
 
+function collectionSize(value: unknown): number {
+  if (Array.isArray(value)) return value.length;
+  const size = (value as { size?: unknown } | null)?.size;
+  return typeof size === "number" && Number.isFinite(size) ? size : 0;
+}
+
+const roundTelemetry = (value: number): number => Math.round(value * 1000) / 1000;
+
+type MorphTargetMesh = THREE.Mesh & {
+  morphTargetDictionary?: Record<string, number>;
+  morphTargetInfluences?: number[];
+};
+
+type ExpressionMorphTargetBind = {
+  primitives: readonly MorphTargetMesh[];
+  index: number;
+  weight: number;
+};
+
+type V4MouthCorrectionBinding = {
+  emotion: V4MoodExpression;
+  morphName: string;
+  mesh: MorphTargetMesh;
+  index: number;
+  expressionScale: number;
+};
+
 export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   let status: EmbodimentStatus = "idle";
   let vrm: VRM | null = null;
@@ -231,6 +410,8 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   const dims: MoodDims = { love: 0.5, compassion: 0.5, fear: 0.2, energy: 0.5 };
   let exprTarget: Record<string, number> = expressionsForState(dims);
   const exprNow: Record<string, number> = {};
+  let v4MouthCorrectionBindings: V4MouthCorrectionBinding[] = [];
+  const mouthCorrectionNow: Record<string, number> = {};
 
   let spriteName = "";
   let spriteMoving = false;
@@ -246,21 +427,33 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   let interactionContactAvailable = false;
   let interactionInContact = false;
   let interactionContactDistance: number | null = null;
+  let interactionTargetReachable = false;
   const interactionLookTarget = new THREE.Object3D();
   interactionLookTarget.name = "Alpecca terminal gaze target";
-  const reachUpperWorld = new THREE.Vector3();
-  const reachDirectionWorld = new THREE.Vector3();
-  const reachDirectionLocal = new THREE.Vector3();
-  const reachRestDirection = new THREE.Vector3();
+  const reachShoulderWorld = new THREE.Vector3();
+  const reachElbowWorld = new THREE.Vector3();
+  const reachTargetDirection = new THREE.Vector3();
+  const reachCurrentDirection = new THREE.Vector3();
+  const reachDesiredDirection = new THREE.Vector3();
+  const reachBoneOriginWorld = new THREE.Vector3();
+  const reachPoleWorld = new THREE.Vector3();
+  const reachFallbackPoleWorld = new THREE.Vector3();
+  const reachElbowTargetWorld = new THREE.Vector3();
+  const reachHandTargetWorld = new THREE.Vector3();
   const reachParentWorld = new THREE.Quaternion();
+  const reachBoneWorld = new THREE.Quaternion();
   const reachAim = new THREE.Quaternion();
-  const reachClampedAim = new THREE.Quaternion();
-  const reachElbow = new THREE.Quaternion();
+  const reachLimitedAim = new THREE.Quaternion();
+  const reachTargetWorld = new THREE.Quaternion();
+  const reachTargetLocal = new THREE.Quaternion();
+  const reachIdentity = new THREE.Quaternion();
   const reachWrist = new THREE.Quaternion();
   const reachEuler = new THREE.Euler();
   const interactionHandWorld = new THREE.Vector3();
+  const debugPositionVector = new THREE.Vector3();
 
   let clipName = "idle";
+  let activePoseName = "idle";
   let clipTime = 0;   // restarts when the resolved clip changes (fresh cycle)
 
   // Face timing is stateful instead of tied to a fixed modulo cycle. That
@@ -282,10 +475,12 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   let mixer: THREE.AnimationMixer | null = null;
   let currentAction: THREE.AnimationAction | null = null;
   let currentVrmaName: string | null = null;
+  let currentPlayMode: PlayMode | null = null;
   const vrmaClips = new Map<string, THREE.AnimationClip>();
   const vrmaLoading = new Set<string>();
   const vrmaFailed = new Set<string>();   // never refetched; procedural covers them
   const fading: THREE.AnimationAction[] = [];
+  const actionPlayback = new WeakMap<THREE.AnimationAction, VrmMotionPlayback>();
 
   // Anti-animatronic scheduling: a finished one-shot/twice performance must not
   // immediately replay (finishedForClip gates it until the state changes), and
@@ -352,6 +547,93 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     em.setValue(name, atLeast ? Math.max(c01(cur), value) : value);
   }
 
+  function expressionMorphBind(bind: unknown): ExpressionMorphTargetBind | null {
+    const candidate = bind as Partial<ExpressionMorphTargetBind> | null;
+    if (!candidate
+      || !Array.isArray(candidate.primitives)
+      || !Number.isInteger(candidate.index)
+      || !Number.isFinite(candidate.weight)) return null;
+    return candidate as ExpressionMorphTargetBind;
+  }
+
+  function discoverV4MouthCorrections(forVrm: VRM): V4MouthCorrectionBinding[] {
+    const manager = forVrm.expressionManager;
+    if (!manager) return [];
+
+    // V4's measured VRoid morphs are exact component sums: ALL = BRW + EYE +
+    // MTH. Only compensate when the authored emotion really binds that ALL
+    // target and the matching component targets are present. The mouth target
+    // must also be unbound so this never overwrites a generic VRM expression.
+    const boundTargets = new Set<string>();
+    for (const expression of manager.expressions) {
+      for (const rawBind of expression.binds) {
+        const bind = expressionMorphBind(rawBind);
+        if (!bind) continue;
+        for (const primitive of bind.primitives) {
+          boundTargets.add(`${primitive.uuid}:${bind.index}`);
+        }
+      }
+    }
+
+    const corrections: V4MouthCorrectionBinding[] = [];
+    for (const [emotion, profile] of Object.entries(V4_MOOD_MOUTH_PROFILES) as Array<
+      [V4MoodExpression, (typeof V4_MOOD_MOUTH_PROFILES)[V4MoodExpression]]
+    >) {
+      const expression = manager.getExpression(emotion);
+      if (!expression) continue;
+      for (const rawBind of expression.binds) {
+        const bind = expressionMorphBind(rawBind);
+        if (!bind) continue;
+        for (const mesh of bind.primitives) {
+          const dictionary = mesh.morphTargetDictionary;
+          const influences = mesh.morphTargetInfluences;
+          if (!dictionary || !influences || dictionary[profile.all] !== bind.index) continue;
+          const mouthIndex = dictionary[profile.mouth];
+          if (!Number.isInteger(dictionary[profile.brow])
+            || !Number.isInteger(dictionary[profile.eye])
+            || !Number.isInteger(mouthIndex)
+            || influences[mouthIndex] == null
+            || boundTargets.has(`${mesh.uuid}:${mouthIndex}`)) continue;
+          corrections.push({
+            emotion,
+            morphName: profile.mouth,
+            mesh,
+            index: mouthIndex,
+            expressionScale: bind.weight,
+          });
+        }
+      }
+    }
+    return corrections;
+  }
+
+  function clearV4MouthCorrections(): void {
+    for (const binding of v4MouthCorrectionBindings) {
+      const influences = binding.mesh.morphTargetInfluences;
+      if (influences?.[binding.index] != null) influences[binding.index] = 0;
+    }
+    for (const profile of Object.values(V4_MOOD_MOUTH_PROFILES)) {
+      mouthCorrectionNow[profile.mouth] = 0;
+    }
+  }
+
+  function applyV4MouthCorrections(): void {
+    const manager = vrm?.expressionManager;
+    if (!manager || v4MouthCorrectionBindings.length === 0) return;
+    const expressionWeights: Partial<Record<V4MoodExpression, number>> = {};
+    for (const emotion of Object.keys(V4_MOOD_MOUTH_PROFILES) as V4MoodExpression[]) {
+      expressionWeights[emotion] = manager.getExpression(emotion)?.outputWeight ?? 0;
+    }
+    const corrections = v4MoodMouthCorrectionWeights(expressionWeights);
+    for (const binding of v4MouthCorrectionBindings) {
+      const influences = binding.mesh.morphTargetInfluences;
+      if (!influences || influences[binding.index] == null) continue;
+      const correction = (corrections[binding.morphName] ?? 0) * binding.expressionScale;
+      influences[binding.index] = correction;
+      mouthCorrectionNow[binding.morphName] = correction;
+    }
+  }
+
   function nextBlinkDelay(): number {
     return BLINK_INTERVAL_MIN + Math.random() * (BLINK_INTERVAL_MAX - BLINK_INTERVAL_MIN);
   }
@@ -401,6 +683,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     interactionPhase = "retract";
     interactionWeight = 0;
     interactionElapsed = 0;
+    interactionTargetReachable = false;
     invalidateInteractionContactStatus();
     if (vrm?.lookAt?.target === interactionLookTarget) {
       vrm.lookAt.target = null;
@@ -424,7 +707,9 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     if (!Number.isFinite(distance)) return;
     interactionContactAvailable = true;
     interactionContactDistance = distance;
-    interactionInContact = distance <= INTERACTION_CONTACT_THRESHOLD;
+    interactionInContact = interactionPhase === "contact"
+      && interactionTargetReachable
+      && distance <= INTERACTION_CONTACT_THRESHOLD;
   }
 
   function advanceInteraction(dt: number): boolean {
@@ -435,41 +720,108 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     if ((interactionPhase === "retract" || !interactionTarget) && interactionWeight < 0.004) {
       interactionWeight = 0;
       interactionTarget = null;
+      interactionTargetReachable = false;
     }
     return interactionTarget !== null && (interactionPhase !== "retract" || interactionWeight > 0);
   }
 
+  function aimBoneTowardWorldPoint(
+    targetBone: THREE.Object3D,
+    currentChildWorld: THREE.Vector3,
+    desiredChildWorld: THREE.Vector3,
+    maxDelta: number,
+    weight: number,
+  ): boolean {
+    const parent = targetBone.parent;
+    if (!parent || weight <= 0) return false;
+    targetBone.getWorldPosition(reachBoneOriginWorld);
+    reachCurrentDirection.copy(currentChildWorld).sub(reachBoneOriginWorld);
+    reachDesiredDirection.copy(desiredChildWorld).sub(reachBoneOriginWorld);
+    if (reachCurrentDirection.lengthSq() < 1e-10 || reachDesiredDirection.lengthSq() < 1e-10) return false;
+    reachCurrentDirection.normalize();
+    reachDesiredDirection.normalize();
+    reachAim.setFromUnitVectors(reachCurrentDirection, reachDesiredDirection);
+    const angle = reachAim.angleTo(reachIdentity);
+    reachLimitedAim.identity();
+    if (angle > maxDelta) reachLimitedAim.slerp(reachAim, maxDelta / angle);
+    else reachLimitedAim.copy(reachAim);
+
+    targetBone.getWorldQuaternion(reachBoneWorld);
+    reachTargetWorld.copy(reachLimitedAim).multiply(reachBoneWorld);
+    parent.getWorldQuaternion(reachParentWorld).invert();
+    reachTargetLocal.copy(reachParentWorld).multiply(reachTargetWorld).normalize();
+    targetBone.quaternion.slerp(reachTargetLocal, c01(weight));
+    targetBone.updateWorldMatrix(true, true);
+    return true;
+  }
+
   function applyInteractionReach(): void {
     const target = interactionTarget;
+    interactionTargetReachable = false;
     if (!target || interactionWeight <= 0) return;
     const upper = bone("rightUpperArm");
     const lower = bone("rightLowerArm");
     const hand = bone("rightHand");
     const parent = upper?.parent;
-    if (!upper || !lower || !hand || !parent || lower.position.lengthSq() < 1e-8) return;
+    if (!upper || !lower || !hand || !parent) return;
 
-    parent.updateWorldMatrix(true, false);
-    upper.getWorldPosition(reachUpperWorld);
-    reachDirectionWorld.copy(target).sub(reachUpperWorld);
-    if (reachDirectionWorld.lengthSq() < 1e-8) return;
-    parent.getWorldQuaternion(reachParentWorld).invert();
-    reachDirectionLocal.copy(reachDirectionWorld).applyQuaternion(reachParentWorld).normalize();
-    reachRestDirection.copy(lower.position).normalize();
-    reachAim.setFromUnitVectors(reachRestDirection, reachDirectionLocal);
+    parent.updateWorldMatrix(true, true);
+    upper.getWorldPosition(reachShoulderWorld);
+    lower.getWorldPosition(reachElbowWorld);
+    hand.getWorldPosition(interactionHandWorld);
+    const upperLength = reachShoulderWorld.distanceTo(reachElbowWorld);
+    const lowerLength = reachElbowWorld.distanceTo(interactionHandWorld);
+    reachTargetDirection.copy(target).sub(reachShoulderWorld);
+    const solution = solveTwoBoneReach(upperLength, lowerLength, reachTargetDirection.length());
+    if (!solution.valid) return;
+    interactionTargetReachable = solution.reachable;
+    reachTargetDirection.normalize();
 
-    const aimAngle = reachAim.angleTo(reachClampedAim.identity());
-    reachClampedAim.identity().slerp(
-      reachAim,
-      aimAngle > MAX_REACH_ANGLE ? MAX_REACH_ANGLE / aimAngle : 1,
+    // Keep the current elbow side when it is defined. A body-relative down/
+    // forward pole handles a nearly straight source pose without a frame-to-
+    // frame plane flip.
+    reachPoleWorld.copy(reachElbowWorld).sub(reachShoulderWorld);
+    reachPoleWorld.addScaledVector(reachTargetDirection, -reachPoleWorld.dot(reachTargetDirection));
+    if (reachPoleWorld.lengthSq() < 1e-8) {
+      parent.getWorldQuaternion(reachParentWorld);
+      reachFallbackPoleWorld.set(0, -1, 0).applyQuaternion(reachParentWorld);
+      reachPoleWorld.copy(reachFallbackPoleWorld)
+        .addScaledVector(reachTargetDirection, -reachFallbackPoleWorld.dot(reachTargetDirection));
+    }
+    if (reachPoleWorld.lengthSq() < 1e-8) {
+      reachFallbackPoleWorld.set(0, 0, 1).applyQuaternion(reachParentWorld);
+      reachPoleWorld.copy(reachFallbackPoleWorld)
+        .addScaledVector(reachTargetDirection, -reachFallbackPoleWorld.dot(reachTargetDirection));
+    }
+    if (reachPoleWorld.lengthSq() < 1e-8) return;
+    reachPoleWorld.normalize();
+
+    reachElbowTargetWorld.copy(reachShoulderWorld)
+      .addScaledVector(reachTargetDirection, solution.elbowAlong)
+      .addScaledVector(reachPoleWorld, solution.elbowOffset);
+    reachHandTargetWorld.copy(reachShoulderWorld)
+      .addScaledVector(reachTargetDirection, solution.solvedDistance);
+
+    if (!aimBoneTowardWorldPoint(
+      upper,
+      reachElbowWorld,
+      reachElbowTargetWorld,
+      MAX_SHOULDER_IK_DELTA,
+      interactionWeight,
+    )) return;
+    lower.getWorldPosition(reachElbowWorld);
+    hand.getWorldPosition(interactionHandWorld);
+    aimBoneTowardWorldPoint(
+      lower,
+      interactionHandWorld,
+      reachHandTargetWorld,
+      MAX_ELBOW_IK_DELTA,
+      interactionWeight,
     );
-    upper.quaternion.slerp(reachClampedAim, interactionWeight);
 
     const contactSettle = interactionPhase === "contact"
       ? Math.sin(interactionElapsed * 2.4) * 0.012
       : 0;
-    const elbowBend = MAX_ELBOW_BEND * interactionWeight;
-    reachElbow.setFromEuler(reachEuler.set(0.04, 0.06, -elbowBend));
-    lower.quaternion.slerp(reachElbow, Math.min(1, interactionWeight * 0.82));
     reachWrist.setFromEuler(reachEuler.set(
       -MAX_WRIST_TURN * 0.35,
       MAX_WRIST_TURN * 0.55,
@@ -720,9 +1072,16 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       }
       const response = lipTarget > lipNow ? 24 : 32;
       lipNow += (lipTarget - lipNow) * (1 - Math.exp(-Math.max(0, dt) * response));
-      if (lipNow > 0.008) setExpr(lipShape, Math.min(MAX_MOUTH_WEIGHT, lipNow), true);
       setExpr(TALK_EMOTIONS[moodLabel] ?? "relaxed", 0.32, true);
     }
+    // Write every vowel on every frame. The first frame after speech therefore
+    // closes all five explicitly, independent of the prior active shape.
+    const vowels = vowelWeightsForSpeech(
+      clip === "talking",
+      lipShape,
+      lipNow > 0.008 ? Math.min(MAX_MOUTH_WEIGHT, lipNow) : 0,
+    );
+    for (const vowel of MOUTH) setExpr(vowel, vowels[vowel]);
   }
 
   function applyExpressions(dt: number): void {
@@ -739,12 +1098,14 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   function capEmotions(): void {
     const em = vrm?.expressionManager;
     if (!em) return;
+    // Caps wide enough that the mood range is visible (joyful vs content must
+    // differ) while stacked layers still cannot pin an uncanny extreme.
     const caps: Record<string, number> = {
-      happy: 0.5,
-      sad: 0.62,
-      surprised: 0.42,
+      happy: 0.85,
+      sad: 0.7,
+      surprised: 0.55,
       angry: 0,
-      relaxed: 0.46,
+      relaxed: 0.7,
     };
     for (const [name, cap] of Object.entries(caps)) {
       const value = em.getValue(name);
@@ -837,7 +1198,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
         // and fight the house's own roaming -- keep rotations only; position
         // belongs to the house (root motion) and the grounding clamp.
         const clip = lib.createVRMAnimationClip(anim, forVrm);
-        clip.tracks = clip.tracks.filter((t) => t.name.endsWith(".quaternion"));
+        clip.tracks = clip.tracks.filter((t) => isRotationOnlyVrmTrack(t.name));
         vrmaClips.set(name, clip);
       })
       .catch(() => {
@@ -863,11 +1224,13 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     else next.setLoop(THREE.LoopRepeat, mode === "twice" ? 2 : 1);
     next.clampWhenFinished = true;   // hold the last frame; the fade-out blends it away
     next.play();
+    actionPlayback.set(next, { name, mode });
     const prev = currentAction;
     if (prev && prev !== next) { prev.crossFadeTo(next, VRMA_FADE, false); fading.push(prev); }
     else next.fadeIn(VRMA_FADE);
     currentAction = next;
     currentVrmaName = name;
+    currentPlayMode = mode;
   }
 
   function stopVrma(): void {
@@ -876,6 +1239,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     fading.push(currentAction);
     currentAction = null;
     currentVrmaName = null;
+    currentPlayMode = null;
   }
 
   // Fully faded actions must be stop()ped so their bindings release the bones
@@ -883,8 +1247,22 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   function reapFaded(): void {
     for (let i = fading.length - 1; i >= 0; i--) {
       const a = fading[i];
-      if (a && a.getEffectiveWeight() <= 0.001) { a.stop(); fading.splice(i, 1); }
+      if (a && a.getEffectiveWeight() <= 0.001) {
+        a.stop();
+        actionPlayback.delete(a);
+        fading.splice(i, 1);
+      }
     }
+  }
+
+  function latestFadingPlayback(): VrmMotionPlayback | null {
+    for (let i = fading.length - 1; i >= 0; i--) {
+      const action = fading[i];
+      if (!action) continue;
+      const playback = actionPlayback.get(action);
+      if (playback) return playback;
+    }
+    return null;
   }
 
   /* ---- foot grounding (ported from apps/vcs vrmIK.js) ----
@@ -1012,6 +1390,8 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
 
       vrm = loaded;
       wrapper = w;
+      v4MouthCorrectionBindings = discoverV4MouthCorrections(loaded);
+      clearV4MouthCorrections();
       resetFaceValues();
       resetBlinkTiming();
       resetLipTiming();
@@ -1078,6 +1458,17 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     return loaded;
   }
 
+  function debugPositionOf(node: THREE.Object3D | null, world: boolean): VrmDebugPosition | null {
+    if (!node) return null;
+    if (world) node.getWorldPosition(debugPositionVector);
+    else debugPositionVector.copy(node.position);
+    return {
+      x: roundTelemetry(debugPositionVector.x),
+      y: roundTelemetry(debugPositionVector.y),
+      z: roundTelemetry(debugPositionVector.z),
+    };
+  }
+
   return {
     get status(): EmbodimentStatus {
       return status;
@@ -1095,6 +1486,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     async activate(): Promise<boolean> {
       if (vrm && wrapper) {   // cached fast path: just re-show
         resetFaceValues();
+        clearV4MouthCorrections();
         resetBlinkTiming();
         resetLipTiming();
         clipTime = 0;
@@ -1116,6 +1508,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
 
     deactivate(): void {
       resetFaceValues();
+      clearV4MouthCorrections();
       resetBlinkTiming();
       resetLipTiming();
       clearInteraction();
@@ -1126,6 +1519,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
 
     dispose(): void {
       resetFaceValues();
+      clearV4MouthCorrections();
       clearInteraction();
       if (mixer) {
         mixer.stopAllAction();
@@ -1134,6 +1528,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       mixer = null;
       currentAction = null;
       currentVrmaName = null;
+      currentPlayMode = null;
       forcedReplayClip = null;
       fading.length = 0;
       vrmaClips.clear();   // clips were retargeted to this vrm instance
@@ -1142,6 +1537,8 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       if (vrm && deepDispose) deepDispose(vrm.scene);
       vrm = null;
       wrapper = null;
+      v4MouthCorrectionBindings = [];
+      for (const name of Object.keys(mouthCorrectionNow)) delete mouthCorrectionNow[name];
       loadPromise = null;
       deepDispose = null;
       groundBase = 0;
@@ -1218,7 +1615,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       let wantMode: PlayMode = "loop";
       if (!spriteMoving && !interactionActive) {
         const mapped = CLIP_VRMA[clipName] ?? null;
-        if (mapped && finishedForClip !== clipName) {
+        if (mapped && shouldScheduleVrmPerformance(clipName, finishedForClip)) {
           wantVrma = mapped;
           wantMode = VRMA_MODE[clipName] ?? "once";
         } else if (!mapped && (clipName === "idle" || clipName === "idle_soft")) {
@@ -1259,7 +1656,13 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       const performanceLimit = PROCEDURAL_PERFORMANCE_SECONDS[clipName];
       const performanceSettled = finishedForClip === clipName
         || (!vrmaDriven && performanceLimit !== undefined && clipTime >= performanceLimit);
-      const poseClip = performanceSettled ? settledPoseFor(clipName) : clipName;
+      const resolvedPoseClip = performanceSettled ? settledPoseFor(clipName) : clipName;
+      // A terminal solve owns the stationary right arm. Start it from the
+      // stable idle skeleton instead of the procedural point/wave pose, whose
+      // raised shoulder can put an otherwise reachable panel outside the
+      // bounded IK delta. Walking approach frames keep their leg cycle.
+      const poseClip = interactionActive && !spriteMoving ? "idle" : resolvedPoseClip;
+      activePoseName = poseClip;
 
       if (!vrmaDriven) {
         for (const n of BONES) { const b = bone(n); if (b) b.rotation.set(0, 0, 0); }
@@ -1301,19 +1704,63 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
           vrm.lookAt.target = engaged || distanceToPlayer < NOTICE_DISTANCE ? camera : null;
         }
       }
+      clearV4MouthCorrections();
       vrm.update(dt);
+      applyV4MouthCorrections();
       groundFeet(dt);   // after vrm.update: clamp the posed soles to the floor
       updateInteractionContactStatus();
     },
 
-    debug(): { groundBase: number; groundOffset: number; lowestSoleY: number | null; springJoints: number; springColliders: number } {
-      const springs = (vrm as unknown as { springBoneManager?: { joints?: Set<unknown>; colliders?: unknown[] } } | null)?.springBoneManager;
+    debug(): VrmEmbodimentDebug {
+      const springs = (vrm as unknown as {
+        springBoneManager?: { joints?: unknown; colliders?: unknown };
+      } | null)?.springBoneManager;
+      const face: Record<string, number> = {};
+      const vowels = vowelWeightsForSpeech(false, "aa", 0);
+      const em = vrm?.expressionManager;
+      if (em) {
+        for (const name of [
+          "blink", "blinkLeft", "blinkRight", "happy", "sad", "relaxed", "surprised", "angry", "neutral",
+          ...MOUTH,
+        ]) {
+          const value = em.getValue(name);
+          if (value != null) face[name] = roundTelemetry(value);
+        }
+        for (const vowel of MOUTH) vowels[vowel] = face[vowel] ?? 0;
+      }
+      const mouthCorrections = Object.fromEntries(
+        Object.entries(mouthCorrectionNow).map(([name, value]) => [name, roundTelemetry(value)]),
+      );
+      const root = vrm?.scene ?? null;
+      const rawHips = vrm?.humanoid.getRawBoneNode("hips") ?? null;
+      const normalizedHips = bone("hips");
+      const motionTelemetry = resolveVrmMotionTelemetry(
+        currentVrmaName && currentPlayMode ? { name: currentVrmaName, mode: currentPlayMode } : null,
+        latestFadingPlayback(),
+        activePoseName,
+      );
       return {
         groundBase,
         groundOffset,
         lowestSoleY: lowestSole(),
-        springJoints: springs?.joints ? (springs.joints as Set<unknown>).size ?? 0 : 0,
-        springColliders: Array.isArray(springs?.colliders) ? springs.colliders.length : 0,
+        springJoints: collectionSize(springs?.joints),
+        springColliders: collectionSize(springs?.colliders),
+        face,
+        vowels,
+        mouthCorrections,
+        mouthCorrectionBindings: v4MouthCorrectionBindings.length,
+        activeClip: clipName,
+        activePose: activePoseName,
+        ...motionTelemetry,
+        rootPosition: debugPositionOf(root, true),
+        rootLocalPosition: debugPositionOf(root, false),
+        hipsPosition: debugPositionOf(rawHips, true),
+        hipsLocalPosition: debugPositionOf(normalizedHips, false),
+        handContactDistance: interactionContactDistance == null
+          ? null
+          : roundTelemetry(interactionContactDistance),
+        interactionPhase,
+        interactionTargetReachable,
       };
     },
   };

@@ -689,6 +689,15 @@ root X/Z/yaw, remove hips translation from stationary clips, calibrate height to
 finish one-shot gesture scheduling, replace permanent LookAround looping, and
 attach hoodie hem chains to appropriate collider groups without changing design.
 
+Implemented through 2026-07-12: direct 1.70 m scaling; translation-track
+rejection; finite one-shot/LookAround handling; five-vowel speech closure;
+V4-specific mouth-component cancellation that preserves mood eyes/brows;
+bounded two-bone right-arm terminal IK; and explicit face, fade, root, hips,
+sole, contact, reachability, joint, and collider telemetry. Actual V4 probes
+measured 1.70009 m, 40 mouth-correction bindings, 74 joints, 22 colliders, and
+near-zero hand error for a reachable target. Live soak/turntable/grounding and
+every-terminal acceptance remain open.
+
 Exit gate: 74 joints and 22 colliders remain; stationary excursion <=3 cm;
 sole penetration <=5 mm and float <=8 mm; gestures return to procedural idle;
 mouth closes after speech; no fixed expression period; ten-minute physics soak

@@ -411,10 +411,16 @@ staged plan at Jason's instruction.
 
 ### Phase 12: V4 embodiment behavior and physics
 
-Keep V4 and all 74 spring joints. Correct root movement, stationary hips tracks,
-1.70 m scale, posed-sole grounding, expression reset, one-shot gesture
-scheduling, LookAround looping, and hoodie collider attachment. Gate on the
-documented ten-minute physics soak and four-angle design-lock turntable.
+**PARTIAL.** V4 now uses direct 1.70 m scaling, rejects VRMA translation tracks,
+keeps finite one-shot/LookAround scheduling, closes all five vowels after speech,
+compensates the measured V4 mood-mouth components without removing eye/brow
+emotion, and uses bounded two-bone right-arm IK for terminal contact. Debug
+telemetry exposes face/vowels, active/fading VRMA mode, root/hips, hand distance,
+reachability, soles, and spring counts. Actual-model probes measured 1.70009 m,
+40 valid mouth-correction bindings, near-zero reachable-hand error, 74 spring
+joints, and 22 colliders. Keep Phase 12 open until the ten-minute physics soak,
+all-terminal contact drill, per-clip sole measurements, hoodie collider check,
+and four-angle design-lock turntable pass.
 
 ### Phase 13: cloud egress and Mindscape continuity - BLOCKED
 

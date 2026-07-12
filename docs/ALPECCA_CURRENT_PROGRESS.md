@@ -197,6 +197,12 @@ labels retained in historical plans and handoffs.
   the Phase 6E-6H contract.
 - Discord proactive participation, recursion, and voice remain default-off until
   the Phase 10 identity, scope, and rate-limit gates pass.
+- Phase 12 V4 behavior is **PARTIAL** with direct 1.70 m scaling, translation-
+  track rejection, post-speech vowel/mood-mouth closure, bounded two-bone
+  terminal reach, and expanded runtime telemetry implemented. The model retains
+  74 spring joints and 22 colliders. Formal completion still requires the
+  ten-minute physics soak, every-terminal contact drill, sole measurements, and
+  four-angle design-lock turntable.
 - `ALPECCA_TOOL_MODE` is `smart` and `ALPECCA_INNATE_TOOLS=1` in this branch.
 - Chat tool-calling is now gated and observable through tool schemas + `CognitionObservation`.
 - Embedding backfill now runs in background on idle drift ticks.

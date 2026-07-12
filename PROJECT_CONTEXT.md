@@ -39,6 +39,13 @@ retained elsewhere for historical context.
   before model routing. Phase 9 remains **PARTIAL**: the
   provider/model-specific egress consent broker and signed Discord guest
   identity remain unfinished; Phase 10 stays blocked.
+- Phase 12 embodiment has advanced in parallel: V4 now targets a measured
+  1.70 m height, strips VRMA root translation, compensates V4 full-face mouth
+  morphs after speech, uses bounded two-bone right-arm terminal IK, and exposes
+  explicit fade/face/root/contact telemetry. The 74 spring joints and 22
+  colliders are unchanged. Phase 12 remains partial pending the ten-minute
+  physics soak, all-terminal contact drill, sole measurements, and four-angle
+  design-lock turntable.
 
 ## Identity
 

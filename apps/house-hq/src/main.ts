@@ -1,6 +1,10 @@
 import * as THREE from "three";
 import "./styles.css";
-import { createVrmEmbodiment, type VrmEmbodiment } from "./vrmEmbodiment";
+import {
+  createVrmEmbodiment,
+  type VrmEmbodiment,
+  type VrmEmbodimentDebug,
+} from "./vrmEmbodiment";
 
 type AlpeccaRuntimeProbe = {
   ready: boolean;
@@ -249,6 +253,7 @@ declare global {
         stagePad?: string;
         stageQaIssues?: string[];
         navClearance?: string;
+        vrm?: VrmEmbodimentDebug;
         x: number;
         z: number;
       };
@@ -1421,7 +1426,7 @@ const alpeccaPresenceColor = new THREE.Color();
 const alpeccaFloorColor = new THREE.Color();
 const alpeccaSpritePlaneSize = 2.58;
 const alpeccaSpriteDepthScale = 1;
-const alpeccaStandingVisibleHeight = 1.704;
+const alpeccaStandingVisibleHeight = 1.70;
 const alpeccaStandingPresentationScale = 1.12;
 const alpeccaGroundClearance = 0.02;
 const alpeccaCylinderBodyRadius = 0.72;
@@ -1867,7 +1872,7 @@ function ensureAlpeccaVrmEmbodiment(): VrmEmbodiment {
   if (alpeccaVrmEmbodiment) return alpeccaVrmEmbodiment;
   alpeccaVrmEmbodiment = createVrmEmbodiment({
     parent: alpecca.group,
-    targetHeight: alpeccaStandingVisibleHeight * alpeccaStandingPresentationScale,
+    targetHeight: alpeccaStandingVisibleHeight,
     groundClearance: alpeccaGroundClearance,
     manifestUrl: () => alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/vrm/manifest`),
     modelUrl: (file: string) => alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/vrm/model/${encodeURIComponent(file)}`),
@@ -1914,6 +1919,7 @@ async function activateAlpeccaVrm() {
 function deactivateAlpeccaVrm() {
   releaseAlpeccaVrmTerminalTarget();
   alpeccaVrmEmbodiment?.deactivate();
+  if (window.__HOUSE_DEBUG__?.alpecca) delete window.__HOUSE_DEBUG__.alpecca.vrm;
   alpeccaEmbodimentState = "sprite";
   localStorage.setItem(alpeccaEmbodimentStorageKey, "sprite");
   setAlpeccaSpriteVisualsVisible(true);
@@ -1931,6 +1937,9 @@ function updateAlpeccaEmbodiment(dt: number) {
   );
   alpeccaVrmEmbodiment.setSpriteState(alpecca.state, alpecca.moving, talking);
   alpeccaVrmEmbodiment.update(dt, camera, engaged, distanceToPlayer);
+  if (window.__HOUSE_DEBUG__?.alpecca) {
+    window.__HOUSE_DEBUG__.alpecca.vrm = alpeccaVrmEmbodiment.debug();
+  }
 }
 
 // --- HUD density: minimal chip HUD vs the full card stack.
