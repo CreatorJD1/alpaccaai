@@ -86,8 +86,10 @@ A hardened provider/model/deployment-specific egress consent ledger now exists
 with exact operation/keyed-payload binding, independent rollback anchoring,
 restart revocation, tokenless server consumption, exact sealed schema identity,
 and bounded maintenance. It remains a foundation: no perception provider or
-interactive creator control is wired to it. Signed Discord guest identity also
-remains unfinished.
+interactive creator control is wired to it. A hardened signed Discord guest-
+actor core also exists with actual request-byte/event/scope bindings and
+structurally guest-only results, but bridge minting and server consumption are
+not wired.
 Phase 10 Discord participation and voice stay blocked on those boundaries.
 
 ## Stage 3 - LLM-In-The-Loop Choice Points

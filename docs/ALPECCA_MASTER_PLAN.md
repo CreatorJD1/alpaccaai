@@ -653,8 +653,11 @@ and byte count; it adds independent rollback anchoring, restart revocation,
 sealed content-free attempt evidence, exact schema verification, tokenless
 server consumption, and bounded cleanup. Remaining before DONE: wire an
 interactive creator authority and this core into each perception provider
-attempt, then bind Discord service authentication to server-signed guest actor
-subjects. Until then Phase 10 remains blocked.
+attempt. A hardened signed guest-actor core now binds actual request bytes,
+Discord event and scope identifiers, fixed service policy, and independent
+rollback evidence to a structurally guest-only result. It still needs bridge
+minting, server consumption, and stable actor/thread scope derivation. Until
+both live wiring gates pass, Phase 10 remains blocked.
 
 Exit gate: Alpecca can cite viewed files/images/audio with provenance; malformed
 or oversized inputs fail closed; prompt injection cannot grant authority; no

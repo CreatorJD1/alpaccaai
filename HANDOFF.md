@@ -48,6 +48,15 @@ retained below as historical implementation evidence.
   manifest, tokenless server consumption, content-free attempt evidence, and
   fixed-batch stale cleanup. Vision/provider calls, the interactive creator
   authority, API/UI controls, and ordered attempt reporting still need wiring.
+- A hardened signed bridge-actor core now exists in
+  `alpecca/bridge_actor_identity.py`. Its constructor fixes the service/platform
+  boundary, policy, clock, keys, and external anchor; envelopes bind actual
+  request bytes, Discord event ID, actor, guild, channel, and thread through
+  keyed identifiers and can only produce a factory-validated guest result. It
+  verifies exact schema objects, detects rollback/truncation, and supports the
+  current bounded image JSON size. It remains unwired: the Discord bridge does
+  not mint envelopes and `/channel/discord` does not consume them or derive a
+  stable actor/thread conversation scope.
 - Creator-DM Discord images are now implemented through a dedicated authenticated
   `/channel/discord` route. The bridge accepts one PNG/JPEG/GIF under 2 MiB,
   sniffs MIME/dimensions from bytes before forwarding, records content-free
@@ -74,8 +83,8 @@ retained below as historical implementation evidence.
   `tests/test_core.py` is green; the focused lease suites are green; House HQ
   builds; and the classic inline JavaScript parses successfully.
 - Phase 9 is not DONE: the provider/model-specific egress consent core is not
-  wired into perception, and Discord guild actors still need signed guest
-  subjects so bridge service authentication cannot become creator authority.
+  wired into perception, and the signed guest-actor core still needs bridge/
+  server envelope wiring and stable scope derivation.
   Keep Phase 10 Discord participation/voice blocked.
 
 - `/house-hq` now serves the **Void Prototype**, including a native categorized

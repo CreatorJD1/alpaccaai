@@ -190,8 +190,9 @@ labels retained in historical plans and handoffs.
   auto-stops at 60 seconds and stale work cancels on disconnect. A hardened,
   independently anchored provider/model/deployment-specific egress consent core
   now exists, but no vision/provider call or interactive creator control uses it
-  yet. Remaining gates are wiring that core and signed Discord guest
-  subjects; Phase 10 stays blocked.
+  yet. A hardened request/event/scope-bound signed guest-actor core also exists,
+  but no bridge/server path mints or consumes its envelopes. Remaining gates are
+  wiring both cores; Phase 10 stays blocked.
 - Phase 6 remains partial. The next gated action is to clear resources and
   re-run preflight, then separately authorize one 8,192 measurement; no direct
   pagefile mutation is authorized. See `docs/CONTEXT_TIER_MEASUREMENT.md` for

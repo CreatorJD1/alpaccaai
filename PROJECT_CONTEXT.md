@@ -41,8 +41,10 @@ retained elsewhere for historical context.
   keyed payload binding, independent rollback anchoring, restart revocation,
   sealed content-free receipts, and bounded maintenance. Phase 9 remains
   **PARTIAL**: vision/provider calls and interactive creator decisions are not
-  wired to that ledger, and signed Discord guest identity remains unfinished;
-  Phase 10 stays blocked.
+  wired to that ledger. A hardened signed guest-actor identity core also exists
+  with actual request-byte/event/scope bindings, independent rollback anchoring,
+  exact schema identity, and structurally guest-only results, but the bridge and
+  server do not mint or consume its envelopes yet. Phase 10 stays blocked.
 - Phase 12 embodiment has advanced in parallel: V4 now targets a measured
   1.70 m height, strips VRMA root translation, compensates V4 full-face mouth
   morphs after speech, uses bounded two-bone right-arm terminal IK, and exposes
