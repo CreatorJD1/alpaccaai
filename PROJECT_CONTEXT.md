@@ -72,6 +72,13 @@ retained elsewhere for historical context.
   Production egress, actor identity, and notification wiring must inject an
   anchor from a separate failure domain; coordinated restoration of both local
   SQLite files cannot be detected honestly.
+- The local untracked `creator_contact.py` experiment is rejected WIP and is not
+  imported by production code. Its direct transports bypass the outbox and must
+  not be wired or checkpointed; the local WIP default is off.
+- Phase 7 now has a read-only pagefile planning foundation only. It uses
+  command-free Phase 6 commit/disk evidence, preserves unknowns, and can propose
+  one exact 4,096 MiB step under code-owned cap/floor rules. It cannot persist,
+  approve, elevate, execute, or mutate any system setting.
 - Phase 12 embodiment has advanced in parallel: V4 now targets a measured
   1.70 m height, strips VRMA root translation, compensates V4 full-face mouth
   morphs after speech, uses bounded two-bone right-arm terminal IK, and exposes

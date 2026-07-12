@@ -153,7 +153,7 @@ They are not fixed Alpecca hardware.
 | Mindpage Layer A | PARTIAL | Request ledger, write-before-delete paging, tiers, page faults, bounded sidecar content-term indexing, fixed-prompt overflow refusal, and cooperative maintenance cancellation work. Legacy index backfill is idle-scheduled; LLM calls, TTS synthesis, reflection, and VACUUM are not force-cancelled |
 | Conversation/privacy partitioning | DONE | Creator app and House HQ turns are scope-partitioned; future guest/Discord subjects remain capability-denied until their later gates |
 | Resource pressure sensing | PARTIAL | Read-only `HostResourceSampler` exposes host evidence through `GET /system/resources`; Phase 6F uses only fresh advisory host pressure to defer optional maintenance before a coordinator lease. Phase 6G separately projects the cached assessment into Soul `host_pressure`, never raw telemetry or advisory data; unknown stays `null`, it makes no LLM/system call, and it does not change seven-agent deliberation, urgency, or actions. Phase 6H adds an execute-only, read-only context-measurement preflight: known unsafe evidence blocks before HTTP, while unknowns remain explicit and do not fabricate a block. Chat and TTS are unchanged, and no automatic context reduction/pagefile/configuration/system action occurs |
-| Approved pagefile broker | BLOCKED | Draft math, caps, approval proof, live recheck, and verification are unsafe |
+| Approved pagefile broker | PARTIAL | Read-only exact-step planner is tested; approval, elevated helper, live recheck, write, and verification remain blocked |
 | llama.cpp KV slot persistence | PARKED | Downloaded experiment, not integrated |
 
 ### Tier 4: Autonomy, improvement, and automation
@@ -394,7 +394,7 @@ automatic context reduction, pagefile, configuration, or system action occurs.
 The largest promoted context tier stays below 90 percent commit, preserves 2 GiB
 of physical RAM, and does not enter sustained SSD paging.
 
-### Phase 7: Creator-approved pagefile broker - BLOCKED
+### Phase 7: Creator-approved pagefile broker - PARTIAL; READ-ONLY PLANNER COMPLETE
 
 Keep policy constants immutable: 4,096 MiB per step, 55,296 MiB hard cap, and
 40 GiB projected C: free-space floor. Environment values may only tighten them.
@@ -405,6 +405,13 @@ back the setting, and records the result.
 From the audited 38,000 MiB baseline, valid steps are 42,096, 46,192, 50,288,
 and 54,384 MiB. 58,480 MiB is rejected. Current commit was about 42 percent, so
 no increase is presently recommended.
+
+Implemented foundation: command-free Phase 6 commit/disk measurement plus a
+pure proposal function. It preserves unknown evidence, uses exact integer 20
+percent headroom comparison, proposes only the next 4,096 MiB step, and keeps
+the cap/floor code-owned. It has no persistence, route, approval consumer,
+elevation, helper, or mutation capability, so the broker execution gate remains
+blocked.
 
 Exit gate: exact arithmetic, stale baseline, replay, disk loss, system-managed
 mode, cap/floor, UAC, post-write readback, and audit tests pass. Every step needs

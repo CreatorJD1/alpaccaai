@@ -221,6 +221,12 @@ labels retained in historical plans and handoffs.
   no creator-contact channel is live.
   Independent follow-up review passes 47 focused tests, including repeated
   concurrency runs; this completes the model-free core, not delivery.
+- The untracked `creator_contact.py` direct-send experiment is **REJECTED WIP**,
+  not a Phase 11 implementation. It is currently unimported/inert and locally
+  defaults off. Its Web Push/Discord/SMS/OpenClaw calls bypass outbox claims,
+  quotas, indeterminate outcomes, and sender-bound acknowledgement, so it must
+  not be wired or checkpointed. Future work starts with one dormant Web Push
+  adapter behind the reviewed outbox.
 - SQLite anchor sidecars are development-only and cannot detect coordinated
   restoration with their main database. Production identity, egress, and outbox
   wiring still requires a separate-failure-domain monotonic anchor.
@@ -284,9 +290,11 @@ following higher-risk features remain held or bounded:
   signed bridge subjects and allowlists exist.
 - Discord text/media and Mindscape exist as partial adapters, not secure
   autonomous presence.
-- `alpecca/creator_contact.py` and `alpecca/system_pressure.py` are untracked WIP
-  scaffolds, not live capabilities. The pagefile implementation is not approved
-  for activation.
+- `alpecca/system_pressure.py` is now a tested read-only Phase 7 foundation:
+  command-free commit/disk measurement and a pure exact-step proposal only. It
+  has no pagefile mutation, persistence, approval consumer, elevation, route,
+  scheduler, or UI. Execution remains blocked. `alpecca/creator_contact.py`
+  remains rejected untracked WIP and is not live.
 
 The corrected local compute target is approximately 24 GB DDR4 with an RTX 3050
 Laptop GPU (4 GB). The old 34 GB/H100 labels describe optional cloud notebook or

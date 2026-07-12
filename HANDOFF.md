@@ -320,14 +320,19 @@ real 16K/24K/32K/48K measurements stay below 90 percent commit, retain 2 GiB
 physical-RAM headroom, and avoid sustained SSD paging. The 38,000 MiB pagefile
 is commit reserve, not extra VRAM or a reason to oversubscribe the laptop.
 
-### Phase 7: creator-approved pagefile broker - BLOCKED
+### Phase 7: creator-approved pagefile broker - PARTIAL; READ-ONLY PLANNER COMPLETE
 
-Implement only after Phase 6 supplies pressure evidence. It needs a separate
-minimal elevated helper, fresh one-use CreatorJD approval, live remeasurement,
-post-write readback, 4,096 MiB steps, 55,296 MiB cap, and 40 GiB free-space
-floor. Valid steps from the 38,000 MiB baseline are 42,096, 46,192, 50,288, and
-54,384 MiB. Do not modify pagefile settings in development or without explicit
-fresh creator approval.
+`alpecca/system_pressure.py` is now a read-only, command-free planning
+foundation. It samples only Phase 6 commit/disk probes, preserves unknowns,
+uses exact integer 20 percent headroom math, and can propose exactly one 4,096
+MiB step from measured configuration evidence. The 55,296 MiB cap and projected
+40 GiB system-disk floor are code-owned. From 38,000 MiB the only next proposal
+is 42,096 MiB.
+
+It has no command, pagefile write, persistence, approval consumer, elevation,
+server route, scheduler, or UI. Execution remains blocked until a separate
+minimal elevated helper performs fresh live remeasurement, consumes one
+authenticated CreatorJD approval atomically, writes once, and verifies readback.
 
 ### Phase 8: bounded recursive self-improvement - PARTIAL
 
@@ -459,6 +464,14 @@ The bundled SQLite anchor implementations are development-only and detect
 uncoordinated main-DB rollback. They do not detect a coordinated restore of both
 local files. Production identity, egress, or notification wiring therefore
 requires a `MonotonicAnchor` implementation in a separate failure domain.
+
+Do **not** import or checkpoint the current untracked
+`alpecca/creator_contact.py`. Audit found that its direct Web Push/Discord/SMS/
+OpenClaw sends bypass the outbox, accept caller-controlled routing and cooldown
+bypass, expose caller reason to shared cognition/Mindscape, and lack restart-safe
+idempotency or sender-bound acknowledgement. It is inert because nothing imports
+it, and the local WIP config default is now off. Redesign one dormant adapter at
+a time behind outbox claims; start with Web Push only.
 
 ### Phase 12: V4 embodiment behavior and physics
 
