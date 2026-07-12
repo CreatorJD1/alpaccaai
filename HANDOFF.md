@@ -34,6 +34,12 @@ retained below as historical implementation evidence.
   HMACs plus uniquely sealed, content-free transition receipts persist. House
   HQ and the secondary classic app acquire grants before opening browser media
   devices; ordinary text chat remains lease-free.
+- Discord transport authentication is partitioned from creator authority. The
+  bridge uses a separate Credential Manager/deployment secret and a closed
+  service header; `/channel/discord` rejects the creator bearer and enters
+  CoreMind as `guest`. Image-bearing bridge requests use loopback even when
+  text traffic is configured for a tunnel. Signed per-actor subjects and scoped
+  Discord conversation identity are still not wired.
 - Creator-DM Discord images are now implemented through a dedicated authenticated
   `/channel/discord` route. The bridge accepts one PNG/JPEG/GIF under 2 MiB,
   sniffs MIME/dimensions from bytes before forwarding, records content-free

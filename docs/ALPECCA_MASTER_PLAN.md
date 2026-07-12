@@ -642,7 +642,10 @@ provenance, tool suppression, and ephemeral derived answers; legacy raw
 camera frames, screen sharing, push-to-talk, voice enrollment, and exact file
 references. Fixed use/byte/time ceilings, explicit stop, disconnect, portal
 replacement, restart recovery, and sealed content-free transition evidence are
-implemented in House HQ and the secondary classic app.
+implemented in House HQ and the secondary classic app. Discord transport now
+uses a separate service-only credential: the Discord route rejects the creator
+bearer, maps transport authority to `guest`, and keeps image-bearing bridge
+requests on loopback. Signed per-actor subjects are still required.
 
 Remaining before DONE: wire provider/model-specific cloud consent and immutable
 egress evidence into each perception provider attempt, and bind Discord service

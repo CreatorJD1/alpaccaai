@@ -46,12 +46,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from alpecca.auth import AUTHORIZATION_HEADER, load_or_create_authorization_secret
+from alpecca.auth import (
+    BRIDGE_AUTHORIZATION_HEADER,
+    load_or_create_bridge_authorization_secret,
+)
 from alpecca import discord_media
 from config import HOME, HOST, PORT, PUBLIC_URL
 
 
-_AUTHORIZATION_SECRET = load_or_create_authorization_secret(HOME)
+_BRIDGE_AUTHORIZATION_SECRET = load_or_create_bridge_authorization_secret(HOME)
 
 def _resolve_backend_url() -> str:
     """Prefer explicit backend override, then shared public URL, then local host."""
@@ -68,6 +71,7 @@ def _resolve_backend_url() -> str:
 
 
 BACKEND_URL = _resolve_backend_url()
+LOCAL_BACKEND_URL = f"http://127.0.0.1:{PORT}"
 DM_ALLOW = {s.strip() for s in os.environ.get("ALPECCA_DISCORD_DM_ALLOW", "").split(",") if s.strip()}
 # The allowlist accepts numeric user ids AND usernames (e.g. "realcreatorjd").
 # Usernames resolve to ids lazily on first contact (the DM itself carries the
@@ -163,10 +167,14 @@ def _ask_alpecca(text: str, sender: str, channel: str,
     body = json.dumps(body_obj).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
-        AUTHORIZATION_HEADER: _AUTHORIZATION_SECRET,
+        BRIDGE_AUTHORIZATION_HEADER: _BRIDGE_AUTHORIZATION_SECRET,
     }
+    # Pixel-bearing requests stay on the laptop even when text traffic uses a
+    # tunnel. Cloud model egress, when explicitly consented, happens only after
+    # the local server validates and classifies the image.
+    backend_url = LOCAL_BACKEND_URL if image else BACKEND_URL
     req = urllib.request.Request(
-        f"{BACKEND_URL}/channel/discord",
+        f"{backend_url}/channel/discord",
         data=body,
         headers=headers,
         method="POST",
@@ -202,7 +210,7 @@ def _synth_voice_wav(text: str) -> "bytes | None":
     body = json.dumps({"text": text}).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
-        AUTHORIZATION_HEADER: _AUTHORIZATION_SECRET,
+        BRIDGE_AUTHORIZATION_HEADER: _BRIDGE_AUTHORIZATION_SECRET,
     }
     req = urllib.request.Request(f"{BACKEND_URL}/tts", data=body, headers=headers, method="POST")
     try:

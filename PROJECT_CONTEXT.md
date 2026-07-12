@@ -33,7 +33,10 @@ retained elsewhere for historical context.
   capability leases now gate camera frames, screen sharing, push-to-talk, voice
   enrollment, and exact file references. They bind to the live portal and fail
   closed on expiry, replay, disconnect, replacement, or restart, with sealed
-  content-free transition receipts. Phase 9 remains **PARTIAL**: the
+  content-free transition receipts. Discord transport now uses a separate
+  service-only credential; `/channel/discord` rejects the creator bearer, maps
+  the bridge to `guest`, and keeps image-bearing bridge requests on loopback
+  before model routing. Phase 9 remains **PARTIAL**: the
   provider/model-specific egress consent broker and signed Discord guest
   identity remain unfinished; Phase 10 stays blocked.
 

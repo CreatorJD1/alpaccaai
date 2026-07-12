@@ -184,8 +184,11 @@ labels retained in historical plans and handoffs.
   bounded exact references and remain ephemeral after the live answer. Expiring
   portal-bound leases now gate camera, screen, microphone, voice enrollment,
   and exact file-reference use with fixed caps, disconnect/restart revocation,
-  and sealed content-free evidence. House microphone capture auto-stops at 60
-  seconds and stale work cancels on disconnect. Remaining gates are wiring the
+  and sealed content-free evidence. Discord bridge authentication now uses a
+  separate service-only credential, maps to `guest`, rejects the creator bearer,
+  and keeps image-bearing backend requests on loopback. House microphone capture
+  auto-stops at 60 seconds and stale work cancels on disconnect. Remaining gates
+  are wiring the
   provider/model-specific egress consent broker and signed Discord guest
   subjects; Phase 10 stays blocked.
 - Phase 6 remains partial. The next gated action is to clear resources and

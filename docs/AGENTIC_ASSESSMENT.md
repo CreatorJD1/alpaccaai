@@ -75,6 +75,13 @@ stop on disconnect, replacement, expiry, or restart, and persist only HMACs plus
 sealed content-free transition evidence. House HQ and the classic app acquire
 leases before browser media access; normal text chat is unchanged.
 
+Discord transport authentication is separate from creator authorization. The
+bridge receives a service-only credential, `/channel/discord` treats it as
+guest transport rather than CreatorJD, and image-bearing bridge requests stay
+on loopback until server-side perception routing. Signed per-actor subjects
+remain unfinished, so this does not enable guild participation or Discord
+autonomy.
+
 Phase 9 is not complete. Provider/model-specific egress consent is not yet
 wired into perception, and signed Discord guest identity remains unfinished.
 Phase 10 Discord participation and voice stay blocked on those boundaries.

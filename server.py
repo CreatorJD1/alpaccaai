@@ -2326,6 +2326,7 @@ app = FastAPI(title="Alpecca", lifespan=lifespan)
 from starlette.responses import JSONResponse as _JSON
 
 _AUTH_SECRET = auth_mod.load_or_create_authorization_secret(HOME)
+_DISCORD_BRIDGE_SECRET = auth_mod.load_or_create_bridge_authorization_secret(HOME)
 _capability_lease_store = capability_leases_mod.CapabilityLeaseStore(
     DB_PATH,
     seal_key=_AUTH_SECRET,
@@ -2346,6 +2347,7 @@ _AUTHORITY = auth_mod.SessionAuthority(
     _AUTH_SECRET,
     session_ttl_s=_TRUSTED_DEVICE_DAYS * 24 * 60 * 60,
     creator_password=_CREATOR_PASSWORD,
+    service_secrets={"discord-bridge": _DISCORD_BRIDGE_SECRET},
 )
 _PUBLIC_AUTH_PATHS = frozenset({
     "/healthz",
@@ -2553,10 +2555,21 @@ async def _auth_gate(request: Request, call_next):
         return _with_cors(await call_next(request), origin)
 
     client_host = request.client.host if request.client else ""
-    decision = _AUTHORITY.authorize_request(
-        headers=request.headers,
-        cookies=request.cookies,
-        query=request.query_params,
+    bridge_header_present = bool(
+        request.headers.get(auth_mod.BRIDGE_AUTHORIZATION_HEADER, "").strip()
+    )
+    decision = (
+        _AUTHORITY.validate_bridge_service(
+            request.headers,
+            service="discord-bridge",
+        )
+        if request.url.path == "/channel/discord"
+        or (request.url.path == "/tts" and bridge_header_present)
+        else _AUTHORITY.authorize_request(
+            headers=request.headers,
+            cookies=request.cookies,
+            query=request.query_params,
+        )
     )
     if not decision.allowed:
         _record_auth_decision(
@@ -3161,6 +3174,26 @@ def _require_creator_request(req: Request) -> auth_mod.AuthDecision:
         raise HTTPException(
             status_code=403,
             detail="creator authorization required",
+            headers={"Cache-Control": "no-store"},
+        )
+    return decision
+
+
+def _require_discord_bridge_request(req: Request) -> auth_mod.AuthDecision:
+    decision = getattr(req.state, "authorization", None)
+    if not isinstance(decision, auth_mod.AuthDecision) or not decision.allowed:
+        raise HTTPException(
+            status_code=401,
+            detail="Discord bridge authorization required",
+            headers={"Cache-Control": "no-store"},
+        )
+    if (
+        decision.mechanism != "service_bearer"
+        or decision.principal != "service:discord-bridge"
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Discord bridge service required",
             headers={"Cache-Control": "no-store"},
         )
     return decision
@@ -6403,7 +6436,14 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     image_desc = None
     image_perception: dict[str, object] | None = None
     decision = getattr(req.state, "authorization", None)
-    principal = getattr(decision, "principal", "guest") or "guest"
+    if route_surface == "discord":
+        _require_discord_bridge_request(req)
+        # A bridge process is authenticated as a transport service, never as
+        # CreatorJD. Signed actor subjects will later partition Discord guest
+        # conversations without widening this principal.
+        principal = "guest"
+    else:
+        principal = getattr(decision, "principal", "guest") or "guest"
     request_connection = req.headers.get(
         capability_leases_mod.CONNECTION_HEADER, ""
     ).strip()
@@ -6480,8 +6520,8 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     # descriptions are never treated as perception evidence.
     if image_data:
         if route_surface == "discord":
-            decision = _require_creator_request(req)
-            principal = decision.principal
+            _require_discord_bridge_request(req)
+            principal = "guest"
             if not DISCORD_MEDIA_ENABLED:
                 raise HTTPException(
                     status_code=403,

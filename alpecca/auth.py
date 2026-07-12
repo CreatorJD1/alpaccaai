@@ -21,6 +21,9 @@ from typing import Any
 
 AUTH_ENV_NAME = "ALPECCA_AUTH_SECRET"
 CREDENTIAL_TARGET = "Alpecca/ServerAuthorization"
+BRIDGE_AUTH_ENV_NAME = "ALPECCA_DISCORD_BRIDGE_SECRET"
+BRIDGE_AUTHORIZATION_HEADER = "X-Alpecca-Bridge-Authorization"
+BRIDGE_CREDENTIAL_TARGET = "Alpecca/DiscordBridgeAuthorization"
 CREATOR_PASSWORD_ENV_NAME = "ALPECCA_CREATOR_PASSWORD"
 CREATOR_PASSWORD_CREDENTIAL_TARGET = "Alpecca/CreatorPassword"
 AUTHORIZATION_HEADER = "X-Alpecca-Authorization"
@@ -32,6 +35,7 @@ _MAX_CREDENTIAL_CHARS = 4096
 _MAX_PASSWORD_ATTEMPTS = 5
 PASSWORD_WINDOW_SECONDS = 60
 _PROCESS_SECRET: str | None = None
+_PROCESS_BRIDGE_SECRET: str | None = None
 _PROCESS_SECRET_LOCK = threading.Lock()
 
 _PUBLIC_IDENTITY_HEADERS = frozenset(
@@ -57,6 +61,14 @@ def _process_authorization_secret() -> str:
         if _PROCESS_SECRET is None:
             _PROCESS_SECRET = _new_secret()
         return _PROCESS_SECRET
+
+
+def _process_bridge_authorization_secret() -> str:
+    global _PROCESS_BRIDGE_SECRET
+    with _PROCESS_SECRET_LOCK:
+        if _PROCESS_BRIDGE_SECRET is None:
+            _PROCESS_BRIDGE_SECRET = _new_secret()
+        return _PROCESS_BRIDGE_SECRET
 
 
 def _credential_error_code(exc: BaseException) -> int | None:
@@ -90,7 +102,11 @@ def _decode_credential_blob(blob: Any) -> str:
     return value
 
 
-def _load_or_create_windows_credential() -> str:
+def _load_or_create_named_windows_credential(
+    target: str,
+    *,
+    comment: str,
+) -> str:
     try:
         import win32cred
     except ImportError as exc:
@@ -100,7 +116,7 @@ def _load_or_create_windows_credential() -> str:
 
     try:
         credential = win32cred.CredRead(
-            CREDENTIAL_TARGET, win32cred.CRED_TYPE_GENERIC, 0
+            target, win32cred.CRED_TYPE_GENERIC, 0
         )
     except Exception as exc:
         if _credential_error_code(exc) not in {2, 1168}:
@@ -113,23 +129,30 @@ def _load_or_create_windows_credential() -> str:
         win32cred.CredWrite(
             {
                 "Type": win32cred.CRED_TYPE_GENERIC,
-                "TargetName": CREDENTIAL_TARGET,
+                "TargetName": target,
                 # pywin32 requires a str here (rejects bytes with a TypeError
                 # on cold start) and stores it as UTF-16-LE; the reader above
                 # detects and reverses that encoding.
                 "CredentialBlob": generated,
                 "Persist": win32cred.CRED_PERSIST_LOCAL_MACHINE,
                 "UserName": "Alpecca",
-                "Comment": "Alpecca server authorization secret",
+                "Comment": comment,
             },
             0,
         )
         credential = win32cred.CredRead(
-            CREDENTIAL_TARGET, win32cred.CRED_TYPE_GENERIC, 0
+            target, win32cred.CRED_TYPE_GENERIC, 0
         )
     except Exception as exc:
         raise RuntimeError("Could not store the authorization credential.") from exc
     return _decode_credential_blob(credential.get("CredentialBlob"))
+
+
+def _load_or_create_windows_credential() -> str:
+    return _load_or_create_named_windows_credential(
+        CREDENTIAL_TARGET,
+        comment="Alpecca server authorization secret",
+    )
 
 
 def _read_windows_credential(target: str) -> str | None:
@@ -216,6 +239,32 @@ def load_or_create_authorization_secret(
     if os.name == "nt" and not _test_environment(env):
         return _load_or_create_windows_credential()
     return _process_authorization_secret()
+
+
+def load_or_create_bridge_authorization_secret(
+    home: Path,
+    environ: MutableMapping[str, str] | None = None,
+) -> str:
+    """Load the Discord bridge's service-only credential.
+
+    This credential is deliberately separate from creator authorization. It
+    can authenticate the one Discord ingress route, but it cannot mint a
+    creator session or authorize any creator-only endpoint.
+    """
+
+    Path(home)
+    env = os.environ if environ is None else environ
+    if BRIDGE_AUTH_ENV_NAME in env:
+        supplied = env[BRIDGE_AUTH_ENV_NAME]
+        if not isinstance(supplied, str) or not supplied.strip():
+            raise ValueError(f"{BRIDGE_AUTH_ENV_NAME} must not be empty.")
+        return supplied
+    if os.name == "nt" and not _test_environment(env):
+        return _load_or_create_named_windows_credential(
+            BRIDGE_CREDENTIAL_TARGET,
+            comment="Alpecca Discord bridge service credential",
+        )
+    return _process_bridge_authorization_secret()
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,6 +393,7 @@ class SessionAuthority:
     """Mint and validate bounded bootstrap grants and signed sessions."""
 
     authorization_header = AUTHORIZATION_HEADER
+    bridge_authorization_header = BRIDGE_AUTHORIZATION_HEADER
     cookie_name = SESSION_COOKIE_NAME
 
     def __init__(
@@ -352,6 +402,7 @@ class SessionAuthority:
         session_ttl_s: int = 28800,
         bootstrap_ttl_s: int = 60,
         creator_password: str | None = None,
+        service_secrets: Mapping[str, str] | None = None,
     ) -> None:
         if not isinstance(secret, str) or not secret.strip():
             raise ValueError("Authorization secret must not be empty.")
@@ -361,6 +412,21 @@ class SessionAuthority:
         self.session_ttl_s = int(session_ttl_s)
         self.bootstrap_ttl_s = int(bootstrap_ttl_s)
         self._bearer_digest = self._digest(b"bearer", self._secret)
+        self._service_bearer_digests: dict[str, bytes] = {}
+        for service, service_secret in (service_secrets or {}).items():
+            if service != "discord-bridge":
+                raise ValueError("Unsupported bridge service.")
+            if (
+                not isinstance(service_secret, str)
+                or len(service_secret.encode("utf-8")) < 32
+            ):
+                raise ValueError(
+                    "Bridge service secret must contain at least 32 bytes."
+                )
+            self._service_bearer_digests[service] = self._digest(
+                b"service-bearer-v1\x00" + service.encode("ascii"),
+                service_secret.encode("utf-8"),
+            )
         self._creator_password_digest = (
             self._digest(b"creator-password-v1", creator_password.encode("utf-8"))
             if creator_password else None
@@ -548,6 +614,37 @@ class SessionAuthority:
             return AuthDecision(False, "bearer", "rejected")
         return AuthDecision(True, "bearer", "accepted", principal="creator")
 
+    def validate_bridge_service(
+        self,
+        headers: Mapping[str, Any] | None,
+        *,
+        service: str = "discord-bridge",
+    ) -> AuthDecision:
+        """Authenticate one closed bridge service without creator authority."""
+
+        expected = self._service_bearer_digests.get(service)
+        if expected is None:
+            return AuthDecision(False, "service_bearer", "not_configured")
+        supplied = _mapping_value(headers, BRIDGE_AUTHORIZATION_HEADER)
+        if not supplied:
+            return AuthDecision(False, "service_bearer", "missing")
+        if supplied[:7].casefold() == "bearer ":
+            supplied = supplied[7:]
+        if not supplied or len(supplied) > _MAX_CREDENTIAL_CHARS:
+            return AuthDecision(False, "service_bearer", "malformed")
+        candidate = self._digest(
+            b"service-bearer-v1\x00" + service.encode("ascii"),
+            supplied.encode("utf-8"),
+        )
+        if not hmac.compare_digest(candidate, expected):
+            return AuthDecision(False, "service_bearer", "rejected")
+        return AuthDecision(
+            True,
+            "service_bearer",
+            "accepted",
+            principal=f"service:{service}",
+        )
+
     @property
     def password_configured(self) -> bool:
         return self._creator_password_digest is not None
@@ -719,6 +816,9 @@ class SessionAuthority:
 __all__ = [
     "AUTH_ENV_NAME",
     "AUTHORIZATION_HEADER",
+    "BRIDGE_AUTH_ENV_NAME",
+    "BRIDGE_AUTHORIZATION_HEADER",
+    "BRIDGE_CREDENTIAL_TARGET",
     "CREDENTIAL_TARGET",
     "CREATOR_PASSWORD_CREDENTIAL_TARGET",
     "CREATOR_PASSWORD_ENV_NAME",
@@ -729,6 +829,7 @@ __all__ = [
     "SessionCookie",
     "is_loopback_address",
     "load_creator_password",
+    "load_or_create_bridge_authorization_secret",
     "load_or_create_authorization_secret",
     "set_windows_creator_password",
 ]

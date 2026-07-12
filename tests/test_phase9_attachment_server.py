@@ -35,6 +35,13 @@ def _auth_headers() -> dict[str, str]:
     return {server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET}
 
 
+def _bridge_headers() -> dict[str, str]:
+    return {
+        server.auth_mod.BRIDGE_AUTHORIZATION_HEADER:
+            server._DISCORD_BRIDGE_SECRET,
+    }
+
+
 def _assert_png_perception(
     perception: dict[str, object],
     payload: bytes,
@@ -152,7 +159,7 @@ def test_authenticated_house_channel_png_uses_one_local_vision_call_and_metadata
     )
 
 
-def test_creator_discord_image_uses_enabled_remote_vision_with_truthful_metadata(
+def test_bridge_authenticated_discord_image_has_guest_authority_and_truthful_metadata(
     client, monkeypatch, isolated_server
 ):
     payload = _png()
@@ -179,7 +186,7 @@ def test_creator_discord_image_uses_enabled_remote_vision_with_truthful_metadata
 
     response = client.post(
         "/channel/discord",
-        headers=_auth_headers(),
+        headers=_bridge_headers(),
         json={"text": "Who is this?", "image": _data_url(payload)},
     )
 
@@ -188,7 +195,7 @@ def test_creator_discord_image_uses_enabled_remote_vision_with_truthful_metadata
     assert vision_calls == [(payload, False)]
     assert audit_calls == [(
         "discord_media",
-        {"action": "observe", "principal": "creator", "source": "discord_bridge"},
+        {"action": "observe", "principal": "guest", "source": "discord_bridge"},
     )]
     assert isolated_server[-1]["image_desc"] == "A creator-supplied Discord image."
     assert body["perception"]["classification_scope"] == "local-ingress-validation"
@@ -216,7 +223,7 @@ def test_discord_image_route_is_disabled_without_explicit_media_opt_in(
 
     response = client.post(
         "/channel/discord",
-        headers=_auth_headers(),
+        headers=_bridge_headers(),
         json={"text": "Who is this?", "image": _data_url(_png())},
     )
 
