@@ -105,6 +105,36 @@ class _ReadOnlyOutcomeLedger:
         return self.snapshot
 
 
+class _TrialSettlementStore:
+    def __init__(
+        self,
+        settlement: dict[str, object] | None = None,
+        settlements: list[dict[str, object]] | None = None,
+    ) -> None:
+        self.settlement = settlement
+        self.calls: list[tuple[int, object]] = []
+        self.list_calls: list[tuple[object, int]] = []
+        self.settlements = [] if settlements is None else settlements
+
+    def get_settlement(self, trial_id: int, db_path):
+        self.calls.append((trial_id, db_path))
+        return self.settlement if self.settlement and trial_id == self.settlement["trial_id"] else None
+
+    def list_settlements(self, db_path, *, limit: int):
+        self.list_calls.append((db_path, limit))
+        return list(self.settlements)
+
+
+class _SettlementWorker:
+    def __init__(self, settlements: list[dict[str, object]] | None = None) -> None:
+        self.settlements = [] if settlements is None else settlements
+        self.calls: list[object] = []
+
+    def settle_closed_trials(self, db_path):
+        self.calls.append(db_path)
+        return list(self.settlements)
+
+
 def _trial_record(*, state: str = "registered") -> dict[str, object]:
     return {
         "id": 9,
@@ -117,6 +147,67 @@ def _trial_record(*, state: str = "registered") -> dict[str, object]:
             "metric": "qualified_response_rate",
         },
         "approval_proof": {"proof_id": "must-not-leak"},
+    }
+
+
+def _closed_trial_record() -> dict[str, object]:
+    record = _trial_record(state="rolled_back")
+    record["spec"] = {
+        "parameter": "chatter_chance",
+        "metric": "qualified_response_rate",
+        "baseline": 0.5,
+        "min_samples": 5,
+    }
+    record.update({
+        "started_at": 100.0,
+        "planned_end_at": 400.0,
+        "ended_at": 400.0,
+        "rollback": {
+            "recorded_at": 400.0,
+            "reason": "planned behavior trial exposure elapsed",
+        },
+    })
+    return record
+
+
+def _settlement_snapshot(*, trial_id: int = 9) -> dict[str, object]:
+    evidence = {
+        "metric": "qualified_response_rate",
+        "definition_version": 1,
+        "trial_id": trial_id,
+        "dispatching": 0,
+        "pending": 0,
+        "qualified_responses": 3,
+        "unanswered": 2,
+        "cancelled": 0,
+        "completed": 5,
+        "rate": 0.6,
+    }
+    return {
+        "contract_version": 1,
+        "trial_id": trial_id,
+        "scope": "creator-personal",
+        "parameter": "chatter_chance",
+        "metric": "qualified_response_rate",
+        "definition_version": 1,
+        "spec_sha256": "a" * 64,
+        "settled_at": 500.0,
+        "status": "ready_for_creator_review",
+        "recommendation": "creator_review_required",
+        "evidence": evidence,
+        "review": {
+            "trial_id": trial_id,
+            "spec_sha256": "a" * 64,
+            "evaluation": {
+                **evidence,
+                "spec_sha256": "a" * 64,
+                "baseline": 0.5,
+                "min_samples": 5,
+                "delta_from_baseline": 0.1,
+                "readiness": "ready_for_creator_review",
+                "comparison": "improved",
+            },
+        },
     }
 
 
@@ -342,8 +433,10 @@ def test_behavior_trial_status_handler_returns_snapshot_for_creator(monkeypatch)
     }
     controller = _ReadOnlyStatusController(snapshot)
     outcome = _ReadOnlyOutcomeLedger({"metric": "qualified_response_rate", "completed": 0})
+    settlements = _TrialSettlementStore()
     monkeypatch.setattr(server, "behavior_trial_controller", controller)
     monkeypatch.setattr(server, "qualified_response_ledger", outcome)
+    monkeypatch.setattr(server, "behavior_trial_settlement_mod", settlements)
     server._behavior_trial_recovery_ready.set()
 
     response = server.behavior_trial_status(_creator_request())
@@ -353,9 +446,12 @@ def test_behavior_trial_status_handler_returns_snapshot_for_creator(monkeypatch)
     assert json.loads(response.body) == {
         **snapshot,
         "outcome_evidence": outcome.snapshot,
+        "review_settlements": [],
+        "review_settlements_available": True,
     }
     assert controller.calls == ["status_snapshot"]
     assert outcome.calls == ["summary"]
+    assert settlements.list_calls == [(server.DB_PATH, 5)]
 
 
 def test_behavior_trial_status_handler_rejects_anonymous_before_controller_access(monkeypatch):
@@ -397,8 +493,10 @@ def test_behavior_trial_status_handler_returns_503_until_recovery(monkeypatch):
 def test_behavior_trial_status_handler_never_calls_mutators(monkeypatch):
     controller = _ReadOnlyStatusController({"state": "ready", "recent": []})
     outcome = _ReadOnlyOutcomeLedger({"metric": "qualified_response_rate", "completed": 0})
+    settlements = _TrialSettlementStore()
     monkeypatch.setattr(server, "behavior_trial_controller", controller)
     monkeypatch.setattr(server, "qualified_response_ledger", outcome)
+    monkeypatch.setattr(server, "behavior_trial_settlement_mod", settlements)
     server._behavior_trial_recovery_ready.set()
 
     response = server.behavior_trial_status(_creator_request())
@@ -406,6 +504,7 @@ def test_behavior_trial_status_handler_never_calls_mutators(monkeypatch):
     assert response.status_code == 200
     assert controller.calls == ["status_snapshot"]
     assert outcome.calls == ["summary"]
+    assert settlements.list_calls == [(server.DB_PATH, 5)]
 
 
 def test_creator_approval_route_derives_all_facts_from_server_authorization(monkeypatch):
@@ -745,6 +844,174 @@ def test_creator_start_asgi_rejects_allowed_non_creator_before_controller_access
     assert controller.calls == []
 
 
+def test_settlement_maintenance_records_only_new_frozen_reviews(monkeypatch):
+    worker = _SettlementWorker([{
+        "trial_id": 9,
+        "status": "ready_for_creator_review",
+    }])
+    observations: list[object] = []
+    monkeypatch.setattr(server, "behavior_trial_settlement_mod", worker)
+    monkeypatch.setattr(
+        server.cognition_mod, "record_observation", lambda observation: observations.append(observation)
+    )
+    server._behavior_trial_recovery_ready.set()
+
+    asyncio.run(server._settle_closed_behavior_trials_once())
+
+    assert worker.calls == [server.DB_PATH]
+    assert len(observations) == 1
+    assert observations[0].source == "behavior_trial_settlement"
+    assert observations[0].metadata == {
+        "trial_count": 1,
+        "trial_ids": [9],
+        "statuses": ["ready_for_creator_review"],
+        "runtime_change": False,
+    }
+
+
+def test_settlement_maintenance_is_gated_and_silent_without_new_snapshots(monkeypatch):
+    worker = _SettlementWorker()
+    observations: list[object] = []
+    monkeypatch.setattr(server, "behavior_trial_settlement_mod", worker)
+    monkeypatch.setattr(
+        server.cognition_mod, "record_observation", lambda observation: observations.append(observation)
+    )
+
+    asyncio.run(server._settle_closed_behavior_trials_once())
+    assert worker.calls == []
+    assert observations == []
+
+    server._behavior_trial_recovery_ready.set()
+    asyncio.run(server._settle_closed_behavior_trials_once())
+    assert worker.calls == [server.DB_PATH]
+    assert observations == []
+
+
+def test_creator_review_route_returns_only_a_frozen_sanitized_settlement(monkeypatch):
+    controller = _CreatorApprovalController(_closed_trial_record())
+    settlement = _TrialSettlementStore(_settlement_snapshot())
+    outcome = _ReadOnlyOutcomeLedger({"must_not": "be queried"})
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server, "behavior_trial_settlement_mod", settlement)
+    monkeypatch.setattr(server, "qualified_response_ledger", outcome)
+    server._behavior_trial_recovery_ready.set()
+
+    response = server.behavior_trial_creator_review(9, _creator_request())
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert json.loads(response.body) == {
+        "trial": {
+            "id": 9,
+            "scope": "creator-personal",
+            "proposal_id": 51,
+            "state": "rolled_back",
+            "parameter": "chatter_chance",
+            "metric": "qualified_response_rate",
+            "spec_sha256": "a" * 64,
+        },
+        "review": {
+            "contract_version": 1,
+            "settled_at": 500.0,
+            "status": "ready_for_creator_review",
+            "recommendation": "creator_review_required",
+            "evidence": {
+                "metric": "qualified_response_rate",
+                "definition_version": 1,
+                "trial_id": 9,
+                "dispatching": 0,
+                "pending": 0,
+                "qualified_responses": 3,
+                "unanswered": 2,
+                "cancelled": 0,
+                "completed": 5,
+                "rate": 0.6,
+            },
+            "evaluation": {
+                "metric": "qualified_response_rate",
+                "definition_version": 1,
+                "trial_id": 9,
+                "spec_sha256": "a" * 64,
+                "baseline": 0.5,
+                "min_samples": 5,
+                "qualified_responses": 3,
+                "unanswered": 2,
+                "completed": 5,
+                "dispatching": 0,
+                "pending": 0,
+                "cancelled": 0,
+                "rate": 0.6,
+                "delta_from_baseline": 0.1,
+                "readiness": "ready_for_creator_review",
+                "comparison": "improved",
+            },
+        },
+    }
+    assert controller.calls == [("get", 9)]
+    assert settlement.calls == [(9, server.DB_PATH)]
+    assert outcome.calls == []
+    assert "must-not-leak" not in response.body.decode("utf-8")
+
+
+def test_creator_review_route_requires_closed_matching_settlement(monkeypatch):
+    controller = _CreatorApprovalController(_trial_record(state="running"))
+    settlement = _TrialSettlementStore(_settlement_snapshot())
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server, "behavior_trial_settlement_mod", settlement)
+    server._behavior_trial_recovery_ready.set()
+
+    with pytest.raises(server.HTTPException) as running_error:
+        server.behavior_trial_creator_review(9, _creator_request())
+
+    assert running_error.value.status_code == 409
+    assert controller.calls == [("get", 9)]
+    assert settlement.calls == []
+
+    missing_settlement = _TrialSettlementStore()
+    controller = _CreatorApprovalController(_closed_trial_record())
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server, "behavior_trial_settlement_mod", missing_settlement)
+    with pytest.raises(server.HTTPException) as settlement_error:
+        server.behavior_trial_creator_review(9, _creator_request())
+
+    assert settlement_error.value.status_code == 409
+    assert controller.calls == [("get", 9)]
+    assert missing_settlement.calls == [(9, server.DB_PATH)]
+
+    mismatched = _settlement_snapshot()
+    mismatched["spec_sha256"] = "b" * 64
+    controller = _CreatorApprovalController(_closed_trial_record())
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server, "behavior_trial_settlement_mod", _TrialSettlementStore(mismatched))
+    with pytest.raises(server.HTTPException) as mismatch_error:
+        server.behavior_trial_creator_review(9, _creator_request())
+
+    assert mismatch_error.value.status_code == 503
+
+
+def test_creator_review_route_is_recovery_gated_and_protected(monkeypatch):
+    controller = _CreatorApprovalController(_closed_trial_record())
+    settlement = _TrialSettlementStore(_settlement_snapshot())
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server, "behavior_trial_settlement_mod", settlement)
+
+    response = server.behavior_trial_creator_review(9, _creator_request())
+    assert response.status_code == 503
+    assert controller.calls == []
+    assert settlement.calls == []
+
+    client = TestClient(server.app)
+    try:
+        anonymous = client.get("/behavior-trials/9/review")
+    finally:
+        client.close()
+
+    assert anonymous.status_code == 401
+    assert anonymous.headers["cache-control"] == "no-store"
+    assert controller.calls == []
+    assert settlement.calls == []
+
+
 def test_behavior_trial_status_asgi_rejects_anonymous_and_public_identity_spoof(
     monkeypatch,
 ):
@@ -769,8 +1036,10 @@ def test_behavior_trial_status_asgi_returns_snapshot_for_protected_bearer(monkey
     snapshot = {"state": "ready", "active_trial": None, "recent": []}
     controller = _ReadOnlyStatusController(snapshot)
     outcome = _ReadOnlyOutcomeLedger({"metric": "qualified_response_rate", "completed": 0})
+    settlements = _TrialSettlementStore()
     monkeypatch.setattr(server, "behavior_trial_controller", controller)
     monkeypatch.setattr(server, "qualified_response_ledger", outcome)
+    monkeypatch.setattr(server, "behavior_trial_settlement_mod", settlements)
     server._behavior_trial_recovery_ready.set()
     client = TestClient(server.app)
     try:
@@ -785,9 +1054,15 @@ def test_behavior_trial_status_asgi_returns_snapshot_for_protected_bearer(monkey
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
-    assert response.json() == {**snapshot, "outcome_evidence": outcome.snapshot}
+    assert response.json() == {
+        **snapshot,
+        "outcome_evidence": outcome.snapshot,
+        "review_settlements": [],
+        "review_settlements_available": True,
+    }
     assert controller.calls == ["status_snapshot"]
     assert outcome.calls == ["summary"]
+    assert settlements.list_calls == [(server.DB_PATH, 5)]
 
 
 def test_behavior_trial_status_asgi_rejects_allowed_non_creator_before_controller_access(
@@ -825,16 +1100,24 @@ def test_behavior_trial_route_inventory_has_only_status_creator_approval_and_sta
         for route in server.app.routes
         if getattr(route, "path", "") == "/behavior-trials/{trial_id}/start"
     )
+    review_route = next(
+        route
+        for route in server.app.routes
+        if getattr(route, "path", "") == "/behavior-trials/{trial_id}/review"
+    )
 
     assert behavior_trial_routes == {
         ("/behavior-trials/status", "GET"),
         ("/behavior-trials/{trial_id}/approve", "POST"),
         ("/behavior-trials/{trial_id}/start", "POST"),
+        ("/behavior-trials/{trial_id}/review", "GET"),
     }
     assert status_route.dependant.query_params == []
     assert status_route.dependant.body_params == []
     assert start_route.dependant.query_params == []
     assert start_route.dependant.body_params == []
+    assert review_route.dependant.query_params == []
+    assert review_route.dependant.body_params == []
     assert not any(
         path.endswith(suffix)
         for path, _method in behavior_trial_routes

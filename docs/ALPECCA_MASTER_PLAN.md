@@ -163,7 +163,7 @@ They are not fixed Alpecca hardware.
 | Proactive/living behavior | BASELINE COMPLETE | Living ticks, proactive speech, and routines share one scoped budget; ignored outreach backs off and each proactive event selects one delivery surface |
 | Routines and watchers | PARTIAL | Empty/off by default; routine deletion and unified scheduling remain |
 | Background work coordination | PARTIAL | Timeouts do not cancel worker threads; optional jobs can overlap |
-| Recursive self-improvement | PARTIAL | Phase 8A contains legacy `selfmod` autonomy: idle lessons remain evidence and create/refresh a bounded creator-review card, while CoreMind starts/evaluates no `selfmod` trial. Phase 8B has an **INTERNAL** approval-proof-backed `BehaviorTrialController` only for `creator-personal` / `chatter_chance`: the database permits at most one active `approved` or `running` trial, and its runtime-only SQLite override has apply/readback/rollback, automatic expiry rollback, and startup recovery before CoreMind consumes it. Phase 8C1 makes the generic ledger retain immutable specs and the exact SHA-256 of each raw persisted spec, requires a creator-only `chatter_chance` binding sidecar HMAC-sealed in memory with the existing protected server authorization secret before runtime consumption, uses a read-only fail-closed chatter supplier plus recovery-gated off-`mind_lock` maintenance for expiry/integrity receipts, and exposes creator-only, read-only, `no-store` `GET /behavior-trials/status` only after recovery. Phase 8C2 records durable aggregate-only `qualified_response_rate` evidence from confirmed typed chatter portal deliveries and matching authenticated creator WebSocket turns; it stores no message content or client scores, and current evidence is baseline-only. Phase 8C5 adds server-derived, creator-only approval for an already registered trial. Phase 8C6 adds a separate creator-only start action for an approved trial, with an idempotent running retry that re-verifies the binding. There are no registration, completion, rollback, or generic mutation routes, no trial is running by default, and no automated behavior change. |
+| Recursive self-improvement | PARTIAL | Phase 8A legacy `selfmod` remains evidence-only. Phase 8B provides an internal, approval-proof-backed controller for only `creator-personal` / `chatter_chance`, with exact apply/readback/rollback and startup recovery. C1 protects immutable specs and creator binding; C2-C4 provide aggregate-only attributed response evidence; C5/C6 provide explicit creator approval and start. C7 seals only a valid planned-expiry rollback after every trial outcome settles, fingerprints the aggregate evidence/evaluation, blocks later trial outcomes, and exposes frozen review read-only through protected status/review surfaces and the Workshop. No public registration, completion, rollback, or generic mutation route exists, no trial runs by default, and evidence never triggers an automated behavior change. |
 | External action approvals | BLOCKED | Creator-only scoped approval works for read-only `self_status`; external or mutating action classes remain blocked |
 | MCP federation | PARKED | Largest external surface; no current companion-value need |
 
@@ -457,8 +457,8 @@ controller's internal creator-binding method was not an HTTP approval flow.
 #### Phase 8C2: Durable qualified-response outcomes - COMPLETE, OBSERVATIONAL ONLY
 
 `alpecca.qualified_response_ledger` now records the server-owned
-`qualified_response_rate` evidence contract before any behavior-trial start
-route exists. A row starts as a provisional dispatch before a portal send. It
+`qualified_response_rate` evidence contract before C6 introduced a creator
+start route. A row starts as a provisional dispatch before a portal send. It
 becomes an eligible exposure only after the WebSocket/House HQ portal confirms
 delivery. Only a typed `ProactiveCandidate(origin="chatter")` with an allowed
 initiative can request that path; mood speech, routines, channel delivery,
@@ -490,9 +490,9 @@ the rate as `improved`, `unchanged`, or `worse` relative to the immutable
 baseline and always requires creator review.
 
 The contract performs no I/O or trial-state change. It does not start,
-complete, evaluate-to-action, approve, or roll back a trial. C4 may feed it a
-verified trial cohort, but controlled creator approval/start and a completion
-lifecycle remain later gated scopes.
+complete, evaluate-to-action, approve, or roll back a trial. C4 feeds it a
+verified cohort; C5/C6 supply approval/start and C7 stores its fixed result in
+a durable settlement, never as an automatic action.
 
 #### Phase 8C4: Verified running-trial outcome attribution - COMPLETE, DORMANT
 
@@ -527,7 +527,7 @@ requests fail closed. This route cannot register, start, complete, roll back,
 or apply a runtime override; a creator's approval alone changes no live
 Alpecca behavior.
 
-#### Phase 8C6: Creator-triggered start - COMPLETE, NO COMPLETION ROUTE
+#### Phase 8C6: Creator-triggered start - COMPLETE, EXPLICIT START ONLY
 
 `POST /behavior-trials/{trial_id}/start` is creator-only, recovery-gated, and
 `Cache-Control: no-store`. It starts an already approved trial; a retry for the
@@ -544,17 +544,37 @@ closed. This route cannot register, approve, complete, roll back, or pass
 arbitrary runtime values. A C6 start is explicit; approval alone never
 activates a trial and no background path can start one.
 
-The broader Phase 8C plan remains incomplete: add wired metric
-collection/completion and creator UI before any real behavior trial. Any real
-trial must be
+#### Phase 8C7: Frozen closure settlement and creator review - COMPLETE, NO RETUNING
+
+After the existing off-lock controller maintenance has restored the exact
+baseline and recorded a valid planned-expiry rollback, C7 waits for every
+attributed qualified-response window to settle. It then reads the closed trial
+and its aggregate evidence in one SQLite transaction, verifies the immutable
+raw-spec digest and closure contract, applies the fixed C3 evaluation, and
+persists canonical evidence/review JSON plus SHA-256 fingerprints. A SQLite
+trigger refuses any new trial outcome after settlement, making later review
+reads stable.
+
+Settlement runs outside `mind_lock`, records a content-free
+`CognitionObservation`, and can only produce `ready_for_creator_review` or
+`inconclusive_insufficient_samples`. It cannot start, extend, complete,
+rollback, approve, or retune a trial. `GET /behavior-trials/{trial_id}/review`
+is creator-only, recovery-gated, and `no-store`; it returns the frozen evidence
+only. `GET /behavior-trials/status` lists recent settlements, and the Workshop
+shows baseline observation plus the latest settled result with no behavior
+change control.
+
+The broader Phase 8C plan remains incomplete: add a bounded creator-approved
+proposal-to-trial registration bridge and a separate creator decision after
+review. Any real trial must be
 reviewable against its hypothesis, exposure window, evidence, end time, and
 exact rollback. Code or system changes remain reviewable handoff proposals only.
 
-Exit gate remains unmet: it requires a registered fixed hypothesis, fixed metric
-collection through a completion/evaluation loop, evidence, end time, and exact
-rollback; worsening trials must revert exactly; startup must recover interrupted
-runtime-only state; and source, shell, accounts, files, and OS must remain
-outside the self-modification set.
+Exit gate remains unmet: it requires a registered fixed hypothesis from a
+bounded proposal path and a separate creator decision after the frozen review;
+worsening or inconclusive results must leave the baseline unchanged; startup
+must recover interrupted runtime-only state; and source, shell, accounts,
+files, and OS must remain outside the self-modification set.
 
 ### Phase 9: Multimodal and source perception - PARTIAL
 

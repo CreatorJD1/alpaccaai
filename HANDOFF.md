@@ -47,9 +47,15 @@ retained below as historical implementation evidence.
   approved trial, with an idempotent retry for that same running trial. It
   accepts no browser-supplied runtime values or timestamp;
   server time and the controller's binding, preimage, runtime-readback, and
-  one-active-trial checks govern activation. There are no behavior-trial
+  one-active-trial checks govern activation. There are no public behavior-trial
   registration, completion, rollback, or generic mutation routes, and no trial
-  is running by default. Phase 8C2 now has server-owned durable
+  is running by default. Phase 8C7 runs after outcome expiry and the existing
+  off-lock baseline restoration: only a valid planned-expiry rollback with no
+  outstanding outcome windows can be sealed into a hashed aggregate settlement.
+  A SQLite fence then rejects new trial outcomes. Creator-only `GET
+  /behavior-trials/{trial_id}/review` returns that frozen snapshot, while the
+  Workshop shows baseline observation and the latest settled review without
+  controls that can change behavior. Phase 8C2 now has server-owned durable
   `qualified_response_rate` outcomes established before C6 added the
   creator-triggered start route: a typed chatter
   candidate plus allowed initiative reserves a provisional row before a live
@@ -60,13 +66,15 @@ retained below as historical implementation evidence.
   sends are cancelled; confirmed expiry becomes unanswered; status exposes
   aggregate-only baseline/trial evidence through the existing protected
   `no-store` endpoint. No trial is running, so all evidence is baseline-only.
-  Phase 8C still needs wired metric completion and creator UI before any real
-  behavior trial. Phase 8C3 now has a pure per-trial evaluation
+  Phase 8C still needs a bounded registration bridge for a validated proposal
+  and a separate creator decision after review; settlement never changes the
+  runtime value. Phase 8C3 now has a pure per-trial evaluation
   contract: aggregate outcome evidence is scoped by server-owned trial id and
   validated against the exact spec SHA-256, baseline, and sample threshold. It
   reports collecting/awaiting-settlement/creator-review readiness plus an
   improved/unchanged/worse comparison, but it performs no I/O, start,
-  completion, approval, rollback, or runtime change.
+  completion, approval, rollback, or runtime change; C7 invokes it only while
+  creating a durable settlement and stores its result rather than acting on it.
   Phase 8C4 now supplies dormant attribution: an eligible proactive dispatch
   gets a trial id only when a query-only controller check verifies a live,
   HMAC-bound `chatter_chance` override whose immutable metric is exactly
@@ -74,7 +82,9 @@ retained below as historical implementation evidence.
   recovery gap, expiry, tampering, missing override, or other metric records a
   baseline row instead. C4 itself added no approval, start, completion, or
   mutation route; C5 separately adds approval-only and C6 adds only an
-  explicit creator start, with a binding-reverified running retry.
+  explicit creator start, with a binding-reverified running retry. C7 adds a
+  read-only review surface after the existing expiry rollback, not a new runtime
+  change path.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A rejects orthogonal and negative semantic matches. Phase 6B
   adds bounded sidecar Mindpage content-term indexing: new pages index after a
@@ -256,11 +266,11 @@ records `qualified_response_rate` outcomes only for confirmed typed chatter
 deliveries to a creator portal and matching authenticated creator WebSocket
 turns in the same scope/surface. It stores no message content, client scores,
 or caller-provided timestamps and exposes only aggregate evidence. No real trial
-is running, every row is baseline-only, and no completion/runtime-mutation
-route exists beyond C5 approval and C6 explicit start. C6 accepts no client
-runtime values and calls the controller for an approved, creator-bound trial
-or an idempotent retry of that same running trial. Fixed metric
-collection/completion and creator UI are
+is running, every row is baseline-only, and no public completion/runtime-mutation
+route exists beyond C5 approval and C6 explicit start. C7 now freezes a settled
+planned-expiry rollback into a hashed aggregate review and exposes it read-only
+to the creator and Workshop; it never retunes behavior. A bounded proposal-to-
+trial registration bridge and a separate creator decision after review are
 still required for a real behavior trial. Code, files,
 accounts, and operating-system changes remain outside the self-improvement
 surface.

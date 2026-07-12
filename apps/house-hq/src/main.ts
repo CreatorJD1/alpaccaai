@@ -5531,22 +5531,66 @@ async function loadAlpeccaWorkshop() {
 
 async function loadWorkshopTrialStatus() {
   const sequence = ++workshopTrialStatusSequence;
-  let status = "Behavior trial: unavailable";
-  workshopTrialStatus.textContent = "Behavior trial: loading...";
+  let status = "Behavior review: unavailable";
+  workshopTrialStatus.textContent = "Behavior review: loading...";
   try {
     const response = await alpeccaBackendFetch(
       alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/behavior-trials/status`),
       { method: "GET", cache: "no-store", signal: AbortSignal.timeout(5000) },
     );
     if (response.status === 401) {
-      status = "Behavior trial: sign-in required";
+      status = "Behavior review: sign-in required";
     } else if (response.status === 403) {
-      status = "Behavior trial: creator access required";
+      status = "Behavior review: creator access required";
+    } else if (response.status === 503) {
+      status = "Behavior review: recovery pending";
     } else if (response.status === 200) {
-      const data = await response.json() as { active_trial?: unknown };
+      const data = await response.json() as {
+        active_trial?: unknown;
+        outcome_evidence?: unknown;
+        review_settlements?: unknown;
+        review_settlements_available?: unknown;
+      };
       const activeTrial = data?.active_trial;
+      let baselineText = "baseline observation awaiting settled deliveries";
+      const evidence = data?.outcome_evidence;
+      if (evidence && typeof evidence === "object") {
+        const baseline = (evidence as { baseline?: unknown }).baseline;
+        if (baseline && typeof baseline === "object") {
+          const values = baseline as { completed?: unknown; qualified_responses?: unknown; rate?: unknown };
+          const completed = Number.isInteger(values.completed) && Number(values.completed) >= 0
+            ? Number(values.completed)
+            : 0;
+          const qualified = Number.isInteger(values.qualified_responses) && Number(values.qualified_responses) >= 0
+            ? Number(values.qualified_responses)
+            : 0;
+          const rate = typeof values.rate === "number" && Number.isFinite(values.rate)
+            ? Math.max(0, Math.min(1, values.rate))
+            : null;
+          if (completed > 0 && rate !== null) {
+            baselineText = `baseline ${qualified}/${completed} qualified responses (${Math.round(rate * 100)}%)`;
+          }
+        }
+      }
+      let reviewText = "no settled trial review";
+      if (data?.review_settlements_available === false) {
+        reviewText = "settled review history unavailable";
+      } else if (Array.isArray(data?.review_settlements)) {
+        const latest = data.review_settlements.find((item) => item && typeof item === "object") as {
+          trial_id?: unknown;
+          status?: unknown;
+        } | undefined;
+        if (latest && Number.isInteger(latest.trial_id)) {
+          if (latest.status === "ready_for_creator_review") {
+            reviewText = `trial #${latest.trial_id} is ready for creator review`;
+          } else if (latest.status === "inconclusive_insufficient_samples") {
+            reviewText = `trial #${latest.trial_id} concluded with insufficient evidence`;
+          }
+        }
+      }
+      status = `Behavior review: ${baselineText}. ${reviewText}.`;
       if (activeTrial === null) {
-        status = "Behavior trial: no active trial";
+        status += " No active trial.";
       } else if (activeTrial && typeof activeTrial === "object") {
         const trial = activeTrial as {
           state?: unknown;
@@ -5557,9 +5601,9 @@ async function loadWorkshopTrialStatus() {
           (trial.state === "approved" || trial.state === "running") &&
           trial.parameter === "chatter_chance"
         ) {
-          status = trial.creator_binding_present === true
-            ? `Behavior trial: chatter chance ${trial.state}`
-            : "Behavior trial: approval is not bound";
+          status += trial.creator_binding_present === true
+            ? ` Active chatter chance trial: ${trial.state}.`
+            : " Active trial approval is not bound.";
         }
       }
     }

@@ -3509,6 +3509,9 @@ def test_proactive_llm_judge_false_stays_quiet(monkeypatch):
     from alpecca import mind as mind_mod
 
     mind = mind_mod.CoreMind()
+    # This test targets the chatter judge. Persisted mood history may otherwise
+    # create a separate mood-speech candidate before that path is evaluated.
+    monkeypatch.setattr(mind_mod.proactive_mod, "should_speak", lambda *_args, **_kwargs: None)
     mind._last_user_ts = time.time() - 10_000
     mind._last_volunteer_ts = 0
     mind.llm._backend = "ollama"

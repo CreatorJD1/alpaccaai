@@ -552,5 +552,10 @@ def test_status_includes_read_only_aggregate_evidence_without_mutating_controlle
     response = server.behavior_trial_status(request)
 
     assert response.status_code == 200
-    assert json.loads(response.body) == {**snapshot, "outcome_evidence": evidence}
+    assert json.loads(response.body) == {
+        **snapshot,
+        "outcome_evidence": evidence,
+        "review_settlements": [],
+        "review_settlements_available": True,
+    }
     assert snapshot == {"state": "ready", "active_trial": None}

@@ -52,9 +52,15 @@ labels retained in historical plans and handoffs.
   approved trial, with an idempotent retry for that same running trial. It
   accepts no browser-supplied runtime values or timestamp;
   server time and the controller's binding, preimage, runtime-readback, and
-  one-active-trial checks govern activation. There are no behavior-trial
+  one-active-trial checks govern activation. There are no public behavior-trial
   registration, completion, rollback, or generic mutation routes, and no trial
-  is running by default. Phase 8C2 now provides the server-owned durable
+  is running by default. Phase 8C7 runs after outcome expiry and the existing
+  off-lock baseline restoration: only a valid planned-expiry rollback with no
+  outstanding outcome windows can be sealed into a hashed aggregate settlement.
+  A SQLite fence then rejects new trial outcomes. Creator-only `GET
+  /behavior-trials/{trial_id}/review` returns that frozen snapshot, while the
+  Workshop shows baseline observation and the latest settled review without
+  controls that can change behavior. Phase 8C2 now provides the server-owned durable
   `qualified_response_rate` evidence layer: only a typed `chatter` candidate
   with an allowed initiative that is confirmed delivered to the creator's live
   WebSocket/House HQ portal can enter the denominator. The ledger reserves a
@@ -66,7 +72,8 @@ labels retained in historical plans and handoffs.
   aggregate baseline/trial evidence only through the existing creator-only,
   read-only, `no-store` endpoint. No trial is currently running, so all current
   outcome evidence is baseline-only. The broader Phase 8C plan still requires a
-  wired metric collection/completion and creator UI before any real trial.
+  bounded registration bridge for a validated proposal and a separate creator
+  decision after review; C7 never changes behavior from evidence.
   Phase 8C3 now supplies the fixed, pure evaluation contract for a future
   `qualified_response_rate` trial: per-trial aggregate evidence is isolated by
   server-owned trial id and classified only as collecting, awaiting settlement,
@@ -98,6 +105,14 @@ labels retained in historical plans and handoffs.
   preimage, one-active-trial policy, and runtime readback. It logs a
   content-free CognitionObservation after durable start and cannot approve,
   complete, roll back, or register a trial.
+
+  Phase 8C7 now seals a closed planned-expiry trial only after all attributed
+  outcome windows settle. The sealed aggregate evidence and fixed evaluation
+  are SHA-256 fingerprinted; a SQLite trigger rejects later trial outcomes. It
+  is created off `mind_lock`, logs a content-free settlement observation, and
+  never starts, extends, rolls back, or retunes behavior. Creator-only review
+  reads the frozen snapshot, and the Workshop renders baseline evidence plus
+  the latest settled review without an action control.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A semantic-negative/orthogonal recall abstention and Phase 6B
   bounded sidecar content-term indexing are implemented and covered by focused

@@ -74,6 +74,7 @@ from alpecca import resource_coordinator as resource_coordinator_mod
 from alpecca import turn_context as turn_context_mod
 from alpecca import commitments as commitments_mod
 from alpecca import commitment_executor as commitment_executor_mod
+from alpecca import behavior_trial_settlement as behavior_trial_settlement_mod
 from alpecca.behavior_trial_controller import BehaviorTrialController
 from alpecca.qualified_response_ledger import QualifiedResponseLedger
 
@@ -89,6 +90,9 @@ behavior_trial_controller = BehaviorTrialController()
 # Outcome rows remain server-owned. The only public view is aggregate evidence
 # in the existing creator-only behavior-trial status response.
 qualified_response_ledger = QualifiedResponseLedger(DB_PATH)
+# Settlement snapshots freeze only closed, fully settled trial evidence. They
+# do not own or alter the runtime override.
+behavior_trial_settlement_mod.init_db(DB_PATH)
 
 # A persisted runtime override is not trusted until startup has closed any
 # interrupted trial. This event starts unset deliberately and is reset for
@@ -143,6 +147,54 @@ async def _expire_due_behavior_trials_once() -> None:
     except Exception:
         # Runtime maintenance is already durable; failing to record its
         # evidence must not make the running companion unavailable.
+        pass
+
+
+async def _settle_closed_behavior_trials_once() -> None:
+    """Freeze closed, fully settled trial evidence outside ``mind_lock``."""
+    if not _behavior_trial_recovery_ready.is_set():
+        return
+    try:
+        settlements = await asyncio.to_thread(
+            behavior_trial_settlement_mod.settle_closed_trials,
+            DB_PATH,
+        )
+    except Exception:
+        # Settlement is retried on the next drift tick. It never starts,
+        # extends, rolls back, or retunes a trial.
+        return
+    if not settlements:
+        return
+    trial_ids: list[int] = []
+    statuses: list[str] = []
+    for settlement in settlements:
+        if not isinstance(settlement, Mapping):
+            continue
+        trial_id = settlement.get("trial_id")
+        if isinstance(trial_id, int) and not isinstance(trial_id, bool) and trial_id > 0:
+            trial_ids.append(trial_id)
+        status = settlement.get("status")
+        if isinstance(status, str):
+            statuses.append(status)
+    try:
+        cognition_mod.record_observation(cognition_mod.CognitionObservation(
+            source="behavior_trial_settlement",
+            content=(
+                f"Settled {len(settlements)} closed behavior trial(s) for creator "
+                "review without applying a behavior change."
+            ),
+            confidence=1.0,
+            privacy_class="local",
+            metadata={
+                "trial_count": len(settlements),
+                "trial_ids": trial_ids,
+                "statuses": statuses,
+                "runtime_change": False,
+            },
+        ))
+    except Exception:
+        # The frozen settlement is already durable. Audit failure cannot reopen
+        # the trial or cause a second settlement.
         pass
 
 
@@ -1867,6 +1919,9 @@ async def lifespan(app: FastAPI):
                 # This is independent of speech eligibility and stays outside
                 # `mind_lock`, so a due rollback cannot queue behind chat.
                 await _expire_due_behavior_trials_once()
+                # A settlement is possible only after the controller has
+                # durably restored the baseline and outcome windows are closed.
+                await _settle_closed_behavior_trials_once()
                 _background_autonomy_status["tick_count"] = int(_background_autonomy_status.get("tick_count") or 0) + 1
                 _background_autonomy_status["last_drift_at"] = _time.time()
                 async with mind_lock:
@@ -2988,6 +3043,53 @@ def _behavior_trial_public_summary(record: Mapping[str, object]) -> dict:
     }
 
 
+def _behavior_trial_settlement_public_summary(settlement: Mapping[str, object]) -> dict:
+    """Curate one frozen C7 settlement without raw records or proof material."""
+    evidence = settlement.get("evidence")
+    review = settlement.get("review")
+    if not isinstance(evidence, Mapping) or not isinstance(review, Mapping):
+        raise ValueError("settlement is missing its immutable evidence")
+    evaluation = review.get("evaluation")
+    if not isinstance(evaluation, Mapping):
+        raise ValueError("settlement is missing its fixed evaluation")
+    return {
+        "contract_version": int(settlement["contract_version"]),
+        "settled_at": float(settlement["settled_at"]),
+        "status": str(settlement["status"]),
+        "recommendation": str(settlement["recommendation"]),
+        "evidence": {
+            "metric": str(evidence["metric"]),
+            "definition_version": int(evidence["definition_version"]),
+            "trial_id": int(evidence["trial_id"]),
+            "dispatching": int(evidence["dispatching"]),
+            "pending": int(evidence["pending"]),
+            "qualified_responses": int(evidence["qualified_responses"]),
+            "unanswered": int(evidence["unanswered"]),
+            "cancelled": int(evidence["cancelled"]),
+            "completed": int(evidence["completed"]),
+            "rate": evidence["rate"],
+        },
+        "evaluation": {
+            "metric": str(evaluation["metric"]),
+            "definition_version": int(evaluation["definition_version"]),
+            "trial_id": int(evaluation["trial_id"]),
+            "spec_sha256": str(evaluation["spec_sha256"]),
+            "baseline": float(evaluation["baseline"]),
+            "min_samples": int(evaluation["min_samples"]),
+            "qualified_responses": int(evaluation["qualified_responses"]),
+            "unanswered": int(evaluation["unanswered"]),
+            "completed": int(evaluation["completed"]),
+            "dispatching": int(evaluation["dispatching"]),
+            "pending": int(evaluation["pending"]),
+            "cancelled": int(evaluation["cancelled"]),
+            "rate": evaluation["rate"],
+            "delta_from_baseline": evaluation["delta_from_baseline"],
+            "readiness": str(evaluation["readiness"]),
+            "comparison": evaluation["comparison"],
+        },
+    }
+
+
 def _behavior_trial_recovery_response() -> JSONResponse:
     return JSONResponse(
         {"detail": "behavior trial recovery is not ready"},
@@ -3004,6 +3106,17 @@ def behavior_trial_status(req: Request) -> JSONResponse:
         return _behavior_trial_recovery_response()
     snapshot = dict(behavior_trial_controller.status_snapshot())
     snapshot["outcome_evidence"] = qualified_response_ledger.summary()
+    try:
+        snapshot["review_settlements"] = behavior_trial_settlement_mod.list_settlements(
+            DB_PATH,
+            limit=5,
+        )
+        snapshot["review_settlements_available"] = True
+    except Exception:
+        # Settlement storage is optional observational context for this status
+        # surface. Do not fabricate an empty successful review history.
+        snapshot["review_settlements"] = []
+        snapshot["review_settlements_available"] = False
     return JSONResponse(
         snapshot,
         headers={"Cache-Control": "no-store"},
@@ -3196,6 +3309,78 @@ def behavior_trial_creator_start(trial_id: int, req: Request) -> JSONResponse:
             "already_running": already_running,
             "trial": summary,
         },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/behavior-trials/{trial_id}/review")
+def behavior_trial_creator_review(trial_id: int, req: Request) -> JSONResponse:
+    """Read one immutable C7 settlement; never evaluate live evidence on demand."""
+    _require_creator_request(req)
+    if not _behavior_trial_recovery_ready.is_set():
+        return _behavior_trial_recovery_response()
+    try:
+        current = behavior_trial_controller.get(trial_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="invalid behavior trial",
+            headers={"Cache-Control": "no-store"},
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial storage unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    if current is None:
+        raise HTTPException(
+            status_code=404,
+            detail="behavior trial not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    if current.get("state") != "rolled_back":
+        raise HTTPException(
+            status_code=409,
+            detail="behavior trial has not reached a reviewable closure",
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        settlement = behavior_trial_settlement_mod.get_settlement(trial_id, DB_PATH)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial settlement unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial settlement unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    if settlement is None:
+        raise HTTPException(
+            status_code=409,
+            detail="behavior trial has not settled for creator review",
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        if (
+            settlement.get("trial_id") != trial_id
+            or settlement.get("spec_sha256") != current.get("spec_sha256")
+            or settlement.get("scope") != current.get("scope")
+        ):
+            raise ValueError("settlement does not match the immutable trial")
+        review = _behavior_trial_settlement_public_summary(settlement)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial settlement is invalid",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    return JSONResponse(
+        {"trial": _behavior_trial_public_summary(current), "review": review},
         headers={"Cache-Control": "no-store"},
     )
 
