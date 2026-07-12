@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import server
+from alpecca import bridge_actor_transport as actor_transport
 from alpecca import desktop as desktop_mod
 from alpecca import openclaw_bridge
 from alpecca.attachment_ingress import DEFAULT_MAX_IMAGE_BYTES
@@ -35,11 +36,38 @@ def _auth_headers() -> dict[str, str]:
     return {server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET}
 
 
-def _bridge_headers() -> dict[str, str]:
-    return {
+def _signed_discord_post(
+    client: TestClient,
+    payload: dict[str, object],
+    *,
+    event_id: str,
+):
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    bindings = actor_transport.DiscordActorBindings(
+        event_id=event_id,
+        actor_id="200000000000000002",
+        channel_id="300000000000000003",
+    )
+    headers = {
         server.auth_mod.BRIDGE_AUTHORIZATION_HEADER:
             server._DISCORD_BRIDGE_SECRET,
+        "Content-Type": "application/json",
+        **bindings.as_headers(),
     }
+    minted = client.post(
+        "/channel/discord/actor-envelope",
+        headers=headers,
+        content=raw,
+    )
+    assert minted.status_code == 200, minted.text
+    return client.post(
+        "/channel/discord",
+        headers={
+            **headers,
+            actor_transport.ENVELOPE_HEADER: minted.json()["envelope"],
+        },
+        content=raw,
+    )
 
 
 def _assert_png_perception(
@@ -83,7 +111,7 @@ def client():
 
 
 @pytest.fixture(autouse=True)
-def isolated_server(monkeypatch):
+def isolated_server(monkeypatch, tmp_path):
     chat_calls: list[dict[str, object]] = []
 
     async def fake_chat(text: str, **kwargs):
@@ -114,6 +142,14 @@ def isolated_server(monkeypatch):
     monkeypatch.setattr(server, "_ws_portal_epochs", {})
     monkeypatch.setattr(server, "_ws_portal_turns", {})
     monkeypatch.setattr(server, "_active_ws_portal", None)
+    monkeypatch.setattr(
+        server,
+        "_DISCORD_ACTOR_STORE",
+        actor_transport.build_actor_store(
+            tmp_path,
+            "phase9-attachment-actor-seal-secret-with-enough-entropy",
+        ),
+    )
     return chat_calls
 
 
@@ -183,10 +219,10 @@ def test_bridge_authenticated_discord_image_has_guest_authority_and_truthful_met
     monkeypatch.setattr(server.vision, "describe_and_recognize_result", fake_vision)
     monkeypatch.setattr(server, "_record_capability_use", fake_audit)
 
-    response = client.post(
-        "/channel/discord",
-        headers=_bridge_headers(),
-        json={"text": "Who is this?", "image": _data_url(payload)},
+    response = _signed_discord_post(
+        client,
+        {"text": "Who is this?", "image": _data_url(payload)},
+        event_id="100000000000000001",
     )
 
     assert response.status_code == 200
@@ -211,10 +247,10 @@ def test_discord_image_route_is_disabled_without_explicit_media_opt_in(
         lambda *_args, **_kwargs: vision_calls.append(True),
     )
 
-    response = client.post(
-        "/channel/discord",
-        headers=_bridge_headers(),
-        json={"text": "Who is this?", "image": _data_url(_png())},
+    response = _signed_discord_post(
+        client,
+        {"text": "Who is this?", "image": _data_url(_png())},
+        event_id="100000000000000002",
     )
 
     assert response.status_code == 403

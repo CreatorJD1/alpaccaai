@@ -95,12 +95,15 @@ restart revocation, tokenless server consumption, exact sealed schema identity,
 and bounded maintenance. It remains a foundation: no perception provider or
 interactive creator control is wired to it. A hardened signed Discord guest-
 actor core also exists with actual request-byte/event/scope bindings and
-structurally guest-only results, but bridge minting and server consumption are
-not wired. A separate live capability boundary now makes every non-creator turn
+structurally guest-only results. Bridge minting and one-use server consumption
+are now wired for allowlisted DMs and derive stable opaque guest scopes. A
+separate live capability boundary now makes every non-creator turn
 reply-only, without tools, commitments, creator continuity, state mutation, or
 private telemetry. Validated Discord image context can enter only through an
 in-process exact-turn envelope and is not persisted. This closes capability
-leakage but does not yet establish stable Discord actor or thread identity.
+leakage and establishes signed DM identity, while guest history, guild
+participation, rates, approvals, voice, and production anchoring remain
+unfinished.
 The bridge is therefore hard-locked to allowlisted DMs. Guild/thread input,
 proactive participation, recursion, and voice are code-disabled, and all DM
 payloads remain guest authority. Actor sealing now has a dedicated protected

@@ -13,6 +13,7 @@ import pytest
 
 from alpecca import discord_bridge
 from alpecca import discord_media
+from alpecca.bridge_actor_transport import DiscordActorBindings
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,7 @@ class _Typing:
 
 class _Channel:
     def __init__(self) -> None:
+        self.id = 3001
         self.typing_calls = 0
 
     def typing(self) -> _Typing:
@@ -48,6 +50,7 @@ class _Author:
 
 class _Message:
     def __init__(self, *, content: str, attachments: list[object] | None = None) -> None:
+        self.id = 1001
         self.author = _Author()
         self.guild = None
         self.content = content
@@ -190,6 +193,11 @@ def test_allowlisted_dm_text_still_reaches_guest_backend_and_replies(monkeypatch
     )
     assert kwargs["context"] == "Discord message from Discord guest via discord-dm"
     assert kwargs["image"] == ""
+    assert kwargs["actor_bindings"] == DiscordActorBindings(
+        event_id="1001",
+        actor_id="42",
+        channel_id="3001",
+    )
     assert message.channel.typing_calls == 1
     assert message.replies == [("bounded DM reply", {"mention_author": False})]
 
@@ -266,6 +274,45 @@ def test_allowlisted_dm_image_and_approved_outbound_media_still_flow(monkeypatch
     assert message.replies[0][1]["file"].filename == "alpecca-portrait.png"
 
 
+def test_actor_proof_failure_never_falls_back_to_sending_local_media(monkeypatch):
+    client = _client(monkeypatch)
+    _allow_dm(monkeypatch)
+    outbound = discord_media.OutboundDiscordImage(
+        kind="portrait",
+        filename="alpecca-portrait.png",
+        image_bytes=b"approved-catalog-image",
+        mime_type="image/png",
+        size_bytes=22,
+        sha256="b" * 64,
+    )
+    audit_statuses: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        discord_bridge.discord_media,
+        "resolve_outbound_media",
+        lambda _text: outbound,
+    )
+    monkeypatch.setattr(
+        discord_bridge.discord_media,
+        "record_media_event",
+        lambda direction, *, status, **_kwargs: audit_statuses.append(
+            (direction, status)
+        ) or 1,
+    )
+    monkeypatch.setattr(
+        discord_bridge,
+        "_ask_alpecca",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("actor envelope unavailable")
+        ),
+    )
+    message = _Message(content="send your portrait")
+
+    asyncio.run(client.on_message(message))
+
+    assert message.replies == []
+    assert audit_statuses == [("outbound", "accepted")]
+
+
 def test_every_backend_body_is_guest_even_for_claimed_creator(monkeypatch):
     requests: list[object] = []
 
@@ -278,25 +325,40 @@ def test_every_backend_body_is_guest_even_for_claimed_creator(monkeypatch):
         def __exit__(self, *_args):
             return False
 
-        def read(self) -> bytes:
-            return b'{"reply":"guest reply"}'
+        def read(self, limit: int = -1) -> bytes:
+            if len(requests) == 1:
+                body = b'{"envelope":"signed-actor-envelope"}'
+            else:
+                body = b'{"reply":"guest reply"}'
+            return body if limit < 0 else body[:limit]
 
     def fake_urlopen(request, timeout):
         del timeout
         requests.append(request)
         return FakeResponse()
 
-    monkeypatch.setattr(discord_bridge.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        discord_bridge,
+        "_build_backend_opener",
+        lambda *, direct: SimpleNamespace(open=fake_urlopen),
+    )
 
     reply = discord_bridge._ask_alpecca(
         "I claim creator authority",
         "CreatorJD (claimed role)",
         "discord-dm",
         speaker="creator",
+        actor_bindings=DiscordActorBindings(
+            event_id="1001",
+            actor_id="42",
+            channel_id="3001",
+        ),
     )
 
     assert reply == "guest reply"
-    body = json.loads(requests[0].data)
+    assert len(requests) == 2
+    assert requests[0].data is requests[1].data
+    body = json.loads(requests[1].data)
     assert body["speaker"] == "guest"
     assert body["sender"] == "Discord guest"
 

@@ -19,6 +19,7 @@ import io
 import json
 import os
 import re
+import sqlite3
 import socket
 import sys
 import threading
@@ -27,6 +28,7 @@ import zipfile
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import NoReturn
 from urllib.parse import parse_qs, quote, urlparse
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -84,6 +86,8 @@ from alpecca import behavior_trial_review_decisions as behavior_trial_review_dec
 from alpecca import behavior_trial_settlement as behavior_trial_settlement_mod
 from alpecca import attachment_ingress as attachment_ingress_mod
 from alpecca import audio_ingress as audio_ingress_mod
+from alpecca import bridge_actor_identity as bridge_actor_identity_mod
+from alpecca import bridge_actor_transport as bridge_actor_transport_mod
 from alpecca import file_ingress as file_ingress_mod
 from alpecca.behavior_trial_controller import BehaviorTrialController
 from alpecca.qualified_response_ledger import QualifiedResponseLedger
@@ -105,18 +109,53 @@ async def _read_bounded_body(req: Request, *, max_bytes: int) -> bytes:
         try:
             declared_length = int(raw_length)
         except ValueError:
-            raise HTTPException(status_code=400, detail="invalid content-length")
+            raise HTTPException(
+                status_code=400,
+                detail="invalid content-length",
+                headers={"Cache-Control": "no-store"},
+            )
         if declared_length < 0:
-            raise HTTPException(status_code=400, detail="invalid content-length")
+            raise HTTPException(
+                status_code=400,
+                detail="invalid content-length",
+                headers={"Cache-Control": "no-store"},
+            )
         if declared_length > max_bytes:
-            raise HTTPException(status_code=413, detail="attachment is too large")
+            raise HTTPException(
+                status_code=413,
+                detail="attachment is too large",
+                headers={"Cache-Control": "no-store"},
+            )
 
     body = bytearray()
     async for chunk in req.stream():
         if len(body) + len(chunk) > max_bytes:
-            raise HTTPException(status_code=413, detail="attachment is too large")
+            raise HTTPException(
+                status_code=413,
+                detail="attachment is too large",
+                headers={"Cache-Control": "no-store"},
+            )
         body.extend(chunk)
     return bytes(body)
+
+
+def _parse_json_object(raw: bytes) -> dict[str, object]:
+    """Parse exact UTF-8 request bytes as one JSON object."""
+    try:
+        value = json.loads(raw)
+    except (RecursionError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        raise HTTPException(
+            status_code=400,
+            detail="body must be JSON",
+            headers={"Cache-Control": "no-store"},
+        )
+    if not isinstance(value, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="body must be a JSON object",
+            headers={"Cache-Control": "no-store"},
+        )
+    return value
 
 
 async def _read_bounded_json_object(
@@ -124,13 +163,7 @@ async def _read_bounded_json_object(
 ) -> dict[str, object]:
     """Parse one bounded UTF-8 JSON object without buffering an unlimited body."""
     raw = await _read_bounded_body(req, max_bytes=max_bytes)
-    try:
-        value = json.loads(raw)
-    except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
-        raise HTTPException(status_code=400, detail="body must be JSON")
-    if not isinstance(value, dict):
-        raise HTTPException(status_code=400, detail="body must be a JSON object")
-    return value
+    return _parse_json_object(raw)
 
 
 async def _record_capability_use(
@@ -2356,6 +2389,59 @@ from starlette.responses import JSONResponse as _JSON
 
 _AUTH_SECRET = auth_mod.load_or_create_authorization_secret(HOME)
 _DISCORD_BRIDGE_SECRET = auth_mod.load_or_create_bridge_authorization_secret(HOME)
+_DISCORD_ACTOR_STORE_LOCK = threading.Lock()
+_DISCORD_ACTOR_STORE: (
+    bridge_actor_identity_mod.BridgeActorIdentityStore | None
+) = None
+
+
+class _DiscordActorStoreUnavailable(RuntimeError):
+    """The lazy actor-identity store could not be constructed."""
+
+
+def _discord_actor_store() -> bridge_actor_identity_mod.BridgeActorIdentityStore:
+    """Load the dedicated actor seal and store only on first actor request."""
+    global _DISCORD_ACTOR_STORE
+    store = _DISCORD_ACTOR_STORE
+    if store is not None:
+        return store
+    with _DISCORD_ACTOR_STORE_LOCK:
+        store = _DISCORD_ACTOR_STORE
+        if store is not None:
+            return store
+        try:
+            seal_secret = auth_mod.load_or_create_bridge_actor_identity_seal_secret(
+                HOME
+            )
+            store = bridge_actor_transport_mod.build_actor_store(HOME, seal_secret)
+        except Exception as exc:
+            raise _DiscordActorStoreUnavailable from exc
+        _DISCORD_ACTOR_STORE = store
+        return store
+
+
+def _issue_discord_actor_envelope(
+    request_body: bytes,
+    bindings: bridge_actor_transport_mod.DiscordActorBindings,
+) -> bridge_actor_identity_mod.BridgeActorEnvelope:
+    return _discord_actor_store().issue_envelope(
+        request_body=request_body,
+        **bindings.as_store_kwargs(),
+    )
+
+
+def _verify_discord_actor_envelope(
+    envelope: str,
+    request_body: bytes,
+    bindings: bridge_actor_transport_mod.DiscordActorBindings,
+) -> bridge_actor_identity_mod.BridgeActorVerification:
+    return _discord_actor_store().verify_and_consume(
+        envelope,
+        request_body=request_body,
+        **bindings.as_store_kwargs(),
+    )
+
+
 _capability_lease_store = capability_leases_mod.CapabilityLeaseStore(
     DB_PATH,
     seal_key=_AUTH_SECRET,
@@ -2387,6 +2473,10 @@ _PUBLIC_AUTH_PATHS = frozenset({
     "/auth/password",
 })
 _SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_DISCORD_SERVICE_PATHS = frozenset({
+    "/channel/discord",
+    "/channel/discord/actor-envelope",
+})
 
 def _access_html(
     next_path: str = "/",
@@ -2584,22 +2674,30 @@ async def _auth_gate(request: Request, call_next):
         return _with_cors(await call_next(request), origin)
 
     client_host = request.client.host if request.client else ""
-    bridge_header_present = bool(
-        request.headers.get(auth_mod.BRIDGE_AUTHORIZATION_HEADER, "").strip()
+    bridge_header_values = request.headers.getlist(
+        auth_mod.BRIDGE_AUTHORIZATION_HEADER
     )
-    decision = (
-        _AUTHORITY.validate_bridge_service(
+    bridge_service_requested = (
+        request.url.path in _DISCORD_SERVICE_PATHS
+        or (request.url.path == "/tts" and bool(bridge_header_values))
+    )
+    if bridge_service_requested and len(bridge_header_values) != 1:
+        decision = auth_mod.AuthDecision(
+            False,
+            "service_bearer",
+            "duplicate" if bridge_header_values else "missing",
+        )
+    elif bridge_service_requested:
+        decision = _AUTHORITY.validate_bridge_service(
             request.headers,
             service="discord-bridge",
         )
-        if request.url.path == "/channel/discord"
-        or (request.url.path == "/tts" and bridge_header_present)
-        else _AUTHORITY.authorize_request(
+    else:
+        decision = _AUTHORITY.authorize_request(
             headers=request.headers,
             cookies=request.cookies,
             query=request.query_params,
         )
-    )
     if not decision.allowed:
         _record_auth_decision(
             "request",
@@ -2684,7 +2782,10 @@ async def _auth_gate(request: Request, call_next):
         )
 
     request.state.authorization = decision
-    return _with_cors(await call_next(request), origin)
+    result = await call_next(request)
+    if request.url.path in _DISCORD_SERVICE_PATHS:
+        result.headers["Cache-Control"] = "no-store"
+    return _with_cors(result, origin)
 
 
 @app.get("/auth/status")
@@ -3226,6 +3327,64 @@ def _require_discord_bridge_request(req: Request) -> auth_mod.AuthDecision:
             headers={"Cache-Control": "no-store"},
         )
     return decision
+
+
+def _raise_discord_actor_denied() -> NoReturn:
+    raise HTTPException(
+        status_code=403,
+        detail={"code": "discord_actor_denied"},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _raise_discord_actor_store_unavailable() -> NoReturn:
+    raise HTTPException(
+        status_code=503,
+        detail={"code": "discord_actor_identity_unavailable"},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+_DISCORD_ACTOR_UNAVAILABLE_ERRORS = (
+    _DiscordActorStoreUnavailable,
+    bridge_actor_identity_mod.BridgeActorIntegrityError,
+    bridge_actor_identity_mod.BridgeActorClockError,
+    sqlite3.DatabaseError,
+    OSError,
+)
+
+
+async def _verified_discord_actor_request(
+    req: Request,
+) -> tuple[dict[str, object], bridge_actor_identity_mod.VerifiedGuestActor]:
+    """Authenticate exact request bytes before any Discord turn side effect."""
+    _require_discord_bridge_request(req)
+    try:
+        bindings = bridge_actor_transport_mod.parse_binding_headers(req.headers)
+        envelope = bridge_actor_transport_mod.parse_envelope_header(req.headers)
+    except bridge_actor_transport_mod.DiscordActorHeaderError:
+        _raise_discord_actor_denied()
+
+    raw_body = await _read_bounded_body(
+        req,
+        max_bytes=bridge_actor_transport_mod.MAX_DISCORD_BODY_BYTES,
+    )
+    payload = _parse_json_object(raw_body)
+    try:
+        verification = await asyncio.to_thread(
+            _verify_discord_actor_envelope,
+            envelope,
+            raw_body,
+            bindings,
+        )
+    except _DISCORD_ACTOR_UNAVAILABLE_ERRORS:
+        _raise_discord_actor_store_unavailable()
+    except bridge_actor_identity_mod.BridgeActorIdentityError:
+        _raise_discord_actor_denied()
+    actor = verification.actor
+    if not verification.accepted or actor is None:
+        _raise_discord_actor_denied()
+    return payload, actor
 
 
 def _capability_lease_http_status(reason: str) -> int:
@@ -6387,6 +6546,36 @@ def portrait() -> FileResponse:
     return FileResponse(path, media_type="image/png")
 
 
+@app.post("/channel/discord/actor-envelope")
+async def issue_discord_actor_envelope(req: Request, response: Response) -> dict:
+    """Mint one exact-body Discord guest envelope after bridge service auth."""
+    response.headers["Cache-Control"] = "no-store"
+    _require_discord_bridge_request(req)
+    try:
+        bindings = bridge_actor_transport_mod.parse_binding_headers(req.headers)
+        if req.headers.getlist(bridge_actor_transport_mod.ENVELOPE_HEADER):
+            _raise_discord_actor_denied()
+    except bridge_actor_transport_mod.DiscordActorHeaderError:
+        _raise_discord_actor_denied()
+
+    raw_body = await _read_bounded_body(
+        req,
+        max_bytes=bridge_actor_transport_mod.MAX_DISCORD_BODY_BYTES,
+    )
+    _parse_json_object(raw_body)
+    try:
+        envelope = await asyncio.to_thread(
+            _issue_discord_actor_envelope,
+            raw_body,
+            bindings,
+        )
+    except _DISCORD_ACTOR_UNAVAILABLE_ERRORS:
+        _raise_discord_actor_store_unavailable()
+    except bridge_actor_identity_mod.BridgeActorIdentityError:
+        _raise_discord_actor_denied()
+    return {"envelope": envelope.encode()}
+
+
 @app.post("/channel/inbound")
 @app.post("/channel/house-hq")
 @app.post("/channel/discord")
@@ -6401,8 +6590,15 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     back on their own channel. See alpecca/openclaw_bridge.py for the
     delivery half."""
     response.headers["Cache-Control"] = "no-store"
+    verified_discord_actor: (
+        bridge_actor_identity_mod.VerifiedGuestActor | None
+    ) = None
+    if req.url.path == "/channel/discord":
+        payload, verified_discord_actor = await _verified_discord_actor_request(req)
+    else:
+        payload = await _read_bounded_json_object(req, max_bytes=6 * 1024 * 1024)
     from alpecca import openclaw_bridge   # local import keeps import order safe
-    payload = await _read_bounded_json_object(req, max_bytes=6 * 1024 * 1024)
+
     def field(*names: str, default: str = "") -> str:
         for name in names:
             value = payload.get(name)
@@ -6466,10 +6662,8 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     image_perception: dict[str, object] | None = None
     decision = getattr(req.state, "authorization", None)
     if route_surface == "discord":
-        _require_discord_bridge_request(req)
-        # A bridge process is authenticated as a transport service, never as
-        # CreatorJD. Signed actor subjects will later partition Discord guest
-        # conversations without widening this principal.
+        if verified_discord_actor is None:
+            _raise_discord_actor_denied()
         principal = "guest"
     else:
         principal = getattr(decision, "principal", "guest") or "guest"
@@ -6482,16 +6676,31 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         and _capability_connection_surface(request_connection) == "house-hq"
         else f"local-{route_surface}"
     )
-    turn = turn_context_mod.TurnContext.create(
-        _server_conversation_id(
-            principal,
-            route_surface,
-            ephemeral_seed=uuid.uuid4().hex,
-        ),
-        principal=principal,
-        surface=route_surface,
-        portal_epoch=turn_portal_epoch,
-    )
+    if verified_discord_actor is not None:
+        try:
+            conversation_id, privacy_scope = bridge_actor_transport_mod.guest_scope(
+                verified_discord_actor
+            )
+        except bridge_actor_identity_mod.BridgeActorIntegrityError:
+            _raise_discord_actor_store_unavailable()
+        turn = turn_context_mod.TurnContext.create(
+            conversation_id,
+            principal="guest",
+            surface="discord",
+            privacy_scope=privacy_scope,
+            portal_epoch=turn_portal_epoch,
+        )
+    else:
+        turn = turn_context_mod.TurnContext.create(
+            _server_conversation_id(
+                principal,
+                route_surface,
+                ephemeral_seed=uuid.uuid4().hex,
+            ),
+            principal=principal,
+            surface=route_surface,
+            portal_epoch=turn_portal_epoch,
+        )
     if turn.principal == "creator":
         mind.note_initiative_user_activity(turn.scope_key)
     attachment_context = ""

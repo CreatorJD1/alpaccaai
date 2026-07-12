@@ -190,9 +190,12 @@ labels retained in historical plans and handoffs.
   auto-stops at 60 seconds and stale work cancels on disconnect. A hardened,
   externally anchored provider/model/deployment-specific egress consent core
   now exists, but no vision/provider call or interactive creator control uses it
-  yet. A hardened request/event/scope-bound signed guest-actor core also exists,
-  but no bridge/server path mints or consumes its envelopes. Remaining gates are
-  wiring both cores; Phase 10 stays blocked.
+  yet. Signed Discord DM actor identity is now wired end to end: exact request
+  bytes and Discord event/actor/channel IDs are server-minted, consumed once
+  before side effects, and converted to a stable opaque guest scope. Raw IDs do
+  not enter payloads, prompts, history, or persisted identity rows. Phase 10
+  remains partial for guilds, retained guest context, rates, approvals, voice,
+  and a production external anchor.
 - Generic public vision is now **verified-local only** across image chat,
   screen/webcam sensing, pose tagging, self-recognition, ingestion, and Studio.
   Backend flags and cloud model tags cannot authorize egress or produce
@@ -205,8 +208,9 @@ labels retained in historical plans and handoffs.
   continuity, state mutation, runtime telemetry, Mindpage, cognition, or
   initiative writes. Only a server-created exact-turn envelope can carry a
   validated Discord image description, and image-derived guest turns are not
-  retained. Stable actor/thread context, allowlists, participation, approvals,
-  rate limits, and voice remain unfinished.
+  retained. Stable opaque actor/thread scope is now implemented for signed DMs;
+  retained context, guild participation, approvals, rate limits, and voice remain
+  unfinished.
 - Discord is now hard-locked to allowlisted DMs. Guild/thread messages have zero
   media/backend effects; proactive participation, recursion, and voice cannot be
   enabled by environment flags. DM bodies always use guest authority. A separate

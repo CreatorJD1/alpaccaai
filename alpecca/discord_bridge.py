@@ -23,6 +23,7 @@ Her backend (`server.py`) must be running so `/channel/inbound` is reachable.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import io
 import json
 import os
@@ -45,7 +46,7 @@ from alpecca.auth import (
     BRIDGE_AUTHORIZATION_HEADER,
     load_or_create_bridge_authorization_secret,
 )
-from alpecca import discord_media
+from alpecca import bridge_actor_transport, discord_media
 from config import HOME, HOST, PORT, PUBLIC_URL
 
 
@@ -97,6 +98,7 @@ IMAGE_INBOUND_TIMEOUT = max(
     float(os.environ.get("ALPECCA_DISCORD_IMAGE_TIMEOUT", "300")),
 )
 MAX_DISCORD_CHARS = 2000
+MAX_BACKEND_RESPONSE_BYTES = 1024 * 1024
 # Phase 10 stays closed until the signed actor envelope is wired end to end.
 # These are code locks, not deployment knobs: environment flags cannot widen
 # Discord into guild participation, autonomous speech, recursion, or voice.
@@ -142,18 +144,175 @@ def _is_reply_to_me(message: "discord.Message", client: "discord.Client") -> boo
     return bool(author and client.user and author.id == client.user.id)
 
 
-def _ask_alpecca(text: str, sender: str, channel: str,
-                 speaker: str = "guest",
-                 context: str = "", room: str = "", image: str = "") -> str:
-    """Forward one message to her mind via /channel/inbound; return her reply.
+def _message_actor_bindings(
+    message: "discord.Message",
+) -> bridge_actor_transport.DiscordActorBindings:
+    """Extract raw Discord IDs for dedicated transport headers only."""
+    channel = getattr(message, "channel", None)
+    author = getattr(message, "author", None)
+    guild = getattr(message, "guild", None)
+    if channel is None or author is None:
+        raise bridge_actor_transport.DiscordActorHeaderError(
+            "Discord actor bindings are unavailable"
+        )
+
+    event_id = getattr(message, "id", None)
+    actor_id = getattr(author, "id", None)
+    channel_id = getattr(channel, "id", None)
+    if event_id is None or actor_id is None or channel_id is None:
+        raise bridge_actor_transport.DiscordActorHeaderError(
+            "Discord actor bindings are unavailable"
+        )
+
+    guild_id: str | None = None
+    thread_id: str | None = None
+    if guild is not None:
+        raw_guild_id = getattr(guild, "id", None)
+        if raw_guild_id is None:
+            raise bridge_actor_transport.DiscordActorHeaderError(
+                "Discord actor bindings are unavailable"
+            )
+        guild_id = str(raw_guild_id)
+        parent_id = getattr(channel, "parent_id", None)
+        if parent_id is not None:
+            thread_id = str(channel_id)
+            channel_id = parent_id
+
+    return bridge_actor_transport.DiscordActorBindings(
+        event_id=str(event_id),
+        actor_id=str(actor_id),
+        guild_id=guild_id,
+        channel_id=str(channel_id),
+        thread_id=thread_id,
+    )
+
+
+class _RejectRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject redirects before urllib can copy actor credentials to a new URL."""
+
+    @staticmethod
+    def _reject(request, response, code, message, headers):
+        if response is not None:
+            response.close()
+        raise urllib.error.HTTPError(
+            request.full_url,
+            code,
+            message,
+            headers,
+            None,
+        )
+
+    def http_error_301(self, request, response, code, message, headers):
+        return self._reject(request, response, code, message, headers)
+
+    def http_error_302(self, request, response, code, message, headers):
+        return self._reject(request, response, code, message, headers)
+
+    def http_error_303(self, request, response, code, message, headers):
+        return self._reject(request, response, code, message, headers)
+
+    def http_error_307(self, request, response, code, message, headers):
+        return self._reject(request, response, code, message, headers)
+
+    def http_error_308(self, request, response, code, message, headers):
+        return self._reject(request, response, code, message, headers)
+
+
+def _is_loopback_backend_url(url: str) -> bool:
+    """Whether an HTTP(S) backend URL names a literal local endpoint."""
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or not hostname:
+        return False
+    normalized = hostname.rstrip(".").casefold()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _build_backend_opener(*, direct: bool) -> urllib.request.OpenerDirector:
+    """Build a one-request opener with redirects disabled and optional no-proxy."""
+    handlers: list[urllib.request.BaseHandler] = []
+    if direct:
+        handlers.append(urllib.request.ProxyHandler({}))
+    handlers.append(_RejectRedirectHandler())
+    return urllib.request.build_opener(*handlers)
+
+
+def _open_backend_request(request: urllib.request.Request, *, timeout: float):
+    opener = _build_backend_opener(
+        direct=_is_loopback_backend_url(request.full_url),
+    )
+    return opener.open(request, timeout=timeout)
+
+
+def _post_json_once(
+    url: str,
+    *,
+    body: bytes,
+    headers: dict[str, str],
+    timeout: float,
+) -> dict[str, object]:
+    """POST one request exactly once and require a JSON object response."""
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with _open_backend_request(request, timeout=timeout) as response:
+            raw_response = response.read(MAX_BACKEND_RESPONSE_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"alpecca backend rejected the request ({exc.code})") from None
+    except Exception as exc:
+        raise RuntimeError(
+            f"alpecca bridge request failed: {type(exc).__name__}"
+        ) from None
+    if type(raw_response) is not bytes:
+        raise RuntimeError("alpecca backend returned a malformed response")
+    if len(raw_response) > MAX_BACKEND_RESPONSE_BYTES:
+        raise RuntimeError("alpecca backend response exceeds the bounded byte limit")
+    try:
+        payload = json.loads(raw_response)
+    except (UnicodeDecodeError, ValueError, TypeError, RecursionError) as exc:
+        raise RuntimeError("alpecca backend returned malformed JSON") from exc
+    if type(payload) is not dict:
+        raise RuntimeError("alpecca backend returned a malformed result")
+    return payload
+
+
+def _ask_alpecca(
+    text: str,
+    sender: str,
+    channel: str,
+    speaker: str = "guest",
+    context: str = "",
+    room: str = "",
+    image: str = "",
+    actor_bindings: bridge_actor_transport.DiscordActorBindings | None = None,
+) -> str:
+    """Mint an actor proof, then forward the exact signed guest request bytes.
 
     `image` (optional) is a data-URL of an attached picture; the backend runs it
     through her vision + self-recognition. Raw document uploads are deliberately
     not part of this bridge contract. Blocking (urllib); callers run it off the
     event loop via asyncio.to_thread.
     """
-    # Sender labels and caller-supplied roles are presentation data, never
-    # authority. Until signed actor wiring lands, every Discord turn is guest.
+    del sender, speaker
+    if type(actor_bindings) is not bridge_actor_transport.DiscordActorBindings:
+        raise RuntimeError("Discord actor bindings are required")
+    if any(type(value) is not str for value in (text, channel, context, room, image)):
+        raise TypeError("Discord guest payload fields must be strings")
+    if channel not in {"discord", "discord-dm"}:
+        raise ValueError("Discord channel label is not allowed")
+
     body_obj = {
         "text": text,
         "sender": "Discord guest",
@@ -165,31 +324,56 @@ def _ask_alpecca(text: str, sender: str, channel: str,
     }
     if image:
         body_obj["image"] = image
-    body = json.dumps(body_obj).encode("utf-8")
-    headers = {
+    body = json.dumps(
+        body_obj,
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    if len(body) > bridge_actor_transport.MAX_DISCORD_BODY_BYTES:
+        raise ValueError("Discord guest payload exceeds the bounded byte limit")
+
+    base_headers = {
         "Content-Type": "application/json",
         BRIDGE_AUTHORIZATION_HEADER: _BRIDGE_AUTHORIZATION_SECRET,
+        **actor_bindings.as_headers(),
     }
     # Pixel-bearing requests stay on the laptop even when text traffic uses a
     # tunnel. Cloud model egress, when explicitly consented, happens only after
     # the local server validates and classifies the image.
     backend_url = LOCAL_BACKEND_URL if image else BACKEND_URL
-    req = urllib.request.Request(
-        f"{backend_url}/channel/discord",
-        data=body,
-        headers=headers,
-        method="POST",
+    mint_payload = _post_json_once(
+        f"{backend_url}/channel/discord/actor-envelope",
+        body=body,
+        headers=base_headers,
+        timeout=INBOUND_TIMEOUT,
     )
+    if (
+        set(mint_payload) != {"envelope"}
+        or type(mint_payload.get("envelope")) is not str
+    ):
+        raise RuntimeError("alpecca backend returned a malformed actor envelope")
     try:
-        timeout = IMAGE_INBOUND_TIMEOUT if image else INBOUND_TIMEOUT
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read() or b"{}")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="ignore") if exc.fp else str(exc)
-        raise RuntimeError(f"alpecca backend returned {exc.code}: {detail}") from None
-    except Exception as exc:
-        raise RuntimeError(f"alpecca bridge failed: {type(exc).__name__}: {exc}") from None
-    return str(payload.get("reply") or "").strip()
+        envelope = bridge_actor_transport.parse_envelope_header(
+            {bridge_actor_transport.ENVELOPE_HEADER: mint_payload["envelope"]}
+        )
+    except bridge_actor_transport.DiscordActorHeaderError as exc:
+        raise RuntimeError("alpecca backend returned a malformed actor envelope") from exc
+
+    payload = _post_json_once(
+        f"{backend_url}/channel/discord",
+        body=body,
+        headers={
+            **base_headers,
+            bridge_actor_transport.ENVELOPE_HEADER: envelope,
+        },
+        timeout=IMAGE_INBOUND_TIMEOUT if image else INBOUND_TIMEOUT,
+    )
+    reply = payload.get("reply")
+    if type(reply) is not str:
+        raise RuntimeError("alpecca backend returned a malformed Discord reply")
+    return reply.strip()
 
 
 _FFMPEG_EXE = None
@@ -217,7 +401,7 @@ def _synth_voice_wav(text: str) -> "bytes | None":
     }
     req = urllib.request.Request(f"{BACKEND_URL}/tts", data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=INBOUND_TIMEOUT) as resp:
+        with _open_backend_request(req, timeout=INBOUND_TIMEOUT) as resp:
             if resp.status != 200:
                 return None
             data = resp.read()
@@ -327,7 +511,10 @@ def build_client() -> discord.Client:
         if client.user is None:
             return
         # Never react to herself or to other bots.
-        if message.author.id == client.user.id or message.author.bot:
+        author_id = getattr(getattr(message, "author", None), "id", None)
+        if author_id is None:
+            return
+        if author_id == client.user.id or getattr(message.author, "bot", False):
             return
 
         is_dm = message.guild is None
@@ -343,6 +530,12 @@ def build_client() -> discord.Client:
 
         if is_dm:
             if not _dm_author_allowed(message.author):   # DM allowlist = CreatorJD only
+                return
+            try:
+                actor_bindings = _message_actor_bindings(message)
+            except bridge_actor_transport.DiscordActorHeaderError:
+                if DEBUG:
+                    print("[discord] missing or invalid actor bindings", file=sys.stderr)
                 return
             text = message.content.strip()
             channel_label = "discord-dm"
@@ -558,21 +751,11 @@ def build_client() -> discord.Client:
                     context=context,
                     room="discord",
                     image=image_dataurl,
+                    actor_bindings=actor_bindings,
                 )
         except Exception as exc:
             print(f"[discord] backend error: {type(exc).__name__}: {exc}", file=sys.stderr)
-            if outbound_media is not None:
-                reply = f"Here is my {outbound_media.kind} image."
-            elif image_dataurl:
-                await message.reply(
-                    "I received the image, but my vision pass did not return a "
-                    "usable result. I won't pretend I saw details that were not "
-                    "returned.",
-                    mention_author=False,
-                )
-                return
-            else:
-                return
+            return
 
         reply = (reply or "").strip()
         if not reply and outbound_media is None:

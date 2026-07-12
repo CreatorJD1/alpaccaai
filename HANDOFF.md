@@ -38,8 +38,11 @@ retained below as historical implementation evidence.
   bridge uses a separate Credential Manager/deployment secret and a closed
   service header; `/channel/discord` rejects the creator bearer and enters
   CoreMind as `guest`. Image-bearing bridge requests use loopback even when
-  text traffic is configured for a tunnel. Signed per-actor subjects and scoped
-  Discord conversation identity are still not wired.
+  text traffic is configured for a tunnel. The bridge now serializes each DM
+  once, obtains a short-lived server-minted actor envelope bound to those exact
+  bytes and Discord event/actor/channel IDs, then sends the unchanged body.
+  `/channel/discord` consumes that envelope before perception or model work and
+  derives a stable opaque guest scope without persisting raw Discord IDs.
 - A hardened Phase 9 egress-consent ledger now exists in
   `alpecca/egress_consent.py`, but it is not live. Its frozen route policy binds
   provider, deployment, model, processing location, destination class, HTTPS
@@ -54,37 +57,33 @@ retained below as historical implementation evidence.
   request bytes, Discord event ID, actor, guild, channel, and thread through
   keyed identifiers and can only produce a factory-validated guest result. It
   verifies exact schema objects, detects rollback/truncation, and supports the
-  current bounded image JSON size. It remains unwired: the Discord bridge does
-  not mint envelopes and `/channel/discord` does not consume them or derive a
-  stable actor/thread conversation scope.
+  current bounded image JSON size. Its DM transport is now wired through
+  `/channel/discord/actor-envelope` plus one-use consumption on
+  `/channel/discord`. Missing, mismatched, replayed, or duplicate proof fails
+  before CoreMind; redirects are rejected and loopback image requests bypass
+  proxies. Guest history remains deliberately ephemeral.
 - Creator-DM Discord images are now implemented through a dedicated authenticated
   `/channel/discord` route. The bridge accepts one PNG/JPEG/GIF under 2 MiB,
   sniffs MIME/dimensions from bytes before forwarding, records content-free
   ingress/egress observations, and no longer sends the retired raw document
-  fields. Discord image vision is separately enabled by the launcher and uses
-  the configured `gemma4:cloud` route first (measured about 7 seconds on the
-  current laptop); every response distinguishes local ingress validation from
-  the backend that actually processed pixels. Local `qwen3.5:9b` remains the
-  fallback but measured beyond four minutes on CPU, so image calls have a
-  five-minute fallback timeout. Explicit creator requests such as `!image
+  fields. Discord image vision is verified-local only; backend flags cannot
+  authorize cloud egress. Explicit creator requests such as `!image
   portrait`, `!image base`, `!image reference`, or `!image gallery` attach one
   byte-validated image from a closed Alpecca-owned local catalog. No model text,
   Discord filename, URL, or user path can select an outbound file.
 - Private image descriptions, microphone-derived text, source-tool turns,
   House file excerpts, retained private history, and paged private evidence
-  force verified local inference. The narrow exception is an explicitly enabled
-  creator-DM Discord image, which was already sent through Discord and may use
-  the configured vision backend; its actual backend and egress state are exposed
-  in `vision_processing`. File attachment context remains isolated as untrusted
+  force verified local inference. Discord images are also processed locally.
+  File attachment context remains isolated as untrusted
   prompt data and suppresses tool schemas for that turn. A remote `OLLAMA_HOST`,
   HF primary backend, or cloud-tagged model receives no House/private sensor or
   source-file request. Normal non-private hosted-chat paths remain unchanged.
-- Verification for this checkpoint: `1296 passed, 2 skipped` under `tests/`;
-  `tests/test_core.py` is green; the focused lease suites are green; House HQ
-  builds; and the classic inline JavaScript parses successfully.
+- Verification for this checkpoint: `1587 passed, 2 skipped` under `tests/`;
+  the 198-test signed actor/Discord matrix is green; House embodiment tests are
+  4/4; House HQ builds with only the existing large-chunk advisory. The four
+  Python warnings are existing dependency/model warnings, not test failures.
 - Phase 9 is not DONE: the provider/model-specific egress consent core is not
-  wired into perception, and the signed guest-actor core still needs bridge/
-  server envelope wiring and stable scope derivation.
+  wired into perception.
   Keep Phase 10 Discord participation/voice blocked.
 
 - `/house-hq` now serves the **Void Prototype**, including a native categorized
@@ -410,9 +409,9 @@ derived-output non-retention, commitment blocking, and House/WebSocket
 integration.
 
 Still required: wire the exact provider/model egress consent broker into every
-private perception provider attempt and partition Discord bridge service
-authentication from signed guest actor identity. Do not mark Phase 9 complete
-or unblock Phase 10 before those gates.
+private perception provider attempt. Discord service authentication and signed
+guest identity are now partitioned and wired for allowlisted DMs; do not mark
+Phase 9 complete while provider consent remains unwired.
 
 Generic vision is now verified-local by construction. `VISION_BACKEND`, a cloud
 model tag, or the former Discord cloud flag cannot authorize image egress or
@@ -428,7 +427,8 @@ Cloudflare.
 
 Reactive creator-DM text and bounded creator-DM image seeing/sending work.
 The current non-creator CoreMind path is now a reply-only conversation boundary:
-it uses a static prompt and retains no history until signed actor scopes exist.
+it uses a static prompt and deliberately retains no history even though signed
+DM actor scopes now exist.
 It exposes no tools, commitments, private continuity, state, location, model
 telemetry, Mindpage, cognition, or initiative
 mutation. Arbitrary caller image descriptions are ignored; a Discord image can
@@ -442,10 +442,9 @@ guest. The dedicated actor-identity seal credential is separate from creator
 authorization, bridge service authentication, and the bot token; no existing
 credential was changed or revoked.
 Keep guild image access plus Discord participation/recursion disabled until
-scoped bridge envelopes, signed guest actor identity, creator/guild/channel
-allowlists, conversation partitioning, guest capability denial, persistent rate
-limits, and nonce-bound creator approvals work. Add audio queues and live receive
-only after the text bridge passes its gate.
+creator/guild/channel allowlists, retained conversation partitioning, persistent
+rate limits, and nonce-bound creator approvals work. Add audio queues and live
+receive only after those text-participation gates pass.
 
 ### Phase 11: creator contact and notification outbox - PARTIAL; DELIVERY UNWIRED
 
@@ -515,7 +514,7 @@ claims only from evidence.
   phase explicitly adopts them after its gate.
 - Before every checkpoint run `python -m pytest -q tests\test_core.py` and
   `npm.cmd run house:build`. Current verified baseline: `tests/test_core.py`
-  is green and the full suite reports `1296 passed, 2 skipped`; House HQ builds
+  is green and the full suite reports `1587 passed, 2 skipped`; House HQ builds
   with only its existing large-chunk advisory.
 
 ### Current checkpoint

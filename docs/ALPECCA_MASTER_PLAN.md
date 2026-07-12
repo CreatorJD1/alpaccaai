@@ -650,9 +650,10 @@ camera frames, screen sharing, push-to-talk, voice enrollment, and exact file
 references. Fixed use/byte/time ceilings, explicit stop, disconnect, portal
 replacement, restart recovery, and sealed content-free transition evidence are
 implemented in House HQ and the secondary classic app. Discord transport now
-uses a separate service-only credential: the Discord route rejects the creator
-bearer, maps transport authority to `guest`, and keeps image-bearing bridge
-requests on loopback. Signed per-actor subjects are still required.
+uses a separate service-only credential plus a server-minted exact-body actor
+envelope. The route rejects the creator bearer, consumes each envelope once
+before perception/model work, derives a stable opaque guest scope, and keeps
+image-bearing requests on direct loopback transport.
 
 A hardened, unwired egress-consent core now freezes exact provider, deployment,
 model, destination, location, HTTPS route, operation, keyed payload metadata,
@@ -660,11 +661,13 @@ and byte count; it adds an external monotonic-anchor contract, restart revocatio
 sealed content-free attempt evidence, exact schema verification, tokenless
 server consumption, and bounded cleanup. Remaining before DONE: wire an
 interactive creator authority and this core into each perception provider
-attempt. A hardened signed guest-actor core now binds actual request bytes,
-Discord event and scope identifiers, fixed service policy, and independent
-rollback evidence to a structurally guest-only result. It still needs bridge
-minting, server consumption, and stable actor/thread scope derivation. Until
-both live wiring gates pass, Phase 10 remains blocked.
+attempt. A hardened signed guest-actor path now binds actual request bytes,
+Discord event and scope identifiers, fixed service policy, and an external
+monotonic-anchor contract to a structurally guest-only result. Bridge minting,
+one-use server consumption, and stable opaque actor/thread scope derivation are
+live for allowlisted DMs. Phase 10 remains partial because guest history, guild
+participation, rate limits, approvals, voice, and a production external anchor
+are not complete.
 
 Generic vision is now verified-local for image chat, screen/webcam sensing,
 pose tagging, self-recognition, ingestion, and Studio. Backend configuration no
@@ -677,7 +680,7 @@ Exit gate: Alpecca can cite viewed files/images/audio with provenance; malformed
 or oversized inputs fail closed; prompt injection cannot grant authority; no
 private sensor payload leaves the laptop without provider-specific consent.
 
-### Phase 10: Discord presence and voice - BLOCKED
+### Phase 10: Discord presence and voice - PARTIAL; GUILD/VOICE BLOCKED
 
 Default participation and recursion off. Add creator/guild/channel allowlists,
 signed bridge envelopes, conversation partitioning, guest capability denial,
@@ -690,8 +693,9 @@ Implemented foundation: non-creator turns now use a reply-only bounded pipeline
 with no creator continuity, tools, commitments, state mutation, or private
 telemetry. Caller-supplied image descriptions cannot enter it; a validated
 Discord image uses an in-process exact-turn envelope and is not retained. This
-does not provide stable actor/thread identity, allowlists, participation, rate
-limits, approvals, or voice, so the phase remains blocked.
+is now paired with stable signed DM actor/thread identity while guest history
+stays ephemeral. Guild participation, persistent rate limits, approvals,
+retained channel context, and voice remain blocked.
 
 The deployed bridge posture is DM-only until those gates pass. Guild/thread
 messages hard-return before media/backend work; proactive participation,

@@ -43,13 +43,15 @@ retained elsewhere for historical context.
   **PARTIAL**: vision/provider calls and interactive creator decisions are not
   wired to that ledger. A hardened signed guest-actor identity core also exists
   with actual request-byte/event/scope bindings, an external monotonic-anchor contract,
-  exact schema identity, and structurally guest-only results, but the bridge and
-  server do not mint or consume its envelopes yet. Independently, every current
+  exact schema identity, and structurally guest-only results. The bridge now
+  obtains a server-minted exact-body envelope and `/channel/discord` consumes it
+  once before side effects, deriving a stable opaque guest scope. Every current
   non-creator CoreMind turn is now conversation-only: no tools, commitments,
   private continuity, runtime telemetry, state mutation, or initiative writes.
   Server-validated Discord image descriptions can enter only through an
-  in-process exact-turn envelope and remain ephemeral. Stable actor/thread
-  context still depends on the signed identity wiring, so Phase 10 stays blocked.
+  in-process exact-turn envelope and remain ephemeral. Phase 10 remains partial
+  for retained guest context, guilds, rates, approvals, voice, and a production
+  external anchor.
 - The live Discord bridge is hard-locked to creator-allowlisted DMs. Guild and
   thread messages return before media or backend work; environment flags cannot
   enable participation, proactive speech, recursion, or voice. DM payloads are

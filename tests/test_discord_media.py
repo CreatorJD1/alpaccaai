@@ -9,6 +9,7 @@ import pytest
 
 from alpecca import discord_bridge
 from alpecca import discord_media
+from alpecca.bridge_actor_transport import DiscordActorBindings
 from alpecca import vision
 
 
@@ -164,14 +165,20 @@ def test_bridge_posts_only_image_field_and_uses_extended_image_timeout(monkeypat
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, *_args):
+            if len(calls) == 1:
+                return b'{"envelope":"signed-actor-envelope"}'
             return b'{"reply":"I can see it."}'
 
-    def fake_urlopen(request, timeout):
+    def fake_open_backend(request, *, timeout):
         calls.append((request, timeout))
         return FakeResponse()
 
-    monkeypatch.setattr(discord_bridge.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        discord_bridge,
+        "_open_backend_request",
+        fake_open_backend,
+    )
 
     reply = discord_bridge._ask_alpecca(
         "Who is this?",
@@ -179,15 +186,25 @@ def test_bridge_posts_only_image_field_and_uses_extended_image_timeout(monkeypat
         "discord-dm",
         speaker="creator",
         image="data:image/png;base64,AAAA",
+        actor_bindings=DiscordActorBindings(
+            event_id="1001",
+            actor_id="42",
+            channel_id="3001",
+        ),
     )
 
     assert reply == "I can see it."
-    request, timeout = calls[0]
+    assert len(calls) == 2
+    mint_request, mint_timeout = calls[0]
+    request, timeout = calls[1]
     body = json.loads(request.data)
+    assert mint_request.full_url.endswith("/channel/discord/actor-envelope")
+    assert mint_request.data is request.data
     assert request.full_url.endswith("/channel/discord")
     assert body["image"] == "data:image/png;base64,AAAA"
     assert "file_name" not in body
     assert "file_data" not in body
+    assert mint_timeout == discord_bridge.INBOUND_TIMEOUT
     assert timeout == discord_bridge.IMAGE_INBOUND_TIMEOUT
     assert timeout > discord_bridge.INBOUND_TIMEOUT
 
