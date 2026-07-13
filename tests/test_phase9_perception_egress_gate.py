@@ -424,6 +424,27 @@ def test_reused_operation_without_new_consent_is_fail_closed(
     assert len(calls) == 1  # provider ran exactly once
 
 
+@pytest.mark.parametrize("bad_gate", (None, object(), "not-a-gate"))
+def test_missing_or_invalid_gate_falls_back_without_calling_provider(
+    monkeypatch, bad_gate
+):
+    def forbidden(*_a, **_k):
+        pytest.fail("a missing/invalid gate must never run a remote transport")
+
+    monkeypatch.setattr(vision, "_describe_ollama_cloud", forbidden)
+    monkeypatch.setattr(vision, "_describe_zerogpu", forbidden)
+
+    result = vision.describe_image_via_consent(
+        IMAGE_BYTES,
+        gate=bad_gate,  # type: ignore[arg-type]
+        route_id=PRIMARY_ROUTE,
+        operation_id=OPERATION_A,
+        provider="ollama-cloud",
+    )
+
+    assert result is None
+
+
 def test_empty_image_never_reaches_gate_or_provider(tmp_path: Path, monkeypatch):
     gate, authority, _clock = _gate(tmp_path)
 

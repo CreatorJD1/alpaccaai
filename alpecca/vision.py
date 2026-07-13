@@ -219,6 +219,10 @@ def describe_image_via_consent(
     verified-local vision. The returned description reports the route's attested
     processing location and destination -- it is never relabelled local-only.
     """
+    # A missing or invalid gate is treated as absent consent: fall back to
+    # verified-local vision rather than crash or reach a remote provider.
+    if not isinstance(gate, PerceptionEgressGate):
+        return None
     transport = _remote_transport(provider)
     if transport is None:
         return None
