@@ -18,8 +18,9 @@ is missing, each capability quietly reports nothing -- same degradation
 contract as every other sense.
 
 Privacy: every generic public wrapper requires a verified-local Ollama target.
-Private cloud-provider helpers remain available for a future exact-consent
-adapter, but configuration alone never routes pixels to them.
+Legacy cloud-provider helpers remain private and unregistered because their
+final routes cannot be attested; configuration alone never routes pixels to
+them. The separate explicit API uses a code-owned exact HTTPS transport.
 """
 from __future__ import annotations
 
@@ -35,7 +36,16 @@ from config import (
     OLLAMA_NUM_CTX,
     VISION_CLOUD_MODEL,
 )
+from alpecca.attachment_ingress import ImageIngress
+from alpecca.egress_consent import EgressConsentLedger
 from alpecca.local_inference import verified_local_ollama_target
+from alpecca.perception_egress import (
+    EgressAttemptEvidence,
+    PrivateImageEndpoint,
+    PrivateImagePromptProfile,
+    ProviderAttestation,
+    describe_private_image_with_consent,
+)
 
 
 # --- The shared eye: one image in, a short description out ------------------
@@ -43,12 +53,32 @@ from alpecca.local_inference import verified_local_ollama_target
 
 @dataclass(frozen=True, slots=True)
 class VisionDescription:
-    """A grounded description plus the backend that actually saw the pixels."""
+    """A grounded description plus truthful local or consented route metadata."""
 
     text: str
     backend: str
     processing_location: str
     cloud_egress: str
+    egress_route: Optional[ProviderAttestation] = None
+    egress_attempt: Optional[EgressAttemptEvidence] = None
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteVisionAttempt:
+    """Content-free audit view of one consumed remote vision attempt."""
+
+    route: ProviderAttestation
+    attempt: EgressAttemptEvidence
+    outcome: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExplicitVisionResult:
+    """Local description or a content-free record of one remote attempt."""
+
+    description: Optional[VisionDescription]
+    remote_attempt: Optional[RemoteVisionAttempt] = None
+
 
 _DESCRIBE_PROMPT = (
     "Describe this image in two or three sentences, plainly and concretely: "
@@ -103,7 +133,8 @@ def _describe_ollama_cloud(image_bytes: bytes, prompt: str) -> Optional[str]:
     """Describe an image on a vision-capable Ollama *cloud* model, through the
     same signed-in local Ollama API as everything else. No ZeroGPU queue or
     quota, zero local VRAM -- pixels go to the account's hosted model and only
-    text comes back. Retained for a future exact-consent adapter."""
+    text comes back. It is not registered with the consent path because this
+    local proxy cannot attest its final HTTPS route or processing location."""
     if not VISION_CLOUD_MODEL:
         return None
     try:
@@ -122,7 +153,8 @@ def _describe_ollama_cloud(image_bytes: bytes, prompt: str) -> Optional[str]:
 def _describe_zerogpu(image_bytes: bytes, prompt: str) -> Optional[str]:
     """Describe an image on her ZeroGPU space's /vision endpoint -- the VL model
     runs on the Space's cloud GPU, so the local card is never touched. None on any
-    failure. Retained for a future exact-consent adapter."""
+    failure. It is not registered with the consent path because the Gradio
+    client can redirect or use a proxy outside the exact route contract."""
     from config import ZEROGPU_SPACE, ZEROGPU_TOKEN, ZEROGPU_VISION_API
     if not ZEROGPU_SPACE:
         return None
@@ -156,13 +188,73 @@ def describe_image_result(
 
     `ambient` remains accepted for compatibility with existing sensor callers.
     Generic wrappers are local-only regardless of that flag or
-    ``config.VISION_BACKEND``. A future remote adapter must consume an exact
-    consent grant before it invokes either private provider helper.
+    ``config.VISION_BACKEND``. The explicit egress API below is separate and
+    never invokes either legacy private provider helper.
     """
     local = _describe_local(image_bytes, prompt)
     return (
         VisionDescription(local, "local-ollama", "local-only", "denied")
         if local else None
+    )
+
+
+def describe_image_result_with_explicit_egress(
+    ingress: ImageIngress,
+    *,
+    ledger: EgressConsentLedger,
+    endpoint: PrivateImageEndpoint,
+) -> ExplicitVisionResult:
+    """Prefer verified-local vision, then attempt one explicitly approved route.
+
+    This is intentionally separate from every generic wrapper. Callers inject
+    the process ledger and a code-attested endpoint; the transport layer mints
+    a fresh operation identifier. Provider errors do not cascade into another
+    remote route.
+    """
+
+    if type(ingress) is not ImageIngress:
+        raise TypeError("ingress must be ImageIngress")
+    profile = PrivateImagePromptProfile.DESCRIBE_V1
+    local = _describe_local(ingress.image_bytes, profile.prompt)
+    if local:
+        return ExplicitVisionResult(
+            description=VisionDescription(
+                local,
+                "local-ollama",
+                "local-only",
+                "denied",
+            ),
+        )
+
+    result = describe_private_image_with_consent(
+        ingress,
+        ledger=ledger,
+        endpoint=endpoint,
+        profile=profile,
+    )
+    description = None
+    if result.text is not None:
+        description = VisionDescription(
+            text=result.text,
+            backend=(
+                f"consented-route:{result.route.provider}/"
+                f"{result.route.deployment}/"
+                f"{result.route.model}"
+            ),
+            processing_location=(
+                f"consented-route-declared:{result.route.processing_location}"
+            ),
+            cloud_egress="creator-approved",
+            egress_route=result.route,
+            egress_attempt=result.attempt,
+        )
+    return ExplicitVisionResult(
+        description=description,
+        remote_attempt=RemoteVisionAttempt(
+            route=result.route,
+            attempt=result.attempt,
+            outcome=result.outcome,
+        ),
     )
 
 
