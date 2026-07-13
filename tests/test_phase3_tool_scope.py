@@ -66,7 +66,12 @@ def test_scoped_retrieval_tools_exclude_shared_and_other_scopes(monkeypatch):
     )]
     assert page_calls == [(
         "marker",
-        {"limit": 3, "scope": "creator-private", "include_shared": False},
+        {
+            "limit": 3,
+            "scope": "creator-private",
+            "include_shared": False,
+            "max_tokens": 220,
+        },
     )]
 
 

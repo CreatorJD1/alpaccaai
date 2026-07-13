@@ -74,6 +74,90 @@ def test_fit_request_reports_deterministic_fixed_overflow_without_false_fit():
     assert _outcome(first) == _outcome(second)
 
 
+def test_tool_followup_fit_drops_old_groups_but_keeps_current_exchange():
+    system = {"role": "system", "content": "fixed companion instructions"}
+    old_group = [
+        {"role": "user", "content": "old question " * 80},
+        {"role": "assistant", "content": "old answer " * 80},
+    ]
+    current_group = [
+        {"role": "user", "content": "check current status"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "function": {"name": "self_status", "arguments": {}},
+            }],
+        },
+        {"role": "tool", "content": '{"status":"ready"}'},
+    ]
+
+    selected, ledger = mindpage.fit_tool_followup_request(
+        [system, *old_group, *current_group],
+        num_ctx=128,
+        output_reserve=16,
+        protocol_reserve=4,
+    )
+
+    assert selected == [system, *current_group]
+    assert ledger["context_fits"] is True
+    assert ledger["request_kind"] == "tool_followup"
+    assert ledger["dropped_history_messages"] == len(old_group)
+    assert ledger["required_message_count"] == len(current_group) + 1
+    assert ledger["request_message_tokens"] == (
+        mindpage.message_request_token_estimate(selected)
+    )
+
+
+def test_tool_followup_fit_counts_tool_metadata_and_refuses_required_overflow():
+    messages = [
+        {"role": "system", "content": "fixed system"},
+        {"role": "user", "content": "use the bounded tool"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call-1",
+                "type": "function",
+                "function": {
+                    "name": "bounded_tool",
+                    "arguments": {"payload": "argument-data-" * 80},
+                },
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "tool-result-data-" * 80,
+        },
+    ]
+
+    selected, ledger = mindpage.fit_tool_followup_request(
+        messages,
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "bounded_tool",
+                "description": "schema-data-" * 40,
+                "parameters": {"type": "object"},
+            },
+        }],
+        num_ctx=160,
+        output_reserve=16,
+        protocol_reserve=4,
+    )
+
+    assert selected == messages
+    assert ledger["context_fits"] is False
+    assert ledger["fit_status"] == "fixed_overflow"
+    assert ledger["fixed_overflow"] is True
+    assert ledger["minimum_required_tokens"] > ledger["num_ctx"]
+    assert ledger["required_message_tokens"] == (
+        mindpage.message_request_token_estimate(messages)
+    )
+    assert ledger["breakdown"]["tools"] > 0
+
+
 def test_fit_context_keeps_memory_history_musing_shrink_priority():
     history = [
         {"role": "user", "content": "u" * 20},

@@ -503,6 +503,7 @@ class InnateToolkit:
             limit=3,
             scope=turn.memory_scope,
             include_shared=False,
+            max_tokens=220,
         )
         if not hits:
             return f"no paged episode hit for: {topic}"
@@ -514,7 +515,9 @@ class InnateToolkit:
                     "kind": hit.get("kind"),
                     "topic": hit.get("topic"),
                     "summary": hit.get("summary"),
-                    "content": (hit.get("content") or "")[:1000],
+                    "content": mindpage_mod.truncate_tokens(
+                        hit.get("content") or "", 220
+                    ),
                     "score": hit.get("score"),
                 } for hit in hits
             ],

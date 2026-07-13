@@ -131,6 +131,160 @@ def test_content_only_fact_is_searchable_and_recallable(tmp_path: Path):
         assert hits[0]["match_source"] in {"content", "both"}
 
 
+def test_buried_content_recall_centers_match_and_stays_bounded(tmp_path: Path):
+    db_path = _db(tmp_path)
+    marker = "buriedcinderlattice"
+    page_id = _write_content_page(
+        db_path,
+        content=(
+            ("frontpadding " * 700)
+            + f"The exact {marker} calibration belongs to terminal two. "
+            + ("tailpadding " * 700)
+        ),
+    )
+
+    prefix = mindpage.fault_page(page_id, max_tokens=80, db_path=db_path)
+    recalled = mindpage.recall_page(marker, max_tokens=80, db_path=db_path)
+
+    assert prefix is not None and marker not in prefix["content"]
+    assert recalled and recalled[0]["id"] == page_id
+    assert marker in recalled[0]["content"]
+    assert recalled[0]["content_match_centered"] is True
+    assert "earlier page content omitted" in recalled[0]["content"]
+    assert "later page content omitted" in recalled[0]["content"]
+    assert mindpage.estimate_tokens(recalled[0]["content"]) <= 80
+
+
+def test_prefault_buried_content_keeps_match_inside_evidence_budget(tmp_path: Path):
+    db_path = _db(tmp_path)
+    marker = "prefaultamberrelay"
+    _write_content_page(
+        db_path,
+        content=(
+            ("oldcontext " * 700)
+            + f"The {marker} decision must remain available. "
+            + ("latercontext " * 700)
+        ),
+    )
+
+    pages = mindpage.prefault_pages(
+        marker,
+        token_budget=120,
+        limit=1,
+        db_path=db_path,
+    )
+
+    assert pages and marker in pages[0]["evidence_text"]
+    assert pages[0]["content_match_centered"] is True
+    assert mindpage.estimate_tokens(pages[0]["evidence_text"]) <= 120
+
+
+def test_prefault_long_metadata_preserves_buried_match_and_total_budget(tmp_path: Path):
+    db_path = _db(tmp_path)
+    marker = "longsummaryvioletrelay"
+    _write_content_page(
+        db_path,
+        topic="verbose historical conversation metadata " * 12,
+        summary="summary material that must yield to matched evidence " * 80,
+        content=("old detail " * 500) + marker + (" later detail" * 500),
+    )
+
+    pages = mindpage.prefault_pages(
+        marker,
+        token_budget=80,
+        limit=1,
+        db_path=db_path,
+    )
+
+    assert pages and marker in pages[0]["evidence_text"]
+    assert mindpage.estimate_tokens(pages[0]["evidence_text"]) <= 80
+
+
+def test_small_centered_excerpt_does_not_trim_across_matched_token(tmp_path: Path):
+    db_path = _db(tmp_path)
+    marker = "smallbudgetrelay"
+    _write_content_page(
+        db_path,
+        content=("prefix words " * 80) + marker + (" suffix words" * 80),
+    )
+
+    recalled = mindpage.recall_page(marker, max_tokens=12, db_path=db_path)
+
+    assert recalled and marker in recalled[0]["content"]
+    assert mindpage.estimate_tokens(recalled[0]["content"]) <= 12
+
+
+def test_missing_content_match_does_not_return_prefix_or_promote_page(tmp_path: Path):
+    db_path = _db(tmp_path)
+    page_id = _write_content_page(
+        db_path,
+        content="This page intentionally lacks the requested marker.",
+        tier="warm",
+    )
+    with mindpage._connect(db_path) as conn:
+        before = conn.execute(
+            "SELECT tier, access_count FROM mindpage_pages WHERE id=?",
+            (page_id,),
+        ).fetchone()
+
+    result = mindpage.fault_page(
+        page_id,
+        query="stalecontentmarker",
+        max_tokens=80,
+        db_path=db_path,
+    )
+
+    with mindpage._connect(db_path) as conn:
+        after = conn.execute(
+            "SELECT tier, access_count FROM mindpage_pages WHERE id=?",
+            (page_id,),
+        ).fetchone()
+    assert result is None
+    assert dict(after) == dict(before)
+
+
+def test_metadata_only_recall_keeps_prefix_behavior(tmp_path: Path):
+    db_path = _db(tmp_path)
+    marker = "metadatasilverthread"
+    page_id = _write_content_page(
+        db_path,
+        topic=f"Notes about {marker}",
+        summary="Metadata-only match",
+        content=("prefixbody " * 300) + "unrelated buried ending",
+    )
+
+    recalled = mindpage.recall_page(marker, max_tokens=40, db_path=db_path)
+
+    assert recalled and recalled[0]["id"] == page_id
+    assert recalled[0]["match_source"] == "metadata"
+    assert recalled[0]["content"].startswith("prefixbody")
+    assert recalled[0]["content_match_centered"] is False
+
+
+def test_multiterm_locator_prefers_buried_distinct_term_over_repeated_prefix(
+    tmp_path: Path,
+):
+    db_path = _db(tmp_path)
+    common = "repeatedsignal"
+    distinct = "violetanchor"
+    _write_content_page(
+        db_path,
+        content=(common + " ") * 500
+        + f"The relevant passage joins {common} with {distinct}. "
+        + ("tail material " * 500),
+    )
+
+    recalled = mindpage.recall_page(
+        f"{common} {distinct}",
+        max_tokens=60,
+        db_path=db_path,
+    )
+
+    assert recalled and distinct in recalled[0]["content"]
+    assert recalled[0]["content_match_centered"] is True
+    assert mindpage.estimate_tokens(recalled[0]["content"]) <= 60
+
+
 def test_search_does_not_inflate_compressed_page_content(tmp_path: Path, monkeypatch):
     db_path = _db(tmp_path)
     marker = "quartzsignal"

@@ -772,7 +772,133 @@ def search_pages(query: str, limit: int = 5, *, include_cold: bool = False,
     return [item for _, _, item in scored[: max(1, int(limit))]]
 
 
+def _bounded_page_excerpt(
+    content: str,
+    max_tokens: int,
+    query: str = "",
+) -> tuple[str, bool, bool]:
+    """Return a bounded prefix or, when possible, a window around a query hit."""
+    value = str(content or "")
+    limit = max(0, int(max_tokens))
+    if limit <= 0:
+        return "", False, False
+
+    query_terms, _ = _content_index_terms(query, limit=CONTENT_INDEX_QUERY_LIMIT)
+    if not query_terms:
+        if estimate_tokens(value) <= limit:
+            return value, False, False
+        return truncate_tokens(value, limit), False, False
+
+    lowered = value.lower()
+    wanted = set(query_terms)
+    positions: dict[str, list[tuple[int, int]]] = {term: [] for term in query_terms}
+    last_position: dict[str, tuple[int, int]] = {}
+    counts: dict[str, int] = {term: 0 for term in query_terms}
+    for match in _WORD.finditer(lowered):
+        term = _normalized_content_term(match.group(0))
+        if term not in wanted:
+            continue
+        counts[term] += 1
+        span = (match.start(), match.end())
+        last_position[term] = span
+        if len(positions[term]) < 8:
+            positions[term].append(span)
+
+    candidates: list[tuple[int, int, str]] = []
+    exact_query = " ".join(str(query or "").lower().split())
+    exact_position = lowered.find(exact_query) if exact_query else -1
+    if exact_position >= 0:
+        candidates.append((exact_position, exact_position + len(exact_query), ""))
+    for term in query_terms:
+        term_positions = positions[term]
+        tail = last_position.get(term)
+        if tail is not None and tail not in term_positions:
+            term_positions.append(tail)
+        candidates.extend((start, end, term) for start, end in term_positions)
+    if not candidates:
+        if estimate_tokens(value) <= limit:
+            return value, False, False
+        return truncate_tokens(value, limit), False, False
+    if estimate_tokens(value) <= limit:
+        return value, False, True
+
+    max_chars = max(1, limit * 4)
+    before_marker = "[earlier page content omitted] "
+    after_marker = " [later page content omitted]"
+    if max_chars <= len(before_marker) + len(after_marker) + 16:
+        before_marker = "... "
+        after_marker = " ..."
+    scoring_window = max(1, max_chars - len(before_marker) - len(after_marker))
+
+    def window(anchor: int, size: int) -> tuple[int, int]:
+        start = max(0, int(anchor) - max(1, int(size)) // 2)
+        end = min(len(value), start + max(1, int(size)))
+        start = max(0, end - max(1, int(size)))
+        return start, end
+
+    best_start, best_end = candidates[0][:2]
+    best_score: tuple[int, int, int, int] | None = None
+    for match_start, match_end, anchor_term in candidates:
+        anchor = match_start + max(0, match_end - match_start) // 2
+        start, end = window(anchor, scoring_window)
+        segment = lowered[start:end]
+        segment_terms = {
+            normalized
+            for token in _WORD.finditer(segment)
+            if (normalized := _normalized_content_term(token.group(0)))
+        }
+        score = (
+            int(bool(exact_query and exact_query in segment)),
+            len(wanted & segment_terms),
+            -int(counts.get(anchor_term, 0)),
+            -int(match_start),
+        )
+        if best_score is None or score > best_score:
+            best_score = score
+            best_start = match_start
+            best_end = match_end
+
+    best_anchor = best_start + max(0, best_end - best_start) // 2
+    payload_chars = scoring_window
+    start = end = 0
+    for _ in range(2):
+        start, end = window(best_anchor, payload_chars)
+        marker_chars = (
+            (len(before_marker) if start > 0 else 0)
+            + (len(after_marker) if end < len(value) else 0)
+        )
+        payload_chars = max(1, max_chars - marker_chars)
+    start, end = window(best_anchor, payload_chars)
+
+    # Avoid starting or ending in the middle of a word when nearby whitespace
+    # can be used without moving the matched passage out of the excerpt.
+    if start > 0 and start < best_start:
+        boundary = re.search(r"\s", value[start:min(best_start, start + 32)])
+        if boundary:
+            start += boundary.end()
+    if end < len(value) and end > best_end:
+        tail_start = max(best_end, end - 32)
+        tail = value[tail_start:end]
+        boundary = max(tail.rfind(" "), tail.rfind("\n"), tail.rfind("\t"))
+        if boundary >= 0:
+            end = max(best_end, tail_start + boundary)
+
+    excerpt = value[start:end].strip()
+    if start > 0:
+        excerpt = before_marker + excerpt
+    if end < len(value):
+        excerpt += after_marker
+    bounded = truncate_tokens(excerpt, limit)
+    returned_terms, _ = _content_index_terms(
+        bounded,
+        limit=CONTENT_INDEX_TERM_LIMIT,
+    )
+    match_returned = bool(wanted & set(returned_terms))
+    return bounded, match_returned, match_returned
+
+
 def fault_page(page_id: int, *, max_tokens: int = 1000,
+               query: str = "",
                scope: str = "shared", include_shared: bool = True,
                db_path: Path = DB_PATH) -> dict | None:
     """Inflate one page, promote it to hot, and bound returned content."""
@@ -791,17 +917,31 @@ def fault_page(page_id: int, *, max_tokens: int = 1000,
         ).fetchone()
         if not row:
             return None
-        conn.execute(
-            """
+    item = dict(row)
+    content_blob = item.pop("content_blob", b"")
+    content = _inflate(content_blob)
+    excerpt, match_centered, match_found = _bounded_page_excerpt(
+        content,
+        max_tokens,
+        query,
+    )
+    if query and not match_found:
+        return None
+    with _connect(db_path) as conn:
+        updated = conn.execute(
+            f"""
             UPDATE mindpage_pages
             SET tier='hot', last_access=?, access_count=access_count+1
-            WHERE id=?
+            WHERE id=? AND scope IN ({placeholders}) AND content_blob=?
             """,
-            (time.time(), int(page_id)),
-        )
-    item = dict(row)
+            (time.time(), int(page_id), *scopes, content_blob),
+        ).rowcount
+    if not updated:
+        return None
     item["tier"] = "hot"
-    item["content"] = truncate_tokens(_inflate(item.pop("content_blob", b"")), max_tokens)
+    item["content"] = excerpt
+    item["content_match_centered"] = match_centered
+    item["content_match_found"] = match_found
     return item
 
 
@@ -814,7 +954,8 @@ def get_page(page_id: int, db_path: Path = DB_PATH, *, scope: str = "shared",
 
 
 def recall_page(query: str, limit: int = 3, db_path: Path = DB_PATH, *,
-                scope: str = "shared", include_shared: bool = True) -> list[dict]:
+                scope: str = "shared", include_shared: bool = True,
+                max_tokens: int = 1000) -> list[dict]:
     """Explicit page fault across every tier, including cold pages."""
     hits = search_pages(
         query, limit=limit, include_cold=True, scope=scope,
@@ -822,8 +963,11 @@ def recall_page(query: str, limit: int = 3, db_path: Path = DB_PATH, *,
     )
     out = []
     for hit in hits:
+        match_query = (
+            query if hit.get("match_source") in {"content", "both"} else ""
+        )
         page = fault_page(
-            int(hit["id"]), max_tokens=1000, scope=scope,
+            int(hit["id"]), max_tokens=max_tokens, query=match_query, scope=scope,
             include_shared=include_shared, db_path=db_path,
         )
         if page:
@@ -852,22 +996,49 @@ def prefault_pages(query: str, *, token_budget: int = DEFAULT_PREFAULT_TOKENS,
     for candidate in candidates:
         if remaining < 24:
             break
-        # Reserve room for the summary and labels; a stronger match receives a
-        # larger excerpt, but no page can consume the whole per-turn allowance.
         per_page = min(remaining, max(80, budget // max(1, int(limit))))
+        max_chars = per_page * 4
+        topic = truncate_tokens(
+            str(candidate.get("topic") or "conversation"),
+            12,
+        )
+        header = f"Page {candidate['id']} ({topic})."
+        excerpt_label = "\nBounded page excerpt: "
+        summary_label = "\nLabeled summary: "
+        fixed_chars = len(header) + len(excerpt_label)
+        available_chars = max(1, max_chars - fixed_chars)
+        minimum_excerpt_chars = min(96, available_chars)
+        summary_chars = min(
+            96,
+            max(
+                0,
+                available_chars - minimum_excerpt_chars - len(summary_label),
+            ),
+        )
+        summary_part = ""
+        if summary_chars >= 4:
+            summary = truncate_tokens(
+                str(candidate.get("summary") or ""),
+                summary_chars // 4,
+            )
+            if summary:
+                summary_part = summary_label + summary
+        excerpt_chars = max(
+            1,
+            max_chars - len(header) - len(summary_part) - len(excerpt_label),
+        )
+        match_query = (
+            query if candidate.get("match_source") in {"content", "both"} else ""
+        )
         page = fault_page(
-            int(candidate["id"]), max_tokens=max(24, per_page - 40), scope=scope,
+            int(candidate["id"]), max_tokens=max(1, excerpt_chars // 4),
+            query=match_query, scope=scope,
             include_shared=include_shared, db_path=db_path,
         )
         if not page:
             continue
-        summary = str(page.get("summary") or "")
         content = str(page.get("content") or "")
-        evidence = (
-            f"Page {page['id']} ({page.get('topic', 'conversation')}), labeled summary: "
-            f"{summary}\nBounded page excerpt: {content}"
-        )
-        evidence = truncate_tokens(evidence, per_page)
+        evidence = header + summary_part + excerpt_label + content
         used = estimate_tokens(evidence)
         if used <= 0 or used > remaining:
             continue
@@ -883,6 +1054,20 @@ def prefault_pages(query: str, *, token_budget: int = DEFAULT_PREFAULT_TOKENS,
 
 def history_token_estimate(history: list[dict]) -> int:
     return estimate_tokens(turns_to_text(history))
+
+
+def message_request_token_estimate(messages: list[dict]) -> int:
+    """Estimate serialized chat messages, including tool-call metadata."""
+    try:
+        value = json.dumps(
+            list(messages or []),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+    except (TypeError, ValueError):
+        value = str(list(messages or []))
+    return estimate_tokens(value)
 
 
 def _tools_token_estimate(tools) -> int:
@@ -1100,6 +1285,85 @@ def fit_request(system_prompt: str, user_message: str, history: list[dict],
         dropped_history_messages=len(dropped),
         dropped_history_tokens=history_token_estimate(dropped),
     )
+    return selected, snapshot
+
+
+def fit_tool_followup_request(
+    messages: list[dict],
+    tools=None,
+    *,
+    num_ctx: int = OLLAMA_NUM_CTX,
+    output_reserve: int = OLLAMA_NUM_PREDICT,
+    protocol_reserve: int = PROTOCOL_TOKEN_RESERVE,
+) -> tuple[list[dict], dict]:
+    """Fit a tool follow-up without dropping its current user/tool exchange.
+
+    Leading system messages and the newest user-led group are required. Older
+    complete groups are retained newest-first only while the exact serialized
+    request, active tool schemas, and reserves fit. A required exchange that is
+    itself too large reports fixed overflow so the caller can refuse the model
+    request instead of silently losing a tool result.
+    """
+    request = [dict(message or {}) for message in messages or []]
+    system_messages: list[dict] = []
+    while request and str(request[0].get("role") or "") == "system":
+        system_messages.append(request.pop(0))
+
+    groups = _history_groups(request)
+    required_group = list(groups[-1]) if groups else []
+    optional_groups = [list(group) for group in groups[:-1]]
+    required_messages = [*system_messages, *required_group]
+    required_tokens = message_request_token_estimate(required_messages)
+    tool_tokens = _tools_token_estimate(tools)
+    context_limit = max(1, int(num_ctx))
+    output = max(0, min(int(output_reserve), max(0, context_limit - 1)))
+    protocol = max(0, min(int(protocol_reserve), max(0, context_limit - output)))
+
+    selected_groups: list[list[dict]] = []
+    for group in reversed(optional_groups):
+        candidate_groups = [group, *selected_groups]
+        candidate_messages = [
+            *system_messages,
+            *(message for selected in candidate_groups for message in selected),
+            *required_group,
+        ]
+        candidate_tokens = message_request_token_estimate(candidate_messages)
+        if candidate_tokens + tool_tokens + output + protocol > context_limit:
+            break
+        selected_groups = candidate_groups
+
+    selected_optional = [
+        message for group in selected_groups for message in group
+    ]
+    selected = [*system_messages, *selected_optional, *required_group]
+    selected_message_tokens = message_request_token_estimate(selected)
+    optional_tokens = max(0, selected_message_tokens - required_tokens)
+    dropped_group_count = max(0, len(optional_groups) - len(selected_groups))
+    dropped = [
+        message
+        for group in optional_groups[:dropped_group_count]
+        for message in group
+    ]
+    snapshot = _ledger(
+        fixed_tokens=required_tokens,
+        memory_tokens=0,
+        history_tokens=optional_tokens,
+        musing_tokens=0,
+        tool_tokens=tool_tokens,
+        output_reserve=output,
+        protocol_reserve=protocol,
+        num_ctx=context_limit,
+        history_messages=len(selected_optional),
+        dropped_history_messages=len(dropped),
+        dropped_history_tokens=message_request_token_estimate(dropped),
+    )
+    snapshot.update({
+        "request_kind": "tool_followup",
+        "request_message_tokens": selected_message_tokens,
+        "required_message_tokens": required_tokens,
+        "required_message_count": len(required_messages),
+        "optional_message_tokens": optional_tokens,
+    })
     return selected, snapshot
 
 
