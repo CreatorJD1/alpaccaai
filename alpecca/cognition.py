@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from alpecca import governed_learning as governed_learning_mod
 from config import DB_PATH
 
 INTENTS = {
@@ -35,6 +36,10 @@ APPROVAL_NEVER_AUTO = "never_auto"
 PROPOSAL_STATUSES = {"noticed", "planned", "testing", "accepted", "rejected", "superseded"}
 CLOSED_PROPOSAL_STATUSES = {"accepted", "rejected", "superseded"}
 EVALUATION_PHASES = {"noticed", "baseline", "planned", "testing", "result", "accepted", "rejected"}
+
+GOVERNED_LEARNING_SOURCE = "governed_learning"
+GOVERNED_LEARNING_SCOPE = "creator-personal"
+GOVERNED_CANDIDATE_ACTION = "Consider a bounded proactive chatter trial"
 
 _SCOPE_RE = re.compile(r"[^a-zA-Z0-9_.:-]+")
 
@@ -316,27 +321,136 @@ def proposal_payload(row: dict | None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _insert_observation(conn: sqlite3.Connection, obs: CognitionObservation) -> int:
+    cur = conn.execute(
+        "INSERT INTO cognition_observations "
+        "(ts, source, room, content, confidence, privacy_class, scope, metadata) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            obs.ts,
+            obs.source,
+            obs.room,
+            obs.content,
+            obs.confidence,
+            obs.privacy_class,
+            obs.scope,
+            json.dumps(obs.metadata, ensure_ascii=True),
+        ),
+    )
+    return int(cur.lastrowid)
+
+
 def record_observation(obs: CognitionObservation, db_path: Path = DB_PATH) -> int | None:
     obs = obs.clean()
     if not obs.content:
         return None
     with _connect(db_path) as conn:
-        cur = conn.execute(
-            "INSERT INTO cognition_observations "
-            "(ts, source, room, content, confidence, privacy_class, scope, metadata) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                obs.ts,
-                obs.source,
-                obs.room,
-                obs.content,
-                obs.confidence,
-                obs.privacy_class,
-                obs.scope,
-                json.dumps(obs.metadata, ensure_ascii=True),
-            ),
-        )
-        return int(cur.lastrowid)
+        return _insert_observation(conn, obs)
+
+
+def governed_learning_candidate_card(
+    signal: governed_learning_mod.GovernedLearningSignal | dict[str, Any],
+    db_path: Path = DB_PATH,
+) -> dict[str, Any] | None:
+    """Link verified governed status to its existing Workshop proposal.
+
+    Candidate creation remains exclusively inside BehaviorTrialCandidateStore.
+    This function only reads and sanitizes the already-created proposal.
+    """
+    normalized = governed_learning_mod.coerce_signal(signal)
+    link = normalized.candidate_card()
+    if link is None:
+        return None
+    proposal = get_action_proposal(int(link["proposal_id"]), db_path=db_path)
+    if (
+        proposal is None
+        or proposal.get("action") != GOVERNED_CANDIDATE_ACTION
+        or proposal.get("approval") != APPROVAL_ASK_FIRST
+        or proposal.get("risk") != "low"
+    ):
+        return None
+    return {
+        **link,
+        "proposal": {
+            key: proposal.get(key)
+            for key in (
+                "id",
+                "ts",
+                "action",
+                "reason",
+                "approval",
+                "risk",
+                "status",
+                "evidence",
+                "result",
+            )
+        },
+    }
+
+
+def record_governed_learning_observation(
+    signal: governed_learning_mod.GovernedLearningSignal | dict[str, Any],
+    db_path: Path = DB_PATH,
+) -> dict[str, Any]:
+    """Record one creator-scoped fact per verified lifecycle transition.
+
+    Idle and unavailable states are intentionally silent. Exact transition
+    keys deduplicate repeated status polling without creating a new authority
+    or a second candidate card.
+    """
+    normalized = governed_learning_mod.coerce_signal(signal)
+    card = governed_learning_candidate_card(normalized, db_path=db_path)
+    if not normalized.available or normalized.phase == "idle":
+        return {
+            "recorded": False,
+            "reused": False,
+            "observation_id": None,
+            "reason": normalized.evidence_code,
+            "candidate_card": card,
+        }
+    transition_key = normalized.transition_key
+    metadata = {
+        "kind": "governed_learning_transition",
+        "transition_key": transition_key,
+        "signal": normalized.as_dict(),
+    }
+    observation = CognitionObservation(
+        source=GOVERNED_LEARNING_SOURCE,
+        room="workshop",
+        content=normalized.observation_text(),
+        confidence=1.0,
+        privacy_class="personal",
+        scope=GOVERNED_LEARNING_SCOPE,
+        metadata=metadata,
+    ).clean()
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        latest = conn.execute(
+            "SELECT id,metadata FROM cognition_observations "
+            "WHERE source=? AND scope=? ORDER BY id DESC LIMIT 1",
+            (GOVERNED_LEARNING_SOURCE, GOVERNED_LEARNING_SCOPE),
+        ).fetchone()
+        latest_key = ""
+        if latest is not None:
+            try:
+                latest_metadata = json.loads(str(latest["metadata"] or "{}"))
+            except (TypeError, ValueError):
+                latest_metadata = {}
+            if isinstance(latest_metadata, dict):
+                latest_key = str(latest_metadata.get("transition_key") or "")
+        if latest is not None and latest_key == transition_key:
+            observation_id = int(latest["id"])
+            reused = True
+        else:
+            observation_id = _insert_observation(conn, observation)
+            reused = False
+    return {
+        "recorded": not reused,
+        "reused": reused,
+        "observation_id": observation_id,
+        "reason": normalized.evidence_code,
+        "candidate_card": card,
+    }
 
 
 def recent_observations(limit: int = 12, db_path: Path = DB_PATH, *,
@@ -976,13 +1090,18 @@ def record_behavior_improvement_review(lesson: dict | None = None,
                        "reverted_changes", "social_hunger", "memory_count"}
         )
     bounded_test = (
-        f"Observe whether the {lesson_kind} lesson improves grounded replies and "
-        "self-tuning before keeping any behavior change."
+        f"Observe whether the {lesson_kind} lesson remains supported by grounded "
+        "outcomes. This observation card cannot apply or retain a behavior change."
+    )
+    suggestion_note = (
+        f" The lesson named {suggestion} as an advisory direction."
+        if suggestion
+        else ""
     )
     next_step = (
-        f"Next bounded step: trial {suggestion} through selfmod only after user-visible evidence."
-        if suggestion else
-        "Next bounded step: keep observing; do not change a tunable until evidence points to one."
+        "Next bounded step: keep observing. A behavior trial may proceed only "
+        "through a separately server-issued, evidence-bound governed candidate "
+        f"and explicit creator lifecycle decisions.{suggestion_note}"
     )
     evidence = (
         f"lesson_kind={lesson_kind}; lesson={lesson_text}; evidence={lesson_evidence or 'no numeric evidence supplied'}"

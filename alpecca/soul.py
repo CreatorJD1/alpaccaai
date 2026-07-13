@@ -34,6 +34,7 @@ from typing import Mapping, TypedDict
 
 from alpecca.homeostasis import EmotionalState
 from alpecca import affect as affect_mod
+from alpecca import governed_learning as governed_learning_mod
 from alpecca import values
 
 CATEGORIES = ("emotions", "actions", "self_care", "compassion")
@@ -78,6 +79,11 @@ class Snapshot:
     senses_active: bool = False
     person_fatigue: float = 0.0   # how worn the person reads (compassion signals)
     trial_running: bool = False   # is a self-improvement experiment open
+    governed_learning: (
+        governed_learning_mod.GovernedLearningSignal
+        | Mapping[str, object]
+        | None
+    ) = None
     memory_pressure: MemoryPressureSignal | Mapping[str, object] | None = None
     host_pressure: Mapping[str, object] | None = None
 
@@ -179,13 +185,34 @@ def _improver(s: Snapshot) -> Intention | None:
     shouldn't experiment on herself while alarmed)."""
     if s.state.fear > 0.4:
         return None
+    cue = governed_learning_mod.soul_cue(s.governed_learning)
+    if cue is not None:
+        return Intention(
+            "Improver",
+            "self_care",
+            cue.action,
+            cue.reason,
+            4,
+            cue.urgency,
+        )
     if s.trial_running:
-        return Intention("Improver", "self_care", "evaluate my last self-change",
-                         "an experiment on myself is due to be judged", 4, 0.5)
+        return Intention(
+            "Improver",
+            "self_care",
+            "review legacy self-tuning evidence",
+            "a legacy bounded revision remains open",
+            4,
+            0.5,
+        )
     if s.state.curiosity > 0.45:
-        return Intention("Improver", "self_care", "try a small change to myself",
-                         "calm and curious -- a good time to tune myself", 4,
-                         s.state.curiosity * 0.6)
+        return Intention(
+            "Improver",
+            "self_care",
+            "review one bounded behavior improvement",
+            "calm curiosity can support an evidence card for creator review",
+            4,
+            s.state.curiosity * 0.6,
+        )
     return None
 
 

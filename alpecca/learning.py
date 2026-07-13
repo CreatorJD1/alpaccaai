@@ -1,10 +1,9 @@
 """Her self-training: learning lessons from her own real history.
 
-`selfmod.py` lets her nudge a parameter and keep it if an outcome improves. This
-module is the layer above it -- the part that *notices patterns in herself over
-time and draws lessons from them*, then points her self-tuning in a direction.
-It's the difference between "try a knob, measure" and "I've noticed that when X,
-Y tends to happen, so I should Z."
+`selfmod.py` retains the legacy bounded revision history. This module notices
+patterns in that history and her measured state, then draws reviewable lessons.
+The current production loop treats those lessons as observations; they do not
+select or activate the separately governed runtime trial.
 
 Grounded, like everything else: a lesson is only ever derived from her real data
 -- her mood log, the self-changes she's kept or reverted, her memory count -- and
@@ -12,8 +11,12 @@ each lesson carries the **evidence** it came from (the actual numbers), so it ca
 never be a made-up generalisation. She is training on herself, honestly.
 
 The loop, run occasionally on quiet ticks (mind.learn_tick):
-    analyze(real history)  ->  derive(a lesson, with evidence + a suggested nudge)
-    ->  record it  ->  hand the nudge to selfmod to trial.
+    analyze(real history)  ->  derive(a lesson, with evidence + an advisory)
+    ->  record it  ->  expose it as an observation for creator review.
+
+An advisory never starts a trial. Live behavior changes use the separate
+governed Phase 8 candidate, approval, start, settlement, and creator-decision
+contract backed by its own qualified-response evidence.
 
 Pure where it counts: `analyze` and `derive` take plain data and return plain
 dicts, so the reasoning is unit-testable without a database or a model.
@@ -90,9 +93,10 @@ def analyze(love_history: list[float], revisions: list[dict],
 
 def derive(a: dict) -> dict | None:
     """Draw at most one grounded lesson from the analysis, with the evidence that
-    backs it and, when warranted, a `suggestion` of which tunable to nudge and
-    which way (selfmod reads this). Returns None when nothing real stands out --
-    she doesn't invent a lesson just to have one.
+    backs it and, when warranted, a `suggestion` naming a direction worth later
+    review. The suggestion is observational and cannot enter the governed trial
+    lifecycle. Returns None when nothing real stands out -- she doesn't invent a
+    lesson just to have one.
 
     Each branch fires only on a genuine pattern in the numbers, and names those
     numbers as its evidence."""
