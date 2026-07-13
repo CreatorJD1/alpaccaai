@@ -134,16 +134,16 @@ CHANNEL_MIN_INTERVAL = float(os.environ.get("ALPECCA_DISCORD_MIN_INTERVAL", "1.5
 PROACTIVE_ENABLED = True
 PROACTIVE_COOLDOWN = max(
     60.0,
-    float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_COOLDOWN", "480")),
+    float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_COOLDOWN", "180")),
 )
 PROACTIVE_CHANCE = max(
     0.0,
-    min(1.0, float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_CHANCE", "0.3"))),
+    min(1.0, float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_CHANCE", "0.65"))),
 )
 PROACTIVE_MIN_LEN = int(os.environ.get("ALPECCA_DISCORD_PROACTIVE_MIN_LEN", "40"))
 PROACTIVE_QUIET_MIN = max(
     30.0,
-    float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_QUIET_MIN", "120")),
+    float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_QUIET_MIN", "60")),
 )
 PROACTIVE_SWEEP = max(
     10.0,
@@ -151,7 +151,7 @@ PROACTIVE_SWEEP = max(
 )
 PROACTIVE_GLOBAL_COOLDOWN = max(
     30.0,
-    float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_GLOBAL_COOLDOWN", "120")),
+    float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_GLOBAL_COOLDOWN", "60")),
 )
 # Recursive self-continuation: when the room goes quiet after SHE spoke, she may
 # continue her own train of thought a little deeper -- bounded, paced, and it
