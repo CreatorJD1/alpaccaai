@@ -22,7 +22,9 @@ function corsHeaders() {
 
 function authorized(request, env) {
   const expected = env.MINDSCAPE_TOKEN || "";
-  if (!expected) return true;
+  // A missing deployment secret must fail closed. The Worker is a continuity
+  // vault, not a public status endpoint.
+  if (!expected) return false;
   const bearer = request.headers.get("authorization") || "";
   const token = request.headers.get("x-alpecca-mindscape-token") || "";
   return bearer === `Bearer ${expected}` || token === expected;
