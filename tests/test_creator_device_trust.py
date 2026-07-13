@@ -131,6 +131,29 @@ def test_remote_browser_validates_once_then_uses_trusted_cookie(monkeypatch):
     assert same_origin_post.status_code == 404
 
 
+def test_remote_password_page_can_be_opened_directly(monkeypatch):
+    import server
+
+    authority = auth.SessionAuthority(
+        "test-only-remote-password-page-secret",
+        session_ttl_s=180 * 24 * 60 * 60,
+        creator_password=TEST_PASSWORD,
+    )
+    monkeypatch.setattr(server, "_AUTHORITY", authority)
+    client = TestClient(
+        server.app,
+        base_url="https://alpecca.example",
+        client=("192.0.2.47", 50105),
+    )
+
+    page = client.get("/auth/password?next=/house-hq")
+
+    assert page.status_code == 200
+    assert 'action="/auth/password"' in page.text
+    assert 'name="next" value="/house-hq"' in page.text
+    assert TEST_PASSWORD not in page.text
+
+
 def test_remote_password_exchange_accepts_mobile_same_site_referer(monkeypatch):
     import server
 

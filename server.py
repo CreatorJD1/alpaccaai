@@ -3351,6 +3351,24 @@ def request_auth_bootstrap(request: Request) -> dict:
     }
 
 
+@app.get("/auth/password")
+def auth_password_landing(request: Request) -> Response:
+    """Serve the remote creator password form for direct mobile opens."""
+    client_host = request.client.host if request.client else ""
+    allow_password = request.url.scheme == "https" or auth_mod.is_loopback_address(client_host)
+    return HTMLResponse(
+        _access_html(
+            _safe_local_path(request.query_params.get("next") or "/house-hq"),
+            allow_password=allow_password,
+        ),
+        headers={
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "same-origin",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @app.post("/auth/password")
 async def auth_password_exchange(request: Request) -> Response:
     """Exchange the protected creator password for an HttpOnly session."""
