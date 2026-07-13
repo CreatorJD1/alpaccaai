@@ -247,8 +247,10 @@ def test_exactly_one_4096_mib_step_is_proposed_from_measured_current_maximum():
         "proposed_maximum_mib": 42096,
         "increase_mib": 4096,
         "future_requirements": (
-            "fresh_live_remeasurement",
-            "separate_authenticated_one_use_creator_approval",
+            "documented_safe_8192_measurement",
+            "fresh_live_pagefile_commit_disk_readback",
+            "authenticated_one_use_creatorjd_approval",
+            "uac_elevation",
             "separate_minimal_elevated_helper",
             "single_bounded_write",
             "post_write_readback",
@@ -417,9 +419,10 @@ def test_plan_is_content_free_and_exposes_only_a_future_execution_boundary():
     assert not set(plan).intersection(
         {"approval_code", "command", "content", "credential", "path", "script", "token"}
     )
-    assert "separate_authenticated_one_use_creator_approval" in plan[
+    assert "authenticated_one_use_creatorjd_approval" in plan[
         "future_requirements"
     ]
+    assert "uac_elevation" in plan["future_requirements"]
     assert "separate_minimal_elevated_helper" in plan["future_requirements"]
 
 

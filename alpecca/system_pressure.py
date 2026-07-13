@@ -1,11 +1,12 @@
-"""Read-only Phase 7 host-pressure measurement and pagefile planning.
+"""Read-only Phase 7 host-pressure measurement and pagefile preparation.
 
 This module can observe through the established Phase 6 sampler and derive one
-bounded proposal from explicitly supplied pagefile-configuration evidence.  It
-contains no persistence, approval, elevation, command construction, or system
-mutation capability.  A later, separately reviewed boundary must authenticate
-one-use creator approval, remeasure live state, perform any elevated write, and
-verify the result.
+bounded proposal from explicitly supplied pagefile-configuration evidence. It
+can also assess whether a supplied Phase 6 report is structurally eligible for
+manual safe-8K review. It contains no persistence, approval, elevation, command
+construction, or system mutation capability. A later, separately reviewed
+boundary must authenticate one-use creator approval, remeasure live state,
+perform any elevated write, and verify the result.
 """
 from __future__ import annotations
 
@@ -32,9 +33,17 @@ COMMIT_HEADROOM_TRIGGER_FRACTION = (
 )
 
 PROPOSAL_SCHEMA = "alpecca.phase7.pagefile-proposal.v1"
+BROKER_PREREQUISITE_SCHEMA = (
+    "alpecca.phase7.pagefile-broker-prerequisite.v1"
+)
+BROKER_REQUIRED_CONTEXT_TIER = 8192
+BROKER_REQUIRED_CONTEXT_MODEL = "qwen3.5:9b"
+BROKER_REQUIRED_CREATOR_PRINCIPAL = "CreatorJD"
 FUTURE_EXECUTION_REQUIREMENTS = (
-    "fresh_live_remeasurement",
-    "separate_authenticated_one_use_creator_approval",
+    "documented_safe_8192_measurement",
+    "fresh_live_pagefile_commit_disk_readback",
+    "authenticated_one_use_creatorjd_approval",
+    "uac_elevation",
     "separate_minimal_elevated_helper",
     "single_bounded_write",
     "post_write_readback",
@@ -221,6 +230,166 @@ def _check(state: str, **evidence: Any) -> dict[str, Any]:
     return {"state": state, **evidence}
 
 
+def _empty_json_list(value: object) -> bool:
+    return type(value) is list and not value
+
+
+def _measurement_sample_summary(value: object) -> dict[str, Any]:
+    sample = _mapping(value)
+    data = _mapping(sample.get("data"))
+    assessment = _mapping(data.get("assessment"))
+    severity = assessment.get("severity")
+    if severity not in {"normal", "elevated"}:
+        severity = None
+    return {
+        "collected": sample.get("collected") is True,
+        "severity": severity,
+        "request_in_flight": sample.get("request_in_flight") is True,
+    }
+
+
+def assess_pagefile_broker_prerequisite(
+    measurement_report: Mapping[str, Any] | object,
+) -> dict[str, Any]:
+    """Assess a Phase 6 report without authorizing or constructing a broker.
+
+    Passing this structural assessment means only that the report is eligible
+    for manual safe-8K review. It is not evidence authentication, CreatorJD
+    approval, UAC consent, fresh live readback, or authority to change the host.
+    """
+    report = _mapping(measurement_report)
+    preflight = _mapping(report.get("preflight"))
+    request = _mapping(report.get("request"))
+    marker = _mapping(report.get("marker_verification"))
+    resources = _mapping(report.get("resources"))
+    manual_review = _mapping(report.get("manual_review"))
+    side_effects = _mapping(report.get("side_effects"))
+
+    samples = {
+        phase: _measurement_sample_summary(resources.get(phase))
+        for phase in ("before", "during", "after")
+    }
+    identity_ok = (
+        type(report.get("schema_version")) is int
+        and report.get("schema_version") == 1
+        and report.get("kind") == "alpecca_context_tier_measurement"
+        and type(report.get("tier")) is int
+        and report.get("tier") == BROKER_REQUIRED_CONTEXT_TIER
+        and report.get("model") == BROKER_REQUIRED_CONTEXT_MODEL
+    )
+    completion_ok = (
+        report.get("status") == "completed"
+        and report.get("mode") == "execute"
+    )
+    preflight_ok = (
+        preflight.get("performed") is True
+        and preflight.get("status") == "passed"
+        and preflight.get("request_permitted") is True
+        and preflight.get("evidence_state") == "observed"
+        and preflight.get("sample_collected") is True
+        and _empty_json_list(preflight.get("reasons"))
+        and _empty_json_list(preflight.get("unknowns"))
+    )
+    request_ok = (
+        request.get("allowed") is True
+        and request.get("attempted") is True
+        and type(request.get("http_request_count")) is int
+        and request.get("http_request_count") == 1
+        and type(request.get("http_request_count_limit")) is int
+        and request.get("http_request_count_limit") == 1
+    )
+    marker_ok = (
+        marker.get("checked") is True
+        and marker.get("response_contains_marker") is True
+        and marker.get("verified") is True
+    )
+    resources_ok = (
+        all(
+            sample["collected"] and sample["severity"] is not None
+            for sample in samples.values()
+        )
+        and samples["during"]["request_in_flight"]
+        and _empty_json_list(report.get("unknowns"))
+    )
+    manual_review_ok = (
+        report.get("manual_review_only") is True
+        and manual_review.get("required") is True
+        and manual_review.get("decision") == "manual_review_only"
+    )
+    side_effects_ok = (
+        report.get("automatic_promotion") is False
+        and report.get("system_settings_mutated") is False
+        and report.get("pagefile_mutated") is False
+        and side_effects
+        == {
+            "downloads_requested": False,
+            "files_written": False,
+            "system_settings_mutated": False,
+            "pagefile_mutated": False,
+        }
+    )
+
+    checks = {
+        "measurement_identity": _check(
+            "pass" if identity_ok else "fail",
+            required_tier=BROKER_REQUIRED_CONTEXT_TIER,
+            required_model=BROKER_REQUIRED_CONTEXT_MODEL,
+        ),
+        "completed_execute_measurement": _check(
+            "pass" if completion_ok else "fail"
+        ),
+        "fully_observed_safe_preflight": _check(
+            "pass" if preflight_ok else "fail"
+        ),
+        "exactly_one_request": _check("pass" if request_ok else "fail"),
+        "marker_verified": _check("pass" if marker_ok else "fail"),
+        "complete_nonblocking_resource_samples": _check(
+            "pass" if resources_ok else "fail",
+            samples=samples,
+        ),
+        "manual_review_contract": _check(
+            "pass" if manual_review_ok else "fail"
+        ),
+        "measurement_side_effect_free": _check(
+            "pass" if side_effects_ok else "fail"
+        ),
+    }
+    failed = tuple(
+        f"{name}_failed"
+        for name, check in checks.items()
+        if check["state"] != "pass"
+    )
+    if failed:
+        state = "blocked"
+        decision_codes = failed
+    else:
+        state = "review_required"
+        decision_codes = ("manual_safe_8192_measurement_review_required",)
+
+    return {
+        "schema": BROKER_PREREQUISITE_SCHEMA,
+        "state": state,
+        "execution_state": "preparation_only",
+        "broker_authorized": False,
+        "host_mutation_capability": False,
+        "manual_review_required": True,
+        "required_creator_principal": BROKER_REQUIRED_CREATOR_PRINCIPAL,
+        "decision_codes": decision_codes,
+        "checks": checks,
+        "deferred_execution_requirements": FUTURE_EXECUTION_REQUIREMENTS,
+        "policy": {
+            "step_mib": PAGEFILE_STEP_MIB,
+            "absolute_maximum_mib": PAGEFILE_ABSOLUTE_MAX_MIB,
+            "minimum_projected_system_disk_free_bytes": (
+                MIN_PROJECTED_SYSTEM_DISK_FREE_BYTES
+            ),
+            "uac_required": True,
+            "fresh_live_readback_required": True,
+            "post_write_readback_required": True,
+        },
+    }
+
+
 def propose_pagefile_plan(
     host_snapshot: Mapping[str, Any] | object,
     pagefile_observation: Mapping[str, Any] | object,
@@ -358,12 +527,17 @@ def propose_pagefile_plan(
 
 
 __all__ = [
+    "BROKER_PREREQUISITE_SCHEMA",
+    "BROKER_REQUIRED_CONTEXT_MODEL",
+    "BROKER_REQUIRED_CONTEXT_TIER",
+    "BROKER_REQUIRED_CREATOR_PRINCIPAL",
     "COMMIT_HEADROOM_TRIGGER_FRACTION",
     "FUTURE_EXECUTION_REQUIREMENTS",
     "MIN_PROJECTED_SYSTEM_DISK_FREE_BYTES",
     "PAGEFILE_ABSOLUTE_MAX_MIB",
     "PAGEFILE_STEP_MIB",
     "PROPOSAL_SCHEMA",
+    "assess_pagefile_broker_prerequisite",
     "measure_host_pressure",
     "propose_pagefile_plan",
 ]
