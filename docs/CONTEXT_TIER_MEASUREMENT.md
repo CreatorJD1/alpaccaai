@@ -1,6 +1,6 @@
 # Context Tier Measurement
 
-Last updated: **2026-07-10**
+Last updated: **2026-07-13**
 
 ## Phase 6E-6H Checkpoint
 
@@ -85,6 +85,42 @@ the harness cannot make it automatically.
 On 2026-07-10, a real-machine execute invocation was blocked by critical host
 pressure before any Ollama request. No real `qwen3.5:9b` inference or
 context-tier measurement completed, and no tier was promoted.
+
+On 2026-07-13, a real-machine `--execute --tier 8192` invocation was again
+blocked by the read-only preflight. The captured before-sample assessed host
+severity as `high` (overall pressure 0.866, disk-driven), which is in the
+blocking set. The harness reported `status: blocked`,
+`preflight.request_permitted: false`, a single blocking reason
+`host_assessment_high`, and every `durations_ms` value `null`, confirming no
+`/api/generate` HTTP request was issued. `pagefile_mutated` and
+`automatic_promotion` were both `false`, and no tier was promoted. This is the
+expected gated outcome: the 8,192 measurement is not completed because the
+read-only preflight did not pass. The next attempt still requires clearing host
+pressure (disk headroom in particular) and a separate authorization.
+
+## Phase 6 Lane A completion (2026-07-13)
+
+Three additional Mindpage guarantees were landed alongside the measurement
+evidence above:
+
+- **Every tool-result follow-up round is budgeted.** `mindpage.fit_tool_round`
+  re-measures the exact resent message array on each round of a tool-calling
+  turn, evicting the oldest evictable turns to fit while protecting the system
+  scaffolding, the current user message, and this round's tool results. When
+  even that protected minimum cannot fit, it refuses honestly
+  (`fit_status: fixed_overflow`) instead of silently truncating a tool result.
+- **Buried indexed facts fault in match-centered.** `mindpage.fault_page`
+  accepts an optional `query`; when a page exceeds the token budget the excerpt
+  is centered on the densest match (with ellipsis markers) rather than returning
+  an unrelated prefix. `recall_page` and `prefault_pages` pass the query through.
+  A non-matching query never fabricates a window; it falls back to the honest
+  prefix. Callers without a query keep the prior prefix behavior.
+- **Page-tier maintenance is cancellable.** `mindpage.maintain_pages` accepts a
+  cooperative `cancel_event`; a cancelled pass keeps its partial, idempotent
+  progress, leaves `last_maintenance` unstamped so it resumes, and is reported
+  `ran=False, cancelled=True` so it is never recorded as a completed run.
+  Maintenance issues no model call, so it can run under a background optional-work
+  lease that defers under foreground chat/TTS without ever holding a state lock.
 
 ## Remaining Phase 6 Work
 

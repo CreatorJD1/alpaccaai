@@ -664,6 +664,75 @@ def _query_words(text: str) -> set[str]:
     }
 
 
+def _match_centered_excerpt(content: str, query: str, max_tokens: int) -> str:
+    """Return a bounded excerpt centered on the densest query-term match.
+
+    A buried fact must surface with its surrounding context, not an unrelated
+    prefix. When the whole page already fits, or nothing in the query matches,
+    the ordinary prefix-bounded text is returned unchanged so callers without a
+    query keep their existing behavior.
+    """
+    text = str(content or "")
+    limit = max(0, int(max_tokens))
+    if limit <= 0:
+        return ""
+    if estimate_tokens(text) <= limit:
+        return text
+    words = _query_words(query)
+    if not words:
+        return truncate_tokens(text, limit)
+    lowered = text.lower()
+    spans = [
+        (match.start(), match.end())
+        for match in _WORD.finditer(lowered)
+        if match.group(0) in words
+    ]
+    if not spans:
+        # The match lives only in derived index terms, not the raw transcript;
+        # never fabricate a centered window, fall back to the honest prefix.
+        return truncate_tokens(text, limit)
+    marker = "..."
+    # Reserve room for up to two ellipsis markers within the same token budget.
+    window_tokens = max(1, limit - 2 * (estimate_tokens(marker) + 1))
+    window_chars = max(1, window_tokens * 4)
+    # Choose the window covering the most matches; deterministically prefer the
+    # earliest densest cluster so identical inputs always yield the same excerpt.
+    best_start = spans[0][0]
+    best_cover = -1
+    for anchor_start, _ in spans:
+        window_end = anchor_start + window_chars
+        cover = sum(1 for s, e in spans if s >= anchor_start and e <= window_end)
+        if cover > best_cover:
+            best_cover = cover
+            best_start = anchor_start
+    covered = [
+        (s, e) for s, e in spans if s >= best_start and e <= best_start + window_chars
+    ]
+    cluster_start = min(s for s, _ in covered) if covered else best_start
+    cluster_end = max(e for _, e in covered) if covered else best_start
+    # Center the covered cluster instead of gluing it to the left edge.
+    lead = max(0, (window_chars - (cluster_end - cluster_start)) // 2)
+    start = max(0, cluster_start - lead)
+    end = min(len(text), start + window_chars)
+    start = max(0, end - window_chars)
+    # Snap to whitespace so the excerpt never begins or ends mid-token.
+    if start > 0:
+        space = text.find(" ", start)
+        if space != -1 and space < cluster_start:
+            start = space + 1
+    if end < len(text):
+        space = text.rfind(" ", cluster_end, end)
+        if space > cluster_start:
+            end = space
+    excerpt = text[start:end].strip()
+    if start > 0:
+        excerpt = f"{marker} {excerpt}"
+    if end < len(text):
+        excerpt = f"{excerpt} {marker}"
+    # The leading marker is kept because truncate_tokens only trims the tail.
+    return truncate_tokens(excerpt, limit)
+
+
 def search_pages(query: str, limit: int = 5, *, include_cold: bool = False,
                   scope: str = "shared", include_shared: bool = True,
                   db_path: Path = DB_PATH) -> list[dict]:
@@ -774,8 +843,14 @@ def search_pages(query: str, limit: int = 5, *, include_cold: bool = False,
 
 def fault_page(page_id: int, *, max_tokens: int = 1000,
                scope: str = "shared", include_shared: bool = True,
+               query: str | None = None,
                db_path: Path = DB_PATH) -> dict | None:
-    """Inflate one page, promote it to hot, and bound returned content."""
+    """Inflate one page, promote it to hot, and bound returned content.
+
+    When ``query`` is supplied and the page exceeds the token budget, the
+    returned excerpt is centered on the matching text so a buried indexed fact
+    surfaces with its surrounding context rather than an unrelated prefix.
+    """
     if not MINDPAGE:
         return None
     ensure_schema(db_path)
@@ -801,7 +876,11 @@ def fault_page(page_id: int, *, max_tokens: int = 1000,
         )
     item = dict(row)
     item["tier"] = "hot"
-    item["content"] = truncate_tokens(_inflate(item.pop("content_blob", b"")), max_tokens)
+    content = _inflate(item.pop("content_blob", b""))
+    if query:
+        item["content"] = _match_centered_excerpt(content, query, max_tokens)
+    else:
+        item["content"] = truncate_tokens(content, max_tokens)
     return item
 
 
@@ -824,7 +903,7 @@ def recall_page(query: str, limit: int = 3, db_path: Path = DB_PATH, *,
     for hit in hits:
         page = fault_page(
             int(hit["id"]), max_tokens=1000, scope=scope,
-            include_shared=include_shared, db_path=db_path,
+            include_shared=include_shared, query=query, db_path=db_path,
         )
         if page:
             page["score"] = hit.get("score")
@@ -857,7 +936,7 @@ def prefault_pages(query: str, *, token_budget: int = DEFAULT_PREFAULT_TOKENS,
         per_page = min(remaining, max(80, budget // max(1, int(limit))))
         page = fault_page(
             int(candidate["id"]), max_tokens=max(24, per_page - 40), scope=scope,
-            include_shared=include_shared, db_path=db_path,
+            include_shared=include_shared, query=query, db_path=db_path,
         )
         if not page:
             continue
@@ -1103,6 +1182,102 @@ def fit_request(system_prompt: str, user_message: str, history: list[dict],
     return selected, snapshot
 
 
+def _message_token_estimate(message: dict) -> int:
+    """Estimate one chat message, including tool-call payloads and framing."""
+    if not isinstance(message, dict):
+        return estimate_tokens(str(message or "")) + 4
+    total = estimate_tokens(str(message.get("content") or ""))
+    tool_calls = message.get("tool_calls")
+    if tool_calls:
+        try:
+            total += estimate_tokens(
+                json.dumps(tool_calls, sort_keys=True, separators=(",", ":"))
+            )
+        except (TypeError, ValueError):
+            total += estimate_tokens(str(tool_calls))
+    return total + 4
+
+
+def fit_tool_round(messages: list[dict], tools=None, *,
+                   num_ctx: int = OLLAMA_NUM_CTX,
+                   output_reserve: int = OLLAMA_NUM_PREDICT,
+                   protocol_reserve: int = PROTOCOL_TOKEN_RESERVE
+                   ) -> tuple[list[dict], dict]:
+    """Budget a tool-result follow-up round against the exact resent request.
+
+    Each round after the first appends the model's tool calls and the tool
+    outputs to the running message list, so the request grows even though the
+    first request was already budgeted. This re-measures the whole resent array
+    and evicts the oldest evictable turns to fit, while protecting the system
+    scaffolding, the current user message, and this round's tool results. When
+    even that protected minimum cannot fit, it refuses honestly (``fit_status``
+    ``fixed_overflow``/``overflow``) rather than silently truncating a tool
+    result the model still needs.
+    """
+    msgs = [message for message in (messages or []) if isinstance(message, dict)]
+    output = max(0, min(int(output_reserve), max(0, int(num_ctx) - 1)))
+    protocol = max(0, min(int(protocol_reserve), max(0, int(num_ctx) - output)))
+    tool_tokens = _tools_token_estimate(tools)
+
+    # The leading system block is fixed scaffolding and is never evicted here.
+    lead = 0
+    while lead < len(msgs) and str(msgs[lead].get("role") or "") == "system":
+        lead += 1
+    system_block = msgs[:lead]
+    rest = msgs[lead:]
+
+    # Protect the current round: the most recent user message and everything
+    # after it (this round's assistant tool calls and their tool results).
+    tail_start = 0
+    for index in range(len(rest) - 1, -1, -1):
+        if str(rest[index].get("role") or "") == "user":
+            tail_start = index
+            break
+    middle = rest[:tail_start]
+    tail = rest[tail_start:]
+
+    protected = system_block + tail
+    protected_tokens = sum(_message_token_estimate(message) for message in protected)
+    allowed_middle = max(
+        0, int(num_ctx) - protected_tokens - tool_tokens - output - protocol
+    )
+
+    kept_reversed: list[dict] = []
+    kept_tokens = 0
+    dropped: list[dict] = []
+    for message in reversed(middle):
+        cost = _message_token_estimate(message)
+        if kept_tokens + cost > allowed_middle:
+            dropped.append(message)
+            continue
+        kept_reversed.append(message)
+        kept_tokens += cost
+    kept_middle = list(reversed(kept_reversed))
+    dropped_count = len(dropped)
+    dropped_tokens = sum(_message_token_estimate(message) for message in dropped)
+
+    # Fixed tokens for the ledger are the unshrinkable system + protected tail;
+    # the evictable middle is reported as the history component.
+    snapshot = _ledger(
+        fixed_tokens=protected_tokens,
+        memory_tokens=0,
+        history_tokens=kept_tokens,
+        musing_tokens=0,
+        tool_tokens=tool_tokens,
+        output_reserve=output,
+        protocol_reserve=protocol,
+        num_ctx=num_ctx,
+        history_messages=len(kept_middle),
+        dropped_history_messages=dropped_count,
+        dropped_history_tokens=dropped_tokens,
+    )
+    snapshot["source"] = "estimated_tool_round"
+    snapshot["tool_round_messages"] = len(system_block) + len(kept_middle) + len(tail)
+    snapshot["protected_tail_messages"] = len(tail)
+    kept_messages = system_block + kept_middle + tail
+    return kept_messages, snapshot
+
+
 def select_history_for_page(history: list[dict], snapshot: dict,
                             target_fill: float = 0.72,
                             min_keep_messages: int = 4) -> tuple[list[dict], list[dict]]:
@@ -1193,8 +1368,19 @@ def adjust_pressure_after_paging(snapshot: dict, attached_evicted: list[dict]) -
 
 def maintain_pages(*, db_path: Path = DB_PATH, now: float | None = None,
                    force: bool = False, min_interval_s: float = 3600.0,
-                   decay: float = 0.995, batch: int = 500) -> dict:
-    """Idempotently decay salience and demote inactive pages in bounded batches."""
+                   decay: float = 0.995, batch: int = 500,
+                   cancel_event=None) -> dict:
+    """Idempotently decay salience and demote inactive pages in bounded batches.
+
+    The salience decay and tier demotion are idempotent enough to resume, so a
+    cooperative ``cancel_event`` lets foreground chat or TTS reclaim the slot at
+    a safe row boundary. A cancelled run keeps its partial, idempotent progress
+    but does not stamp ``last_maintenance``, is reported ``ran=False`` with
+    ``cancelled=True``, and is therefore never recorded as a completed pass.
+    """
+    if cancel_event is not None and cancel_event.is_set():
+        return {"ran": False, "cancelled": True, "updated": 0,
+                "hot_to_warm": 0, "warm_to_cold": 0}
     if not MINDPAGE:
         return {"ran": False, "updated": 0, "hot_to_warm": 0, "warm_to_cold": 0}
     ensure_schema(db_path)
@@ -1218,7 +1404,11 @@ def maintain_pages(*, db_path: Path = DB_PATH, now: float | None = None,
         hot_to_warm = 0
         warm_to_cold = 0
         updated = 0
+        cancelled = False
         for row in rows:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
             age = max(0.0, stamp - float(row["last_access"] or 0.0))
             old_tier = str(row["tier"] or "warm")
             new_tier = old_tier
@@ -1234,6 +1424,11 @@ def maintain_pages(*, db_path: Path = DB_PATH, now: float | None = None,
                 (new_tier, new_salience, int(row["id"])),
             )
             updated += 1
+        if cancelled:
+            # Leave ``last_maintenance`` untouched so the idempotent decay resumes
+            # on a later idle window; a cancelled pass is never a completed run.
+            return {"ran": False, "cancelled": True, "updated": updated,
+                    "hot_to_warm": hot_to_warm, "warm_to_cold": warm_to_cold}
         conn.execute(
             """
             INSERT INTO mindpage_meta(key, value) VALUES('last_maintenance', ?)
