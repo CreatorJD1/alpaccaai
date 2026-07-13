@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import html
 import importlib.util
 import io
@@ -84,6 +85,7 @@ from alpecca import turn_context as turn_context_mod
 from alpecca import commitments as commitments_mod
 from alpecca import commitment_executor as commitment_executor_mod
 from alpecca import behavior_trial_candidates as behavior_trial_candidates_mod
+from alpecca import behavior_trial_profile as behavior_trial_profile_mod
 from alpecca import behavior_trial_review_decisions as behavior_trial_review_decisions_mod
 from alpecca import behavior_trial_settlement as behavior_trial_settlement_mod
 from alpecca import attachment_ingress as attachment_ingress_mod
@@ -95,7 +97,14 @@ from alpecca import notification_anchor as notification_anchor_mod
 from alpecca import notification_outbox as notification_outbox_mod
 from alpecca import web_push_adapter as web_push_adapter_mod
 from alpecca import web_push_runtime as web_push_runtime_mod
-from alpecca.behavior_trial_controller import BehaviorTrialController
+from alpecca import knowledge_blocks as knowledge_blocks_mod
+from alpecca import preferences as preferences_mod
+from alpecca import overload as overload_mod
+from alpecca.behavior_trial_controller import (
+    BehaviorTrialController,
+    TRIAL_ABORT_REASON,
+    TRIAL_EXPIRATION_REASON,
+)
 from alpecca.qualified_response_ledger import QualifiedResponseLedger
 
 
@@ -219,6 +228,11 @@ behavior_trial_candidate_store = behavior_trial_candidates_mod.BehaviorTrialCand
 behavior_trial_review_decision_store = (
     behavior_trial_review_decisions_mod.BehaviorTrialReviewDecisionStore(DB_PATH)
 )
+# A separate sealed profile store is the only boundary that may retain a
+# completed trial value. The trial controller itself always rolls back first.
+behavior_trial_profile_store = behavior_trial_profile_mod.BehaviorTrialProfileStore(
+    DB_PATH
+)
 # Outcome rows remain server-owned. The only public view is aggregate evidence
 # in the existing creator-only behavior-trial status response.
 qualified_response_ledger = QualifiedResponseLedger(DB_PATH)
@@ -230,16 +244,58 @@ behavior_trial_settlement_mod.init_db(DB_PATH)
 # interrupted trial. This event starts unset deliberately and is reset for
 # every lifespan entry.
 _behavior_trial_recovery_ready = threading.Event()
+_behavior_trial_profile_ready = threading.Event()
+_behavior_trial_profile_error = "profile seal and retained value not loaded"
+# Linearizes the small set of runtime gate transitions with outcome reservation.
+# It never surrounds an LLM call, network await, or ``mind_lock`` acquisition.
+_behavior_trial_transition_lock = threading.RLock()
 # Private sensor/file grants fail closed until startup has revoked every lease
 # left active by a previous process. The rest of Alpecca can still start.
 _capability_lease_recovery_ready = threading.Event()
 
 
+def _behavior_profile_generation(profile: Mapping[str, object]) -> str:
+    """Return a stable, non-secret identity for one retained profile epoch."""
+    material = json.dumps(
+        {
+            "parameter": str(profile.get("parameter") or "chatter_chance"),
+            "source_trial_id": profile.get("source_trial_id"),
+            "updated_at": profile.get("updated_at"),
+            "value": float(profile["value"]),
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _behavior_trial_chatter_gate() -> dict[str, object]:
+    """Supply one atomic probability/profile/trial snapshot to ``CoreMind``."""
+    snapshot = getattr(behavior_trial_controller, "proactive_gate_snapshot", None)
+    if callable(snapshot):
+        return snapshot(include_trial=_behavior_trial_recovery_ready.is_set())
+    # Compatibility for isolated adapters that expose only the original scalar
+    # supplier. The empty generation keeps these reads out of RSI evidence.
+    chance = float(behavior_trial_controller.default_chatter_chance)
+    if _behavior_trial_recovery_ready.is_set():
+        chance = float(behavior_trial_controller.chatter_chance())
+    return {
+        "chance": chance,
+        "trial_id": None,
+        "profile_generation": "",
+        "gated_at": _time.time(),
+    }
+
+
 def _behavior_trial_chatter_chance() -> float:
-    """Use only the baseline until interrupted-trial recovery succeeds."""
-    if not _behavior_trial_recovery_ready.is_set():
-        return behavior_trial_controller.default_chatter_chance
-    return behavior_trial_controller.chatter_chance()
+    """Compatibility view for callers that need only the live probability."""
+    return float(_behavior_trial_chatter_gate()["chance"])
+
+
+def _run_behavior_trial_transition(fn, /, *args, **kwargs):
+    with _behavior_trial_transition_lock:
+        return fn(*args, **kwargs)
 
 
 async def _expire_due_behavior_trials_once() -> None:
@@ -248,6 +304,7 @@ async def _expire_due_behavior_trials_once() -> None:
         return
     try:
         closed_trials = await asyncio.to_thread(
+            _run_behavior_trial_transition,
             behavior_trial_controller.maintain_runtime_state,
         )
     except Exception:
@@ -334,7 +391,7 @@ async def _settle_closed_behavior_trials_once() -> None:
 
 
 mind = CoreMind(
-    chatter_chance_supplier=_behavior_trial_chatter_chance,
+    chatter_chance_supplier=_behavior_trial_chatter_gate,
 )
 sensor = WindowSensor()
 # Voice-tone sense: opt-in (ALPECCA_VOICE=1) and quietly inert otherwise.
@@ -709,6 +766,7 @@ async def _expire_due_qualified_response_outcomes_once(
         # Closure is already durable. Failing to add a local observation does
         # not reopen it or change the metric.
         pass
+    await _reconcile_behavior_trial_candidate_once()
     return closed
 
 
@@ -729,43 +787,72 @@ def _qualified_response_outcome_eligible(
     )
 
 
-async def _begin_qualified_response_dispatch(
+def _reserve_qualified_response_dispatch(
     turn: turn_context_mod.TurnContext,
+    candidate: ProactiveCandidate,
 ) -> str | None:
-    """Reserve a provisional portal exposure before the transport await."""
-    delivery_id = uuid.uuid4().hex
-    dispatched_at = _time.time()
-    trial_id: int | None = None
-    if _behavior_trial_recovery_ready.is_set():
+    """Synchronously validate and reserve at one transition linearization point."""
+    with _behavior_trial_transition_lock:
+        delivery_id = uuid.uuid4().hex
+        dispatched_at = _time.time()
+        if not _behavior_trial_recovery_ready.is_set():
+            return None
+        if (
+            not isinstance(candidate, ProactiveCandidate)
+            or candidate.origin != "chatter"
+            or not candidate.profile_generation
+            or candidate.gate_chance is None
+            or candidate.gate_draw is None
+            or candidate.gated_at is None
+            or not math.isfinite(candidate.gate_chance)
+            or not math.isfinite(candidate.gate_draw)
+            or not math.isfinite(candidate.gated_at)
+            or not 0.0 <= candidate.gate_draw < candidate.gate_chance <= 1.0
+            or not 0.0 <= candidate.gated_at <= dispatched_at
+        ):
+            return None
         try:
-            candidate_trial_id = await asyncio.to_thread(
-                behavior_trial_controller.active_outcome_trial_id,
+            live_gate = behavior_trial_controller.proactive_gate_snapshot(
+                gated_at=dispatched_at,
+                include_trial=True,
+            )
+            live_chance = float(live_gate["chance"])
+        except Exception:
+            # An unverifiable transition is never silently reclassified as
+            # baseline evidence.
+            return None
+        if (
+            candidate.trial_id != live_gate.get("trial_id")
+            or candidate.profile_generation
+            != str(live_gate.get("profile_generation") or "")
+            or candidate.gate_chance != live_chance
+        ):
+            return None
+        try:
+            qualified_response_ledger.begin_dispatch(
+                delivery_id=delivery_id,
+                scope_key=turn.scope_key,
+                surface=turn.surface,
+                proactive_turn_id=turn.turn_id,
+                response_window_seconds=INITIATIVE_RESPONSE_WINDOW_SECONDS,
+                trial_id=candidate.trial_id,
                 dispatched_at=dispatched_at,
             )
-            if (
-                isinstance(candidate_trial_id, int)
-                and not isinstance(candidate_trial_id, bool)
-                and candidate_trial_id > 0
-            ):
-                trial_id = candidate_trial_id
         except Exception:
-            # Outcome attribution is optional evidence. A controller read
-            # failure must leave the delivery baseline-only, never block it.
-            pass
-    try:
-        await asyncio.to_thread(
-            qualified_response_ledger.begin_dispatch,
-            delivery_id=delivery_id,
-            scope_key=turn.scope_key,
-            surface=turn.surface,
-            proactive_turn_id=turn.turn_id,
-            response_window_seconds=INITIATIVE_RESPONSE_WINDOW_SECONDS,
-            trial_id=trial_id,
-            dispatched_at=dispatched_at,
-        )
-    except Exception:
-        return None
-    return delivery_id
+            return None
+        return delivery_id
+
+
+async def _begin_qualified_response_dispatch(
+    turn: turn_context_mod.TurnContext,
+    candidate: ProactiveCandidate,
+) -> str | None:
+    """Reserve a verified exposure off the event loop without a transition gap."""
+    return await asyncio.to_thread(
+        _reserve_qualified_response_dispatch,
+        turn,
+        candidate,
+    )
 
 
 async def _confirm_qualified_response_dispatch(delivery_id: str) -> bool:
@@ -778,10 +865,13 @@ async def _confirm_qualified_response_dispatch(delivery_id: str) -> bool:
         )
     except Exception:
         return False
-    return (
+    confirmed = (
         isinstance(row, Mapping)
         and str(row.get("state") or "") in {"pending", "responded"}
     )
+    if confirmed and str(row.get("state") or "") == "responded":
+        await _reconcile_behavior_trial_candidate_once()
+    return confirmed
 
 
 async def _cancel_qualified_response_dispatch(delivery_id: str) -> None:
@@ -823,7 +913,10 @@ async def _record_qualified_creator_response(
     except Exception:
         # Evidence collection must never block the authenticated chat turn.
         return False
-    return isinstance(row, Mapping)
+    recorded = isinstance(row, Mapping)
+    if recorded and str(row.get("state") or "") == "responded":
+        await _reconcile_behavior_trial_candidate_once()
+    return recorded
 
 
 def _schedule_ignored_outreach(initiative: dict | None) -> bool:
@@ -867,7 +960,10 @@ async def _deliver_proactive_once(
             initiative,
             proactive_turn,
         ):
-            delivery_id = await _begin_qualified_response_dispatch(proactive_turn)
+            delivery_id = await _begin_qualified_response_dispatch(
+                proactive_turn,
+                outcome_candidate,
+            )
         try:
             delivered = await _broadcast({
                 "type": "proactive", "reply": text,
@@ -986,6 +1082,13 @@ try:
     )
 except (TypeError, ValueError):
     BACKGROUND_MINDPAGE_CONTENT_INDEX_INTERVAL = 300.0
+try:
+    BACKGROUND_MINDPAGE_TIER_MAINTENANCE_INTERVAL = max(
+        60.0,
+        float(os.environ.get("ALPECCA_MINDPAGE_TIER_MAINTENANCE_INTERVAL", "900")),
+    )
+except (TypeError, ValueError):
+    BACKGROUND_MINDPAGE_TIER_MAINTENANCE_INTERVAL = 900.0
 _background_autonomy_status = {
     "enabled": True,
     "started_at": _time.time(),
@@ -1010,6 +1113,9 @@ _background_autonomy_status = {
     "mindpage_content_index_backfill_interval": BACKGROUND_MINDPAGE_CONTENT_INDEX_INTERVAL,
     "last_mindpage_content_index_backfill_at": 0.0,
     "last_mindpage_content_index_backfill_run": {},
+    "mindpage_tier_maintenance_interval": BACKGROUND_MINDPAGE_TIER_MAINTENANCE_INTERVAL,
+    "last_mindpage_tier_maintenance_at": 0.0,
+    "last_mindpage_tier_maintenance_run": {},
     "last_error": "",
     "tick_count": 0,
     "living_tick_count": 0,
@@ -1558,6 +1664,57 @@ def _compact_mindpage_content_index_run(result: object) -> dict:
     return compact
 
 
+def _compact_mindpage_tier_maintenance_run(result: object) -> dict:
+    """Keep page-tier maintenance telemetry content-free and bounded."""
+    if not isinstance(result, dict):
+        return {"status": "completed" if result else "timed_out"}
+    compact: dict[str, object] = {
+        "status": "completed" if result.get("ran") else (
+            "cancelled" if result.get("cancelled") else "skipped"
+        )
+    }
+    for key in ("updated", "hot_to_warm", "warm_to_cold"):
+        value = result.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            compact[key] = max(0, min(value, 1_000_000))
+    return compact
+
+
+async def _maintain_mindpage_tiers(*, now: float | None = None):
+    """Run bounded page aging only while the companion is idle."""
+    scheduled_at = float(_time.time() if now is None else now)
+    if _player_chat_priority_active():
+        return {"status": "deferred", "reason": "chat-active", "category": "routine"}
+    last_run = float(
+        _background_autonomy_status.get("last_mindpage_tier_maintenance_at") or 0.0
+    )
+    elapsed = scheduled_at - last_run
+    if last_run and elapsed < BACKGROUND_MINDPAGE_TIER_MAINTENANCE_INTERVAL:
+        return {
+            "status": "skipped",
+            "reason": "interval",
+            "next_in": round(BACKGROUND_MINDPAGE_TIER_MAINTENANCE_INTERVAL - elapsed, 3),
+        }
+    try:
+        result = await _optional_bounded_thread(
+            "routine",
+            "mindpage_tier_maintenance",
+            mindpage_mod.maintain_pages,
+            min_interval_s=BACKGROUND_MINDPAGE_TIER_MAINTENANCE_INTERVAL,
+            timeout=10.0,
+            cooperative=True,
+        )
+    except Exception as exc:
+        result = {"status": "error", "error": type(exc).__name__}
+    if _optional_work_noncompletion(result):
+        return result
+    _background_autonomy_status["last_mindpage_tier_maintenance_at"] = scheduled_at
+    _background_autonomy_status["last_mindpage_tier_maintenance_run"] = (
+        _compact_mindpage_tier_maintenance_run(result)
+    )
+    return result
+
+
 async def _maintain_mindpage_content_index(*, now: float | None = None):
     """Backfill a small legacy Mindpage index batch only when the companion is idle."""
     scheduled_at = float(_time.time() if now is None else now)
@@ -1992,18 +2149,42 @@ async def _run_routine(row: dict) -> dict:
 
 
 async def _run_due_routines_once() -> None:
-    """Advance only routines that actually reached a terminal completion."""
+    """Resolve atomic routine claims without consuming deferred or failed work."""
     if not AutomationCfg.ROUTINES:
         return
-    for row in routines_mod.due():
-        result = await _run_routine(row)
+    for row, claim in routines_mod.claim_due():
+        try:
+            result = await _run_routine(row)
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "status": "error",
+                "kind": str(row.get("kind") or ""),
+                "result": {"error": type(exc).__name__},
+            }
         if _optional_work_noncompletion(result):
+            # A deferred coordinator lease or cooperative cancellation did not
+            # execute the occurrence. Return it to the current-hour queue.
+            routines_mod.release(claim)
             continue
-        routines_mod.mark_ran(int(row["id"]))
-        await _broadcast({
-            "type": "activity",
-            "text": f"routine '{row.get('name')}' ran: {result.get('status', 'ok')}",
-        })
+        if bool(isinstance(result, dict) and result.get("ok")):
+            if routines_mod.complete(claim):
+                await _broadcast({
+                    "type": "activity",
+                    "text": f"routine '{row.get('name')}' ran: {result.get('status', 'ok')}",
+                })
+            continue
+        # Failures are retryable with ledger-owned capped exponential backoff.
+        # Only a terminal failure consumes the current schedule occurrence.
+        failure = routines_mod.fail(
+            claim,
+            error=(result.get("result") if isinstance(result, dict) else "routine_error"),
+        )
+        if failure.get("terminal"):
+            await _broadcast({
+                "type": "activity",
+                "text": f"routine '{row.get('name')}' reached its retry limit",
+            })
 
 
 @asynccontextmanager
@@ -2028,35 +2209,39 @@ async def lifespan(app: FastAPI):
     # This durable maintenance is idempotent and stays outside `mind_lock`.
     # It closes only already-due response windows; it starts no trial or send.
     await _expire_due_qualified_response_outcomes_once()
-    try:
-        recovered_trials = await asyncio.to_thread(
-            behavior_trial_controller.recover_interrupted,
-        )
-    except Exception:
-        # Recovery is retried on the next process start. It never starts or
-        # executes a behavior trial and must not block local startup.
-        pass
-    else:
-        _behavior_trial_recovery_ready.set()
-        if recovered_trials:
-            try:
-                cognition_mod.record_observation(cognition_mod.CognitionObservation(
-                    source="behavior_trial_recovery",
-                    content=(
-                        f"Closed {len(recovered_trials)} interrupted behavior trial(s) "
-                        "without starting or executing a trial."
-                    ),
-                    confidence=1.0,
-                    privacy_class="local",
-                    metadata={
-                        "trial_count": len(recovered_trials),
-                        "trial_ids": [int(row["id"]) for row in recovered_trials],
-                    },
-                ))
-            except Exception:
-                # Recovery already succeeded; failure to record its evidence
-                # must not reactivate or leave an override unclosed.
-                pass
+    if _behavior_trial_profile_ready.is_set():
+        try:
+            recovered_trials = await asyncio.to_thread(
+                _run_behavior_trial_transition,
+                behavior_trial_controller.recover_interrupted,
+            )
+        except Exception:
+            # Recovery is retried on the next process start. It never starts or
+            # executes a behavior trial and must not block local startup.
+            pass
+        else:
+            _behavior_trial_recovery_ready.set()
+            if recovered_trials:
+                try:
+                    cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                        source="behavior_trial_recovery",
+                        content=(
+                            f"Closed {len(recovered_trials)} interrupted behavior trial(s) "
+                            "without starting or executing a trial."
+                        ),
+                        confidence=1.0,
+                        privacy_class="local",
+                        metadata={
+                            "trial_count": len(recovered_trials),
+                            "trial_ids": [int(row["id"]) for row in recovered_trials],
+                        },
+                    ))
+                except Exception:
+                    # Recovery already succeeded; failure to record its evidence
+                    # must not reactivate or leave an override unclosed.
+                    pass
+            await _settle_closed_behavior_trials_once()
+            await _reconcile_behavior_trial_candidate_once()
 
     try:
         recovered = await asyncio.to_thread(
@@ -2172,6 +2357,7 @@ async def lifespan(app: FastAPI):
                 # same optional-work slot as embedding backfill, never holds
                 # `mind_lock`, and retries as soon as a deferred idle window ends.
                 await _maintain_mindpage_content_index(now=now)
+                await _maintain_mindpage_tiers(now=now)
                 if chat_priority:
                     reflect_now = False
                     living_due = False
@@ -2420,6 +2606,7 @@ _NOTIFICATION_PUSH_SUBSCRIPTIONS_TARGET = "Alpecca/NotificationPushSubscriptions
 _NOTIFICATION_PUSH_SUBSCRIPTIONS_ANCHOR_TARGET = (
     "Alpecca/NotificationPushSubscriptionsAnchor"
 )
+_NOTIFICATION_PUSH_ACK_ANCHOR_TARGET = "Alpecca/NotificationPushAckAnchor"
 _NOTIFICATION_PUSH_VAPID_TARGET = "Alpecca/NotificationPushVapid"
 
 
@@ -2560,6 +2747,12 @@ def _notification_runtime() -> dict[str, object]:
                         anchor_key=push_store_key,
                     )
                 )
+                ack_anchor = notification_anchor_mod.CredentialMonotonicAnchor(
+                    notification_anchor_mod.WindowsCredentialManagerBackend(
+                        _NOTIFICATION_PUSH_ACK_ANCHOR_TARGET
+                    ),
+                    anchor_key=push_store_key,
+                )
                 policy = notification_outbox_mod.OutboxPolicy(
                     policy_id="creator_app_push",
                     policy_version=1,
@@ -2597,6 +2790,7 @@ def _notification_runtime() -> dict[str, object]:
                     ),
                     seal_key=push_store_key,
                     subscription_anchor=subscription_anchor,
+                    ack_anchor=ack_anchor,
                 )
                 vapid = web_push_runtime_mod.load_or_create_vapid(
                     _notification_credential(
@@ -2631,6 +2825,20 @@ _capability_lease_store = capability_leases_mod.CapabilityLeaseStore(
 behavior_trial_controller.set_approval_seal_key(_AUTH_SECRET)
 behavior_trial_candidate_store.set_seal_key(_AUTH_SECRET)
 behavior_trial_review_decision_store.set_seal_key(_AUTH_SECRET)
+behavior_trial_profile_store.set_seal_key(_AUTH_SECRET)
+try:
+    _loaded_behavior_profile = behavior_trial_profile_store.active_profile(
+        behavior_trial_controller.default_chatter_chance
+    )
+    behavior_trial_controller.adopt_profile_chatter_chance(
+        float(_loaded_behavior_profile["value"]),
+        generation_token=_behavior_profile_generation(_loaded_behavior_profile),
+    )
+except Exception as exc:
+    _behavior_trial_profile_error = type(exc).__name__
+else:
+    _behavior_trial_profile_error = ""
+    _behavior_trial_profile_ready.set()
 _CREATOR_PASSWORD = auth_mod.load_creator_password()
 _TRUSTED_DEVICE_DAYS = max(
     1,
@@ -3355,6 +3563,49 @@ def mindpage_stats() -> dict:
         history=getattr(mind, "_history", []),
         ledger=getattr(mind, "_last_mindpage", None),
     )
+
+
+@app.get("/knowledge/brain-map")
+def knowledge_brain_map(req: Request) -> JSONResponse:
+    """Creator-only, read-only map of explicitly taught knowledge."""
+    _require_creator_request(req)
+    return JSONResponse(
+        knowledge_blocks_mod.brain_map_snapshot(scope="creator", db_path=DB_PATH),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/preferences/snapshot")
+def preferences_snapshot(req: Request) -> JSONResponse:
+    """Creator-only, read-only grounded preference/favorites snapshot."""
+    _require_creator_request(req)
+    return JSONResponse(
+        preferences_mod.snapshot(db_path=DB_PATH),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/overload/read-the-room")
+def overload_read_the_room(req: Request) -> JSONResponse:
+    """Return cited workload evidence, never an invented emotional state."""
+    _require_creator_request(req)
+    ledger = mind.mindpage_state()
+    raw_context_fill = ledger.get("context_fill") if isinstance(ledger, Mapping) else None
+    context_cue = (
+        overload_mod.context_pressure_cue(raw_context_fill)
+        if isinstance(raw_context_fill, (int, float)) and not isinstance(raw_context_fill, bool)
+        else None
+    )
+    assessment = overload_mod.assess_overload(
+        # There is no real turn-rate meter yet, so this deliberately remains
+        # unknown rather than fabricating a calm message-volume reading.
+        concurrent_actors=overload_mod.concurrent_actor_cue(len(ws_clients)),
+        context_pressure=context_cue,
+        host_pressure=overload_mod.host_pressure_cue_from_measurement(
+            _host_resource_sampler.snapshot(force=False)
+        ),
+    )
+    return JSONResponse(assessment, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/mindscape/snapshot")
@@ -4221,6 +4472,19 @@ def _behavior_trial_public_summary(record: Mapping[str, object]) -> dict:
     }
 
 
+def _behavior_trial_profile_contract(record: Mapping[str, object]) -> dict:
+    """Expose only the reviewed scalar values needed for an informed decision."""
+    spec = record.get("spec")
+    if not isinstance(spec, Mapping):
+        raise ValueError("behavior trial specification is unavailable")
+    return {
+        "preimage_value": float(spec["old_value"]),
+        "trial_value": float(spec["trial_value"]),
+        "exposure_seconds": float(spec["exposure_seconds"]),
+        "min_samples": int(spec["min_samples"]),
+    }
+
+
 def _behavior_trial_settlement_public_summary(settlement: Mapping[str, object]) -> dict:
     """Curate one frozen C7 settlement without raw records or proof material."""
     evidence = settlement.get("evidence")
@@ -4235,6 +4499,13 @@ def _behavior_trial_settlement_public_summary(settlement: Mapping[str, object]) 
         "settled_at": float(settlement["settled_at"]),
         "status": str(settlement["status"]),
         "recommendation": str(settlement["recommendation"]),
+        "outcome": str(settlement.get("outcome") or "inconclusive"),
+        "creator_retention_eligible": bool(
+            settlement.get("creator_retention_eligible") is True
+        ),
+        "creator_retention_reason": str(
+            settlement.get("creator_retention_reason") or "insufficient_evidence"
+        ),
         "evidence": {
             "metric": str(evidence["metric"]),
             "definition_version": int(evidence["definition_version"]),
@@ -4254,6 +4525,10 @@ def _behavior_trial_settlement_public_summary(settlement: Mapping[str, object]) 
             "spec_sha256": str(evaluation["spec_sha256"]),
             "baseline": float(evaluation["baseline"]),
             "min_samples": int(evaluation["min_samples"]),
+            "required_samples": int(
+                evaluation.get("required_samples", evaluation["min_samples"])
+            ),
+            "effect_threshold": float(evaluation.get("effect_threshold", 0.0)),
             "qualified_responses": int(evaluation["qualified_responses"]),
             "unanswered": int(evaluation["unanswered"]),
             "completed": int(evaluation["completed"]),
@@ -4264,6 +4539,9 @@ def _behavior_trial_settlement_public_summary(settlement: Mapping[str, object]) 
             "delta_from_baseline": evaluation["delta_from_baseline"],
             "readiness": str(evaluation["readiness"]),
             "comparison": evaluation["comparison"],
+            "creator_retention_eligible": bool(
+                evaluation.get("creator_retention_eligible") is True
+            ),
         },
     }
 
@@ -4280,6 +4558,13 @@ def _behavior_trial_candidate_public_summary() -> dict | None:
     if summary["state"] != "registered":
         return summary
     trial_id = int(candidate["registered_trial_id"])
+    if _behavior_trial_profile_ready.is_set():
+        decided = behavior_trial_profile_store.get(trial_id)
+        if decided is not None:
+            # The sealed profile decision is the archival boundary for this
+            # registered candidate. It remains in history but no longer blocks
+            # the next bounded cycle.
+            return None
     details = behavior_trial_candidate_store.registration_details(
         summary["proposal_id"],
         default_chatter_chance=behavior_trial_controller.default_chatter_chance,
@@ -4291,6 +4576,13 @@ def _behavior_trial_candidate_public_summary() -> dict | None:
         raise behavior_trial_candidates_mod.CandidateIntegrityError(
             "registered candidate does not match its behavior trial"
         )
+    rollback = current.get("rollback")
+    if current.get("state") == "rolled_back" and isinstance(rollback, Mapping):
+        if rollback.get("reason") != TRIAL_EXPIRATION_REASON:
+            # Aborts, interrupted recovery, and integrity closures are terminal
+            # but intentionally have no retain/revert settlement. Keep their
+            # rows as history without stranding the next review-only candidate.
+            return None
     summary["trial"] = _behavior_trial_public_summary(current)
     return summary
 
@@ -4306,9 +4598,16 @@ def _issue_behavior_trial_candidate_from_baseline() -> dict:
         # new candidate while the previously registered trial is still the one
         # waiting for approval, start, closure, or later creator review.
         return {"issued": False, "reason": "registration_pending"}
-    evidence = qualified_response_ledger.summary()
-    baseline = evidence.get("baseline")
-    if not isinstance(baseline, Mapping):
+    if not _behavior_trial_profile_ready.is_set():
+        return {"issued": False, "reason": "profile_unavailable"}
+    try:
+        profile = behavior_trial_profile_store.active_profile(
+            behavior_trial_controller.default_chatter_chance
+        )
+        baseline = qualified_response_ledger.baseline_summary(
+            since=profile.get("updated_at")
+        )
+    except Exception:
         return {"issued": False, "reason": "baseline_unavailable"}
     result = behavior_trial_candidate_store.issue_from_baseline(
         baseline,
@@ -4341,6 +4640,25 @@ def _issue_behavior_trial_candidate_from_baseline() -> dict:
             # must not create another candidate or change behavior.
             pass
     return result
+
+
+async def _reconcile_behavior_trial_candidate_once() -> dict:
+    """Idempotently advance a fresh profile epoch when evidence becomes ready."""
+    if (
+        not _behavior_trial_recovery_ready.is_set()
+        or not _behavior_trial_profile_ready.is_set()
+    ):
+        return {"issued": False, "reason": "recovery_pending"}
+    try:
+        result = await asyncio.to_thread(
+            _issue_behavior_trial_candidate_from_baseline
+        )
+    except Exception:
+        return {"issued": False, "reason": "candidate_unavailable"}
+    return result if isinstance(result, dict) else {
+        "issued": False,
+        "reason": "candidate_unavailable",
+    }
 
 
 def _behavior_trial_proposal_id(value: str) -> int:
@@ -4394,11 +4712,46 @@ def behavior_trial_status(req: Request) -> JSONResponse:
         return _behavior_trial_recovery_response()
     snapshot = dict(behavior_trial_controller.status_snapshot())
     snapshot["outcome_evidence"] = qualified_response_ledger.summary()
+    snapshot["profile_ready"] = _behavior_trial_profile_ready.is_set()
+    snapshot["profile_error"] = _behavior_trial_profile_error
+    if _behavior_trial_profile_ready.is_set():
+        try:
+            profile = behavior_trial_profile_store.active_profile(
+                behavior_trial_controller.default_chatter_chance
+            )
+            snapshot["active_profile"] = profile
+            snapshot["cycle_baseline"] = qualified_response_ledger.baseline_summary(
+                since=profile.get("updated_at")
+            )
+            snapshot["profile_decisions"] = behavior_trial_profile_store.list(limit=5)
+            snapshot["profile_decisions_available"] = True
+        except Exception:
+            snapshot["active_profile"] = None
+            snapshot["cycle_baseline"] = None
+            snapshot["profile_decisions"] = []
+            snapshot["profile_decisions_available"] = False
+    else:
+        snapshot["active_profile"] = None
+        snapshot["cycle_baseline"] = None
+        snapshot["profile_decisions"] = []
+        snapshot["profile_decisions_available"] = False
     try:
-        snapshot["review_settlements"] = behavior_trial_settlement_mod.list_settlements(
+        stored_settlements = behavior_trial_settlement_mod.list_settlements(
             DB_PATH,
             limit=5,
         )
+        review_settlements = []
+        for stored in stored_settlements:
+            public = dict(stored)
+            try:
+                trial_id = int(public["trial_id"])
+                trial = behavior_trial_controller.get(trial_id)
+                if trial is not None:
+                    public["profile"] = _behavior_trial_profile_contract(trial)
+            except Exception:
+                public["profile"] = None
+            review_settlements.append(public)
+        snapshot["review_settlements"] = review_settlements
         snapshot["review_settlements_available"] = True
     except Exception:
         # Settlement storage is optional observational context for this status
@@ -4721,7 +5074,10 @@ def behavior_trial_creator_start(trial_id: int, req: Request) -> JSONResponse:
         )
     already_running = current_state == "running"
     try:
-        updated = behavior_trial_controller.start(trial_id)
+        updated = _run_behavior_trial_transition(
+            behavior_trial_controller.start,
+            trial_id,
+        )
     except ValueError as exc:
         # The controller verifies the approval binding, exact preimage, and
         # runtime readback. A rejected start cannot fall back to a mutation.
@@ -4774,6 +5130,82 @@ def behavior_trial_creator_start(trial_id: int, req: Request) -> JSONResponse:
             "running": True,
             "already_running": already_running,
             "trial": summary,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/behavior-trials/{trial_id}/abort")
+async def behavior_trial_creator_abort(trial_id: str, req: Request) -> JSONResponse:
+    """Restore the profile and close one started trial as inconclusive."""
+    authorization = _require_creator_request(req)
+    if not _behavior_trial_recovery_ready.is_set():
+        return _behavior_trial_recovery_response()
+    await _require_bodyless_behavior_trial_request(
+        req,
+        action="behavior trial abort",
+    )
+    try:
+        trial_key = _behavior_trial_id(trial_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="invalid behavior trial",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    try:
+        closed = _run_behavior_trial_transition(
+            behavior_trial_controller.abort,
+            trial_key,
+            "creator requested an early stop",
+            actor="creator",
+        )
+        already_aborted = closed.get("already_aborted") is True
+    except (ValueError, sqlite3.IntegrityError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="behavior trial cannot be aborted from its current state",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial abort storage unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    rollback = closed.get("rollback")
+    if not isinstance(rollback, Mapping) or rollback.get("reason") != TRIAL_ABORT_REASON:
+        raise HTTPException(
+            status_code=409,
+            detail="behavior trial was already closed by another outcome",
+            headers={"Cache-Control": "no-store"},
+        )
+    if not already_aborted:
+        try:
+            cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                source="behavior_trial_creator_abort",
+                content=f"Creator stopped Alpecca behavior trial {trial_key} early.",
+                confidence=1.0,
+                privacy_class="local",
+                metadata={
+                    "trial_id": trial_key,
+                    "scope": "creator-personal",
+                    "decision": "abort_inconclusive",
+                    "authorization": authorization.mechanism,
+                    "restored_value": float(rollback["restored_value"]),
+                    "runtime_change": not already_aborted,
+                },
+            ))
+        except Exception:
+            pass
+    return JSONResponse(
+        {
+            "aborted": True,
+            "already_aborted": already_aborted,
+            "trial_id": trial_key,
+            "state": str(closed.get("state") or "rolled_back"),
+            "outcome": "inconclusive",
+            "restored_value": float(rollback["restored_value"]),
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -4839,6 +5271,7 @@ def behavior_trial_creator_review(trial_id: int, req: Request) -> JSONResponse:
         ):
             raise ValueError("settlement does not match the immutable trial")
         review = _behavior_trial_settlement_public_summary(settlement)
+        review["profile"] = _behavior_trial_profile_contract(current)
     except Exception as exc:
         raise HTTPException(
             status_code=503,
@@ -4886,7 +5319,15 @@ async def behavior_trial_creator_retain_baseline(
     trial_id: str,
     req: Request,
 ) -> JSONResponse:
-    """Seal one creator acknowledgement after a frozen review, without retuning."""
+    """Compatibility alias for the bounded revert-to-baseline decision."""
+    return await behavior_trial_creator_profile_decision(
+        trial_id,
+        behavior_trial_profile_mod.REVERT_TO_BASELINE,
+        req,
+    )
+
+    # Kept below for one release as inert migration context for older C9 data.
+    # New requests never execute this acknowledgement-only path.
     decision = _require_creator_request(req)
     if not _behavior_trial_recovery_ready.is_set():
         return _behavior_trial_recovery_response()
@@ -5029,6 +5470,129 @@ async def behavior_trial_creator_retain_baseline(
             "already_recorded": not created,
             "decision": public_receipt,
             "trial": summary,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/behavior-trials/{trial_id}/review/decision/{decision_name}")
+async def behavior_trial_creator_profile_decision(
+    trial_id: str,
+    decision_name: str,
+    req: Request,
+) -> JSONResponse:
+    """Commit one creator-reviewed value, then open a fresh evidence epoch."""
+    authorization = _require_creator_request(req)
+    if not _behavior_trial_recovery_ready.is_set():
+        return _behavior_trial_recovery_response()
+    if not _behavior_trial_profile_ready.is_set():
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial profile is unavailable",
+            headers={"Cache-Control": "no-store"},
+        )
+    await _require_bodyless_behavior_trial_request(
+        req,
+        action="behavior trial profile decision",
+    )
+    try:
+        trial_key = _behavior_trial_id(trial_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="invalid behavior trial",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    if decision_name not in {
+        behavior_trial_profile_mod.RETAIN_TRIAL_VALUE,
+        behavior_trial_profile_mod.REVERT_TO_BASELINE,
+    }:
+        raise HTTPException(
+            status_code=400,
+            detail="invalid behavior trial profile decision",
+            headers={"Cache-Control": "no-store"},
+        )
+    def commit_profile_decision():
+        previous = float(behavior_trial_controller.default_chatter_chance)
+        stored_receipt, was_created = behavior_trial_profile_store.decide(
+            trial_key,
+            decision=decision_name,
+            expected_current_value=previous,
+            principal=authorization.principal,
+            authorization_mechanism=authorization.mechanism,
+            authorization_issued_at=authorization.issued_at,
+            authorization_expires_at=authorization.expires_at,
+        )
+        profile = behavior_trial_profile_store.active_profile(previous)
+        behavior_trial_controller.adopt_profile_chatter_chance(
+            float(profile["value"]),
+            generation_token=_behavior_profile_generation(profile),
+        )
+        return stored_receipt, was_created, profile, previous
+
+    try:
+        receipt, created, active_profile, previous_profile_value = (
+            _run_behavior_trial_transition(commit_profile_decision)
+        )
+    except behavior_trial_profile_mod.ProfileDecisionNotEligible as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except behavior_trial_profile_mod.BehaviorTrialProfileError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial profile decision failed integrity checks",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="behavior trial profile storage unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    if created:
+        try:
+            cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                source="behavior_trial_profile_decision",
+                content=(
+                    f"Creator completed Alpecca behavior trial {trial_key} with "
+                    f"the decision {decision_name}."
+                ),
+                confidence=1.0,
+                privacy_class="local",
+                metadata={
+                    "trial_id": trial_key,
+                    "scope": behavior_trial_profile_mod.CREATOR_PERSONAL_SCOPE,
+                    "parameter": behavior_trial_profile_mod.PROFILE_PARAMETER,
+                    "decision": decision_name,
+                    "applied_value": float(receipt["applied_value"]),
+                    "authorization": authorization.mechanism,
+                    "runtime_change": (
+                        float(receipt["applied_value"]) != previous_profile_value
+                    ),
+                    "source_write": False,
+                    "system_change": False,
+                },
+            ))
+        except Exception:
+            pass
+    try:
+        next_cycle = _issue_behavior_trial_candidate_from_baseline()
+    except Exception:
+        next_cycle = {"issued": False, "reason": "candidate_unavailable"}
+    return JSONResponse(
+        {
+            "recorded": True,
+            "already_recorded": not created,
+            "decision": receipt,
+            "active_profile": active_profile,
+            "next_cycle": {
+                "issued": bool(next_cycle.get("issued")),
+                "reused": bool(next_cycle.get("reused")),
+                "reason": str(next_cycle.get("reason") or ""),
+            },
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -6011,6 +6575,7 @@ async def cognition_proposal_create(req: Request) -> dict:
 @app.post("/cognition/proposals/{proposal_id}")
 async def cognition_proposal_update(proposal_id: int, req: Request) -> dict:
     """Move a proposal through noticed/planned/testing/accepted/rejected."""
+    _require_creator_request(req)
     try:
         body = await req.json()
     except Exception:

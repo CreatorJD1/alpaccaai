@@ -253,6 +253,11 @@ class ProactiveCandidate:
 
     origin: Literal["chatter", "mood_speech"]
     reason: str
+    trial_id: int | None = None
+    profile_generation: str = ""
+    gate_chance: float | None = None
+    gate_draw: float | None = None
+    gated_at: float | None = None
 
 
 def strip_think(text: str) -> str:
@@ -905,10 +910,24 @@ class _LLM:
                         result = on_tool(fn.get("name", ""), fn.get("arguments") or {})
                         messages.append({"role": "tool", "content": str(result)})
                     last = (i == rounds - 1)
+                    round_tools = None if last else tools
+                    messages, round_ledger = mindpage_mod.fit_tool_round(
+                        messages, tools=round_tools
+                    )
+                    if not round_ledger.get("context_fits", True):
+                        # Never resend a tool result through a request we know
+                        # cannot fit; that would silently discard evidence.
+                        msg = {
+                            "content": (
+                                "I completed the available step, but the next "
+                                "tool round exceeds my working-memory budget."
+                            )
+                        }
+                        break
                     try:
                         resp = self._chat(
                             messages,
-                            tools=(None if last else tools),
+                            tools=round_tools,
                             model=tool_model,
                             local_only=local_only,
                         )
@@ -1339,21 +1358,67 @@ class CoreMind:
         """Install a read-only chance supplier for proactive chatter."""
         self._chatter_chance_supplier = supplier if callable(supplier) else None
 
-    def _resolved_chatter_chance(self) -> float | None:
-        """Return one valid supplied chance, or None to keep the config default."""
+    def _resolved_chatter_gate(self) -> dict[str, object]:
+        """Read one chance together with the runtime generation that supplied it."""
+        fallback: dict[str, object] = {
+            "chance": None,
+            "trial_id": None,
+            "profile_generation": "",
+            "gated_at": None,
+        }
         supplier = getattr(self, "_chatter_chance_supplier", None)
         if not callable(supplier):
-            return None
+            return fallback
         try:
             supplied = supplier()
-            if isinstance(supplied, bool) or not isinstance(supplied, Number):
-                return None
-            chance = float(supplied)
+            if isinstance(supplied, Mapping):
+                raw_chance = supplied.get("chance")
+            else:
+                raw_chance = supplied
+            if isinstance(raw_chance, bool) or not isinstance(raw_chance, Number):
+                return fallback
+            chance = float(raw_chance)
             if not math.isfinite(chance) or not 0.0 <= chance <= 1.0:
-                return None
+                return fallback
         except Exception:
-            return None
-        return chance
+            return fallback
+
+        if not isinstance(supplied, Mapping):
+            return {**fallback, "chance": chance}
+
+        raw_trial_id = supplied.get("trial_id")
+        trial_id = (
+            int(raw_trial_id)
+            if isinstance(raw_trial_id, int)
+            and not isinstance(raw_trial_id, bool)
+            and raw_trial_id > 0
+            else None
+        )
+        generation = supplied.get("profile_generation")
+        if not isinstance(generation, str) or not generation.strip():
+            generation = ""
+        else:
+            generation = generation.strip()[:160]
+        raw_gated_at = supplied.get("gated_at")
+        gated_at = (
+            float(raw_gated_at)
+            if isinstance(raw_gated_at, Number)
+            and not isinstance(raw_gated_at, bool)
+            and math.isfinite(float(raw_gated_at))
+            and float(raw_gated_at) >= 0.0
+            else None
+        )
+        return {
+            "chance": chance,
+            "trial_id": trial_id,
+            "profile_generation": generation,
+            "gated_at": gated_at,
+        }
+
+    def _resolved_chatter_chance(self) -> float | None:
+        """Compatibility view of the supplied chatter probability."""
+        chance = self._resolved_chatter_gate().get("chance")
+        return float(chance) if isinstance(chance, Number) else None
 
     def _tool_mode(self) -> str:
         mode = (ActionsCfg.TOOL_MODE or "").strip().lower()
@@ -3640,19 +3705,22 @@ class CoreMind:
         if not ProactiveCfg.ENABLED:
             return None
         now = time.time()
-        chance = self._resolved_chatter_chance()
+        gate = self._resolved_chatter_gate()
+        chance = gate.get("chance")
         reason = proactive_mod.should_speak(
             self.state, state_store.mood_history(limit=40), self._last_volunteer_ts
         )
         if reason:
             self._last_volunteer_ts = now
             return ProactiveCandidate(origin="mood_speech", reason=reason)
-        # No mood shift -- but she can still just start a conversation. The LLM
-        # may judge the final fire/seed choice once deterministic eligibility
-        # passes; random chance remains the offline/parse fallback.
+        # No mood shift -- but she can still just start a conversation. Draw the
+        # probability exactly once before any LLM judgment so a bounded behavior
+        # trial changes the real proactive path. The LLM may veto or choose the
+        # grounded seed, but it cannot bypass or re-roll the configured chance.
         chatter_chance_kwargs = {"chance": chance} if chance is not None else {}
+        gate_draw = random.random()
         chatter_eligible = proactive_mod.should_chatter(
-            now, self._last_user_ts, self._last_volunteer_ts, 0.0,
+            now, self._last_user_ts, self._last_volunteer_ts, gate_draw,
             **chatter_chance_kwargs,
         )
         if chatter_eligible:
@@ -3678,14 +3746,43 @@ class CoreMind:
                         return None
                     pick = int(decision.get("pick", 0))
                     self._last_volunteer_ts = now
-                    return ProactiveCandidate(origin="chatter", reason=seeds[pick])
-            if proactive_mod.should_chatter(now, self._last_user_ts,
-                                            self._last_volunteer_ts, random.random(),
-                                            **chatter_chance_kwargs):
-                self._last_volunteer_ts = now
-                return ProactiveCandidate(
-                    origin="chatter", reason=random.choice(seeds)
-                )
+                    return ProactiveCandidate(
+                        origin="chatter",
+                        reason=seeds[pick],
+                        trial_id=gate.get("trial_id"),
+                        profile_generation=str(gate.get("profile_generation") or ""),
+                        gate_chance=(
+                            float(chance)
+                            if isinstance(chance, Number)
+                            else float(ProactiveCfg.CHATTER_CHANCE)
+                        ),
+                        gate_draw=gate_draw,
+                        gated_at=(
+                            float(gate["gated_at"])
+                            if isinstance(gate.get("gated_at"), Number)
+                            else now
+                        ),
+                    )
+            # The probability gate already passed. A local-model failure falls
+            # back to one grounded seed without silently taking a second chance.
+            self._last_volunteer_ts = now
+            return ProactiveCandidate(
+                origin="chatter",
+                reason=random.choice(seeds),
+                trial_id=gate.get("trial_id"),
+                profile_generation=str(gate.get("profile_generation") or ""),
+                gate_chance=(
+                    float(chance)
+                    if isinstance(chance, Number)
+                    else float(ProactiveCfg.CHATTER_CHANCE)
+                ),
+                gate_draw=gate_draw,
+                gated_at=(
+                    float(gate["gated_at"])
+                    if isinstance(gate.get("gated_at"), Number)
+                    else now
+                ),
+            )
         return None
 
     def volunteer_reason(self) -> str | None:

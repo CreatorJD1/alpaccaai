@@ -24,6 +24,7 @@ AUTHORIZATION_ISSUED_AT = 90.0
 AUTHORIZATION_EXPIRES_AT = 200.0
 AUTHORIZATION_MECHANISM = "creator-session"
 APPROVAL_SEAL_KEY = b"phase8c1-test-only-approval-seal-key"
+FEASIBLE_EXPOSURE_SECONDS = 2 * 60 * 60.0
 
 
 class _Clock:
@@ -48,6 +49,8 @@ def _validated_chatter_trial(
     old_value: float = DEFAULT_CHANCE,
     trial_value: float = TRIAL_CHANCE,
     metric: str = "ignored_outreach_rate",
+    exposure_seconds: float = FEASIBLE_EXPOSURE_SECONDS,
+    min_samples: int = 5,
 ):
     return experiment_trials.validate_trial_spec(
         experiment_trials.TrialSpecification(
@@ -56,7 +59,10 @@ def _validated_chatter_trial(
             hypothesis="A lower chatter chance will reduce ignored outreach.",
             metric=metric,
             baseline=0.35,
-            exposure=experiment_trials.ExposureWindow(300, 5),
+            exposure=experiment_trials.ExposureWindow(
+                exposure_seconds,
+                min_samples,
+            ),
             change=experiment_trials.ParameterChange(old_value, trial_value),
             rollback_value=old_value,
         )
@@ -94,12 +100,14 @@ def _controller(
     clock: _Clock | None = None,
     db_path=None,
     approval_seal_key=APPROVAL_SEAL_KEY,
+    chatter_trial_pacing=None,
 ):
     return controller_mod.BehaviorTrialController(
         db_path=tmp_path / "behavior-trials.db" if db_path is None else db_path,
         default_chatter_chance=DEFAULT_CHANCE,
         clock=_Clock() if clock is None else clock,
         approval_seal_key=approval_seal_key,
+        chatter_trial_pacing=chatter_trial_pacing,
     )
 
 
@@ -152,6 +160,162 @@ def _eligible_chatter_args() -> dict[str, float]:
         "last_user_ts": 0.0,
         "last_unprompted_ts": 0.0,
     }
+
+
+def test_retained_profile_becomes_default_without_writing_an_override(tmp_path):
+    controller = _controller(tmp_path)
+
+    assert controller.adopt_profile_chatter_chance(
+        0.23,
+        generation_token="profile-generation-1",
+    ) == 0.23
+    assert controller.default_chatter_chance == 0.23
+    assert controller.chatter_chance() == 0.23
+    assert controller.proactive_gate_snapshot(include_trial=False) == {
+        "chance": 0.23,
+        "trial_id": None,
+        "profile_generation": "profile-generation-1",
+        "gated_at": STARTED_AT,
+    }
+    assert _runtime_rows(controller.db_path) == []
+
+
+def test_proactive_gate_snapshot_binds_trial_to_the_profile_generation(tmp_path):
+    clock = _Clock(STARTED_AT)
+    controller = _controller(tmp_path, clock=clock)
+    controller.adopt_profile_chatter_chance(
+        DEFAULT_CHANCE,
+        generation_token="profile-generation-1",
+    )
+    running = _running_trial(
+        controller,
+        metric="qualified_response_rate",
+    )
+
+    assert controller.proactive_gate_snapshot() == {
+        "chance": TRIAL_CHANCE,
+        "trial_id": running["id"],
+        "profile_generation": "profile-generation-1",
+        "gated_at": STARTED_AT,
+    }
+
+    clock.set(float(running["planned_end_at"]))
+    due = controller.proactive_gate_snapshot()
+    assert due["chance"] == DEFAULT_CHANCE
+    assert due["trial_id"] is None
+    assert due["profile_generation"] == ""
+
+
+def test_retained_profile_must_match_interrupted_trial_preimage(tmp_path):
+    controller = _controller(tmp_path)
+    running = _running_trial(controller)
+
+    assert controller.adopt_profile_chatter_chance(DEFAULT_CHANCE) == DEFAULT_CHANCE
+    assert controller.chatter_chance() == TRIAL_CHANCE
+    with pytest.raises(controller_mod.RuntimeOverrideError):
+        controller.adopt_profile_chatter_chance(0.23)
+    assert controller.get(running["id"])["state"] == "running"
+    assert controller.chatter_chance() == TRIAL_CHANCE
+
+
+def test_abort_retry_never_removes_successor_trial_override(tmp_path):
+    clock = _Clock(STARTED_AT)
+    controller = _controller(tmp_path, clock=clock)
+    first = _running_trial(controller, proposal_id=1)
+    aborted = controller.abort(
+        first["id"],
+        "creator stopped the first trial",
+        actor="creator",
+        recorded_at=STARTED_AT + 1.0,
+    )
+    assert aborted["state"] == "rolled_back"
+    assert aborted["already_aborted"] is False
+
+    clock.set(STARTED_AT + 2.0)
+    second = _running_trial(controller, proposal_id=2)
+    before = _runtime_rows(controller.db_path)
+    assert controller.chatter_chance() == TRIAL_CHANCE
+
+    replay = controller.abort(
+        first["id"],
+        "a retry with different explanatory text",
+        actor="creator",
+        recorded_at=STARTED_AT + 3.0,
+    )
+
+    assert replay["id"] == first["id"]
+    assert replay["already_aborted"] is True
+    assert controller.get(second["id"])["state"] == "running"
+    assert _runtime_rows(controller.db_path) == before
+    assert controller.chatter_chance() == TRIAL_CHANCE
+
+
+def test_feasibility_uses_half_open_deadline_and_effective_rate_cap():
+    pacing = controller_mod.ChatterTrialPacing(
+        enabled=True,
+        effective_cooldown_seconds=100.0,
+        rate_window_seconds=3600.0,
+        rate_cap=3,
+    )
+
+    impossible = controller_mod.assess_chatter_trial_feasibility(
+        3700.0,
+        5,
+        pacing=pacing,
+    )
+    feasible = controller_mod.assess_chatter_trial_feasibility(
+        3700.001,
+        5,
+        pacing=pacing,
+    )
+
+    assert impossible.feasible is False
+    assert impossible.attainable_observations == 4
+    assert impossible.final_observation_offset_seconds == 3700.0
+    assert feasible.feasible is True
+    assert feasible.attainable_observations == 5
+
+
+def test_impossible_chatter_trial_is_rejected_before_registration(tmp_path):
+    controller = _controller(tmp_path)
+
+    with pytest.raises(
+        controller_mod.BehaviorTrialFeasibilityError,
+        match="only 3 fit before the deadline",
+    ):
+        controller.register(
+            _validated_chatter_trial(1, exposure_seconds=300.0)
+        )
+
+    with sqlite3.connect(controller.db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM experiment_trial_ledger"
+        ).fetchone()[0] == 0
+
+
+def test_start_rechecks_feasibility_before_applying_runtime_value(tmp_path):
+    controller = _controller(tmp_path)
+    approved = _approved_trial(controller, 1)
+    stricter = _controller(
+        tmp_path,
+        db_path=controller.db_path,
+        chatter_trial_pacing=controller_mod.ChatterTrialPacing(
+            enabled=True,
+            effective_cooldown_seconds=100.0,
+            rate_window_seconds=10_000.0,
+            rate_cap=1,
+        ),
+    )
+
+    with pytest.raises(
+        controller_mod.BehaviorTrialFeasibilityError,
+        match="only 1 fit before the deadline",
+    ):
+        stricter.start(approved["id"])
+
+    assert stricter.get(approved["id"])["state"] == trial_ledger.APPROVED
+    assert stricter.chatter_chance() == DEFAULT_CHANCE
+    assert _runtime_rows(stricter.db_path) == []
 
 
 def test_unapproved_start_leaves_no_runtime_override(tmp_path):
@@ -897,6 +1061,266 @@ def test_exact_rollback_restores_default_and_records_receipt(tmp_path):
     assert _runtime_rows(controller.db_path) == []
 
 
+def test_abort_restores_baseline_and_records_terminal_inconclusive_receipt(tmp_path):
+    clock = _Clock(200.0)
+    controller = _controller(tmp_path, clock=clock)
+    running = _running_trial(controller)
+
+    aborted = controller.abort(
+        running["id"],
+        "Creator stopped the trial before enough evidence settled.",
+        actor="creator",
+    )
+
+    assert aborted["state"] == trial_ledger.ROLLED_BACK
+    assert aborted["already_aborted"] is False
+    assert aborted["ended_at"] == 200.0
+    assert aborted["rollback"]["reason"] == controller_mod.TRIAL_ABORT_REASON
+    assert aborted["rollback"]["expected_value"] == DEFAULT_CHANCE
+    assert aborted["rollback"]["restored_value"] == DEFAULT_CHANCE
+    assert aborted["rollback"]["evidence"] == {
+        "runtime_override": {
+            "parameter": controller_mod.CHATTER_CHANCE_PARAMETER,
+            "trial_id": running["id"],
+            "removed": True,
+            "was_present": True,
+        },
+        "termination": {
+            "actor": "creator",
+            "kind": "abort",
+            "outcome": controller_mod.TRIAL_ABORT_OUTCOME,
+            "reason": "Creator stopped the trial before enough evidence settled.",
+        },
+    }
+    assert "trial_value" not in json.dumps(aborted["rollback"]["evidence"])
+    assert "override_value" not in json.dumps(aborted["rollback"]["evidence"])
+    assert controller.chatter_chance() == DEFAULT_CHANCE
+    assert Proactive.CHATTER_CHANCE == DEFAULT_CHANCE
+    assert _runtime_rows(controller.db_path) == []
+
+
+def test_abort_is_idempotent_across_creator_and_supervisor_retries(tmp_path):
+    controller = _controller(tmp_path, clock=_Clock(200.0))
+    running = _running_trial(controller)
+    first = controller.abort(
+        running["id"],
+        "Creator requested a safety stop.",
+        actor="creator",
+        recorded_at=200.0,
+    )
+
+    second = controller.abort(
+        running["id"],
+        "Supervisor independently confirmed the stop.",
+        actor="supervisor",
+        recorded_at=250.0,
+    )
+
+    assert first["already_aborted"] is False
+    assert second["already_aborted"] is True
+    assert {
+        key: value for key, value in second.items() if key != "already_aborted"
+    } == {
+        key: value for key, value in first.items() if key != "already_aborted"
+    }
+    assert second["rollback"]["recorded_at"] == 200.0
+    assert second["rollback"]["evidence"]["termination"]["actor"] == "creator"
+    assert _runtime_rows(controller.db_path) == []
+
+
+def test_concurrent_creator_and_supervisor_aborts_commit_one_receipt(tmp_path):
+    clock = _Clock(200.0)
+    creator_controller = _controller(tmp_path, clock=clock)
+    running = _running_trial(creator_controller)
+    supervisor_controller = _controller(
+        tmp_path,
+        db_path=creator_controller.db_path,
+        clock=clock,
+    )
+    barrier = threading.Barrier(2)
+    results: list[dict] = []
+    errors: list[Exception] = []
+
+    def abort(controller, actor: str) -> None:
+        try:
+            barrier.wait()
+            results.append(
+                controller.abort(
+                    running["id"],
+                    f"{actor} requested the shared safety stop.",
+                    actor=actor,
+                )
+            )
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    creator = threading.Thread(
+        target=abort,
+        args=(creator_controller, "creator"),
+    )
+    supervisor = threading.Thread(
+        target=abort,
+        args=(supervisor_controller, "supervisor"),
+    )
+    creator.start()
+    supervisor.start()
+    creator.join(timeout=5.0)
+    supervisor.join(timeout=5.0)
+
+    assert not creator.is_alive()
+    assert not supervisor.is_alive()
+    assert errors == []
+    assert len(results) == 2
+    assert sorted(result["already_aborted"] for result in results) == [False, True]
+    assert {
+        key: value for key, value in results[0].items() if key != "already_aborted"
+    } == {
+        key: value for key, value in results[1].items() if key != "already_aborted"
+    }
+    assert results[0]["rollback"]["evidence"]["termination"]["actor"] in {
+        "creator",
+        "supervisor",
+    }
+    assert _runtime_rows(creator_controller.db_path) == []
+
+
+def test_supervisor_abort_does_not_trust_corrupt_runtime_or_approval_value(tmp_path):
+    controller = _controller(tmp_path, clock=_Clock(200.0))
+    running = _running_trial(controller)
+    with sqlite3.connect(controller.db_path) as conn:
+        conn.execute(
+            "UPDATE behavior_trial_runtime_overrides SET override_value=? WHERE trial_id=?",
+            ("not-a-number", running["id"]),
+        )
+        conn.execute(
+            "UPDATE behavior_trial_creator_approval_bindings "
+            "SET approval_seal=? WHERE trial_id=?",
+            ("0" * 64, running["id"]),
+        )
+
+    aborted = controller.abort(
+        running["id"],
+        "Supervisor removed an untrusted runtime override.",
+        actor="supervisor",
+    )
+
+    assert aborted["state"] == trial_ledger.ROLLED_BACK
+    assert aborted["already_aborted"] is False
+    assert aborted["rollback"]["evidence"]["termination"] == {
+        "actor": "supervisor",
+        "kind": "abort",
+        "outcome": controller_mod.TRIAL_ABORT_OUTCOME,
+        "reason": "Supervisor removed an untrusted runtime override.",
+    }
+    assert controller.chatter_chance() == DEFAULT_CHANCE
+    assert _runtime_rows(controller.db_path) == []
+
+
+def test_supervisor_abort_returns_receipt_when_trial_spec_is_malformed(tmp_path):
+    controller = _controller(tmp_path, clock=_Clock(200.0))
+    running = _running_trial(controller)
+    with sqlite3.connect(controller.db_path) as conn:
+        conn.execute("DROP TRIGGER experiment_trial_spec_immutable")
+        conn.execute(
+            "UPDATE experiment_trial_ledger SET spec_json=? WHERE id=?",
+            ("{not-json", running["id"]),
+        )
+
+    aborted = controller.abort(
+        running["id"],
+        "Supervisor stopped a trial with an unreadable specification.",
+        actor="supervisor",
+    )
+
+    assert aborted["id"] == running["id"]
+    assert aborted["state"] == trial_ledger.ROLLED_BACK
+    assert aborted["already_aborted"] is False
+    assert aborted["rollback"]["reason"] == controller_mod.TRIAL_ABORT_REASON
+    assert aborted["rollback"]["evidence"]["termination"]["outcome"] == (
+        controller_mod.TRIAL_ABORT_OUTCOME
+    )
+    assert controller.chatter_chance() == DEFAULT_CHANCE
+    assert _runtime_rows(controller.db_path) == []
+
+    replay = controller.abort(
+        running["id"],
+        "A retry must use the raw terminal receipt.",
+        actor="creator",
+    )
+
+    assert replay["already_aborted"] is True
+    assert replay["rollback"] == aborted["rollback"]
+
+
+def test_abort_retry_uses_receipt_values_after_profile_default_changes(tmp_path):
+    controller = _controller(tmp_path, clock=_Clock(200.0))
+    running = _running_trial(controller)
+    first = controller.abort(
+        running["id"],
+        "Creator stopped the trial before changing profiles.",
+        actor="creator",
+    )
+    controller.adopt_profile_chatter_chance(0.23)
+
+    replay = controller.abort(
+        running["id"],
+        "Retry after the profile changed.",
+        actor="supervisor",
+    )
+
+    assert first["already_aborted"] is False
+    assert replay["already_aborted"] is True
+    assert replay["rollback"]["expected_value"] == DEFAULT_CHANCE
+    assert replay["rollback"]["restored_value"] == DEFAULT_CHANCE
+    assert controller.chatter_chance() == 0.23
+    assert _runtime_rows(controller.db_path) == []
+
+
+def test_abort_retry_rejects_receipt_with_mismatched_restored_value(tmp_path):
+    controller = _controller(tmp_path, clock=_Clock(200.0))
+    running = _running_trial(controller)
+    controller.abort(
+        running["id"],
+        "Creator stopped the trial.",
+        actor="creator",
+    )
+    with sqlite3.connect(controller.db_path) as conn:
+        conn.execute(
+            "UPDATE experiment_trial_rollbacks SET restored_value=? WHERE trial_id=?",
+            (0.23, running["id"]),
+        )
+
+    with pytest.raises(
+        trial_ledger.TrialStateError,
+        match="different or invalid terminal receipt",
+    ):
+        controller.abort(
+            running["id"],
+            "A retry must reject the altered receipt.",
+            actor="supervisor",
+        )
+
+    assert _runtime_rows(controller.db_path) == []
+
+
+def test_abort_rejects_untrusted_actor_without_changing_runtime(tmp_path):
+    controller = _controller(tmp_path)
+    running = _running_trial(controller)
+
+    with pytest.raises(controller_mod.BehaviorTrialControllerError, match="actor"):
+        controller.abort(
+            running["id"],
+            "Untrusted stop request.",
+            actor="guest",
+        )
+
+    assert controller.get(running["id"])["state"] == trial_ledger.RUNNING
+    assert controller.chatter_chance() == TRIAL_CHANCE
+    assert _runtime_rows(controller.db_path) == [
+        (running["id"], DEFAULT_CHANCE, TRIAL_CHANCE)
+    ]
+
+
 def test_restart_recovery_restores_default_without_resuming_trial(tmp_path):
     clock = _Clock()
     controller = _controller(tmp_path, clock=clock)
@@ -1179,7 +1603,7 @@ def test_controller_mutates_only_the_supplied_temporary_database(tmp_path):
     assert Proactive.CHATTER_CHANCE == DEFAULT_CHANCE
 
 
-def test_coremind_supplier_reuses_one_override_for_both_chatter_gates(monkeypatch):
+def test_coremind_supplier_feeds_the_single_effective_chatter_gate(monkeypatch):
     from alpecca import mind as mind_mod
     from alpecca.homeostasis import EmotionalState
 
@@ -1210,4 +1634,4 @@ def test_coremind_supplier_reuses_one_override_for_both_chatter_gates(monkeypatc
 
     assert mind.volunteer_reason() == "seed"
     assert supplied == [TRIAL_CHANCE]
-    assert chances == [TRIAL_CHANCE, TRIAL_CHANCE]
+    assert chances == [TRIAL_CHANCE]

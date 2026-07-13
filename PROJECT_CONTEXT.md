@@ -22,6 +22,18 @@ retained elsewhere for historical context.
   routines share one per-scope initiative budget; ignored outreach backs off;
   one proactive event uses one delivery surface; and eligible cue evidence
   changes response strategy without claiming a literal feeling change.
+- Master Plan Phase 8 bounded behavioral RSI implementation is verification
+  green but remains operationally partial pending a real creator-portal trial.
+  A server-sealed
+  chatter candidate now carries its exact two-hour/five-outcome contract;
+  feasibility is rechecked before issue, registration, and start; one
+  probability draw governs the real LLM proactive path; early abort restores
+  baseline with an inconclusive receipt; planned closure settles immutable
+  evidence as improved, degraded, or inconclusive; and only the creator can
+  retain an eligible trial value or keep the pre-trial value. The selected
+  scalar profile survives restart, starts a fresh evidence epoch, and can feed
+  the next bounded candidate. This is recursive behavior tuning, not autonomous
+  source editing, unrestricted self-modification, or evidence of consciousness.
 - Phase 9 multimodal/source perception is the active slice. Source inspection,
   bounded image/audio ingress, scoped provenance, audited sensor use,
   verified-local private inference, and the creator-only server-resolved House

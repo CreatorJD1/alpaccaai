@@ -20,6 +20,10 @@ from typing import Any, Callable
 
 from alpecca import trial_ledger
 from alpecca.behavior_trial_controller import TRIAL_EXPIRATION_REASON
+from alpecca.behavior_trial_evaluation import (
+    BehaviorTrialEvaluationError,
+    evaluate_qualified_response_trial,
+)
 from alpecca.behavior_trial_review import (
     BehaviorTrialReviewError,
     review_closed_qualified_response_trial,
@@ -43,6 +47,26 @@ SETTLEMENTS_TABLE = "behavior_trial_settlements"
 CONTRACT_VERSION = 1
 _SCHEMA_LOCK = threading.Lock()
 _SCHEMA_READY: set[Path] = set()
+
+_SETTLEMENT_SELECT = f"""
+    SELECT settlement.*,
+           trial.id AS ledger_trial_id,
+           trial.scope AS ledger_scope,
+           trial.proposal_id AS ledger_proposal_id,
+           trial.state AS ledger_state,
+           trial.spec_json AS ledger_spec_json,
+           trial.started_at AS ledger_started_at,
+           trial.planned_end_at AS ledger_planned_end_at,
+           trial.ended_at AS ledger_ended_at,
+           rollback.recorded_at AS ledger_rollback_recorded_at,
+           rollback.expected_value AS ledger_rollback_expected_value,
+           rollback.restored_value AS ledger_rollback_restored_value,
+           rollback.reason AS ledger_rollback_reason,
+           rollback.evidence_json AS ledger_rollback_evidence_json
+    FROM {SETTLEMENTS_TABLE} AS settlement
+    LEFT JOIN experiment_trial_ledger AS trial ON trial.id=settlement.trial_id
+    LEFT JOIN experiment_trial_rollbacks AS rollback ON rollback.trial_id=settlement.trial_id
+"""
 
 
 class BehaviorTrialSettlementError(ValueError):
@@ -188,6 +212,54 @@ def _trial_record_from_rows(
     }, raw_spec)
 
 
+def _immutable_trial_from_settlement(row: sqlite3.Row) -> dict[str, Any]:
+    """Rebuild and verify the trial from the ledger, never from review JSON."""
+    if row["ledger_trial_id"] is None or row["ledger_rollback_recorded_at"] is None:
+        raise BehaviorTrialSettlementError(
+            "stored settlement is missing its immutable trial or rollback ledger"
+        )
+    trial_row = {
+        "id": row["ledger_trial_id"],
+        "scope": row["ledger_scope"],
+        "proposal_id": row["ledger_proposal_id"],
+        "state": row["ledger_state"],
+        "spec_json": row["ledger_spec_json"],
+        "started_at": row["ledger_started_at"],
+        "planned_end_at": row["ledger_planned_end_at"],
+        "ended_at": row["ledger_ended_at"],
+    }
+    rollback_row = {
+        "recorded_at": row["ledger_rollback_recorded_at"],
+        "expected_value": row["ledger_rollback_expected_value"],
+        "restored_value": row["ledger_rollback_restored_value"],
+        "reason": row["ledger_rollback_reason"],
+        "evidence_json": row["ledger_rollback_evidence_json"],
+    }
+    try:
+        trial_record, raw_spec = _trial_record_from_rows(trial_row, rollback_row)
+    except BehaviorTrialSettlementError:
+        raise
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise BehaviorTrialSettlementError(
+            "stored settlement trial ledger is invalid"
+        ) from exc
+
+    immutable_digest = trial_ledger.spec_sha256_from_json(raw_spec)
+    spec = trial_record["spec"]
+    if (
+        int(trial_record["id"]) != int(row["trial_id"])
+        or str(trial_record["scope"]) != str(row["scope"])
+        or immutable_digest != str(row["spec_sha256"])
+        or str(spec.get("parameter") or "") != str(row["parameter"])
+        or str(spec.get("metric") or "") != str(row["metric"])
+        or int(row["definition_version"]) != DEFINITION_VERSION
+    ):
+        raise BehaviorTrialSettlementError(
+            "stored settlement does not match its immutable trial specification"
+        )
+    return trial_record
+
+
 def _evidence_from_snapshot(conn: sqlite3.Connection, trial_id: int) -> dict[str, Any]:
     bucket = {
         "dispatching": 0,
@@ -232,7 +304,159 @@ def _evidence_from_snapshot(conn: sqlite3.Connection, trial_id: int) -> dict[str
     }
 
 
-def _stored_settlement(row: sqlite3.Row) -> dict[str, Any]:
+_LEGACY_EVALUATION_FIELDS = (
+    "metric",
+    "definition_version",
+    "trial_id",
+    "spec_sha256",
+    "baseline",
+    "min_samples",
+    "qualified_responses",
+    "unanswered",
+    "completed",
+    "dispatching",
+    "pending",
+    "cancelled",
+    "rate",
+    "delta_from_baseline",
+    "readiness",
+    "recommendation",
+)
+_STRENGTHENED_EVALUATION_FIELDS = (
+    "required_samples",
+    "minimum_evidence_met",
+    "effect_threshold",
+    "creator_retention_eligible",
+)
+_STRENGTHENED_REVIEW_FIELDS = (
+    "outcome",
+    "creator_retention_eligible",
+    "creator_retention_reason",
+)
+
+
+def _retention_contract(
+    row: sqlite3.Row,
+    evidence: Mapping[str, Any],
+    review: Mapping[str, Any],
+    trial_record: Mapping[str, Any],
+) -> tuple[str, bool, str]:
+    evaluation = review.get("evaluation")
+    if not isinstance(evaluation, Mapping):
+        raise BehaviorTrialSettlementError("stored settlement evaluation is invalid")
+    try:
+        expected = evaluate_qualified_response_trial(trial_record, evidence)
+    except BehaviorTrialEvaluationError as exc:
+        raise BehaviorTrialSettlementError(
+            "stored settlement evaluation evidence is invalid"
+        ) from exc
+    if int(expected["dispatching"]) + int(expected["pending"]):
+        raise BehaviorTrialSettlementError(
+            "stored settlement still has outstanding outcomes"
+        )
+
+    for field in _LEGACY_EVALUATION_FIELDS:
+        if evaluation.get(field) != expected[field]:
+            raise BehaviorTrialSettlementError(
+                f"stored settlement evaluation {field} is invalid"
+            )
+
+    strengthened_evaluation_fields = {
+        field for field in _STRENGTHENED_EVALUATION_FIELDS if field in evaluation
+    }
+    strengthened_review_fields = {
+        field for field in _STRENGTHENED_REVIEW_FIELDS if field in review
+    }
+    if strengthened_evaluation_fields and strengthened_evaluation_fields != set(
+        _STRENGTHENED_EVALUATION_FIELDS
+    ):
+        raise BehaviorTrialSettlementError(
+            "stored settlement evaluation contract is incomplete"
+        )
+    if strengthened_review_fields and strengthened_review_fields != set(
+        _STRENGTHENED_REVIEW_FIELDS
+    ):
+        raise BehaviorTrialSettlementError("stored settlement review contract is incomplete")
+    strengthened = bool(strengthened_evaluation_fields or strengthened_review_fields)
+    if strengthened and not (
+        strengthened_evaluation_fields and strengthened_review_fields
+    ):
+        raise BehaviorTrialSettlementError("stored settlement contracts do not match")
+
+    if strengthened:
+        for field in _STRENGTHENED_EVALUATION_FIELDS:
+            if evaluation.get(field) != expected[field]:
+                raise BehaviorTrialSettlementError(
+                    f"stored settlement evaluation {field} is invalid"
+                )
+        if evaluation.get("comparison") != expected["comparison"]:
+            raise BehaviorTrialSettlementError(
+                "stored settlement evaluation comparison is invalid"
+            )
+    else:
+        delta = expected["delta_from_baseline"]
+        legacy_comparison = None
+        if expected["readiness"] == "ready_for_creator_review":
+            assert isinstance(delta, float)
+            legacy_comparison = (
+                "improved" if delta > 0.0 else ("worse" if delta < 0.0 else "unchanged")
+            )
+        if evaluation.get("comparison") != legacy_comparison:
+            raise BehaviorTrialSettlementError(
+                "stored legacy settlement comparison is invalid"
+            )
+
+    minimum_evidence_met = bool(expected["minimum_evidence_met"])
+    expected_status = (
+        "ready_for_creator_review"
+        if minimum_evidence_met
+        else "inconclusive_insufficient_samples"
+    )
+    status = review.get("status")
+    if status != expected_status:
+        raise BehaviorTrialSettlementError("stored settlement review status is invalid")
+    expected_recommendation = (
+        "creator_review_required"
+        if minimum_evidence_met
+        else "no_automatic_change"
+    )
+    if review.get("recommendation") != expected_recommendation:
+        raise BehaviorTrialSettlementError(
+            "stored settlement review recommendation is invalid"
+        )
+
+    outcome = (
+        str(expected["comparison"])
+        if minimum_evidence_met
+        else "inconclusive"
+    )
+    if outcome not in {"improved", "degraded", "inconclusive"}:
+        raise BehaviorTrialSettlementError("stored settlement outcome is invalid")
+    eligible = outcome == "improved"
+    reason = (
+        {
+            "improved": "improvement_meets_threshold",
+            "degraded": "degraded_outcome",
+            "inconclusive": "effect_below_threshold",
+        }[outcome]
+        if minimum_evidence_met
+        else "insufficient_evidence"
+    )
+    if strengthened and (
+        review.get("outcome") != outcome
+        or review.get("creator_retention_eligible") is not eligible
+        or review.get("creator_retention_reason") != reason
+    ):
+        raise BehaviorTrialSettlementError(
+            "stored settlement creator retention contract is invalid"
+        )
+    return outcome, eligible, reason
+
+
+def _stored_settlement(
+    row: sqlite3.Row,
+    source_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
     evidence_raw = str(row["evidence_json"])
     review_raw = str(row["review_json"])
     if _digest(evidence_raw) != str(row["evidence_sha256"]):
@@ -246,9 +470,29 @@ def _stored_settlement(row: sqlite3.Row) -> dict[str, Any]:
         raise BehaviorTrialSettlementError("stored settlement JSON is invalid") from exc
     if not isinstance(evidence, dict) or not isinstance(review, dict):
         raise BehaviorTrialSettlementError("stored settlement JSON is not an object")
+    if _canonical_json(evidence, name="stored settlement evidence") != _canonical_json(
+        source_evidence,
+        name="outcome ledger evidence",
+    ):
+        raise BehaviorTrialSettlementError(
+            "stored settlement evidence does not match the outcome ledger"
+        )
+    trial_record = _immutable_trial_from_settlement(row)
+    try:
+        expected_review = review_closed_qualified_response_trial(
+            trial_record,
+            source_evidence,
+        )
+    except BehaviorTrialReviewError as exc:
+        raise BehaviorTrialSettlementError(
+            "stored settlement trial or rollback contract is invalid"
+        ) from exc
     if (
         int(row["trial_id"]) != _positive_trial_id(review.get("trial_id"))
         or str(row["spec_sha256"]) != str(review.get("spec_sha256"))
+        or review.get("terminal_state") != expected_review["terminal_state"]
+        or review.get("planned_end_at") != expected_review["planned_end_at"]
+        or review.get("ended_at") != expected_review["ended_at"]
         or review.get("closure_reason") != TRIAL_EXPIRATION_REASON
         or review.get("status") not in {
             "ready_for_creator_review",
@@ -256,6 +500,19 @@ def _stored_settlement(row: sqlite3.Row) -> dict[str, Any]:
         }
     ):
         raise BehaviorTrialSettlementError("stored settlement review contract is invalid")
+    outcome, retention_eligible, retention_reason = _retention_contract(
+        row,
+        evidence,
+        review,
+        trial_record,
+    )
+    if all(field in review for field in _STRENGTHENED_REVIEW_FIELDS) and (
+        _canonical_json(review, name="stored settlement review")
+        != _canonical_json(expected_review, name="expected settlement review")
+    ):
+        raise BehaviorTrialSettlementError(
+            "stored settlement review does not match the immutable trial evidence"
+        )
     return {
         "contract_version": CONTRACT_VERSION,
         "trial_id": int(row["trial_id"]),
@@ -267,6 +524,9 @@ def _stored_settlement(row: sqlite3.Row) -> dict[str, Any]:
         "settled_at": float(row["settled_at"]),
         "status": str(review["status"]),
         "recommendation": str(review["recommendation"]),
+        "outcome": outcome,
+        "creator_retention_eligible": retention_eligible,
+        "creator_retention_reason": retention_reason,
         "evidence": evidence,
         "review": review,
     }
@@ -361,12 +621,12 @@ def settle_closed_trials(
                 ),
             )
             stored = conn.execute(
-                f"SELECT * FROM {SETTLEMENTS_TABLE} WHERE trial_id=?",
+                _SETTLEMENT_SELECT + " WHERE settlement.trial_id=?",
                 (trial_id,),
             ).fetchone()
             if stored is None:  # pragma: no cover - same-transaction invariant
                 raise BehaviorTrialSettlementError("settlement was not retrievable")
-            created.append(_stored_settlement(stored))
+            created.append(_stored_settlement(stored, evidence))
     return created
 
 
@@ -382,12 +642,17 @@ def get_settlement(
         with sqlite3.connect(database_uri, uri=True) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
-                f"SELECT * FROM {SETTLEMENTS_TABLE} WHERE trial_id=?",
+                _SETTLEMENT_SELECT + " WHERE settlement.trial_id=?",
                 (trial_key,),
             ).fetchone()
+            evidence = (
+                None
+                if row is None
+                else _evidence_from_snapshot(conn, trial_key)
+            )
     except sqlite3.OperationalError as exc:
         raise BehaviorTrialSettlementError("settlement storage is unavailable") from exc
-    return None if row is None else _stored_settlement(row)
+    return None if row is None else _stored_settlement(row, evidence)
 
 
 def get_settlement_binding(
@@ -407,14 +672,19 @@ def get_settlement_binding(
         with sqlite3.connect(database_uri, uri=True) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
-                f"SELECT * FROM {SETTLEMENTS_TABLE} WHERE trial_id=?",
+                _SETTLEMENT_SELECT + " WHERE settlement.trial_id=?",
                 (trial_key,),
             ).fetchone()
+            evidence = (
+                None
+                if row is None
+                else _evidence_from_snapshot(conn, trial_key)
+            )
     except sqlite3.OperationalError as exc:
         raise BehaviorTrialSettlementError("settlement storage is unavailable") from exc
     if row is None:
         return None
-    stored = _stored_settlement(row)
+    stored = _stored_settlement(row, evidence)
     return {
         "contract_version": int(stored["contract_version"]),
         "trial_id": int(stored["trial_id"]),
@@ -426,6 +696,9 @@ def get_settlement_binding(
         "settled_at": float(stored["settled_at"]),
         "status": str(stored["status"]),
         "recommendation": str(stored["recommendation"]),
+        "outcome": str(stored["outcome"]),
+        "creator_retention_eligible": bool(stored["creator_retention_eligible"]),
+        "creator_retention_reason": str(stored["creator_retention_reason"]),
         "evidence_sha256": str(row["evidence_sha256"]),
         "review_sha256": str(row["review_sha256"]),
     }
@@ -445,16 +718,25 @@ def list_settlements(
         with sqlite3.connect(database_uri, uri=True) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                f"""
-                SELECT * FROM {SETTLEMENTS_TABLE}
-                ORDER BY settled_at DESC, trial_id DESC
+                _SETTLEMENT_SELECT + """
+                ORDER BY settlement.settled_at DESC, settlement.trial_id DESC
                 LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
+            evidence_by_trial = {
+                int(row["trial_id"]): _evidence_from_snapshot(
+                    conn,
+                    int(row["trial_id"]),
+                )
+                for row in rows
+            }
     except sqlite3.OperationalError as exc:
         raise BehaviorTrialSettlementError("settlement storage is unavailable") from exc
-    return [_stored_settlement(row) for row in rows]
+    return [
+        _stored_settlement(row, evidence_by_trial[int(row["trial_id"])])
+        for row in rows
+    ]
 
 
 __all__ = [

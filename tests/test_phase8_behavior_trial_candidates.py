@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
 
 from alpecca import cognition
 from alpecca import behavior_trial_candidates as candidates
-from alpecca.behavior_trial_controller import BehaviorTrialController
+from alpecca.behavior_trial_controller import (
+    BehaviorTrialController,
+    ChatterTrialPacing,
+)
 
 
 SEAL_KEY = b"phase8c8-test-only-candidate-seal-key"
@@ -29,11 +33,12 @@ def _baseline(
     }
 
 
-def _store(tmp_path):
+def _store(tmp_path, *, chatter_trial_pacing=None):
     tmp_path.mkdir(parents=True, exist_ok=True)
     return candidates.BehaviorTrialCandidateStore(
         tmp_path / "candidates.db",
         seal_key=SEAL_KEY,
+        chatter_trial_pacing=chatter_trial_pacing,
     )
 
 
@@ -103,7 +108,7 @@ def test_candidate_is_sealed_and_derives_one_fixed_validated_spec(tmp_path):
     assert spec.parameter == "chatter_chance"
     assert spec.metric == "qualified_response_rate"
     assert spec.baseline == 0.4
-    assert spec.exposure_seconds == 300.0
+    assert spec.exposure_seconds == 7200.0
     assert spec.min_samples == 5
     assert spec.old_value == 0.25
     assert spec.trial_value == 0.23
@@ -143,8 +148,18 @@ def test_candidate_rejects_mutated_sealed_payload_or_source_snapshot(tmp_path):
         conn.execute(
             "UPDATE behavior_trial_candidates SET candidate_json=? WHERE proposal_id=?",
             (
-                '{"baseline_rate":0.4,"kind":"behavior_trial.chatter_chance.v1",'
-                '"preimage_value":0.25,"trial_value":0.22}',
+                json.dumps(
+                    {
+                        "baseline_rate": 0.4,
+                        "exposure_seconds": candidates.EXPOSURE_SECONDS,
+                        "kind": candidates.CANDIDATE_KIND,
+                        "min_samples": candidates.MIN_SAMPLES,
+                        "preimage_value": 0.25,
+                        "trial_value": 0.22,
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
                 proposal_id,
             ),
         )
@@ -242,3 +257,42 @@ def test_candidate_cannot_register_before_plan_acceptance_or_after_rejection(tmp
     assert replacement["issued"] is True
     assert replacement["reused"] is False
     assert replacement["proposal"]["id"] != proposal_id
+
+
+def test_impossible_profile_is_rejected_before_candidate_issue(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    monkeypatch.setattr(candidates, "EXPOSURE_SECONDS", 300.0)
+
+    assert _issue(store) == {
+        "issued": False,
+        "reason": candidates.TRIAL_PROFILE_NOT_FEASIBLE_REASON,
+    }
+    assert store.public_status() is None
+
+
+def test_registration_rechecks_candidate_against_current_pacing(tmp_path):
+    store = _store(tmp_path)
+    issued = _issue(store)
+    proposal_id = issued["proposal"]["id"]
+    _accept(proposal_id, store.db_path)
+    stricter = _store(
+        tmp_path,
+        chatter_trial_pacing=ChatterTrialPacing(
+            enabled=True,
+            effective_cooldown_seconds=100.0,
+            rate_window_seconds=10_000.0,
+            rate_cap=1,
+        ),
+    )
+
+    with pytest.raises(candidates.CandidateNotEligible, match="not feasible"):
+        stricter.registration_details(
+            proposal_id,
+            default_chatter_chance=0.25,
+        )
+
+    with sqlite3.connect(store.db_path) as conn:
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type='table' AND name='experiment_trial_ledger'"
+        ).fetchone() is None

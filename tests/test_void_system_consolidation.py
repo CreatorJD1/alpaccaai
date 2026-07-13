@@ -60,6 +60,9 @@ def test_void_system_center_keeps_both_native_modes_and_legacy_shell_unreachable
     assert "environmentModeFromUrl" not in source
     assert 'searchParams.get("environment")' in source
     assert 'const currentEnvironmentMode: "prototype" | "hq"' in source
+    assert source.index('const currentEnvironmentMode: "prototype" | "hq"') < source.index(
+        'environmentModeToggle.textContent = isPrototypeMode()'
+    )
     assert 'id="environmentModeToggle"' in source
     assert "switchEnvironmentMode" not in source
     assert "createPrototypeVoid();" in source
@@ -108,3 +111,12 @@ def test_archived_internal_shell_is_not_served_by_web_asset_route():
     assert archived.status_code == 404
     assert home.status_code == 307
     assert home.headers["location"] == "/house-hq"
+
+
+def test_creator_push_accepts_all_successful_registered_devices():
+    source = (ROOT / "apps" / "house-hq" / "src" / "main.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert "accepted >= 1" in source
+    assert "accepted === 1" not in source

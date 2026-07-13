@@ -20,6 +20,9 @@ class BehaviorTrialEvaluationError(ValueError):
 
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+MIN_EVIDENCE_SAMPLES = 5
+MIN_EFFECT_DELTA = 0.10
+_RATE_TOLERANCE = 1e-12
 _COUNT_FIELDS = (
     "dispatching",
     "pending",
@@ -113,22 +116,50 @@ def _evidence_contract(
     return values
 
 
+def classify_effect_delta(delta: object) -> str:
+    """Classify a settled rate delta using the code-owned effect threshold."""
+    if isinstance(delta, bool) or not isinstance(delta, (int, float)):
+        raise BehaviorTrialEvaluationError("effect delta must be numeric")
+    effect = float(delta)
+    if not math.isfinite(effect) or not -1.0 <= effect <= 1.0:
+        raise BehaviorTrialEvaluationError("effect delta must be a finite rate delta")
+    if effect > MIN_EFFECT_DELTA or math.isclose(
+        effect,
+        MIN_EFFECT_DELTA,
+        rel_tol=0.0,
+        abs_tol=_RATE_TOLERANCE,
+    ):
+        return "improved"
+    if effect < -MIN_EFFECT_DELTA or math.isclose(
+        effect,
+        -MIN_EFFECT_DELTA,
+        rel_tol=0.0,
+        abs_tol=_RATE_TOLERANCE,
+    ):
+        return "degraded"
+    return "inconclusive"
+
+
 def evaluate_qualified_response_trial(
     trial_record: object,
     outcome_evidence: object,
 ) -> dict[str, Any]:
     """Return a fixed, non-mutating evaluation for one qualified-response trial.
 
-    Evidence becomes reviewable only after the trial's fixed minimum sample
-    count is met and every confirmed exposure has settled. `comparison` is
-    descriptive, never an instruction to change a parameter automatically.
+    Evidence becomes reviewable only after both the code-owned evidence floor
+    and the trial's immutable minimum sample count are met, and every confirmed
+    exposure has settled. `comparison` requires a conservative absolute effect;
+    it is descriptive, never an instruction to change a parameter automatically.
     """
     trial_id, spec_sha256, baseline, min_samples = _trial_contract(trial_record)
     evidence = _evidence_contract(outcome_evidence, expected_trial_id=trial_id)
     completed = int(evidence["completed"])
     outstanding = int(evidence["dispatching"]) + int(evidence["pending"])
     rate = evidence["rate"]
-    if completed < min_samples:
+    required_samples = max(min_samples, MIN_EVIDENCE_SAMPLES)
+    minimum_evidence_met = completed >= required_samples
+    delta = None if rate is None else float(rate) - baseline
+    if not minimum_evidence_met:
         readiness = "collecting"
         comparison = None
         recommendation = "continue_observation"
@@ -139,10 +170,12 @@ def evaluate_qualified_response_trial(
     else:
         readiness = "ready_for_creator_review"
         assert isinstance(rate, float)  # completed > 0 when min_samples is met
-        delta = rate - baseline
-        comparison = "improved" if delta > 0.0 else ("worse" if delta < 0.0 else "unchanged")
+        assert isinstance(delta, float)
+        comparison = classify_effect_delta(delta)
         recommendation = "creator_review_required"
-    delta = None if rate is None else float(rate) - baseline
+    creator_retention_eligible = (
+        readiness == "ready_for_creator_review" and comparison == "improved"
+    )
     return {
         "metric": METRIC_NAME,
         "definition_version": DEFINITION_VERSION,
@@ -150,6 +183,9 @@ def evaluate_qualified_response_trial(
         "spec_sha256": spec_sha256,
         "baseline": baseline,
         "min_samples": min_samples,
+        "required_samples": required_samples,
+        "minimum_evidence_met": minimum_evidence_met,
+        "effect_threshold": MIN_EFFECT_DELTA,
         "qualified_responses": int(evidence["qualified_responses"]),
         "unanswered": int(evidence["unanswered"]),
         "completed": completed,
@@ -161,10 +197,16 @@ def evaluate_qualified_response_trial(
         "readiness": readiness,
         "comparison": comparison,
         "recommendation": recommendation,
+        # This is eligibility for a future creator-only decision to retain the
+        # trial value. Evaluation itself never reapplies the rolled-back value.
+        "creator_retention_eligible": creator_retention_eligible,
     }
 
 
 __all__ = [
     "BehaviorTrialEvaluationError",
+    "MIN_EFFECT_DELTA",
+    "MIN_EVIDENCE_SAMPLES",
+    "classify_effect_delta",
     "evaluate_qualified_response_trial",
 ]

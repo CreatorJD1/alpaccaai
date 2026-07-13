@@ -21,6 +21,12 @@ from pathlib import Path
 from typing import Any
 
 from alpecca import cognition
+from alpecca.behavior_trial_controller import (
+    BehaviorTrialFeasibilityError,
+    ChatterTrialPacing,
+    assert_chatter_trial_feasible,
+    current_chatter_trial_pacing,
+)
 from alpecca.db import connect
 from alpecca.experiment_trials import (
     ALLOWED_PARAMETERS,
@@ -36,13 +42,14 @@ from config import DB_PATH
 
 CREATOR_PERSONAL_SCOPE = "creator-personal"
 CANDIDATES_TABLE = "behavior_trial_candidates"
-CANDIDATE_KIND = "behavior_trial.chatter_chance.v1"
+CANDIDATE_KIND = "behavior_trial.chatter_chance.v2"
 PROFILE_PARAMETER = "chatter_chance"
 PROFILE_METRIC = METRIC_NAME
-EXPOSURE_SECONDS = 300.0
+EXPOSURE_SECONDS = 2 * 60 * 60.0
 MIN_SAMPLES = 5
 LOW_RESPONSE_RATE = 0.5
 LOW_RESPONSE_DELTA = 0.02
+TRIAL_PROFILE_NOT_FEASIBLE_REASON = "trial_profile_not_feasible"
 
 _CANDIDATE_SEAL_DOMAIN = "alpecca.behavior-trial-candidate.v1"
 _REGISTRATION_SEAL_DOMAIN = "alpecca.behavior-trial-registration.v1"
@@ -51,6 +58,8 @@ _CANDIDATE_FIELDS = frozenset({
     "baseline_rate",
     "preimage_value",
     "trial_value",
+    "exposure_seconds",
+    "min_samples",
 })
 _WITHDRAWN_PROPOSAL_STATUSES = frozenset({"rejected", "superseded"})
 
@@ -139,13 +148,21 @@ def _candidate_payload(value: object) -> dict[str, Any]:
     baseline_rate = _number(value.get("baseline_rate"), name="baseline_rate")
     preimage_value = _number(value.get("preimage_value"), name="preimage_value")
     trial_value = _number(value.get("trial_value"), name="trial_value")
+    exposure_seconds = _number(
+        value.get("exposure_seconds"), name="exposure_seconds"
+    )
+    min_samples = _count(value.get("min_samples"), name="min_samples")
     if not 0.0 < baseline_rate <= 1.0:
         raise CandidateIntegrityError("candidate baseline is invalid")
+    if exposure_seconds <= 0.0 or min_samples <= 0:
+        raise CandidateIntegrityError("candidate exposure contract is invalid")
     return {
         "kind": CANDIDATE_KIND,
         "baseline_rate": baseline_rate,
         "preimage_value": preimage_value,
         "trial_value": trial_value,
+        "exposure_seconds": exposure_seconds,
+        "min_samples": min_samples,
     }
 
 
@@ -172,8 +189,18 @@ class BehaviorTrialCandidateStore:
         db_path: Path = DB_PATH,
         *,
         seal_key: bytes | bytearray | memoryview | str | None = None,
+        chatter_trial_pacing: ChatterTrialPacing | None = None,
     ) -> None:
         self.db_path = Path(db_path)
+        if chatter_trial_pacing is not None and not isinstance(
+            chatter_trial_pacing, ChatterTrialPacing
+        ):
+            raise TypeError("chatter_trial_pacing must be a ChatterTrialPacing")
+        self.chatter_trial_pacing = (
+            current_chatter_trial_pacing()
+            if chatter_trial_pacing is None
+            else chatter_trial_pacing
+        )
         self._seal_key: bytes | None = None
         self._schema_lock = threading.Lock()
         self._schema_ready = False
@@ -409,6 +436,8 @@ class BehaviorTrialCandidateStore:
             "baseline_rate": rate,
             "preimage_value": old_value,
             "trial_value": trial_value,
+            "exposure_seconds": EXPOSURE_SECONDS,
+            "min_samples": MIN_SAMPLES,
         }, "ready"
 
     @staticmethod
@@ -497,6 +526,17 @@ class BehaviorTrialCandidateStore:
         candidate payload directly.
         """
         self._ensure_schema()
+        try:
+            assert_chatter_trial_feasible(
+                EXPOSURE_SECONDS,
+                MIN_SAMPLES,
+                pacing=self.chatter_trial_pacing,
+            )
+        except BehaviorTrialFeasibilityError:
+            return {
+                "issued": False,
+                "reason": TRIAL_PROFILE_NOT_FEASIBLE_REASON,
+            }
         payload, reason = self._draft_from_baseline(
             baseline,
             preimage_value=preimage_value,
@@ -633,6 +673,16 @@ class BehaviorTrialCandidateStore:
         preimage = _number(default_chatter_chance, name="current chatter default")
         if payload["preimage_value"] != preimage:
             raise CandidateNotEligible("candidate preimage no longer matches the chatter default")
+        try:
+            assert_chatter_trial_feasible(
+                EXPOSURE_SECONDS,
+                MIN_SAMPLES,
+                pacing=self.chatter_trial_pacing,
+            )
+        except BehaviorTrialFeasibilityError as exc:
+            raise CandidateNotEligible(
+                "candidate trial profile is not feasible under current chatter pacing"
+            ) from exc
         specification = validate_trial_spec(TrialSpecification(
             proposal_id=proposal_key,
             parameter=PROFILE_PARAMETER,
@@ -642,7 +692,10 @@ class BehaviorTrialCandidateStore:
             ),
             metric=PROFILE_METRIC,
             baseline=float(payload["baseline_rate"]),
-            exposure=ExposureWindow(EXPOSURE_SECONDS, MIN_SAMPLES),
+            exposure=ExposureWindow(
+                float(payload["exposure_seconds"]),
+                int(payload["min_samples"]),
+            ),
             change=ParameterChange(
                 float(payload["preimage_value"]),
                 float(payload["trial_value"]),
@@ -792,4 +845,5 @@ __all__ = [
     "MIN_SAMPLES",
     "PROFILE_METRIC",
     "PROFILE_PARAMETER",
+    "TRIAL_PROFILE_NOT_FEASIBLE_REASON",
 ]

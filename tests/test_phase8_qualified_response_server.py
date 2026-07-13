@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import threading
 import time
 from types import SimpleNamespace
 
@@ -70,13 +71,52 @@ class _ResponseLedger:
 
 
 class _OutcomeTrialController:
-    def __init__(self, trial_id: object) -> None:
+    def __init__(
+        self,
+        trial_id: object,
+        *,
+        generation: str = "profile-a",
+        chance: float = 0.5,
+    ) -> None:
         self.trial_id = trial_id
-        self.calls: list[float] = []
+        self.generation = generation
+        self.chance = chance
+        self.calls: list[tuple[float, bool]] = []
 
-    def active_outcome_trial_id(self, *, dispatched_at: float):
-        self.calls.append(dispatched_at)
-        return self.trial_id
+    def proactive_gate_snapshot(self, *, gated_at: float, include_trial: bool):
+        self.calls.append((gated_at, include_trial))
+        return {
+            "chance": self.chance,
+            "trial_id": self.trial_id if include_trial else None,
+            "profile_generation": self.generation,
+            "gated_at": gated_at,
+        }
+
+
+def _candidate(
+    *,
+    trial_id: int | None = None,
+    generation: str = "profile-a",
+    chance: float = 0.5,
+    draw: float = 0.1,
+    gated_at: float = 100.0,
+) -> ProactiveCandidate:
+    return ProactiveCandidate(
+        origin="chatter",
+        reason="check-in",
+        trial_id=trial_id,
+        profile_generation=generation,
+        gate_chance=chance,
+        gate_draw=draw,
+        gated_at=gated_at,
+    )
+
+
+def _enable_gate(monkeypatch, *, trial_id: int | None = None) -> _OutcomeTrialController:
+    controller = _OutcomeTrialController(trial_id)
+    server._behavior_trial_recovery_ready.set()
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    return controller
 
 
 def _delivery_mind(*, cleared: list[tuple[str, str]] | None = None):
@@ -124,6 +164,7 @@ def test_typed_chatter_reserves_before_portal_send_and_confirms_after(monkeypatc
     initiative = _initiative()
     broadcasts: list[dict[str, object]] = []
     scheduled: list[dict[str, object]] = []
+    _enable_gate(monkeypatch)
 
     async def broadcast(payload):
         assert [name for name, _value in ledger.calls] == ["begin"]
@@ -146,7 +187,7 @@ def test_typed_chatter_reserves_before_portal_send_and_confirms_after(monkeypatc
         "A concise check-in.",
         initiative,
         proactive_turn=turn,
-        outcome_candidate=ProactiveCandidate(origin="chatter", reason="check-in"),
+        outcome_candidate=_candidate(),
     ))
 
     assert result == {"surface": "portal", "delivered": True, "count": 1}
@@ -174,10 +215,15 @@ def test_verified_running_trial_is_attached_to_the_server_owned_dispatch(monkeyp
     monkeypatch.setattr(server, "behavior_trial_controller", controller)
     monkeypatch.setattr(server._time, "time", lambda: 123.0)
 
-    delivery_id = asyncio.run(server._begin_qualified_response_dispatch(turn))
+    delivery_id = asyncio.run(
+        server._begin_qualified_response_dispatch(
+            turn,
+            _candidate(trial_id=17),
+        )
+    )
 
     assert delivery_id
-    assert controller.calls == [123.0]
+    assert controller.calls == [(123.0, True)]
     assert ledger.calls == [("begin", {
         "delivery_id": delivery_id,
         "scope_key": turn.scope_key,
@@ -196,15 +242,17 @@ def test_unrecovered_server_never_queries_for_outcome_trial_attribution(monkeypa
     monkeypatch.setattr(server, "behavior_trial_controller", controller)
     monkeypatch.setattr(server._time, "time", lambda: 222.0)
 
-    delivery_id = asyncio.run(server._begin_qualified_response_dispatch(_turn()))
+    delivery_id = asyncio.run(
+        server._begin_qualified_response_dispatch(_turn(), _candidate(trial_id=17))
+    )
 
-    assert delivery_id
+    assert delivery_id is None
     assert controller.calls == []
-    assert ledger.calls[0][1]["trial_id"] is None
+    assert ledger.calls == []
 
 
-@pytest.mark.parametrize("candidate", [None, 0, True, "17"])
-def test_unverified_or_invalid_trial_id_leaves_dispatch_baseline_only(monkeypatch, candidate):
+@pytest.mark.parametrize("candidate", [0, True, "17"])
+def test_invalid_live_trial_identity_is_excluded_from_evidence(monkeypatch, candidate):
     ledger = _DeliveryLedger()
     controller = _OutcomeTrialController(candidate)
     server._behavior_trial_recovery_ready.set()
@@ -212,10 +260,111 @@ def test_unverified_or_invalid_trial_id_leaves_dispatch_baseline_only(monkeypatc
     monkeypatch.setattr(server, "behavior_trial_controller", controller)
     monkeypatch.setattr(server._time, "time", lambda: 321.0)
 
-    delivery_id = asyncio.run(server._begin_qualified_response_dispatch(_turn()))
+    delivery_id = asyncio.run(
+        server._begin_qualified_response_dispatch(_turn(), _candidate())
+    )
 
-    assert delivery_id
-    assert ledger.calls[0][1]["trial_id"] is None
+    assert delivery_id is None
+    assert ledger.calls == []
+
+
+@pytest.mark.parametrize(
+    ("live_trial_id", "live_generation", "live_chance"),
+    [
+        (None, "profile-a", 0.5),
+        (17, "profile-b", 0.5),
+        (18, "profile-a", 0.5),
+        (17, "profile-a", 0.4),
+    ],
+)
+def test_gate_transition_during_composition_is_excluded_from_both_cohorts(
+    monkeypatch,
+    live_trial_id,
+    live_generation,
+    live_chance,
+):
+    ledger = _DeliveryLedger()
+    controller = _OutcomeTrialController(
+        live_trial_id,
+        generation=live_generation,
+        chance=live_chance,
+    )
+    server._behavior_trial_recovery_ready.set()
+    monkeypatch.setattr(server, "qualified_response_ledger", ledger)
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+    monkeypatch.setattr(server._time, "time", lambda: 321.0)
+
+    delivery_id = asyncio.run(
+        server._begin_qualified_response_dispatch(
+            _turn(),
+            _candidate(trial_id=17),
+        )
+    )
+
+    assert delivery_id is None
+    assert ledger.calls == []
+
+
+def test_candidate_without_a_verified_gate_never_creates_baseline_evidence(monkeypatch):
+    ledger = _DeliveryLedger()
+    controller = _OutcomeTrialController(None)
+    server._behavior_trial_recovery_ready.set()
+    monkeypatch.setattr(server, "qualified_response_ledger", ledger)
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+
+    delivery_id = asyncio.run(
+        server._begin_qualified_response_dispatch(
+            _turn(),
+            ProactiveCandidate(origin="chatter", reason="untracked"),
+        )
+    )
+
+    assert delivery_id is None
+    assert controller.calls == []
+    assert ledger.calls == []
+
+
+def test_transition_cannot_enter_between_gate_recheck_and_outcome_reservation(
+    monkeypatch,
+):
+    entered = threading.Event()
+    release = threading.Event()
+    transitioned = threading.Event()
+    result: list[str | None] = []
+
+    class _BlockingLedger(_DeliveryLedger):
+        def begin_dispatch(self, **kwargs):
+            entered.set()
+            assert release.wait(timeout=2.0)
+            return super().begin_dispatch(**kwargs)
+
+    ledger = _BlockingLedger()
+    controller = _OutcomeTrialController(None)
+    server._behavior_trial_recovery_ready.set()
+    monkeypatch.setattr(server, "qualified_response_ledger", ledger)
+    monkeypatch.setattr(server, "behavior_trial_controller", controller)
+
+    reserve = threading.Thread(
+        target=lambda: result.append(
+            server._reserve_qualified_response_dispatch(_turn(), _candidate())
+        )
+    )
+    transition = threading.Thread(
+        target=lambda: server._run_behavior_trial_transition(transitioned.set)
+    )
+    reserve.start()
+    assert entered.wait(timeout=2.0)
+    transition.start()
+    assert not transitioned.wait(timeout=0.1)
+    release.set()
+    reserve.join(timeout=2.0)
+    transition.join(timeout=2.0)
+
+    assert not reserve.is_alive()
+    assert not transition.is_alive()
+    assert transitioned.is_set()
+    assert result and result[0]
+    assert [name for name, _value in ledger.calls] == ["begin"]
 
 
 def test_mood_speech_and_channel_delivery_never_create_metric_exposure(monkeypatch):
@@ -265,6 +414,7 @@ def test_failed_portal_dispatch_is_cancelled_and_never_confirmed(monkeypatch):
     initiative = _initiative()
     cleared: list[tuple[str, str]] = []
     scheduled: list[dict[str, object]] = []
+    _enable_gate(monkeypatch)
 
     async def failed_portal(_payload):
         return 0
@@ -285,7 +435,7 @@ def test_failed_portal_dispatch_is_cancelled_and_never_confirmed(monkeypatch):
         "A check-in that did not arrive.",
         initiative,
         proactive_turn=_turn(),
-        outcome_candidate=ProactiveCandidate(origin="chatter", reason="check-in"),
+        outcome_candidate=_candidate(),
     ))
 
     assert result["surface"] == "channel"
@@ -414,6 +564,7 @@ def test_outcome_ledger_delivery_failures_never_block_portal_delivery_or_count(m
     initiative = _initiative()
     scheduled: list[dict[str, object]] = []
     turn = _turn()
+    _enable_gate(monkeypatch)
 
     class _BeginFailureLedger:
         def __init__(self) -> None:
@@ -440,7 +591,7 @@ def test_outcome_ledger_delivery_failures_never_block_portal_delivery_or_count(m
         "A check-in.",
         initiative,
         proactive_turn=turn,
-        outcome_candidate=ProactiveCandidate(origin="chatter", reason="check-in"),
+        outcome_candidate=_candidate(),
     ))
 
     class _ConfirmFailureLedger(_DeliveryLedger):
@@ -455,7 +606,7 @@ def test_outcome_ledger_delivery_failures_never_block_portal_delivery_or_count(m
         "A second check-in.",
         initiative,
         proactive_turn=_turn(),
-        outcome_candidate=ProactiveCandidate(origin="chatter", reason="check-in"),
+        outcome_candidate=_candidate(),
     ))
 
     assert begin_result["delivered"] is True
@@ -553,6 +704,12 @@ def test_status_includes_read_only_aggregate_evidence_without_mutating_controlle
     monkeypatch.setattr(server, "behavior_trial_controller", _Controller())
     monkeypatch.setattr(server, "qualified_response_ledger", _StatusLedger())
     monkeypatch.setattr(server, "behavior_trial_review_decision_store", _ReviewDecisionStore())
+    monkeypatch.setattr(
+        server,
+        "_behavior_trial_profile_ready",
+        SimpleNamespace(is_set=lambda: False),
+    )
+    monkeypatch.setattr(server, "_behavior_trial_profile_error", "not_ready")
     server._behavior_trial_recovery_ready.set()
 
     response = server.behavior_trial_status(request)
@@ -561,6 +718,12 @@ def test_status_includes_read_only_aggregate_evidence_without_mutating_controlle
     assert json.loads(response.body) == {
         **snapshot,
         "outcome_evidence": evidence,
+        "profile_ready": False,
+        "profile_error": "not_ready",
+        "active_profile": None,
+        "cycle_baseline": None,
+        "profile_decisions": [],
+        "profile_decisions_available": False,
         "review_settlements": [],
         "review_settlements_available": True,
         "registration_candidate": None,

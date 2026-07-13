@@ -1159,7 +1159,7 @@ hud.innerHTML = `
     <span class="master-plan-status">Void Prototype: embodied home and systems</span>
     <span id="environmentModeLabel">Environment: Void Prototype</span>
     <button id="environmentModeToggle" type="button">Enter the AI Office HQ</button>
-    <span id="masterPlanStageLabel" class="master-plan-status">Master plan: Phase 5 baseline complete, Phase 6 active</span>
+    <span id="masterPlanStageLabel" class="master-plan-status">Master plan: Phase 8 RSI verified; operational soak pending; Phase 9 active</span>
     <span id="alpeccaAssetModeLabel" class="master-plan-status">Art assets: Local fallback</span>
     <span>WASD move</span>
     <span>Click game to lock mouse</span>
@@ -1261,6 +1261,22 @@ const menu = hud.querySelector<HTMLDivElement>("#menu")!;
 const menuButton = hud.querySelector<HTMLButtonElement>("#menuButton")!;
 const environmentModeLabel = hud.querySelector<HTMLSpanElement>("#environmentModeLabel")!;
 const environmentModeToggle = hud.querySelector<HTMLButtonElement>("#environmentModeToggle")!;
+
+// Select the scene before any control asks which environment is active. Keeping
+// this above the first isPrototypeMode() call matters in unbundled dev mode,
+// where const temporal-dead-zone semantics are not lowered by the build.
+const currentEnvironmentMode: "prototype" | "hq" = (() => {
+  try {
+    return new URL(window.location.href).searchParams.get("environment") === "hq" ? "hq" : "prototype";
+  } catch {
+    return "prototype";
+  }
+})();
+
+function isPrototypeMode() {
+  return currentEnvironmentMode === "prototype";
+}
+
 environmentModeToggle.textContent = isPrototypeMode() ? "Enter the AI Office HQ" : "Return to the Void";
 environmentModeToggle.addEventListener("click", (event) => {
   event.stopPropagation();
@@ -1307,22 +1323,6 @@ const viewModeToggle = hud.querySelector<HTMLButtonElement>("#viewModeToggle")!;
 const embodimentToggle = hud.querySelector<HTMLButtonElement>("#embodimentToggle")!;
 const embodimentStatus = hud.querySelector<HTMLSpanElement>("#embodimentStatus")!;
 const topbarEl = hud.querySelector<HTMLDivElement>(".topbar")!;
-
-// The Void is the default primary surface; ?environment=hq enters the AI Office
-// HQ (a place inside her void). Selected at load so the scene builds the right
-// room set (see the officeRooms branch); switching is a navigation, not a live
-// scene-swap, which keeps it robust.
-const currentEnvironmentMode: "prototype" | "hq" = (() => {
-  try {
-    return new URL(window.location.href).searchParams.get("environment") === "hq" ? "hq" : "prototype";
-  } catch {
-    return "prototype";
-  }
-})();
-
-function isPrototypeMode() {
-  return currentEnvironmentMode === "prototype";
-}
 
 // Public identity metadata only. Backend authorization comes from an HttpOnly
 // session cookie and must never treat this stable value as a bearer credential.
@@ -3640,7 +3640,7 @@ function updateEnvironmentModeUi() {
     ? "Environment: Alpecca Void (core)"
     : "Environment: AI Office HQ (in the void)";
   environmentModeToggle.textContent = isPrototypeMode() ? "Enter the AI Office HQ" : "Return to the Void";
-  masterPlanStageLabel.textContent = "Master plan: Phase 5 baseline complete, Phase 6 active";
+  masterPlanStageLabel.textContent = "Master plan: Phase 8 RSI verified; operational soak pending; Phase 9 active";
   alpeccaAssetModeLabel.textContent = `Art assets: ${alpeccaArtAssetMode === "huggingface-runtime" ? "Hugging Face runtime" : "Local fallback"}`;
   alpeccaAssetModeLabel.dataset.status = alpeccaArtAssetMode === "huggingface-runtime" ? "live" : "offline";
   objectiveEl.textContent = activeEnvironmentObjective();
@@ -6587,14 +6587,23 @@ async function loadWorkshopTrialStatus() {
         review_settlements_available?: unknown;
         review_decisions?: unknown;
         review_decisions_available?: unknown;
+        profile_decisions?: unknown;
+        profile_decisions_available?: unknown;
+        active_profile?: unknown;
+        cycle_baseline?: unknown;
         registration_candidate?: unknown;
         registration_candidate_available?: unknown;
       };
       const activeTrial = data?.active_trial;
       let baselineText = "baseline observation awaiting settled deliveries";
       const evidence = data?.outcome_evidence;
-      if (evidence && typeof evidence === "object") {
-        const baseline = (evidence as { baseline?: unknown }).baseline;
+      if (
+        (data?.cycle_baseline && typeof data.cycle_baseline === "object")
+        || (evidence && typeof evidence === "object")
+      ) {
+        const baseline = data?.cycle_baseline && typeof data.cycle_baseline === "object"
+          ? data.cycle_baseline
+          : (evidence as { baseline?: unknown }).baseline;
         if (baseline && typeof baseline === "object") {
           const values = baseline as { completed?: unknown; qualified_responses?: unknown; rate?: unknown };
           const completed = Number.isInteger(values.completed) && Number(values.completed) >= 0
@@ -6612,18 +6621,51 @@ async function loadWorkshopTrialStatus() {
         }
       }
       let reviewText = "no settled trial review";
-      let latestReview: { trialId: number; status: string } | null = null;
+      let latestReview: {
+        trialId: number;
+        status: string;
+        outcome: string;
+        retentionEligible: boolean;
+        preimageValue: number | null;
+        trialValue: number | null;
+        exposureSeconds: number | null;
+        minSamples: number | null;
+      } | null = null;
       if (data?.review_settlements_available === false) {
         reviewText = "settled review history unavailable";
       } else if (Array.isArray(data?.review_settlements)) {
         const latest = data.review_settlements.find((item) => item && typeof item === "object") as {
           trial_id?: unknown;
           status?: unknown;
+          outcome?: unknown;
+          creator_retention_eligible?: unknown;
+          profile?: unknown;
         } | undefined;
         const latestTrialId = Number(latest?.trial_id || 0);
         const latestStatus = typeof latest?.status === "string" ? latest.status : "";
         if (latestTrialId > 0 && Number.isInteger(latestTrialId) && latestStatus) {
-          latestReview = { trialId: latestTrialId, status: latestStatus };
+          const profile = latest?.profile && typeof latest.profile === "object"
+            ? latest.profile as {
+                preimage_value?: unknown;
+                trial_value?: unknown;
+                exposure_seconds?: unknown;
+                min_samples?: unknown;
+              }
+            : null;
+          const finiteOrNull = (value: unknown) => {
+            const number = Number(value);
+            return Number.isFinite(number) ? number : null;
+          };
+          latestReview = {
+            trialId: latestTrialId,
+            status: latestStatus,
+            outcome: typeof latest?.outcome === "string" ? latest.outcome : "inconclusive",
+            retentionEligible: latest?.creator_retention_eligible === true,
+            preimageValue: finiteOrNull(profile?.preimage_value),
+            trialValue: finiteOrNull(profile?.trial_value),
+            exposureSeconds: finiteOrNull(profile?.exposure_seconds),
+            minSamples: finiteOrNull(profile?.min_samples),
+          };
           if (latestStatus === "ready_for_creator_review") {
             reviewText = `trial #${latestTrialId} is ready for creator review`;
           } else if (latestStatus === "inconclusive_insufficient_samples") {
@@ -6632,34 +6674,52 @@ async function loadWorkshopTrialStatus() {
         }
       }
       if (latestReview) {
-        const matchingDecision = Array.isArray(data?.review_decisions)
-          ? data.review_decisions.find((item) => {
+        const matchingDecision = Array.isArray(data?.profile_decisions)
+          ? data.profile_decisions.find((item) => {
               if (!item || typeof item !== "object") return false;
-              const value = item as { trial_id?: unknown; decision?: unknown; settlement_status?: unknown };
-              return Number(value.trial_id || 0) === latestReview?.trialId
-                && value.decision === "retain_baseline"
-                && value.settlement_status === latestReview?.status;
+              const value = item as { trial_id?: unknown; decision?: unknown };
+              return Number(value.trial_id || 0) === latestReview?.trialId;
             })
           : null;
         if (matchingDecision) {
-          reviewText = `trial #${latestReview.trialId} review recorded; baseline retained`;
-          workshopReviewDecision.textContent = "Frozen review recorded. Baseline remains active.";
+          const decision = String((matchingDecision as { decision?: unknown }).decision || "");
+          const retained = decision === "retain_trial_value";
+          reviewText = retained
+            ? `trial #${latestReview.trialId} completed; trial value retained`
+            : `trial #${latestReview.trialId} completed; baseline kept`;
+          workshopReviewDecision.textContent = retained
+            ? "Cycle complete. The reviewed trial value is now the active profile."
+            : "Cycle complete. The pre-trial profile remains active.";
           workshopReviewDecision.classList.remove("hidden");
-        } else if (
-          latestReview.status === "ready_for_creator_review"
-          && data?.review_decisions_available !== false
-        ) {
-          workshopReviewDecision.innerHTML = `<span>Frozen review ready. Baseline remains active.</span><button type="button" data-wc-review-trial-id="${latestReview.trialId}" data-wc-review-act="retain-baseline">Record review</button>`;
+        } else if (data?.profile_decisions_available !== false) {
+          const retainButton = latestReview.retentionEligible
+            ? `<button type="button" data-wc-review-trial-id="${latestReview.trialId}" data-wc-review-act="retain-trial-value">Retain trial value</button>`
+            : "";
+          const valueDetail = latestReview.preimageValue !== null && latestReview.trialValue !== null
+            ? ` Trial ${Math.round(latestReview.trialValue * 100)}% vs baseline ${Math.round(latestReview.preimageValue * 100)}%.`
+            : "";
+          const exposureDetail = latestReview.exposureSeconds !== null && latestReview.minSamples !== null
+            ? ` ${Math.round(latestReview.exposureSeconds / 60)} min, minimum ${latestReview.minSamples} outcomes.`
+            : "";
+          workshopReviewDecision.innerHTML = `<span>Frozen result: ${escapeHudText(latestReview.outcome)}.${valueDetail}${exposureDetail}</span>${retainButton}<button type="button" data-wc-review-trial-id="${latestReview.trialId}" data-wc-review-act="revert-to-baseline">Keep baseline</button>`;
           workshopReviewDecision.classList.remove("hidden");
-        } else if (data?.review_decisions_available === false) {
-          reviewText += "; review receipt status unavailable";
+        } else {
+          reviewText += "; profile decision status unavailable";
         }
       }
       status = `Behavior review: ${baselineText}. ${reviewText}.`;
+      const activeProfile = data?.active_profile;
+      if (activeProfile && typeof activeProfile === "object") {
+        const value = Number((activeProfile as { value?: unknown }).value);
+        if (Number.isFinite(value)) {
+          status += ` Active chatter profile: ${Math.round(value * 100)}%.`;
+        }
+      }
       if (activeTrial === null) {
         status += " No active trial.";
       } else if (activeTrial && typeof activeTrial === "object") {
         const trial = activeTrial as {
+          id?: unknown;
           state?: unknown;
           parameter?: unknown;
           creator_binding_present?: unknown;
@@ -6671,6 +6731,15 @@ async function loadWorkshopTrialStatus() {
           status += trial.creator_binding_present === true
             ? ` Active chatter chance trial: ${trial.state}.`
             : " Active trial approval is not bound.";
+          const activeTrialId = Number(trial.id || 0);
+          if (
+            trial.state === "running"
+            && Number.isInteger(activeTrialId)
+            && activeTrialId > 0
+          ) {
+            workshopReviewDecision.innerHTML = `<span>Trial #${activeTrialId} is running.</span><button type="button" data-wc-trial-id="${activeTrialId}" data-wc-trial-act="abort">Abort trial</button>`;
+            workshopReviewDecision.classList.remove("hidden");
+          }
         }
       }
       const candidate = data?.registration_candidate;
@@ -6723,10 +6792,11 @@ function closeAlpeccaWorkshop() {
 }
 
 async function workshopBehaviorTrialAction(proposalId: number, action: string, trialId = 0) {
-  if (workshopBusy || !proposalId) return;
+  if (workshopBusy) return;
   let path = "";
   let confirmation = "";
   if (action === "register") {
+    if (!proposalId) return;
     path = `/behavior-trials/proposals/${proposalId}/register`;
     confirmation = "Register this sealed proposal as a trial? This does not change Alpecca's behavior. Approval and start remain separate decisions.";
   } else if (action === "approve" && trialId > 0) {
@@ -6735,6 +6805,9 @@ async function workshopBehaviorTrialAction(proposalId: number, action: string, t
   } else if (action === "start" && trialId > 0) {
     path = `/behavior-trials/${trialId}/start`;
     confirmation = "Start this time-bounded behavior trial? It will automatically roll back after its planned exposure.";
+  } else if (action === "abort" && trialId > 0) {
+    path = `/behavior-trials/${trialId}/abort`;
+    confirmation = "Abort this trial now? The active override will be restored to its baseline and the result will close as inconclusive.";
   } else {
     return;
   }
@@ -6754,7 +6827,9 @@ async function workshopBehaviorTrialAction(proposalId: number, action: string, t
       ? `Registered behavior trial from proposal #${proposalId}; no behavior changed.`
       : action === "approve"
         ? `Approved behavior trial #${trialId}; it has not started.`
-        : `Started bounded behavior trial #${trialId}.`);
+        : action === "start"
+          ? `Started bounded behavior trial #${trialId}.`
+          : `Aborted behavior trial #${trialId}; the baseline was restored.`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Behavior trial action failed.";
     appendAlpeccaLog("System", message);
@@ -6765,15 +6840,21 @@ async function workshopBehaviorTrialAction(proposalId: number, action: string, t
   }
 }
 
-async function workshopReviewDecisionAction(trialId: number) {
+async function workshopReviewDecisionAction(trialId: number, decision: string) {
   if (workshopBusy || !Number.isInteger(trialId) || trialId <= 0) return;
-  const confirmation = "Record this frozen review? This acknowledges that the restored baseline remains in effect. It does not apply, retry, start, or otherwise change Alpecca's behavior.";
+  if (decision !== "retain-trial-value" && decision !== "revert-to-baseline") return;
+  const decisionName = decision === "retain-trial-value"
+    ? "retain_trial_value"
+    : "revert_to_baseline";
+  const confirmation = decision === "retain-trial-value"
+    ? "Retain this evidence-qualified trial value as Alpecca's active chatter profile? The decision is durable and becomes the baseline for the next bounded cycle."
+    : "Keep the pre-trial chatter profile and close this cycle? A fresh baseline epoch will begin without retaining the trial value.";
   if (!window.confirm(confirmation)) return;
   workshopBusy = true;
   setWorkshopBusy(true);
   try {
     const response = await alpeccaBackendFetch(
-      alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/behavior-trials/${trialId}/review/retain-baseline`),
+      alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/behavior-trials/${trialId}/review/decision/${decisionName}`),
       { method: "POST", cache: "no-store" },
     );
     if (!response.ok) {
@@ -6782,7 +6863,9 @@ async function workshopReviewDecisionAction(trialId: number) {
     }
     appendAlpeccaLog(
       "System",
-      `Recorded frozen review for behavior trial #${trialId}; baseline remains in effect.`,
+      decision === "retain-trial-value"
+        ? `Completed behavior trial #${trialId}; the qualified trial value is active.`
+        : `Completed behavior trial #${trialId}; the baseline remains active.`,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Review acknowledgement failed.";
@@ -6836,7 +6919,7 @@ async function workshopProposalDecision(proposalId: number, status: string) {
   } finally {
     workshopBusy = false;
     setWorkshopBusy(false);
-    await loadAlpeccaWorkshop();
+    await Promise.all([loadAlpeccaWorkshop(), loadWorkshopTrialStatus()]);
   }
 }
 
@@ -6850,7 +6933,7 @@ async function workshopRunReview() {
   } finally {
     workshopBusy = false;
     setWorkshopBusy(false);
-    await loadAlpeccaWorkshop();
+    await Promise.all([loadAlpeccaWorkshop(), loadWorkshopTrialStatus()]);
   }
 }
 
@@ -14569,9 +14652,12 @@ alpeccaWorkshop.addEventListener("click", (event) => {
     return;
   }
   const reviewButton = target.closest<HTMLButtonElement>("button[data-wc-review-act]");
-  if (reviewButton?.dataset.wcReviewAct === "retain-baseline") {
+  if (
+    reviewButton?.dataset.wcReviewAct === "retain-trial-value"
+    || reviewButton?.dataset.wcReviewAct === "revert-to-baseline"
+  ) {
     const trialId = Number(reviewButton.dataset.wcReviewTrialId || 0);
-    void workshopReviewDecisionAction(trialId);
+    void workshopReviewDecisionAction(trialId, reviewButton.dataset.wcReviewAct);
     return;
   }
   const trialButton = target.closest<HTMLButtonElement>("button[data-wc-trial-act]");
@@ -14708,7 +14794,7 @@ async function testAlpeccaPushNotifications() {
   if (
     delivery.attempted === true
     && delivery.state === "sent"
-    && accepted === 1
+    && accepted >= 1
     && rejected === 0
     && unknown === 0
     && undispatched === 0

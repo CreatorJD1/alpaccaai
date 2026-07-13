@@ -1,5 +1,34 @@
 # Alpecca — Handoff (updated 2026-07-12)
 
+## Codex Wave 1 Integration (2026-07-13)
+
+- The six coordinator lanes were reviewed and integrated in dependency order.
+  Commits `9501c27`, `4cb5099`, `24c9931`, `e1e6188`, `e255ddb`, `7e09bf7`,
+  and `8881eff` are pushed to `origin/feat/vrm-preview`.
+- Lane Q supplies grounded preference storage and an honest workload assessment;
+  Lane O supplies creator-taught knowledge blocks and a brain-map; Lane C adds
+  an acknowledgement-consumption monotonic anchor; Lane A adds per-tool-round
+  context budgeting and cancellable page-tier maintenance; Lane I makes routine
+  execution atomic with retry/backoff; Lane B adds the byte-bound perception
+  consent gate.
+- The corresponding `server.py` / `mind.py` integration is present locally but
+  intentionally remains in the active shared-file worktree with Phase 8 rather
+  than being folded into a blind commit. It adds creator-only no-store snapshots
+  for knowledge, preferences, and workload; wires the push acknowledgement
+  anchor; re-budgets tool rounds; schedules cancellable page maintenance; and
+  uses routine claims. Preserve it when checkpointing Wave 0.
+- Remote perception remains **inert**. No server egress gate is constructed,
+  so all current image, screen, webcam, and Discord vision remains
+  verified-local. Do not activate the remote path without an interactive
+  creator decision authority, operator-attested route values, and a production
+  monotonic anchor in a separate failure domain.
+- Verification: Phase 8 `302 passed`; Phase 6/9/12 `434 passed, 2 skipped`;
+  Phase 9 after the consent integration `316 passed, 2 skipped`; foundation +
+  Phase 11 `267 passed`; routines/resource `34 passed`; security/consolidation/
+  RSI smoke `36 passed`; House HQ build passed. A full `pytest -q tests` run
+  exceeded the runner's 120-second cap without an early failure, so it remains
+  unconfirmed rather than green.
+
 ## Codex Resume Checkpoint: Local Model Honesty And Parallel Stage Review
 
 This block is the newest operational handoff. Preserve the later shared-branch
@@ -58,11 +87,69 @@ independence); they landed after the Phase 11 checkpoint and must not be reset.
   `alpecca/creator_contact.py`, `explorer_phase2_audit/`, and the local PDF
   builder. Do not stage, revert, or absorb it without a separate decision.
 
-Immediate gate after this narrow checkpoint: complete Phase 8 as a bounded RSI
-cycle whose intervention affects the real proactive path, rejects impossible
-trials, settles conservatively, requires a creator decision to retain or revert,
-archives the cycle, and can issue the next candidate. The House slow-turn,
-Discord readiness, and Mindpage tool-round gaps remain separate follow-on work.
+### Phase 8 RSI Worktree Review: CONTRACT IMPLEMENTED, VERIFICATION BLOCKED
+
+The current uncommitted work implements the intended bounded cycle for only
+`creator-personal` / `chatter_chance`; it does not enable general self-editing.
+
+- A candidate is fixed at two hours and five minimum samples. Issue,
+  registration, controller registration, and start all reject a profile that
+  cannot fit five optimistic opportunities under current chatter enablement,
+  effective cooldown, and the shared initiative rate cap.
+- The intervention now affects the real proactive path. CoreMind resolves the
+  verified chance and draws one probability gate; the local model may veto or
+  choose a grounded seed after that gate but cannot bypass or reroll it.
+- Workshop keeps plan acceptance, registration, approval, start, running-trial
+  abort, and the final profile choice as distinct creator-confirmed actions.
+  Abort restores the preimage and records an idempotent `inconclusive` receipt.
+  Frozen review shows the exact profile values, duration, and sample floor, and
+  the baseline sentence uses the current profile epoch.
+- Planned expiry restores the preimage before settlement. Settlement waits for
+  all response windows, requires at least five completed samples, and uses a
+  code-owned 10-point absolute rate threshold. Only `improved` evidence can make
+  `Retain trial value` available; the creator may always choose `Keep baseline`.
+- The final choice is HMAC-bound to the immutable trial and settlement and
+  persists the active profile in SQLite without editing config or source. The
+  controller reloads and re-verifies it on restart. Its decision timestamp
+  starts a fresh baseline epoch, so later candidate issuance excludes old rows.
+  Terminal response transitions run an idempotent successor reconciliation;
+  manual review reaches the same issuer.
+- The current all-Phase-8 selection is `282 passed, 4 failed`, with one existing
+  Starlette/httpx deprecation warning. Three profile-decision route tests return
+  `503` because `server.py` calls an undefined `_behavior_profile_generation`
+  helper. One profile-store regression test references an undefined local
+  `trial`. The durable contract is present, but this exact tree is not green.
+- The last House build passed and its entrypoint is unchanged. A previous full
+  core rerun passed after one transient order-sensitive grounding-card failure,
+  but it predates the latest server/profile-test edits. Rerun Phase 8, core, and
+  the House build against one stable tree after the two current defects are
+  repaired. The accelerated temporary-SQLite retain/successor test is not a
+  substitute for that acceptance run or for a real two-hour portal trial.
+
+Master Plan Phase 8's bounded behavioral RSI completion contract is
+**implemented but not currently acceptance-green**. Do not mark this worktree
+complete until the four focused failures above are resolved and verification is
+rerun. The inspected local database still has only two unanswered baseline
+outcomes and no candidate, trial, override, rollback, settlement, profile
+decision, or active retained profile, so no real cycle has run and it cannot
+yet issue a candidate. After the tree is green, the next operational validation
+is one real qualifying baseline and full two-hour lifecycle, exact rollback,
+creator retain/revert decision, restart readback with no stale override, then
+fresh-epoch evidence that produces the next candidate exactly once through
+reconciliation. Exercise the House abort control separately as a live safety
+drill.
+
+Known limits: feasibility is a best-case upper bound and does not account for
+random misses, model veto, ignored-outreach backoff, shared-budget competition,
+creator activity, or portal loss. Five samples and a 10-point threshold are a
+bounded product rule, not causal/statistical proof. Abort does not create a
+planned-expiry settlement. Fresh epochs are timestamp-filtered, not explicit
+epoch ids, and Phase 8 SQLite/HMAC state has no external monotonic anchor. The
+legacy `review/retain-baseline` route is now a compatibility alias for the same
+sealed baseline profile decision, not an acknowledgement-only branch.
+
+The House slow-turn, Discord readiness, and Mindpage tool-round gaps remain
+separate follow-on work.
 
 ## Current Active Handoff: Phase 9 Multimodal And Source Perception
 
@@ -169,87 +256,16 @@ retained below as historical implementation evidence.
   routines share one per-scope relevance/cooldown/dedupe budget; unanswered
   outreach feeds backoff; one proactive event chooses one delivery surface; and
   eligible cue evidence changes the response strategy with traceable provenance.
-- Master Plan Phase 8 remains **PARTIAL**. Phase 8A contains the legacy
-  `selfmod` autonomous mutation/evaluation path: idle lessons remain evidence
-  and create or refresh one bounded creator-review card, but CoreMind does not
-  start or evaluate a `selfmod` trial. `proactive.should_chatter` has a
-  validated opt-in `chance` override seam. Phase 8B has an **INTERNAL**
-  approval-proof-backed `BehaviorTrialController` for only
-  `creator-personal` / `chatter_chance`. SQLite enforces at most one active
-  `approved` or `running` trial; its runtime-only SQLite override supports
-  apply/readback/rollback, automatic expiry rollback, and startup recovery.
-  CoreMind consumes the override only after successful recovery. Phase 8C1
-  makes the generic ledger retain immutable specs and the
-  exact SHA-256 of each raw persisted spec; the behavior controller has a
-  creator-only `chatter_chance` binding sidecar, HMAC-sealed in memory with the
-  existing protected server authorization secret, and runtime consumption
-  requires it. The chatter supplier is read-only and fails closed; recovery-
-  gated server maintenance outside `mind_lock` receipts expired or invalid
-  runtime records. `GET /behavior-trials/status` is creator-only, read-only,
-  `no-store`, and unavailable before recovery. Phase 8C5 adds the one
-  creator-only, recovery-gated `POST /behavior-trials/{trial_id}/approve`
-  action for an already registered trial. It accepts no browser-supplied proof,
-  timestamp, or authorization mechanism: the server derives those facts from
-  its protected authorization decision and returns only a sanitized summary.
-  Approval is separate from activation. Phase 8C6 adds the one creator-only,
-  recovery-gated `POST /behavior-trials/{trial_id}/start` action for an
-  approved trial, with an idempotent retry for that same running trial. It
-  accepts no browser-supplied runtime values or timestamp;
-  server time and the controller's binding, preimage, runtime-readback, and
-  one-active-trial checks govern activation. Phase 8C8 adds exactly one
-  creator-only, recovery-gated, bodyless proposal-namespaced registration action:
-  `POST /behavior-trials/proposals/{proposal_id}/register`. It accepts only a
-  server-issued, HMAC-sealed candidate from settled low-response baseline
-  evidence, validates a fixed `chatter_chance` / `qualified_response_rate`
-  profile, and records registration only. Generic Workshop payloads and generic
-  proposal acceptance are not trial provenance; registration, approval, and
-  start remain separate creator decisions. There are no generic behavior-trial
-  registration, completion, rollback, or mutation routes, and no trial is
-  running by default. Phase 8C9 adds the one creator-only, recovery-gated,
-  bodyless and query-free `POST /behavior-trials/{trial_id}/review/retain-baseline`
-  acknowledgement. It binds one HMAC-sealed receipt to the exact frozen C7
-  settlement digests and can record only `retain_baseline`; it cannot issue a
-  candidate, approve, start, retry, apply, retune, or otherwise change runtime
-  behavior. Status and frozen review expose only sanitized receipt metadata.
-  Phase 8C7 runs after outcome expiry and the existing
-  off-lock baseline restoration: only a valid planned-expiry rollback with no
-  outstanding outcome windows can be sealed into a hashed aggregate settlement.
-  A SQLite fence then rejects new trial outcomes. Creator-only `GET
-  /behavior-trials/{trial_id}/review` returns that frozen snapshot, while the
-  Workshop shows baseline observation and the latest settled review without
-  controls that can change behavior. Phase 8C2 now has server-owned durable
-  `qualified_response_rate` outcomes established before C6 added the
-  creator-triggered start route: a typed chatter
-  candidate plus allowed initiative reserves a provisional row before a live
-  creator portal send; only confirmed portal delivery enters the denominator;
-  one authenticated, contentful, non-background creator WebSocket turn may
-  match the oldest unexpired same-scope/surface row. The ledger holds no message
-  content, client score, request ID, or credential. Failed and stale provisional
-  sends are cancelled; confirmed expiry becomes unanswered; status exposes
-  aggregate-only baseline/trial evidence through the existing protected
-  `no-store` endpoint. No trial is running, so all evidence is baseline-only.
-  C8 completes the bounded sealed proposal-to-trial registration bridge, and
-  C9 completes the separate retained-baseline acknowledgement after frozen
-  review. Settlement and acknowledgement never change the runtime value. Phase
-  8C3 now has a pure per-trial evaluation
-  contract: aggregate outcome evidence is scoped by server-owned trial id and
-  validated against the exact spec SHA-256, baseline, and sample threshold. It
-  reports collecting/awaiting-settlement/creator-review readiness plus an
-  improved/unchanged/worse comparison, but it performs no I/O, start,
-  completion, approval, rollback, or runtime change; C7 invokes it only while
-  creating a durable settlement and stores its result rather than acting on it.
-  Phase 8C4 now supplies dormant attribution: an eligible proactive dispatch
-  gets a trial id only when a query-only controller check verifies a live,
-  HMAC-bound `chatter_chance` override whose immutable metric is exactly
-  `qualified_response_rate` at the same server-owned dispatch timestamp. Any
-  recovery gap, expiry, tampering, missing override, or other metric records a
-  baseline row instead. C4 itself added no approval, start, completion, or
-  mutation route; C5 separately adds approval-only and C6 adds only an
-  explicit creator start, with a binding-reverified running retry. C7 adds a
-  read-only review surface after the existing expiry rollback, not a new runtime
-  change path. C8 creates a visible sealed candidate only from settled
-  low-response baseline evidence; the Workshop makes plan acceptance,
-  registration, approval, and start separate controls and never chains them.
+- Master Plan Phase 8's bounded behavioral RSI contract is **IMPLEMENTED BUT
+  NOT CURRENTLY ACCEPTANCE-GREEN**. The current worktree implements one bounded
+  `creator-personal` / `chatter_chance` cycle. It now includes the fixed
+  two-hour/five-sample profile, feasibility preflight, one real probability
+  gate, separate Workshop plan/register/approve/start/abort choices,
+  rollback-before-settlement, conservative outcome classification, a separate
+  durable creator profile decision, and a fresh post-decision baseline epoch.
+  The newest Phase 8 RSI block at the top of this file is authoritative for the
+  completion contract, current database evidence, verification, and remaining
+  limits. The older C1-C9 narrative below is historical implementation evidence.
 - Master Plan Phase 6 Mindpage and resource coordination remains partial and
   active. Phase 6A rejects orthogonal and negative semantic matches. Phase 6B
   adds bounded sidecar Mindpage content-term indexing: new pages index after a
@@ -401,49 +417,18 @@ server route, scheduler, or UI. Execution remains blocked until a separate
 minimal elevated helper performs fresh live remeasurement, consumes one
 authenticated CreatorJD approval atomically, writes once, and verifies readback.
 
-### Phase 8: bounded recursive self-improvement - PARTIAL
+### Phase 8: bounded recursive self-improvement - ACCEPTANCE CURRENTLY BLOCKED
 
-Phase 8A contains the legacy `selfmod` autonomous mutation/evaluation path.
-Idle lessons remain evidence and create or refresh one bounded creator-review
-card, but CoreMind does not start or evaluate a `selfmod` trial. Existing
-`selfmod` history is evidence only. `proactive.should_chatter` now has a
-validated opt-in `chance` override seam, but no ledger, controller, or API
-applies it; no behavior trial is running. Not all legacy tunables are proven to
-have a runtime consumer.
-
-Phase 8B now has an **INTERNAL** approval-proof-backed
-`BehaviorTrialController` for only `creator-personal` / `chatter_chance`. The
-database enforces at most one active `approved` or `running` trial. Its
-runtime-only SQLite override supports apply/readback/rollback, automatic expiry
-rollback, and startup recovery; CoreMind consumes it only after successful
-recovery. It is not creator-approved and does not satisfy the Phase 8 exit gate.
-
-Phase 8C1 is the partial spec-integrity, creator-binding, and status-read
-foundation. The generic ledger retains immutable specifications and the
-exact SHA-256 of each raw persisted specification. The behavior controller has
-a creator-only binding sidecar for `chatter_chance`, HMAC-sealed in memory with
-the existing protected server authorization secret, and runtime consumption
-requires that binding and successful recovery. The chatter supplier is read-
-only and fails closed; recovery-gated server maintenance outside `mind_lock`
-receipts expired or invalid runtime records. `GET /behavior-trials/status` is
-creator-only, read-only, `no-store`, and unavailable before recovery. There
-were no behavior-trial start, approval, or mutation routes at the C1 scope,
-no metric collector or completion loop, and no real trial was running. The
-controller's internal creator-binding method was not an HTTP approval flow.
-
-Phase 8C2 is complete as an observational-only evidence layer. It durably
-records `qualified_response_rate` outcomes only for confirmed typed chatter
-deliveries to a creator portal and matching authenticated creator WebSocket
-turns in the same scope/surface. It stores no message content, client scores,
-or caller-provided timestamps and exposes only aggregate evidence. No real trial
-is running, every row is baseline-only, and no public completion/runtime-mutation
-route exists beyond C5 approval and C6 explicit start. C7 now freezes a settled
-planned-expiry rollback into a hashed aggregate review and exposes it read-only
-to the creator and Workshop; it never retunes behavior. A bounded proposal-to-
-trial registration bridge and a separate creator decision after review are
-still required for a real behavior trial. Code, files,
-accounts, and operating-system changes remain outside the self-improvement
-surface.
+This historical section is superseded by **Phase 8 RSI Worktree Review** at the
+top of this file. The current worktree has the bounded proposal-to-trial bridge,
+creator lifecycle and abort routes, real chatter probability intervention,
+planned-expiry settlement, durable retain/revert profile choice, and fresh
+baseline epoch. The intended code contract is implemented, but the exact tree
+has four focused Phase 8 failures described in the authoritative review above;
+it is not verification-complete. A real two-hour lifecycle and
+restart/next-candidate validation run is also pending. General `selfmod`, code,
+files, accounts, shell, services, and operating-system changes remain outside
+the implemented surface.
 
 ### Phase 9: multimodal and source perception
 

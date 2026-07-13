@@ -448,7 +448,7 @@ def test_cancelled_maintenance_and_routines_are_not_recorded_as_completed(
     monkeypatch, optional_work, mindpage_backfill_status
 ):
     observations: list[object] = []
-    marked: list[int] = []
+    released: list[dict] = []
     broadcasts: list[dict] = []
 
     async def cancelled_optional(category, _label, _fn, *args, **kwargs):
@@ -469,12 +469,14 @@ def test_cancelled_maintenance_and_routines_are_not_recorded_as_completed(
     monkeypatch.setattr(
         server.cognition_mod, "record_observation", lambda value: observations.append(value)
     )
-    monkeypatch.setattr(server.routines_mod, "due", lambda: [{
+    row = {
         "id": 71,
         "name": "Cancelled embedding backfill",
         "kind": "embed_backfill",
-    }])
-    monkeypatch.setattr(server.routines_mod, "mark_ran", lambda row_id: marked.append(row_id))
+    }
+    claim = {"routine_id": 71, "run_key": "test", "claim_token": "test"}
+    monkeypatch.setattr(server.routines_mod, "claim_due", lambda: [(row, claim)])
+    monkeypatch.setattr(server.routines_mod, "release", lambda value: released.append(value))
     monkeypatch.setattr(server, "_broadcast", capture_broadcast)
     monkeypatch.setattr(server.AutomationCfg, "ROUTINES", True)
 
@@ -488,7 +490,7 @@ def test_cancelled_maintenance_and_routines_are_not_recorded_as_completed(
     assert maintenance["status"] == "cancelled"
     assert mindpage_backfill_status["last_mindpage_content_index_backfill_at"] == 0.0
     assert mindpage_backfill_status["last_mindpage_content_index_backfill_run"] == {}
-    assert marked == []
+    assert released == [claim]
     assert broadcasts == []
 
 

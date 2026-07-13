@@ -498,6 +498,45 @@ class QualifiedResponseLedger:
             "trial": buckets["trial"],
         }
 
+    def baseline_summary(self, *, since: float | None = None) -> dict[str, Any]:
+        """Return baseline evidence for the current retained-profile epoch.
+
+        A profile decision starts a new baseline epoch. Dispatches from before
+        that decision are deliberately excluded so a later RSI cycle cannot
+        reuse evidence produced under an older behavior value.
+        """
+        cutoff = None if since is None else _timestamp(since, name="since")
+        database_uri = self.db_path.resolve().as_uri() + "?mode=ro"
+        bucket = self._summary_bucket()
+        query = (
+            "SELECT state, COUNT(*) AS count FROM qualified_response_outcomes "
+            "WHERE metric=? AND definition_version=? AND cohort='baseline'"
+        )
+        params: list[object] = [METRIC_NAME, DEFINITION_VERSION]
+        if cutoff is not None:
+            query += " AND dispatched_at>=?"
+            params.append(cutoff)
+        query += " GROUP BY state"
+        with sqlite3.connect(database_uri, uri=True) as conn:
+            rows = conn.execute(query, params).fetchall()
+        for state, count in rows:
+            if str(state) not in _STATES:
+                continue
+            key = {
+                DISPATCHING: "dispatching",
+                PENDING: "pending",
+                RESPONDED: "qualified_responses",
+                UNANSWERED: "unanswered",
+                CANCELLED: "cancelled",
+            }[str(state)]
+            bucket[key] = int(count)
+        return {
+            "metric": METRIC_NAME,
+            "definition_version": DEFINITION_VERSION,
+            "since": cutoff,
+            **self._finalize_bucket(bucket),
+        }
+
     def trial_summary(self, trial_id: int) -> dict[str, Any]:
         """Return one trial's aggregate-only evidence without mutating it.
 

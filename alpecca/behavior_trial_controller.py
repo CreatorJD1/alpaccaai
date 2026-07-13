@@ -18,9 +18,11 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from alpecca import initiative as initiative_mod
 from alpecca import self_improvement_policy
 from alpecca import trial_ledger
 from alpecca.db import connect
@@ -35,6 +37,8 @@ CHATTER_CHANCE_PARAMETER = "chatter_chance"
 CREATOR_APPROVAL_BINDINGS_TABLE = "behavior_trial_creator_approval_bindings"
 INTERRUPTED_RECOVERY_REASON = "interrupted runtime-only behavior trial recovery"
 TRIAL_EXPIRATION_REASON = "planned behavior trial exposure elapsed"
+TRIAL_ABORT_REASON = "behavior trial aborted without a conclusive outcome"
+TRIAL_ABORT_OUTCOME = "inconclusive"
 CREATOR_BINDING_VERIFICATION_FAILURE_REASON = (
     "creator approval binding could not be verified"
 )
@@ -49,6 +53,7 @@ _SENSITIVE_AUTHORIZATION_TERMS = frozenset({
     "secret",
     "credential",
 })
+_TRIAL_ABORT_ACTORS = frozenset({"creator", "supervisor"})
 
 
 class BehaviorTrialControllerError(ValueError):
@@ -73,6 +78,10 @@ class CreatorApprovalBindingError(
     """A runtime trial lacks a complete, exact creator approval binding."""
 
 
+class BehaviorTrialFeasibilityError(BehaviorTrialControllerError):
+    """The requested observation threshold cannot fit the runtime pacing."""
+
+
 def _finite_number(value: object, *, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise BehaviorTrialControllerError(f"{name} must be numeric")
@@ -80,6 +89,185 @@ def _finite_number(value: object, *, name: str) -> float:
     if not math.isfinite(result):
         raise BehaviorTrialControllerError(f"{name} must be finite")
     return result
+
+
+@dataclass(frozen=True, slots=True)
+class ChatterTrialPacing:
+    """Hard upper-bound pacing for attributable proactive chatter deliveries."""
+
+    enabled: bool
+    effective_cooldown_seconds: float
+    rate_window_seconds: float
+    rate_cap: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise BehaviorTrialControllerError("chatter pacing enabled must be a bool")
+        cooldown = _finite_number(
+            self.effective_cooldown_seconds,
+            name="effective chatter cooldown",
+        )
+        window = _finite_number(
+            self.rate_window_seconds,
+            name="initiative rate window",
+        )
+        if cooldown < 0.0:
+            raise BehaviorTrialControllerError(
+                "effective chatter cooldown cannot be negative"
+            )
+        if window <= 0.0:
+            raise BehaviorTrialControllerError(
+                "initiative rate window must be positive"
+            )
+        if (
+            isinstance(self.rate_cap, bool)
+            or not isinstance(self.rate_cap, int)
+            or self.rate_cap <= 0
+        ):
+            raise BehaviorTrialControllerError(
+                "initiative rate cap must be a positive integer"
+            )
+        object.__setattr__(self, "effective_cooldown_seconds", cooldown)
+        object.__setattr__(self, "rate_window_seconds", window)
+
+
+@dataclass(frozen=True, slots=True)
+class ChatterTrialFeasibility:
+    """Explainable result for one immutable exposure request."""
+
+    feasible: bool
+    reason: str
+    duration_seconds: float
+    requested_observations: int
+    attainable_observations: int
+    final_observation_offset_seconds: float | None
+    pacing: ChatterTrialPacing
+
+
+def current_chatter_trial_pacing(
+    policy: initiative_mod.InitiativePolicy | None = None,
+) -> ChatterTrialPacing:
+    """Snapshot the hard chatter and shared-initiative limits used at runtime."""
+    effective_policy = policy or initiative_mod.InitiativePolicy()
+    if not isinstance(effective_policy, initiative_mod.InitiativePolicy):
+        raise BehaviorTrialControllerError(
+            "initiative policy must be an InitiativePolicy"
+        )
+    chatter_gap = _finite_number(
+        Proactive.CHATTER_MIN_GAP_S,
+        name="configured chatter minimum gap",
+    )
+    return ChatterTrialPacing(
+        enabled=bool(Proactive.ENABLED and Proactive.CHATTER_ENABLED),
+        effective_cooldown_seconds=max(
+            chatter_gap,
+            float(effective_policy.cooldown_seconds),
+        ),
+        rate_window_seconds=float(effective_policy.window_seconds),
+        rate_cap=effective_policy.max_per_window,
+    )
+
+
+def assess_chatter_trial_feasibility(
+    duration_seconds: object,
+    minimum_observations: object,
+    *,
+    pacing: ChatterTrialPacing | None = None,
+) -> ChatterTrialFeasibility:
+    """Test whether the requested dispatch count fits a half-open exposure.
+
+    The schedule is deliberately optimistic: every available initiative slot is
+    assigned to the trial and every probability gate succeeds. If even that
+    upper bound misses the threshold, the trial cannot produce conclusive data.
+    """
+    duration = _finite_number(duration_seconds, name="trial exposure_seconds")
+    if duration <= 0.0:
+        raise BehaviorTrialFeasibilityError(
+            "trial exposure_seconds must be positive"
+        )
+    if (
+        isinstance(minimum_observations, bool)
+        or not isinstance(minimum_observations, int)
+        or minimum_observations <= 0
+    ):
+        raise BehaviorTrialFeasibilityError(
+            "trial min_samples must be a positive integer"
+        )
+    limits = current_chatter_trial_pacing() if pacing is None else pacing
+    if not isinstance(limits, ChatterTrialPacing):
+        raise BehaviorTrialFeasibilityError(
+            "chatter trial pacing must be a ChatterTrialPacing"
+        )
+    if not limits.enabled:
+        return ChatterTrialFeasibility(
+            feasible=False,
+            reason="chatter_disabled",
+            duration_seconds=duration,
+            requested_observations=minimum_observations,
+            attainable_observations=0,
+            final_observation_offset_seconds=None,
+            pacing=limits,
+        )
+
+    scheduled_at: list[float] = []
+    attainable = 0
+    for index in range(minimum_observations):
+        earliest = (
+            0.0
+            if index == 0
+            else scheduled_at[-1] + limits.effective_cooldown_seconds
+        )
+        if index >= limits.rate_cap:
+            earliest = max(
+                earliest,
+                scheduled_at[index - limits.rate_cap]
+                + limits.rate_window_seconds,
+            )
+        scheduled_at.append(earliest)
+        if earliest < duration:
+            attainable += 1
+
+    final_offset = scheduled_at[-1]
+    feasible = attainable == minimum_observations
+    return ChatterTrialFeasibility(
+        feasible=feasible,
+        reason="ready" if feasible else "insufficient_observation_capacity",
+        duration_seconds=duration,
+        requested_observations=minimum_observations,
+        attainable_observations=attainable,
+        final_observation_offset_seconds=final_offset,
+        pacing=limits,
+    )
+
+
+def assert_chatter_trial_feasible(
+    duration_seconds: object,
+    minimum_observations: object,
+    *,
+    pacing: ChatterTrialPacing | None = None,
+) -> ChatterTrialFeasibility:
+    """Return a readiness result or reject an impossible chatter experiment."""
+    result = assess_chatter_trial_feasibility(
+        duration_seconds,
+        minimum_observations,
+        pacing=pacing,
+    )
+    if result.feasible:
+        return result
+    if result.reason == "chatter_disabled":
+        raise BehaviorTrialFeasibilityError(
+            "chatter_chance trial cannot collect observations while proactive "
+            "chatter is disabled"
+        )
+    limits = result.pacing
+    raise BehaviorTrialFeasibilityError(
+        "chatter_chance trial requests "
+        f"{result.requested_observations} observations in "
+        f"{result.duration_seconds:g} seconds, but only "
+        f"{result.attainable_observations} fit before the deadline under the "
+        f"effective {limits.effective_cooldown_seconds:g}-second cooldown and "
+        f"{limits.rate_cap}-per-{limits.rate_window_seconds:g}-second rate cap"
+    )
 
 
 def _timestamp(value: object, *, name: str) -> float:
@@ -104,6 +292,14 @@ def _rollback_reason(value: object) -> str:
     if len(cleaned) > 1000:
         raise BehaviorTrialControllerError("rollback reason exceeds 1000 characters")
     return cleaned
+
+
+def _abort_actor(value: object) -> str:
+    if not isinstance(value, str) or value not in _TRIAL_ABORT_ACTORS:
+        raise BehaviorTrialControllerError(
+            "abort actor must be exactly 'creator' or 'supervisor'"
+        )
+    return value
 
 
 def _identifier(value: object, *, name: str) -> str:
@@ -210,6 +406,7 @@ class BehaviorTrialController:
         default_chatter_chance: float = Proactive.CHATTER_CHANCE,
         clock: Callable[[], float] | None = None,
         approval_seal_key: bytes | bytearray | memoryview | str | None = None,
+        chatter_trial_pacing: ChatterTrialPacing | None = None,
     ) -> None:
         if scope != CREATOR_PERSONAL_SCOPE:
             raise ForeignBehaviorTrialScope(
@@ -227,7 +424,22 @@ class BehaviorTrialController:
         self.db_path = Path(db_path)
         self.scope = CREATOR_PERSONAL_SCOPE
         self.default_chatter_chance = chance
+        self._profile_generation = hashlib.sha256(
+            f"configured:{chance:.17g}".encode("ascii")
+        ).hexdigest()
+        self._profile_lock = threading.RLock()
         self._clock = time.time if clock is None else clock
+        if chatter_trial_pacing is not None and not isinstance(
+            chatter_trial_pacing, ChatterTrialPacing
+        ):
+            raise BehaviorTrialControllerError(
+                "chatter_trial_pacing must be a ChatterTrialPacing"
+            )
+        self.chatter_trial_pacing = (
+            current_chatter_trial_pacing()
+            if chatter_trial_pacing is None
+            else chatter_trial_pacing
+        )
         self._approval_seal_key: bytes | None = None
         self.set_approval_seal_key(approval_seal_key)
         self._schema_ready = False
@@ -346,6 +558,22 @@ class BehaviorTrialController:
             raise UnsupportedBehaviorTrial(
                 "this controller supports only chatter_chance trials"
             )
+
+    def _assert_chatter_trial_feasible(
+        self,
+        spec: object,
+    ) -> ChatterTrialFeasibility:
+        if isinstance(spec, Mapping):
+            duration = spec.get("exposure_seconds")
+            minimum = spec.get("min_samples")
+        else:
+            duration = getattr(spec, "exposure_seconds", None)
+            minimum = getattr(spec, "min_samples", None)
+        return assert_chatter_trial_feasible(
+            duration,
+            minimum,
+            pacing=self.chatter_trial_pacing,
+        )
 
     def _record_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
         spec = _json_object(row["spec_json"], name="trial spec")
@@ -976,6 +1204,23 @@ class BehaviorTrialController:
             raise RuntimeOverrideError("chatter chance did not read back to its default")
         return override_was_present
 
+    def _remove_untrusted_abort_override(
+        self, conn: sqlite3.Connection, *, trial_id: int
+    ) -> bool:
+        """Remove only the aborted trial's row without consulting later state."""
+        override_was_present = (
+            self._runtime_override_for_trial(conn, trial_id) is not None
+        )
+        conn.execute(
+            "DELETE FROM behavior_trial_runtime_overrides WHERE trial_id=?",
+            (trial_id,),
+        )
+        if self._runtime_override_for_trial(conn, trial_id) is not None:
+            raise RuntimeOverrideError(
+                "aborted trial runtime override removal did not persist"
+            )
+        return override_was_present
+
     @staticmethod
     def _rollback_evidence_json(trial_id: int, *, override_was_present: bool) -> str:
         return json.dumps(
@@ -992,6 +1237,92 @@ class BehaviorTrialController:
             separators=(",", ":"),
             sort_keys=True,
         )
+
+    @staticmethod
+    def _abort_evidence_json(
+        trial_id: int,
+        *,
+        actor: str,
+        reason: str,
+        override_was_present: bool,
+    ) -> str:
+        return json.dumps(
+            {
+                "runtime_override": {
+                    "parameter": CHATTER_CHANCE_PARAMETER,
+                    "trial_id": trial_id,
+                    "removed": True,
+                    "was_present": override_was_present,
+                },
+                "termination": {
+                    "actor": actor,
+                    "kind": "abort",
+                    "outcome": TRIAL_ABORT_OUTCOME,
+                    "reason": reason,
+                },
+            },
+            ensure_ascii=True,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    def _assert_existing_abort_receipt(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        row: sqlite3.Row,
+    ) -> bool:
+        trial_key = int(row["id"])
+        existing = conn.execute(
+            "SELECT * FROM experiment_trial_rollbacks WHERE trial_id=?",
+            (trial_key,),
+        ).fetchone()
+        if existing is None:
+            return False
+        evidence = _json_object(existing["evidence_json"], name="abort evidence")
+        runtime = evidence.get("runtime_override") if evidence is not None else None
+        termination = evidence.get("termination") if evidence is not None else None
+        expected_value = _finite_number(
+            existing["expected_value"], name="abort expected value"
+        )
+        restored_value = _finite_number(
+            existing["restored_value"], name="abort restored value"
+        )
+        # A later retained profile may change the controller default. The
+        # immutable receipt must instead prove its own expected/restored pair.
+        valid = (
+            str(row["state"]) == trial_ledger.ROLLED_BACK
+            and str(existing["reason"]) == TRIAL_ABORT_REASON
+            and 0.0 <= expected_value <= 1.0
+            and restored_value == expected_value
+            and isinstance(evidence, dict)
+            and set(evidence) == {"runtime_override", "termination"}
+            and isinstance(runtime, dict)
+            and set(runtime)
+            == {"parameter", "trial_id", "removed", "was_present"}
+            and runtime.get("parameter") == CHATTER_CHANCE_PARAMETER
+            and runtime.get("trial_id") == trial_key
+            and runtime.get("removed") is True
+            and isinstance(runtime.get("was_present"), bool)
+            and isinstance(termination, dict)
+            and set(termination) == {"actor", "kind", "outcome", "reason"}
+            and termination.get("actor") in _TRIAL_ABORT_ACTORS
+            and termination.get("kind") == "abort"
+            and termination.get("outcome") == TRIAL_ABORT_OUTCOME
+            and isinstance(termination.get("reason"), str)
+            and _rollback_reason(termination.get("reason"))
+            == termination.get("reason")
+        )
+        if not valid:
+            raise trial_ledger.TrialStateError(
+                "trial already has a different or invalid terminal receipt"
+            )
+        if self._runtime_override_for_trial(conn, trial_key) is not None:
+            raise RuntimeOverrideError(
+                "aborted trial still has an active runtime override"
+            )
+        return True
 
     @staticmethod
     def _binding_failure_evidence_json(
@@ -1230,6 +1561,7 @@ class BehaviorTrialController:
         """Persist a validator-produced chatter trial specification."""
         self._ensure_schema()
         self._require_supported_spec(validated_spec)
+        self._assert_chatter_trial_feasible(validated_spec)
         return trial_ledger.register_trial(
             validated_spec,
             scope=self.scope,
@@ -1501,6 +1833,7 @@ class BehaviorTrialController:
                 self._verify_creator_binding_in_transaction(conn, row)
                 record = self._record_from_row(row)
                 self._require_supported_record(record)
+                self._assert_chatter_trial_feasible(record["spec"])
                 active_rows = conn.execute(
                     """
                     SELECT * FROM experiment_trial_ledger
@@ -1617,6 +1950,128 @@ class BehaviorTrialController:
                 return chance
             except Exception:
                 return self.default_chatter_chance
+
+    def adopt_profile_chatter_chance(
+        self,
+        value: object,
+        *,
+        generation_token: str | None = None,
+    ) -> float:
+        """Adopt one already-verified retained profile without writing storage.
+
+        The profile store owns persistence and creator authorization. This
+        bridge runs at startup and immediately after a profile decision. Any
+        interrupted active trial must name the same preimage, otherwise loading
+        the retained profile fails closed before recovery touches its override.
+        """
+        chance = _finite_number(value, name="retained chatter profile")
+        if not 0.0 <= chance <= 1.0:
+            raise BehaviorTrialControllerError(
+                "retained chatter profile must be between 0 and 1"
+            )
+        if generation_token is None:
+            generation = hashlib.sha256(
+                f"retained:{chance:.17g}".encode("ascii")
+            ).hexdigest()
+        else:
+            generation = str(generation_token).strip()
+            if (
+                not generation
+                or len(generation) > 160
+                or any(ord(char) < 33 or ord(char) > 126 for char in generation)
+            ):
+                raise BehaviorTrialControllerError(
+                    "retained chatter profile generation is invalid"
+                )
+        self._ensure_schema()
+        with connect(self.db_path) as conn:
+            active_rows = conn.execute(
+                "SELECT * FROM experiment_trial_ledger WHERE scope=? "
+                "AND state IN ('approved','running','completed') ORDER BY id",
+                (self.scope,),
+            ).fetchall()
+            for row in active_rows:
+                record = self._record_from_row(row)
+                self._require_supported_record(record)
+                old_value, _trial_value, rollback_value = self._spec_values(record)
+                if old_value != chance or rollback_value != chance:
+                    raise RuntimeOverrideError(
+                        "active trial preimage does not match retained chatter profile"
+                    )
+            override = self._runtime_override(conn)
+            if override is not None and _finite_number(
+                override["preimage_value"], name="stored runtime preimage"
+            ) != chance:
+                raise RuntimeOverrideError(
+                    "runtime override preimage does not match retained chatter profile"
+                )
+        with self._profile_lock:
+            self.default_chatter_chance = chance
+            self._profile_generation = generation
+        return chance
+
+    def proactive_gate_snapshot(
+        self,
+        *,
+        gated_at: float | None = None,
+        include_trial: bool = True,
+    ) -> dict[str, object]:
+        """Read one verified probability and its causal profile/trial identity."""
+        stamp = self._now() if gated_at is None else _timestamp(
+            gated_at, name="gated_at"
+        )
+        with self._profile_lock:
+            baseline = float(self.default_chatter_chance)
+            generation = str(self._profile_generation)
+        result: dict[str, object] = {
+            "chance": baseline,
+            "trial_id": None,
+            "profile_generation": generation,
+            "gated_at": stamp,
+        }
+        if not include_trial:
+            return result
+
+        self._ensure_schema()
+        database_uri = self.db_path.resolve().as_uri() + "?mode=ro"
+        with sqlite3.connect(database_uri, uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT trial.*
+                FROM behavior_trial_runtime_overrides AS runtime
+                JOIN experiment_trial_ledger AS trial ON trial.id=runtime.trial_id
+                WHERE runtime.scope=? AND runtime.parameter=?
+                  AND trial.scope=? AND trial.state='running'
+                """,
+                (self.scope, CHATTER_CHANCE_PARAMETER, self.scope),
+            ).fetchone()
+            if row is None:
+                return result
+            try:
+                old_value, chance = self._assert_verified_active_override(conn, row)
+                record = self._record_from_row(row)
+                spec = record.get("spec")
+                planned_end_at = _timestamp(
+                    row["planned_end_at"], name="planned_end_at"
+                )
+                if (
+                    old_value != baseline
+                    or not isinstance(spec, Mapping)
+                    or spec.get("metric") != QUALIFIED_RESPONSE_METRIC
+                    or planned_end_at <= stamp
+                ):
+                    raise RuntimeOverrideError(
+                        "active chatter gate does not match its profile epoch"
+                    )
+                result["chance"] = chance
+                result["trial_id"] = int(row["id"])
+                return result
+            except Exception:
+                # Keep speech available at the configured baseline, but mark the
+                # epoch unverifiable so the server cannot count this candidate.
+                result["profile_generation"] = ""
+                return result
 
     def active_outcome_trial_id(
         self,
@@ -1781,6 +2236,142 @@ class BehaviorTrialController:
         if result is None:  # pragma: no cover - same-database invariant
             raise BehaviorTrialControllerError("rolled-back trial was not retrievable")
         return result
+
+    def _abort_result(
+        self, trial_id: int, *, already_aborted: bool
+    ) -> dict[str, Any]:
+        try:
+            result = self.get(trial_id)
+        except Exception:
+            result = None
+        if result is not None:
+            result = dict(result)
+            result["already_aborted"] = already_aborted
+            return result
+        with connect(self.db_path) as conn:
+            row = self._row_in_scope(conn, trial_id)
+            receipt = conn.execute(
+                "SELECT * FROM experiment_trial_rollbacks WHERE trial_id=?",
+                (trial_id,),
+            ).fetchone()
+        if receipt is None:  # pragma: no cover - same-transaction invariant
+            raise BehaviorTrialControllerError("aborted trial receipt is unavailable")
+        return {
+            "id": trial_id,
+            "scope": self.scope,
+            "state": str(row["state"]),
+            "already_aborted": already_aborted,
+            "ended_at": (
+                None if row["ended_at"] is None else float(row["ended_at"])
+            ),
+            "rollback": {
+                "id": int(receipt["id"]),
+                "recorded_at": float(receipt["recorded_at"]),
+                "expected_value": float(receipt["expected_value"]),
+                "restored_value": float(receipt["restored_value"]),
+                "reason": str(receipt["reason"]),
+                "evidence": _json_object(
+                    receipt["evidence_json"],
+                    name="abort evidence",
+                )
+                or {},
+            },
+        }
+
+    def abort(
+        self,
+        trial_id: int,
+        reason: str,
+        *,
+        actor: str,
+        recorded_at: float | None = None,
+    ) -> dict[str, Any]:
+        """Converge a started trial on baseline with an inconclusive receipt.
+
+        ``actor`` is a server-derived safety identity, not caller-supplied
+        authorization material. Creator and supervisor retries may race or use
+        different explanatory text; the first committed receipt remains the
+        immutable audit record and every later call returns that receipt with
+        ``already_aborted`` set.
+        Restoration deliberately does not parse or retain the runtime trial
+        value, so abort remains available when the stored spec or binding is
+        untrusted.
+        """
+        self._ensure_schema()
+        trial_key = _trial_id(trial_id)
+        clean_actor = _abort_actor(actor)
+        clean_reason = _rollback_reason(reason)
+        requested_recorded_at = (
+            None
+            if recorded_at is None
+            else _timestamp(recorded_at, name="recorded_at")
+        )
+        already_aborted = False
+        with connect(self.db_path) as conn:
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("BEGIN IMMEDIATE")
+            row = self._row_in_scope(conn, trial_key)
+            state = str(row["state"])
+            if state == trial_ledger.ROLLED_BACK:
+                self._assert_existing_abort_receipt(conn, row=row)
+                already_aborted = True
+            else:
+                if state not in {trial_ledger.RUNNING, trial_ledger.COMPLETED}:
+                    raise trial_ledger.TrialStateError(
+                        "only a started trial can be aborted"
+                    )
+                stamp = (
+                    self._now()
+                    if requested_recorded_at is None
+                    else requested_recorded_at
+                )
+                if row["started_at"] is None or stamp < float(row["started_at"]):
+                    raise trial_ledger.TrialStateError(
+                        "abort cannot predate trial start"
+                    )
+                override_was_present = (
+                    self._remove_untrusted_abort_override(
+                        conn,
+                        trial_id=trial_key,
+                    )
+                )
+                conn.execute(
+                    """
+                    INSERT INTO experiment_trial_rollbacks
+                        (trial_id, recorded_at, expected_value, restored_value,
+                         reason, evidence_json)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        trial_key,
+                        stamp,
+                        self.default_chatter_chance,
+                        self.default_chatter_chance,
+                        TRIAL_ABORT_REASON,
+                        self._abort_evidence_json(
+                            trial_key,
+                            actor=clean_actor,
+                            reason=clean_reason,
+                            override_was_present=override_was_present,
+                        ),
+                    ),
+                )
+                updated = conn.execute(
+                    """
+                    UPDATE experiment_trial_ledger
+                    SET state='rolled_back', ended_at=?, updated_at=?
+                    WHERE id=? AND scope=? AND state IN ('running','completed')
+                    """,
+                    (stamp, stamp, trial_key, self.scope),
+                )
+                if updated.rowcount != 1:  # pragma: no cover - transaction fences races
+                    raise trial_ledger.TrialStateError(
+                        "trial abort lost its started state"
+                    )
+        return self._abort_result(
+            trial_key,
+            already_aborted=already_aborted,
+        )
 
     def expire_due(self) -> list[dict[str, Any]]:
         """Backward-compatible entry point for off-lock runtime maintenance."""
@@ -2056,7 +2647,10 @@ class BehaviorTrialController:
 __all__ = [
     "BehaviorTrialController",
     "BehaviorTrialControllerError",
+    "BehaviorTrialFeasibilityError",
     "CHATTER_CHANCE_PARAMETER",
+    "ChatterTrialFeasibility",
+    "ChatterTrialPacing",
     "CREATOR_APPROVAL_BINDINGS_TABLE",
     "CREATOR_BINDING_VERIFICATION_FAILURE_REASON",
     "CREATOR_PERSONAL_SCOPE",
@@ -2065,6 +2659,11 @@ __all__ = [
     "INTERRUPTED_RECOVERY_REASON",
     "ProposalApprovalProof",
     "RuntimeOverrideError",
+    "TRIAL_ABORT_OUTCOME",
+    "TRIAL_ABORT_REASON",
     "TRIAL_EXPIRATION_REASON",
     "UnsupportedBehaviorTrial",
+    "assess_chatter_trial_feasibility",
+    "assert_chatter_trial_feasible",
+    "current_chatter_trial_pacing",
 ]

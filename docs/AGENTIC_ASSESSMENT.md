@@ -45,6 +45,141 @@ on parse/model failure, `CognitionObservation` logging for autonomous acts, and
 Current model note: do not revive retired legacy model paths. Runtime planning
 uses the configured local Ollama model from `ALPECCA_MODEL`.
 
+## Current Phase 8 Checkpoint - IMPLEMENTATION VERIFIED, OPERATIONAL SOAK PENDING
+
+The focused Phase 8 suite now passes (`302 passed`), the broader core suite
+passes (`355 passed`), and House HQ builds. The bounded implementation is ready
+for the required creator-portal operational soak. Phase 8 remains **PARTIAL**
+until a real qualifying baseline and two-hour lifecycle demonstrate exact
+rollback, creator profile decision, restart readback, and a fresh-epoch
+successor candidate. The pre-fix diagnosis retained below is historical context,
+not the current acceptance result.
+
+## Phase 8 Pre-Fix Audit (Historical)
+
+The uncommitted Phase 8 work implements one narrow, bounded recursive
+improvement baseline for `creator-personal` / `chatter_chance`. It does not
+grant Alpecca general self-modification authority, does not edit source or
+config, and does not start or retain a trial without separate creator actions.
+The intended completion contract is the sealed candidate, real intervention,
+reversible lifecycle, settlement, creator profile decision, restart recovery,
+and successor cycle described below. That contract is present in the current
+code, but this exact worktree is **not verification-complete** because its
+focused Phase 8 test selection currently has four failures. A real two-hour
+creator-portal experiment also has not run.
+
+The implemented cycle is:
+
+1. The server records aggregate `qualified_response_rate` evidence only for a
+   typed chatter candidate that was allowed by the shared initiative budget and
+   confirmed delivered to the creator portal. A matching authenticated,
+   contentful creator turn can qualify the oldest same-scope/surface window.
+2. Candidate issuance requires at least five settled baseline outcomes, no
+   pending or dispatching rows, at least one qualified response, and a response
+   rate strictly between zero and 50 percent. The sealed candidate can only
+   lower the current chatter chance by `0.02`.
+3. The immutable trial profile is exactly two hours with a five-sample minimum.
+   Feasibility is checked when the candidate is issued, when it is translated
+   for registration, when the controller registers it, and immediately before
+   start. Disabled chatter or a duration that cannot fit five opportunities
+   under the configured cooldown and initiative rate cap fails closed.
+4. Workshop keeps `Accept plan`, `Register trial`, `Approve trial`, and `Start
+   trial` as separate creator-confirmed choices. A running trial also has a
+   creator-confirmed `Abort trial` choice. Generic proposal acceptance never
+   counts as trial approval or start. Frozen review shows the preimage, trial
+   value, duration, and sample floor, and its baseline sentence uses the current
+   profile epoch rather than cumulative historical evidence.
+5. The actual proactive chatter path resolves the verified runtime chance and
+   draws `random.random()` exactly once. The local model may veto speech or pick
+   a grounded seed only after that gate passes; model failure uses one seed and
+   cannot reroll or bypass the probability.
+6. A normal two-hour expiry restores and reads back the exact preimage before
+   evidence settlement. Creator abort also removes the override first and
+   records an idempotent, durable `inconclusive` rollback receipt. An abort is a
+   terminal safety stop, not a successful experiment result.
+7. Planned-expiry settlement waits for every attributed response window to
+   become terminal, then freezes aggregate evidence and review digests. Review
+   requires at least five completed samples and classifies the absolute rate
+   delta with a code-owned `0.10` threshold as `improved`, `degraded`, or
+   `inconclusive`. Only `improved` is eligible to retain the trial value.
+8. After frozen review, the creator must choose either `Retain trial value` or
+   `Keep baseline`. The profile store binds that decision to the exact trial and
+   settlement, writes the sealed decision and active profile atomically in
+   SQLite, checks the current preimage, and verifies the retained value again
+   on restart. Inconclusive or degraded evidence can only keep the baseline.
+9. A profile decision opens a fresh baseline epoch at its durable decision
+   timestamp. Candidate issuance excludes older baseline dispatches. An
+   idempotent reconciliation runs when response outcomes become terminal, and a
+   later manual review uses the same issuer, but neither can create the next
+   candidate until the new epoch independently qualifies.
+
+The earlier `POST /behavior-trials/{trial_id}/review/retain-baseline` route is a
+bodyless compatibility alias for the same sealed `revert_to_baseline` profile
+decision. It is wired to complete the cycle and open the fresh epoch through
+the same decision implementation rather than a separate acknowledgement-only
+state; the current route defect described below prevents that path from
+completing successfully in this snapshot.
+
+### Current Acceptance Status
+
+- The current all-Phase-8 selection reports `282 passed, 4 failed` with one
+  existing Starlette/httpx deprecation warning. Phase 8 must not be marked
+  accepted or handed off as green until these failures are fixed and the
+  focused suite, core suite, and House build are rerun against one stable tree.
+- Three creator profile-decision route tests receive `503` instead of `200`.
+  The route now calls `_behavior_profile_generation(...)`, but no such helper is
+  defined in `server.py`; the broad exception handler converts that defect into
+  a storage-unavailable response. This currently breaks both retain-trial and
+  keep-baseline/legacy-alias completion paths despite the durable store contract
+  being implemented beneath them.
+- `test_superseded_profile_decision_cannot_regress_live_generation` also fails
+  before completing its assertion because it references an undefined local
+  variable named `trial`. This is a test defect, but it still makes the current
+  acceptance slice red.
+- The last House build passed and the House entrypoint has not changed since
+  that build. A full core rerun previously passed after one transient,
+  order-sensitive grounding-card test failure, but it predates the latest
+  `server.py` and Phase 8 profile-test edits and therefore does not certify this
+  exact snapshot.
+
+### Remaining Limitations And Live Validation
+
+- No real trial has run. At review time the local database had no candidate,
+  trial, runtime override, rollback, settlement, profile decision, or active
+  retained profile. It had two baseline outcomes, both unanswered, so it cannot
+  yet issue a candidate.
+- For operational confidence, a real run should collect a qualifying fresh
+  baseline, exercise the separate Workshop choices, run the wall-clock two-hour
+  exposure, prove exact rollback before settlement, record a creator
+  retain/revert decision, restart with the same verified profile and no stale
+  override, then collect new-epoch evidence and show that reconciliation issues
+  the next candidate exactly once.
+- The feasibility preflight is deliberately optimistic. It assumes every
+  available initiative slot belongs to chatter and every probability gate
+  succeeds. Shared-budget competition, relevance, creator activity, dedupe,
+  ignored-outreach backoff, model veto, portal availability, and random misses
+  can still leave a feasible trial below five samples.
+- Five samples plus a 10-point absolute effect floor is a conservative product
+  rule, not statistical or causal proof. There is no control arm, confidence
+  interval, power calculation, correction for time-of-day or repeated testing,
+  or randomized attribution. Any authenticated contentful turn inside the
+  response window is only a temporal proxy for engagement with that outreach.
+- Aborted trials have a durable rollback receipt but intentionally do not
+  receive a planned-expiry settlement or retained-profile decision. They may be
+  retried from the existing profile and baseline evidence.
+- The fresh epoch is timestamp-filtered rather than represented by an explicit
+  epoch id, and the Phase 8 SQLite/HMAC records have no independent monotonic
+  anchor. HMAC verification detects edits, not restoration of a complete older
+  valid database snapshot.
+- The scope remains one small numeric runtime behavior. Code, prompts, models,
+  files, shell, accounts, external services, operating-system settings, and the
+  legacy broad `selfmod` tunables remain outside this RSI cycle.
+
+The accelerated temporary-SQLite end-to-end test still exercises an improved
+profile retention and fresh-epoch successor issuance, but it is not a
+substitute for either a green acceptance run or the pending real two-hour
+portal run.
+
 ## Current Phase 9 Checkpoint - PARTIAL
 
 Creator-only, server-resolved House text attachments are implemented. A House client

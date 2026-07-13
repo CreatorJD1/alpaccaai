@@ -55,6 +55,8 @@ as required passdown or reference logs.
 
 ### CURRENT
 - `docs/ALPECCA_MASTER_PLAN.md`
+- `docs/ALPECCA_UNIFIED_MASTER_PLAN.md` (experience overlay; spine status remains authoritative)
+- `docs/CLAUDE_FABLE_PARALLEL_DELEGATION.md`
 - `docs/ALPECCA_FEATURE_SKELETON_INFRASTRUCTURE.md`
 - `docs/AGENTIC_ASSESSMENT.md`
 - `docs/MINDPAGE.md`

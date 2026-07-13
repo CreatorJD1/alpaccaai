@@ -57,7 +57,14 @@ def _closed_trial(db_path, *, proposal_id: int, min_samples: int = 5) -> dict:
         restored_value=0.25,
         reason=TRIAL_EXPIRATION_REASON,
         recorded_at=400.0,
-        evidence={"runtime_override": {"verified": True}},
+        evidence={
+            "runtime_override": {
+                "parameter": "chatter_chance",
+                "trial_id": running["id"],
+                "removed": True,
+                "was_present": True,
+            }
+        },
         db_path=db_path,
     )
 

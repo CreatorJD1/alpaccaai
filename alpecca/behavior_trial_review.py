@@ -48,6 +48,17 @@ def _timestamp(value: object, *, name: str) -> float:
     return stamp
 
 
+def _rate(value: object, *, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise BehaviorTrialReviewEligibilityError(f"{name} must be numeric")
+    result = float(value)
+    if not math.isfinite(result) or not 0.0 <= result <= 1.0:
+        raise BehaviorTrialReviewEligibilityError(
+            f"{name} must be a finite rate in [0, 1]"
+        )
+    return result
+
+
 def _closed_trial_contract(record: object) -> tuple[int, float, float, str]:
     trial = _mapping(record, name="trial record")
     trial_id = trial.get("id")
@@ -63,6 +74,18 @@ def _closed_trial_contract(record: object) -> tuple[int, float, float, str]:
         raise BehaviorTrialReviewEligibilityError(
             "trial closure predates its planned exposure end"
         )
+    spec = _mapping(trial.get("spec"), name="trial spec")
+    parameter = spec.get("parameter")
+    if not isinstance(parameter, str) or not parameter:
+        raise BehaviorTrialReviewEligibilityError("trial parameter is required")
+    old_value = _rate(spec.get("old_value"), name="trial old_value")
+    rollback_value = _rate(
+        spec.get("rollback_value"), name="trial rollback_value"
+    )
+    if rollback_value != old_value:
+        raise BehaviorTrialReviewEligibilityError(
+            "trial rollback value does not match its immutable old value"
+        )
     rollback = _mapping(trial.get("rollback"), name="trial rollback")
     if rollback.get("reason") != TRIAL_EXPIRATION_REASON:
         raise BehaviorTrialReviewEligibilityError(
@@ -72,6 +95,38 @@ def _closed_trial_contract(record: object) -> tuple[int, float, float, str]:
     if recorded_at != ended_at:
         raise BehaviorTrialReviewEligibilityError(
             "rollback receipt does not match the durable trial closure"
+        )
+    expected_value = _rate(
+        rollback.get("expected_value"), name="rollback expected_value"
+    )
+    restored_value = _rate(
+        rollback.get("restored_value"), name="rollback restored_value"
+    )
+    if expected_value != old_value or restored_value != old_value:
+        raise BehaviorTrialReviewEligibilityError(
+            "rollback receipt does not prove restoration of the immutable old value"
+        )
+    rollback_evidence = _mapping(
+        rollback.get("evidence"), name="rollback evidence"
+    )
+    if set(rollback_evidence) != {"runtime_override"}:
+        raise BehaviorTrialReviewEligibilityError(
+            "rollback evidence must contain only the runtime override receipt"
+        )
+    runtime_override = _mapping(
+        rollback_evidence.get("runtime_override"),
+        name="rollback runtime override evidence",
+    )
+    if (
+        set(runtime_override)
+        != {"parameter", "trial_id", "removed", "was_present"}
+        or runtime_override.get("parameter") != parameter
+        or runtime_override.get("trial_id") != trial_id
+        or runtime_override.get("removed") is not True
+        or not isinstance(runtime_override.get("was_present"), bool)
+    ):
+        raise BehaviorTrialReviewEligibilityError(
+            "rollback evidence does not prove removal of the trial runtime override"
         )
     return trial_id, planned_end_at, ended_at, TRIAL_EXPIRATION_REASON
 
@@ -84,9 +139,9 @@ def review_closed_qualified_response_trial(
 
     A valid elapsed trial may still have pending response windows. In that case
     it remains explicitly awaiting settlement. If all windows settle below the
-    immutable minimum sample count, the result is inconclusive rather than an
-    instruction to alter behavior. Only settled evidence at or above the fixed
-    threshold becomes ready for creator review.
+    effective minimum sample count, the result is inconclusive rather than an
+    instruction to alter behavior. Sufficient evidence is still inconclusive
+    unless its absolute effect clears the code-owned conservative threshold.
     """
     trial_id, planned_end_at, ended_at, closure_reason = _closed_trial_contract(
         trial_record
@@ -102,18 +157,38 @@ def review_closed_qualified_response_trial(
 
     outstanding = int(evaluation["dispatching"]) + int(evaluation["pending"])
     completed = int(evaluation["completed"])
-    min_samples = int(evaluation["min_samples"])
+    required_samples = int(evaluation["required_samples"])
     if outstanding:
         status = "awaiting_settlement"
         recommendation = "wait_for_settlement"
-    elif completed < min_samples:
+        outcome = None
+        retention_reason = "outcomes_not_settled"
+    elif completed < required_samples:
         status = "inconclusive_insufficient_samples"
         recommendation = "no_automatic_change"
+        outcome = "inconclusive"
+        retention_reason = "insufficient_evidence"
     elif evaluation["readiness"] == "ready_for_creator_review":
         status = "ready_for_creator_review"
         recommendation = "creator_review_required"
+        outcome = evaluation["comparison"]
+        if outcome not in {"improved", "degraded", "inconclusive"}:
+            raise BehaviorTrialReviewIntegrityError(
+                "review evaluation has an invalid settled outcome"
+            )
+        retention_reason = {
+            "improved": "improvement_meets_threshold",
+            "degraded": "degraded_outcome",
+            "inconclusive": "effect_below_threshold",
+        }[outcome]
     else:  # pragma: no cover - evaluator's fixed contract covers all cases above
         raise BehaviorTrialReviewIntegrityError("review evaluation has an invalid readiness")
+
+    creator_retention_eligible = outcome == "improved"
+    if bool(evaluation["creator_retention_eligible"]) != creator_retention_eligible:
+        raise BehaviorTrialReviewIntegrityError(
+            "review evaluation has inconsistent creator retention eligibility"
+        )
 
     return {
         "trial_id": trial_id,
@@ -124,6 +199,11 @@ def review_closed_qualified_response_trial(
         "closure_reason": closure_reason,
         "status": status,
         "recommendation": recommendation,
+        "outcome": outcome,
+        # Eligibility concerns retaining the trial value after a separate future
+        # creator decision. The exact baseline is already restored here.
+        "creator_retention_eligible": creator_retention_eligible,
+        "creator_retention_reason": retention_reason,
         "evaluation": evaluation,
     }
 
