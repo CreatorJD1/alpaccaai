@@ -59,21 +59,34 @@ retained elsewhere for historical context.
   without changing the creator, bridge-service, or bot credentials.
 - Every generic image, screen, webcam, pose, self-recognition, and Studio vision
   wrapper is now verified-local regardless of `ALPECCA_VISION_BACKEND`.
+  Computer-use screenshots now pass the same verified-loopback/non-cloud check
+  before client creation, capture, and every model call.
   Configuration alone cannot label cloud egress creator-approved. The private
   provider helpers remain dormant until one adapter can attest an exact provider,
   deployment, model, processing location, destination, and HTTPS route for the
   existing one-shot consent ledger. No such production route is currently live.
-- A restart-safe Phase 11 notification-outbox core now exists as an unwired,
-  model-free foundation. It uses opaque payload references, frozen category and
-  adapter registries, quiet hours, quotas, idempotent claims, explicit
-  indeterminate delivery state, externally anchored transition evidence,
-  exact schema verification, and fixed-batch recovery. It contains no transport
-  client, destination, credential, autonomous trigger, or callback route, so no
-  creator-contact channel is live and Phase 11 remains **PARTIAL**.
+- Phase 11 now has one implemented, explicit app Web Push slice behind the restart-safe
+  model-free outbox. Creator-only House controls enroll or revoke a browser and
+  request one fixed connection test; provider acceptance and a one-use,
+  event-bound notification-click acknowledgement are separate transitions.
+  Subscription endpoints, browser keys, VAPID material, outbox seals, and the
+  outbox and subscription monotonic state use dedicated Windows Credential Manager
+  records. Redirects and environment proxies are disabled. The subscription
+  record and its monotonic anchor share Credential Manager, so that pair detects
+  record-only rollback, not coordinated Credential Manager restoration.
+  Acknowledgement-receipt consumption is sealed in SQLite but not
+  monotonic-anchored: restoring a valid pre-consumption receipt database can
+  make an already-acknowledged event return another idempotent success, but
+  cannot resend the notification or create another action. No model, cognition
+  path, routine, or autonomous trigger can enqueue a notification. Discord DM,
+  SMS, phone calls, arbitrary message payloads, escalation, and production
+  mobile soak remain unfinished. Browser enrollment, an accepted-device test,
+  and mobile soak are still pending, so Phase 11 remains **PARTIAL**.
 - Bundled SQLite anchors are development/single-file rollback detectors only.
-  Production egress, actor identity, and notification wiring must inject an
-  anchor from a separate failure domain; coordinated restoration of both local
-  SQLite files cannot be detected honestly.
+  Production egress and actor identity still require anchors from separate
+  failure domains; the notification outbox already anchors SQLite transitions
+  in Credential Manager. Stronger protection against coordinated subscription
+  and anchor restoration would likewise require a different failure domain.
 - The local untracked `creator_contact.py` experiment is rejected WIP and is not
   imported by production code. Its direct transports bypass the outbox and must
   not be wired or checkpointed; the local WIP default is off.
@@ -86,8 +99,10 @@ retained elsewhere for historical context.
   morphs after speech, uses bounded two-bone right-arm terminal IK, and exposes
   explicit fade/face/root/contact telemetry. The 74 spring joints and 22
   colliders are unchanged. Phase 12 remains partial pending the ten-minute
-  physics soak, all-terminal contact drill, sole measurements, and four-angle
-  design-lock turntable.
+  physics soak, dedicated hoodie-hem collider geometry, all-terminal contact
+  drill, sole measurements, and four-angle design-lock turntable. The injector
+  now rejects the current V4 because its existing spine collider surfaces are
+  5.6-8.9 cm from the hem roots, outside the 2.5 cm effectiveness limit.
 
 ## Identity
 
@@ -121,9 +136,9 @@ Important current priorities:
   and signed Discord guest identity without widening Phase 4 execution or
   bypassing the Phase 5 initiative boundary. Phase 6 resource measurement
   remains separately gated.
-- Keep the Phase 11 outbox separate from adapters until its independent review
-  passes; add one secret-backed transport at a time only after sender-bound
-  acknowledgement and live creator controls are defined.
+- Keep Phase 11 limited to the reviewed app-push connection-test slice until
+  browser/mobile soak and sender-bound acknowledgement evidence pass. Add only
+  one secret-backed transport at a time; Discord DM, SMS, and calls remain off.
 - Natural replies through the live backend, not event echoes or copied user text.
 - Stable local model path uses the currently approved Ollama model from `ALPECCA_MODEL`; do not revive retired legacy model paths.
 - Voice should use her personality and modulation system, with Kokoro `af_heart` as the intended voice profile.

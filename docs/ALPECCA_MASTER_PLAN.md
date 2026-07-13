@@ -172,8 +172,8 @@ They are not fixed Alpecca hardware.
 | Feature | Status | Honest current state |
 |---|---|---|
 | House HQ and virtual app | PARTIAL | `/house-hq` serves the Void Prototype with a native categorized Alpecca Systems center and orthographic view; the old internal page is archived and unrouted |
-| V4 VRM body and physics | PARTIAL | Loads with 74 spring joints; scale, sole grounding, collider use, and motion QA remain |
-| Facial expression and gesture control | PARTIAL | Expressions can latch; VRMAs loop; one-shot scheduler is declared but unfinished |
+| V4 VRM body and physics | PARTIAL | Loads at a measured 1.70 m with 74 spring joints and 22 colliders; hoodie-hem collider geometry, sole/contact measurements, physics soak, and turntable QA remain |
+| Facial expression and gesture control | PARTIAL | Expression reset, V4 mouth correction, finite one-shot/LookAround scheduling, and bounded right-arm terminal IK are implemented; all-terminal contact and return-to-idle QA remain |
 | TTS voice stack | PARTIAL | Kokoro/F5 routes exist; cross-surface queueing and resource coordination remain |
 | Image/file perception | PARTIAL | Strict scoped ingress, local routing, ephemeral server-resolved file answers, and expiring portal-bound leases are implemented; provider/model cloud consent remains unwired |
 | Audio perception | PARTIAL | Bounded local push-to-talk and creator voice enrollment are implemented; Discord audio and live voice remain absent |
@@ -675,6 +675,9 @@ longer implies consent. Remote vision wiring is blocked until a provider adapter
 can attest the exact deployment, model, processing location, destination, and
 HTTPS route; the current loopback Ollama-cloud and dynamic ZeroGPU descriptions
 are insufficient and must not be replaced with invented aliases or locations.
+Computer-use screenshot analysis now uses that verified-local gate before the
+client, capture, and every model call, preventing a remote host or cloud tag from
+turning the enabled actuator into an unconsented image-egress path.
 
 Exit gate: Alpecca can cite viewed files/images/audio with provenance; malformed
 or oversized inputs fail closed; prompt injection cannot grant authority; no
@@ -707,27 +710,48 @@ Exit gate: guests receive conversation-only capabilities; no cross-channel
 memory; irrelevant messages produce silence; approvals cannot be spoofed in
 natural language; TTS never leaks across channels; audio is local and discarded.
 
-### Phase 11: Creator contact and notification outbox - PARTIAL; CORE ONLY (2026-07-12)
+### Phase 11: Creator contact and notification outbox - PARTIAL; APP PUSH IMPLEMENTED (2026-07-12)
 
 The durable model-free core is implemented with opaque payload references,
 closed category/adapter registries, idempotent enqueue, quiet hours, global and
-per-route quotas, expiring claims, explicit indeterminate outcomes,
+per-route quotas, atomic expiring claims, explicit indeterminate outcomes,
 acknowledgement/cancellation, an external monotonic-anchor contract, exact schema
-verification, and bounded recovery. It is deliberately unwired: there is no
-transport client, destination, credential, autonomous trigger, callback route,
-server endpoint, or UI control yet.
-The independent follow-up review passed 47 focused tests, including repeated
-anchor-finalization and provider-outcome concurrency cases. The core foundation
-is complete; delivery remains unwired.
+verification, and bounded recovery. The core remains transport-free.
 
-Bundled SQLite anchors are development-only single-file rollback detectors;
-production wiring requires an anchor in a separate failure domain because a
-coordinated restore of both local databases is otherwise indistinguishable.
+One separate app Web Push slice is now implemented. House HQ exposes compact
+creator-only Devices controls for explicit browser enrollment/revocation and a
+fixed connection test. Private subscriptions and VAPID material use dedicated
+Credential Manager records. A Windows credential-backed monotonic anchor keeps
+current/pending checkpoints outside SQLite with a named mutex and sealed exact
+state. The adapter disables redirects/proxy inheritance, maps provider outcomes
+to sent/rejected/indeterminate, and requires a one-use event/subscription-bound
+notification-click receipt before acknowledgement. The browser service worker
+does not acknowledge on receipt or display. Click acknowledgements are queued
+durably in IndexedDB and retried on same-origin navigation. Subscription state
+and its monotonic anchor use distinct Credential Manager records in the same
+failure domain, so they detect record-only rollback rather than coordinated
+Credential Manager restoration. House refuses Web Push when its configured
+backend is cross-origin.
 
-After that gate, implement app Web Push first, Discord DM second, SMS third,
-and phone calls only as a separate explicit opt-in. Destinations and external
-IDs stay in secret-backed adapters, never prompts, logs, git, or Mindscape
-snapshots.
+Residual: acknowledgement-receipt consumption is sealed in SQLite but is not
+monotonic-anchored. Restoring a valid pre-consumption receipt database can make
+an already-acknowledged event return another idempotent success, but cannot
+resend the notification or create another action.
+
+Browser enrollment, one accepted-device test, and mobile soak remain unverified.
+This is not general creator contact: no model or autonomous trigger can enqueue,
+only the fixed connection-test template exists, and Discord DM, SMS, phone calls,
+arbitrary payloads, escalation, and mobile soak are unfinished.
+
+Bundled SQLite anchors remain development-only. The Web Push outbox transition
+anchor uses Windows Credential Manager outside the outbox SQLite database.
+Production egress and actor identity still require anchors in separate failure
+domains; stronger coordinated-restoration protection for the subscription pair
+would require one as well.
+
+After connection-test/mobile soak, consider Discord DM second, SMS third, and
+phone calls only as a separate explicit opt-in. Destinations and external IDs
+stay in secret-backed adapters, never prompts, logs, git, or Mindscape snapshots.
 
 Exit gate: concurrent requests create one event; restart resumes delivery;
 acknowledgement stops escalation; notification does not silently seize the active
@@ -749,6 +773,13 @@ sole, contact, reachability, joint, and collider telemetry. Actual V4 probes
 measured 1.70009 m, 40 mouth-correction bindings, 74 joints, 22 colliders, and
 near-zero hand error for a reachable target. Live soak/turntable/grounding and
 every-terminal acceptance remain open.
+
+The injector now assigns the six hoodie springs only to deterministic,
+humanoid-verified hips/lower-spine collider groups and rejects ambiguous or
+head/hair/accessory-only exports. It additionally requires every collider
+surface to reach its hem-chain root within 2.5 cm. The current V4 fails closed:
+the measured root gaps are 5.6-8.9 cm. Its live binary is unchanged; dedicated
+hem collider geometry is required before promotion.
 
 Exit gate: 74 joints and 22 colliders remain; stationary excursion <=3 cm;
 sole penetration <=5 mm and float <=8 mm; gestures return to procedural idle;

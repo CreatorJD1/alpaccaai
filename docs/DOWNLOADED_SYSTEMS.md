@@ -1,6 +1,6 @@
 # Downloaded Optional Systems
 
-Last updated: 2026-07-08
+Last updated: 2026-07-12
 
 This records optional systems downloaded for the agentic/Mindpage roadmap. The
 actual binaries and virtual environments live under ignored `data/` paths and
@@ -62,6 +62,35 @@ Verification:
 ```powershell
 data\tools\mcp-venv\Scripts\python.exe -c "import mcp, pydantic; print('mcp installed'); print(pydantic.__version__)"
 ```
+
+### Phase 11 Web Push
+
+Installed in the main Python environment:
+
+- `pywebpush==2.3.0`
+- `http-ece==1.2.1`
+- `py-vapid==1.9.4`
+
+The committed optional dependency entry point is
+`requirements-notifications.txt`. Web Push remains independent of core chat.
+
+Verification:
+
+```powershell
+python -c "import pywebpush; print('pywebpush installed')"
+```
+
+### VCS Test Runner
+
+Installed in the main Python environment:
+
+- `pytest-xdist==3.8.0`
+- `execnet==2.1.2`
+
+The locally excluded VCS suite declares `emergentintegrations==0.2.0`, but that
+package is not available from the configured Python index. The VCS local path
+now imports without it and fails closed only if that explicit remote integration
+is selected; no substitute package was installed.
 
 ## Notes
 

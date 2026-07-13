@@ -198,6 +198,8 @@ labels retained in historical plans and handoffs.
   and a production external anchor.
 - Generic public vision is now **verified-local only** across image chat,
   screen/webcam sensing, pose tagging, self-recognition, ingestion, and Studio.
+  Computer-use screenshots now pass the same loopback/non-cloud verification
+  before client creation, capture, and every model call.
   Backend flags and cloud model tags cannot authorize egress or produce
   creator-approved metadata. Remote provider helpers are dormant because no
   current route can attest every exact deployment/model/location/destination/
@@ -216,24 +218,40 @@ labels retained in historical plans and handoffs.
   enabled by environment flags. DM bodies always use guest authority. A separate
   protected actor-seal credential is implemented without rotating or revoking
   existing creator, bridge-service, or bot credentials.
-- Phase 11 is **PARTIAL, CORE ONLY**. A model-free notification outbox now
-  implements opaque payload references, frozen policy registries, idempotent
-  enqueue and claims, quiet hours and quotas, explicit indeterminate outcomes,
+- Phase 11 is **PARTIAL; APP PUSH CONNECTION TEST IMPLEMENTED**. The model-free
+  notification outbox implements opaque payload references, frozen policy
+  registries, idempotent enqueue and atomic expiring claims, quiet hours and
+  quotas, explicit indeterminate outcomes,
   acknowledgement/cancellation, an external monotonic-anchor contract, exact schema
-  verification, and fixed-batch recovery. It has no adapter, destination,
-  credential, autonomous trigger, callback route, server route, or UI wiring;
-  no creator-contact channel is live.
-  Independent follow-up review passes 47 focused tests, including repeated
-  concurrency runs; this completes the model-free core, not delivery.
+  verification, and fixed-batch recovery. A separate app Web Push adapter now
+  supports explicit creator browser enrollment/revocation and one fixed manual
+  connection test from House HQ. Provider acceptance and a one-use,
+  event/subscription-bound notification-click acknowledgement remain distinct.
+  Dedicated Windows Credential Manager records hold subscriptions, browser
+  keys, VAPID material, seals, and the monotonic anchor. Redirects and proxy
+  inheritance are disabled. The subscription record and its monotonic anchor are
+  distinct Credential Manager records in the same failure domain, so they detect
+  record-only rollback rather than coordinated Credential Manager restoration.
+  Acknowledgement-receipt consumption is sealed in SQLite but not
+  monotonic-anchored: restoring a valid pre-consumption receipt database can
+  make an already-acknowledged event return another idempotent success, but
+  cannot resend the notification or create another action. The service worker
+  retains failed click acknowledgements in IndexedDB, and House requires a
+  same-origin backend. Browser enrollment, an accepted device test, and mobile
+  soak remain pending. There is no model/autonomous enqueue, arbitrary payload,
+  escalation, Discord DM delivery, SMS, or phone-call path.
 - The untracked `creator_contact.py` direct-send experiment is **REJECTED WIP**,
   not a Phase 11 implementation. It is currently unimported/inert and locally
   defaults off. Its Web Push/Discord/SMS/OpenClaw calls bypass outbox claims,
   quotas, indeterminate outcomes, and sender-bound acknowledgement, so it must
-  not be wired or checkpointed. Future work starts with one dormant Web Push
-  adapter behind the reviewed outbox.
+  not be wired or checkpointed. The implemented app-push slice uses the separate
+  `web_push_adapter.py` path and does not import this experiment.
 - SQLite anchor sidecars are development-only and cannot detect coordinated
-  restoration with their main database. Production identity, egress, and outbox
-  wiring still requires a separate-failure-domain monotonic anchor.
+  restoration with their main database. Production acceptance for identity and
+  egress still requires monotonic anchors in separate failure domains. The
+  notification outbox already anchors SQLite transitions in Credential Manager;
+  stronger coordinated-restoration protection for its subscription pair would
+  require a different failure domain.
 - Phase 6 remains partial. The next gated action is to clear resources and
   re-run preflight, then separately authorize one 8,192 measurement; no direct
   pagefile mutation is authorized. See `docs/CONTEXT_TIER_MEASUREMENT.md` for
@@ -246,6 +264,11 @@ labels retained in historical plans and handoffs.
   74 spring joints and 22 colliders. Formal completion still requires the
   ten-minute physics soak, every-terminal contact drill, sole measurements, and
   four-angle design-lock turntable.
+  The injector now selects only deterministic humanoid-verified hips/spine
+  collider groups for the six hoodie springs, validates their world-space
+  reach, and rejects unsafe exports. The actual V4 is 5.6-8.9 cm outside the
+  2.5 cm collider-gap limit, so it remains unmodified and unpromoted pending
+  dedicated hem collider geometry.
 - `ALPECCA_TOOL_MODE` is `smart` and `ALPECCA_INNATE_TOOLS=1` in this branch.
 - Chat tool-calling is now gated and observable through tool schemas + `CognitionObservation`.
 - Embedding backfill now runs in background on idle drift ticks.

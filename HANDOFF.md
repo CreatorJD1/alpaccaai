@@ -78,9 +78,13 @@ retained below as historical implementation evidence.
   prompt data and suppresses tool schemas for that turn. A remote `OLLAMA_HOST`,
   HF primary backend, or cloud-tagged model receives no House/private sensor or
   source-file request. Normal non-private hosted-chat paths remain unchanged.
-- Verification for this checkpoint: `1587 passed, 2 skipped` under `tests/`;
+- Computer-use screenshots now use the same verified-loopback/non-cloud gate
+  before client creation, capture, and every model call. An explicit local VCS
+  selection also fails closed locally instead of falling through to a remote
+  provider; that VCS experiment remains excluded from this Git checkout.
+- Verification for this checkpoint: `1756 passed, 2 skipped` under `tests/`;
   the 198-test signed actor/Discord matrix is green; House embodiment tests are
-  4/4; House HQ builds with only the existing large-chunk advisory. The four
+  4/4; House HQ builds with only the existing large-chunk advisory. The two
   Python warnings are existing dependency/model warnings, not test failures.
 - Phase 9 is not DONE: the provider/model-specific egress consent core is not
   wired into perception.
@@ -446,31 +450,56 @@ creator/guild/channel allowlists, retained conversation partitioning, persistent
 rate limits, and nonce-bound creator approvals work. Add audio queues and live
 receive only after those text-participation gates pass.
 
-### Phase 11: creator contact and notification outbox - PARTIAL; DELIVERY UNWIRED
+### Phase 11: creator contact and notification outbox - PARTIAL; APP PUSH IMPLEMENTED
 
-`alpecca/notification_outbox.py` now provides the model-free durable core:
+`alpecca/notification_outbox.py` provides the model-free durable core:
 opaque payload references, closed category/adapter policy, idempotent enqueue,
-quiet hours and quotas, expiring claims, explicit indeterminate outcomes,
+quiet hours and quotas, atomic expiring claims, explicit indeterminate outcomes,
 acknowledgement/cancellation state, externally anchored transition chains,
 exact schema checks, and fixed-batch recovery. It intentionally has no adapter,
-destination, credential, autonomous trigger, callback route, or server/UI
-wiring. Independent follow-up review passed all 47 focused tests, including
-repeated concurrency cases. Add app Web Push first, Discord DM second, SMS third, and
-phone calls only through a separate explicit opt-in. Destinations and IDs stay
-in secret-backed adapters, never prompts, cognition records, git, or Mindscape.
+destination, credential, or network code inside the core itself.
 
-The bundled SQLite anchor implementations are development-only and detect
-uncoordinated main-DB rollback. They do not detect a coordinated restore of both
-local files. Production identity, egress, or notification wiring therefore
-requires a `MonotonicAnchor` implementation in a separate failure domain.
+The first separate adapter is now implemented for **explicit connection testing
+only**.
+Creator-authenticated House controls register/revoke one browser subscription
+and can enqueue one fixed server-owned test template. The adapter claims through
+the outbox, treats transport uncertainty as indeterminate, disables redirects
+and environment proxies, and records provider acceptance separately from a
+one-use event/subscription-bound click receipt. The service worker acknowledges
+only when the creator clicks the notification. Subscription endpoints and keys,
+VAPID material, outbox/store seals, and anchor state use dedicated Windows
+Credential Manager targets; no existing creator, Discord, or bot credential was
+changed or revoked. `pywebpush==2.3.0` is the optional open-source transport.
+The subscription record and its monotonic anchor are distinct Credential Manager
+records in the same failure domain; they detect record-only rollback, not
+coordinated Credential Manager restoration. The service worker durably queues
+click acknowledgements in IndexedDB and retries only on the same origin; House
+refuses push enrollment when its backend is on a different origin. Browser
+enrollment, one accepted-device test, and mobile soak remain manual acceptance
+gates and have not been claimed complete.
+
+Residual: acknowledgement-receipt consumption is sealed in SQLite but is not
+monotonic-anchored. Restoring a valid pre-consumption receipt database can make
+an already-acknowledged event return another idempotent success, but cannot
+resend the notification or create another action.
+
+There is no model, cognition, initiative, routine, watcher, or autonomous enqueue
+path. Arbitrary message content, escalation, Discord DM delivery, SMS, and calls
+remain absent. Add those only one adapter at a time after mobile soak and review.
+
+Notification delivery now injects a canonical HMAC-sealed credential anchor
+with a named cross-process mutex and compare-under-lock transitions. Its state
+lives in Windows Credential Manager rather than beside the outbox SQLite
+database. Bundled SQLite anchors remain development-only for the identity and
+egress ledgers, whose production acceptance still requires anchors in separate
+failure domains.
 
 Do **not** import or checkpoint the current untracked
 `alpecca/creator_contact.py`. Audit found that its direct Web Push/Discord/SMS/
 OpenClaw sends bypass the outbox, accept caller-controlled routing and cooldown
 bypass, expose caller reason to shared cognition/Mindscape, and lack restart-safe
-idempotency or sender-bound acknowledgement. It is inert because nothing imports
-it, and the local WIP config default is now off. Redesign one dormant adapter at
-a time behind outbox claims; start with Web Push only.
+idempotency or sender-bound acknowledgement. It remains inert and unimported;
+the reviewed `web_push_adapter.py` path does not reuse it.
 
 ### Phase 12: V4 embodiment behavior and physics
 
@@ -484,6 +513,14 @@ reachability, soles, and spring counts. Actual-model probes measured 1.70009 m,
 joints, and 22 colliders. Keep Phase 12 open until the ten-minute physics soak,
 all-terminal contact drill, per-clip sole measurements, hoodie collider check,
 and four-angle design-lock turntable pass.
+
+The hoodie injector now deterministically selects only an existing verified
+hips/lower-spine collider group and fails closed on head/hair/accessory-only or
+ambiguous exports. It also measures collider volumes against every hem-chain
+root and requires a surface gap of at most 2.5 cm. The actual V4 fails this gate:
+its selected spine collider surfaces are 5.6-8.9 cm from the roots. The live V4
+binary remains untouched; add dedicated effective hem colliders before any
+re-export/promotion or physics soak.
 
 ### Phase 13: cloud egress and Mindscape continuity - BLOCKED
 
@@ -509,12 +546,12 @@ claims only from evidence.
   account, delete, purchase, or general OS action.
 - Do not revoke, rotate, delete, or alter existing keys/tokens or the preserved
   public Alpecca identity. It is not server authorization.
-- Preserve `apps/house-hq/src/vrmEmbodiment.ts`, `config.py`, and untracked
-  `alpecca/creator_contact.py` / `alpecca/system_pressure.py` unless the active
-  phase explicitly adopts them after its gate.
+- Preserve `apps/house-hq/src/vrmEmbodiment.ts`, the unrelated dirty `config.py`,
+  and untracked `alpecca/creator_contact.py` unless an active phase explicitly
+  adopts them after its gate.
 - Before every checkpoint run `python -m pytest -q tests\test_core.py` and
   `npm.cmd run house:build`. Current verified baseline: `tests/test_core.py`
-  is green and the full suite reports `1587 passed, 2 skipped`; House HQ builds
+  is green and the full suite reports `1756 passed, 2 skipped`; House HQ builds
   with only its existing large-chunk advisory.
 
 ### Current checkpoint

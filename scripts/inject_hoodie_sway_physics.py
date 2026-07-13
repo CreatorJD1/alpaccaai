@@ -26,8 +26,9 @@ WHAT IT DOES (pure-Python GLB surgery, no Blender, stdlib only)
        and angular blending between the two nearest chains (no sector seams).
        Existing weights are scaled by (1 - injected), so stripping +
        renormalizing recovers the original weights.
-    8. Appends one VRMC_springBone spring per chain (colliderGroups: [] for
-       v1, matching VRoid's own collider-less outfit chains).
+    8. Appends one VRMC_springBone spring per chain, using only existing
+       hips/lower-torso collider groups verified against the humanoid rig.
+       Head, hair, limb, and accessory colliders are never attached.
     9. Validates the output structurally (see validate_output) and verifies
        that materials, textures, images, meshes and VRMC_vrm are byte-for-byte
        / JSON-identical to the input -- zero visible-design changes.
@@ -84,6 +85,14 @@ TORSO_BONES = {
     "J_Bip_L_UpperLeg",
     "J_Bip_R_UpperLeg",
 }
+
+# Hoodie-hem collisions are limited to the body at or immediately above the
+# hem. Order is intentional so equivalent exports produce the same references.
+HOODIE_COLLIDER_ATTACHMENTS = (
+    ("hips", "J_Bip_C_Hips"),
+    ("spine", "J_Bip_C_Spine"),
+)
+MAX_HOODIE_COLLIDER_ROOT_GAP_METERS = 0.025
 
 
 class InjectError(RuntimeError):
@@ -270,6 +279,68 @@ def build_parent_map(gltf):
     return parent
 
 
+def select_hoodie_collider_groups(gltf):
+    """Return deterministic, verified hips/lower-torso collider group indices."""
+    nodes = gltf.get("nodes", [])
+    extensions = gltf.get("extensions", {})
+    ext_vrm = extensions.get("VRMC_vrm", {})
+    ext_sb = extensions.get("VRMC_springBone", {})
+    human_bones = ext_vrm.get("humanoid", {}).get("humanBones", {})
+    collider_groups = ext_sb.get("colliderGroups", [])
+    colliders = ext_sb.get("colliders", [])
+    selected = []
+
+    for bone_name, expected_node_name in HOODIE_COLLIDER_ATTACHMENTS:
+        node_index = human_bones.get(bone_name, {}).get("node")
+        if (
+            type(node_index) is not int
+            or not (0 <= node_index < len(nodes))
+            or nodes[node_index].get("name") != expected_node_name
+        ):
+            continue
+
+        matches = []
+        for group_index, group in enumerate(collider_groups):
+            if not isinstance(group, dict) or group.get("name") != expected_node_name:
+                continue
+            refs = group.get("colliders")
+            if not isinstance(refs, list) or not refs:
+                continue
+
+            valid = True
+            for collider_index in refs:
+                if type(collider_index) is not int or not (0 <= collider_index < len(colliders)):
+                    valid = False
+                    break
+                collider = colliders[collider_index]
+                shape = collider.get("shape") if isinstance(collider, dict) else None
+                if (
+                    not isinstance(collider, dict)
+                    or collider.get("node") != node_index
+                    or not isinstance(shape, dict)
+                    or not ("sphere" in shape or "capsule" in shape)
+                ):
+                    valid = False
+                    break
+            if valid:
+                matches.append(group_index)
+
+        if len(matches) > 1:
+            raise InjectError(
+                f"ambiguous hoodie collider groups for {expected_node_name}; refusing"
+            )
+        if matches:
+            selected.append(matches[0])
+
+    if not selected:
+        allowed = ", ".join(name for _bone, name in HOODIE_COLLIDER_ATTACHMENTS)
+        raise InjectError(
+            "no safe hoodie body collider group found; expected a non-empty "
+            f"{allowed} group attached to its matching VRM humanoid node"
+        )
+    return selected
+
+
 def world_matrix(gltf, parent, node_index):
     chain = []
     i = node_index
@@ -282,6 +353,153 @@ def world_matrix(gltf, parent, node_index):
     for j in reversed(chain):
         m = mat4_mul(m, node_local_matrix(gltf["nodes"][j]))
     return m
+
+
+def _finite_vec3(value, name):
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise InjectError(f"{name} must be a finite vec3")
+    result = []
+    for component in value:
+        if isinstance(component, bool) or not isinstance(component, (int, float)):
+            raise InjectError(f"{name} must be a finite vec3")
+        component = float(component)
+        if not math.isfinite(component):
+            raise InjectError(f"{name} must be a finite vec3")
+        result.append(component)
+    return result
+
+
+def _uniform_world_scale(matrix, name):
+    columns = [
+        _finite_vec3([matrix[row][column] for row in range(3)], name)
+        for column in range(3)
+    ]
+    scales = [math.sqrt(sum(component * component for component in column)) for column in columns]
+    if min(scales) <= 1e-8:
+        raise InjectError(f"{name} has a singular world transform")
+    tolerance = max(scales) * 1e-5
+    if max(scales) - min(scales) > tolerance:
+        raise InjectError(f"{name} has unsupported non-uniform world scale")
+    for left in range(3):
+        for right in range(left + 1, 3):
+            dot = sum(columns[left][axis] * columns[right][axis] for axis in range(3))
+            if abs(dot) > max(scales) ** 2 * 1e-5:
+                raise InjectError(f"{name} has unsupported world shear")
+    return sum(scales) / 3.0
+
+
+def _point_segment_distance(point, start, end):
+    delta = [end[axis] - start[axis] for axis in range(3)]
+    length_sq = sum(component * component for component in delta)
+    if length_sq <= 1e-16:
+        return math.dist(point, start)
+    projection = sum(
+        (point[axis] - start[axis]) * delta[axis] for axis in range(3)
+    ) / length_sq
+    projection = max(0.0, min(1.0, projection))
+    nearest = [start[axis] + projection * delta[axis] for axis in range(3)]
+    return math.dist(point, nearest)
+
+
+def hoodie_collider_root_gaps(gltf, collider_group_indices, chain_roots_world):
+    """Measure each hem root's world-space gap to the selected collider volumes."""
+    nodes = gltf.get("nodes", [])
+    ext_sb = gltf.get("extensions", {}).get("VRMC_springBone", {})
+    collider_groups = ext_sb.get("colliderGroups", [])
+    colliders = ext_sb.get("colliders", [])
+    if not isinstance(collider_group_indices, (list, tuple)) or not collider_group_indices:
+        raise InjectError("hoodie collider reach requires selected collider groups")
+    if not isinstance(chain_roots_world, (list, tuple)) or not chain_roots_world:
+        raise InjectError("hoodie collider reach requires hem chain roots")
+
+    parent = build_parent_map(gltf)
+    volumes = []
+    for group_index in collider_group_indices:
+        if type(group_index) is not int or not (0 <= group_index < len(collider_groups)):
+            raise InjectError("hoodie collider group index is invalid")
+        group = collider_groups[group_index]
+        refs = group.get("colliders") if isinstance(group, dict) else None
+        if not isinstance(refs, list) or not refs:
+            raise InjectError("hoodie collider group has no collider volumes")
+        for collider_index in refs:
+            if type(collider_index) is not int or not (0 <= collider_index < len(colliders)):
+                raise InjectError("hoodie collider reference is invalid")
+            collider = colliders[collider_index]
+            node_index = collider.get("node") if isinstance(collider, dict) else None
+            shape = collider.get("shape") if isinstance(collider, dict) else None
+            if type(node_index) is not int or not (0 <= node_index < len(nodes)):
+                raise InjectError("hoodie collider node is invalid")
+            if not isinstance(shape, dict) or frozenset(shape) not in {
+                frozenset({"sphere"}),
+                frozenset({"capsule"}),
+            }:
+                raise InjectError("hoodie collider shape is not an exact sphere or capsule")
+
+            kind = "sphere" if "sphere" in shape else "capsule"
+            details = shape[kind]
+            expected_fields = {"offset", "radius"}
+            if kind == "capsule":
+                expected_fields.add("tail")
+            if not isinstance(details, dict) or frozenset(details) != frozenset(expected_fields):
+                raise InjectError(f"hoodie {kind} collider has an invalid shape")
+            offset = _finite_vec3(details["offset"], f"hoodie {kind} offset")
+            radius = details["radius"]
+            if (
+                isinstance(radius, bool)
+                or not isinstance(radius, (int, float))
+                or not math.isfinite(float(radius))
+                or float(radius) <= 0.0
+            ):
+                raise InjectError(f"hoodie {kind} collider radius is invalid")
+
+            transform = world_matrix(gltf, parent, node_index)
+            world_scale = _uniform_world_scale(
+                transform, f"hoodie collider {collider_index}"
+            )
+            start = mat4_apply(transform, offset)
+            end = start
+            if kind == "capsule":
+                end = mat4_apply(
+                    transform,
+                    _finite_vec3(details["tail"], "hoodie capsule tail"),
+                )
+            volumes.append((start, end, float(radius) * world_scale))
+
+    if not volumes:
+        raise InjectError("hoodie collider groups contain no usable volumes")
+
+    gaps = []
+    for root_index, root in enumerate(chain_roots_world):
+        point = _finite_vec3(root, f"hoodie chain root {root_index}")
+        gaps.append(
+            min(
+                max(0.0, _point_segment_distance(point, start, end) - radius)
+                for start, end, radius in volumes
+            )
+        )
+    return gaps
+
+
+def require_hoodie_collider_reach(gltf, collider_group_indices, chain_roots_world):
+    """Fail unless every hem root is reached by a selected collider volume."""
+    gaps = hoodie_collider_root_gaps(
+        gltf, collider_group_indices, chain_roots_world
+    )
+    ineffective = [
+        (index, gap)
+        for index, gap in enumerate(gaps)
+        if gap > MAX_HOODIE_COLLIDER_ROOT_GAP_METERS
+    ]
+    if ineffective:
+        summary = ", ".join(
+            f"root {index}: {gap:.4f} m" for index, gap in ineffective
+        )
+        raise InjectError(
+            "hoodie collider groups are spatially ineffective; collider surface "
+            f"gap exceeds {MAX_HOODIE_COLLIDER_ROOT_GAP_METERS:.3f} m "
+            f"({summary})"
+        )
+    return gaps
 
 
 # --------------------------------------------------------------------------
@@ -402,6 +620,33 @@ def smoothstep(t):
     return t * t * (3.0 - 2.0 * t)
 
 
+def append_hoodie_springs(
+    ext_sb, node_start, chain_labels, args, collider_group_indices
+):
+    """Append the existing three-node spring topology with verified colliders."""
+    collider_groups = list(collider_group_indices)
+    if not collider_groups:
+        raise InjectError("refusing to append hoodie springs without safe colliders")
+
+    def spring_joint(node_index):
+        return {
+            "node": node_index,
+            "hitRadius": args.hit_radius,
+            "stiffness": args.stiffness,
+            "gravityPower": args.gravity_power,
+            "gravityDir": [0.0, -1.0, 0.0],
+            "dragForce": args.drag_force,
+        }
+
+    for k, label in enumerate(chain_labels):
+        base = node_start + 3 * k
+        ext_sb["springs"].append({
+            "name": f"{INJECT_PREFIX}_{label}",
+            "joints": [spring_joint(base), spring_joint(base + 1), spring_joint(base + 2)],
+            "colliderGroups": list(collider_groups),
+        })
+
+
 def sector_label(center_deg, n_chains):
     if n_chains != 6:
         return f"S{int(round(center_deg)) % 360:03d}"
@@ -423,6 +668,8 @@ def inject(gltf, bin_data, args):
     ext_sb = gltf.get("extensions", {}).get("VRMC_springBone")
     if not ext_vrm or not ext_sb:
         raise InjectError("input is not a VRM 1.0 file (VRMC_vrm/VRMC_springBone missing)")
+
+    hoodie_collider_groups = select_hoodie_collider_groups(gltf)
 
     hips_index = ext_vrm["humanoid"]["humanBones"]["hips"]["node"]
     parent = build_parent_map(gltf)
@@ -523,6 +770,11 @@ def inject(gltf, bin_data, args):
         chain_roots_world.append([rx, band_top, rz])
         chain_labels.append(sector_label(centers[k], n_chains))
     report["chains"] = list(zip(chain_labels, [tuple(round(c, 4) for c in p) for p in chain_roots_world]))
+    collider_root_gaps = require_hoodie_collider_reach(
+        gltf, hoodie_collider_groups, chain_roots_world
+    )
+    report["hoodie_collider_root_gaps"] = collider_root_gaps
+    report["hoodie_collider_max_root_gap"] = max(collider_root_gaps)
 
     # ---- build nodes --------------------------------------------------------
     w_hips = world_matrix(gltf, parent, hips_index)
@@ -653,26 +905,16 @@ def inject(gltf, bin_data, args):
     report["max_injected_weight"] = max_seen
 
     # ---- springs -------------------------------------------------------------
-    def spring_joint(node_index):
-        return {
-            "node": node_index,
-            "hitRadius": args.hit_radius,
-            "stiffness": args.stiffness,
-            "gravityPower": args.gravity_power,
-            "gravityDir": [0.0, -1.0, 0.0],
-            "dragForce": args.drag_force,
-        }
-
     springs_before = len(ext_sb["springs"])
-    for k in range(n_chains):
-        base = node_start + 3 * k
-        ext_sb["springs"].append({
-            "name": f"{INJECT_PREFIX}_{chain_labels[k]}",
-            "joints": [spring_joint(base), spring_joint(base + 1), spring_joint(base + 2)],
-            "colliderGroups": [],
-        })
+    append_hoodie_springs(
+        ext_sb, node_start, chain_labels, args, hoodie_collider_groups
+    )
     report["springs_before"] = springs_before
     report["springs_after"] = len(ext_sb["springs"])
+    report["hoodie_collider_groups"] = list(hoodie_collider_groups)
+    report["hoodie_collider_group_names"] = [
+        ext_sb["colliderGroups"][i]["name"] for i in hoodie_collider_groups
+    ]
 
     # ---- idempotency marker ----------------------------------------------------
     gltf.setdefault("extras", {})[MARKER_KEY] = {
@@ -748,6 +990,7 @@ def validate_output(output_path, input_path, report):
 
     # springbone refs + chain integrity
     sb = gltf["extensions"]["VRMC_springBone"]
+    n_collider_groups = len(sb.get("colliderGroups", []))
     for s in sb["springs"]:
         prev = None
         for j in s.get("joints", []):
@@ -755,10 +998,49 @@ def validate_output(output_path, input_path, report):
             if prev is not None and j["node"] not in gltf["nodes"][prev].get("children", []):
                 problems.append(f"spring {s.get('name')}: joint {j['node']} not a child of {prev}")
             prev = j["node"]
+        for group_index in s.get("colliderGroups", []):
+            if type(group_index) is not int or not (0 <= group_index < n_collider_groups):
+                problems.append(
+                    f"spring {s.get('name')}: collider group {group_index!r} out of range"
+                )
     for c in sb.get("colliders", []):
         check_node(c.get("node"), "collider")
     if len(sb["springs"]) != report["springs_after"]:
         problems.append("spring count does not match report")
+
+    injected_springs = [
+        spring for spring in sb["springs"]
+        if str(spring.get("name", "")).startswith(INJECT_PREFIX)
+    ]
+    if len(injected_springs) != len(report["chains"]):
+        problems.append("injected hoodie spring count does not match chain report")
+    expected_groups = report["hoodie_collider_groups"]
+    for spring in injected_springs:
+        if spring.get("colliderGroups") != expected_groups:
+            problems.append(
+                f"spring {spring.get('name')}: hoodie collider groups do not match report"
+            )
+    try:
+        verified_groups = select_hoodie_collider_groups(gltf)
+    except InjectError as exc:
+        problems.append(f"hoodie collider verification failed: {exc}")
+    else:
+        if verified_groups != expected_groups:
+            problems.append("hoodie collider groups are not the verified safe set")
+        try:
+            parent = build_parent_map(gltf)
+            chain_roots_world = [
+                mat4_apply(
+                    world_matrix(gltf, parent, spring["joints"][0]["node"]),
+                    [0.0, 0.0, 0.0],
+                )
+                for spring in injected_springs
+            ]
+            require_hoodie_collider_reach(
+                gltf, expected_groups, chain_roots_world
+            )
+        except (InjectError, KeyError, IndexError, TypeError, ValueError) as exc:
+            problems.append(f"hoodie collider spatial validation failed: {exc}")
 
     # weights of the body mesh: all joints in range, sums == 1
     skin = gltf["skins"][report["skin_index"]]
@@ -893,6 +1175,21 @@ def main(argv=None):
     for label, pos in report["chains"]:
         print(f"    {INJECT_PREFIX}_{label} root at {pos}")
     print(f"  springs: {report['springs_before']} -> {report['springs_after']}")
+    print(
+        "  hoodie collider groups: "
+        + ", ".join(
+            f"{name} [{index}]"
+            for name, index in zip(
+                report["hoodie_collider_group_names"],
+                report["hoodie_collider_groups"],
+            )
+        )
+    )
+    print(
+        "  hoodie collider max root gap: "
+        f"{report['hoodie_collider_max_root_gap']:.4f} m "
+        f"(limit {MAX_HOODIE_COLLIDER_ROOT_GAP_METERS:.3f} m)"
+    )
     print(f"  re-weighted verts: {report['touched_verts']} "
           f"(max injected weight {report['max_injected_weight']:.3f}, "
           f"{report['single_chain_verts']} snapped to a single chain, "

@@ -1,0 +1,3 @@
+# Optional Phase 11 creator Web Push transport.
+# Core chat and local perception do not depend on this extra.
+pywebpush==2.3.0

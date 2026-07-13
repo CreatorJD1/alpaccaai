@@ -2954,6 +2954,73 @@ class NotificationOutbox:
             ).fetchone()
             status = self._status(conn, updated)
             self._commit_locked(conn, before)
+        return status
+
+    def abandon_claim(
+        self,
+        event_id: str,
+        *,
+        claim_handle: str,
+        transport_idempotency_key: str,
+    ) -> dict[str, object]:
+        """Close a live claim when the adapter proves no dispatch occurred."""
+        clean_event_id = _event_id(event_id)
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            before = self._preflight_locked(conn)
+            now = self._sample_clock_locked(conn)
+            event, tail = self._load_event_tail_locked(conn, clean_event_id)
+            supplied_hmac = self._lease_hmac(_lease_handle(claim_handle))
+            self._require_transport_proof(event, transport_idempotency_key)
+            if (
+                str(event["state"]) in {QUEUED, FAILED}
+                and str(tail["kind"]) == _CLAIM_ABANDONED
+                and tail["lease_hmac"] is not None
+                and hmac.compare_digest(str(tail["lease_hmac"]), supplied_hmac)
+            ):
+                status = self._status(conn, event)
+                conn.commit()
+                return status
+            lease_hmac, expiry = self._require_live_claim(
+                event,
+                claim_handle=claim_handle,
+                transport_idempotency_key=transport_idempotency_key,
+                now=now,
+            )
+            terminal = int(event["attempt_count"]) >= int(event["max_attempts"])
+            state = FAILED if terminal else QUEUED
+            next_attempt = (
+                now
+                if terminal
+                else now + self.policy.backoff_seconds(int(event["attempt_count"]))
+            )
+            self._transition_event_locked(
+                conn,
+                event,
+                state=state,
+                now=now,
+                next_attempt_at=next_attempt,
+                failed_at=now if terminal else None,
+            )
+            self._append_receipt(
+                conn,
+                event=event,
+                kind=_CLAIM_ABANDONED,
+                from_state=LEASED,
+                to_state=state,
+                occurred_at=now,
+                attempt_count=int(event["attempt_count"]),
+                lease_hmac=lease_hmac,
+                lease_expires_at=expiry,
+                next_attempt_at=next_attempt,
+                reason_code="not_dispatched",
+            )
+            updated = conn.execute(
+                "SELECT * FROM notification_outbox_events WHERE event_id=?",
+                (clean_event_id,),
+            ).fetchone()
+            status = self._status(conn, updated)
+            self._commit_locked(conn, before)
             return status
 
     def record_failure(

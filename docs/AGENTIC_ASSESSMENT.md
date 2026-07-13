@@ -79,8 +79,8 @@ Discord transport authentication is separate from creator authorization. The
 bridge receives a service-only credential, `/channel/discord` treats it as
 guest transport rather than CreatorJD, and image-bearing bridge requests stay
 on loopback until server-side perception routing. Signed per-actor subjects
-remain unfinished, so this does not enable guild participation or Discord
-autonomy.
+are now minted and consumed once for allowlisted DMs, but retained guest
+history, guild participation, rates, approvals, and voice remain unfinished.
 
 All generic image, screen, webcam, pose, self-recognition, ingestion, and Studio
 vision wrappers are now verified-local. `VISION_BACKEND`, a cloud model tag, or
@@ -88,6 +88,8 @@ the retired Discord cloud flag cannot authorize egress or produce a
 creator-approved result. Private provider helpers are dormant until an adapter
 can attest every exact provider/deployment/model/location/destination/HTTPS fact
 required by the consent ledger. No production remote vision route is live.
+Computer-use screenshots now pass the same verified-loopback/non-cloud gate
+before client creation, capture, and every model call.
 
 A hardened provider/model/deployment-specific egress consent ledger now exists
 with exact operation/keyed-payload binding, an external monotonic-anchor contract,
@@ -110,21 +112,34 @@ payloads remain guest authority. Actor sealing now has a dedicated protected
 credential separate from creator, service, and bot credentials.
 Phase 10 Discord participation and voice stay blocked on those boundaries.
 
-## Current Phase 11 Checkpoint - PARTIAL, CORE ONLY
+## Current Phase 11 Checkpoint - PARTIAL, APP PUSH TEST IMPLEMENTED
 
 The notification outbox now has a durable model-free state machine with opaque
-payload references, frozen route policy, idempotent claims, quiet-hour and quota
-deferral, explicit indeterminate delivery, acknowledgements, independent
-external monotonic anchoring, exact schema verification, and bounded recovery. This is an
-unwired foundation only: it has no destination, transport, credential,
-autonomous trigger, callback route, server route, or UI control. No external
-notification capability should be inferred from the presence of this module.
-Independent follow-up review passes 47 focused tests, including repeated
-concurrency cases. The state-machine core is complete; transport remains absent.
+payload references, frozen route policy, idempotent enqueue, atomic expiring
+claims, quiet-hour and quota deferral, explicit indeterminate delivery,
+acknowledgements, independent external monotonic anchoring, exact schema
+verification, and bounded recovery.
+This is a transport-free core. One separate app Web Push adapter is implemented
+for a fixed, explicit connection test. Creator-only House controls enroll/revoke a browser;
+a credential-backed anchor sits outside SQLite; and a one-use event/subscription-
+bound click receipt is required for acknowledgement. Subscription endpoints,
+keys, VAPID material, and seals remain in dedicated Windows Credential Manager
+records. Redirects and environment proxy inheritance are disabled.
+The subscription record and its monotonic anchor are distinct Credential Manager
+records in the same failure domain, so they detect record-only rollback rather
+than coordinated Credential Manager restoration. Failed click acknowledgements
+persist in IndexedDB for bounded same-origin retry, and House rejects
+cross-origin push enrollment. Browser enrollment, one accepted-device test, and
+mobile soak are still pending.
 
-The bundled SQLite sidecars are development-only, single-file rollback
-detectors. A production path must inject an anchor in a separate failure domain;
-co-restoring both local files cannot be detected.
+This does not enable general creator contact. No model, routine, watcher,
+initiative, or autonomous path can enqueue a notification, and arbitrary
+message payloads, escalation, Discord DM, SMS, and calls remain absent.
+
+Bundled SQLite sidecars remain development-only. The app-push outbox injects a
+Windows Credential Manager monotonic anchor outside SQLite, with sealed
+current/pending state and named cross-process locking. Production acceptance for
+identity and egress still requires anchors in separate failure domains.
 
 ## Stage 3 - LLM-In-The-Loop Choice Points
 

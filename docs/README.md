@@ -23,7 +23,18 @@ microphone, voice-enrollment, and exact file-reference use. Their fixed caps,
 disconnect/restart revocation, and sealed content-free transition evidence are
 implemented for House HQ and the secondary classic app. Provider/model-specific
 egress consent is not yet wired into perception, and signed Discord guest
-identity is still unfinished. Do not mark Phase 9 complete or unblock Phase 10.
+identity is wired for allowlisted DMs. Retained guest context, guilds, rates,
+approvals, voice, and production actor anchoring remain unfinished. Do not mark
+Phase 9 or Phase 10 complete.
+
+Phase 11 is partial with one explicit app Web Push connection-test path
+implemented. House Devices controls enroll/revoke a browser and request the fixed test;
+provider acceptance is separate from one-use click acknowledgement. No model or
+autonomous notification trigger, arbitrary payload, Discord delivery, SMS, or
+call path is live. Browser enrollment, an accepted-device test, and mobile soak
+remain pending. The subscription record and monotonic anchor are distinct
+Credential Manager records in the same failure domain, so they detect
+record-only rollback rather than coordinated Credential Manager restoration.
 
 ## Canonical Sources
 

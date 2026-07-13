@@ -972,6 +972,46 @@ def test_transport_key_is_event_derived_and_idempotent_retry_reuses_it(tmp_path)
     assert store.acknowledge(event["event_id"])["state"] == outbox_mod.ACKNOWLEDGED
 
 
+def test_abandon_claim_backs_off_idempotently_and_retry_can_send(tmp_path):
+    clock = MutableClock(100.0)
+    store = _store(tmp_path, clock=clock)
+    event = _enqueue(store, adapter_name="app_push")
+    first = store.claim_next(adapter_name="app_push")
+    assert first is not None
+
+    clock.set(101.0)
+    abandoned = store.abandon_claim(
+        event["event_id"],
+        claim_handle=first.claim_handle,
+        transport_idempotency_key=first.transport_idempotency_key,
+    )
+    repeated = store.abandon_claim(
+        event["event_id"],
+        claim_handle=first.claim_handle,
+        transport_idempotency_key=first.transport_idempotency_key,
+    )
+
+    assert abandoned["state"] == outbox_mod.QUEUED
+    assert abandoned["attempt_count"] == 1
+    assert abandoned["next_attempt_at"] == 106.0
+    assert repeated == abandoned
+    assert store.claim_next(adapter_name="app_push") is None
+
+    clock.set(106.0)
+    second = store.claim_next(adapter_name="app_push")
+    assert second is not None
+    assert second.claim_handle != first.claim_handle
+    assert second.transport_idempotency_key == first.transport_idempotency_key
+    assert store.mark_sent(
+        event["event_id"],
+        claim_handle=second.claim_handle,
+        transport_idempotency_key=second.transport_idempotency_key,
+    )["state"] == outbox_mod.SENT
+    assert [
+        receipt["kind"] for receipt in _receipts(store, event["event_id"])
+    ] == ["enqueued", "claimed", "claim_abandoned", "claimed", "sent"]
+
+
 def test_expired_non_idempotent_claim_stays_indeterminate_until_reconciled(tmp_path):
     clock = MutableClock(100.0)
     store = _store(tmp_path, clock=clock)
@@ -1566,6 +1606,7 @@ def test_mutation_apis_have_no_caller_timestamps_and_skip_linear_audit(tmp_path,
         store.claim_next,
         store.recover_expired,
         store.mark_sent,
+        store.abandon_claim,
         store.record_failure,
         store.mark_indeterminate,
         store.reconcile_indeterminate,

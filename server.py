@@ -15,8 +15,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import html
+import importlib.util
 import io
 import json
+import math
 import os
 import re
 import sqlite3
@@ -89,6 +91,10 @@ from alpecca import audio_ingress as audio_ingress_mod
 from alpecca import bridge_actor_identity as bridge_actor_identity_mod
 from alpecca import bridge_actor_transport as bridge_actor_transport_mod
 from alpecca import file_ingress as file_ingress_mod
+from alpecca import notification_anchor as notification_anchor_mod
+from alpecca import notification_outbox as notification_outbox_mod
+from alpecca import web_push_adapter as web_push_adapter_mod
+from alpecca import web_push_runtime as web_push_runtime_mod
 from alpecca.behavior_trial_controller import BehaviorTrialController
 from alpecca.qualified_response_ledger import QualifiedResponseLedger
 
@@ -2393,6 +2399,28 @@ _DISCORD_ACTOR_STORE_LOCK = threading.Lock()
 _DISCORD_ACTOR_STORE: (
     bridge_actor_identity_mod.BridgeActorIdentityStore | None
 ) = None
+_NOTIFICATION_RUNTIME_LOCK = threading.Lock()
+_NOTIFICATION_ACK_OPERATION_LOCK = threading.Lock()
+_NOTIFICATION_RUNTIME: dict[str, object] | None = None
+_NOTIFICATION_RUNTIME_MUTEX: notification_anchor_mod.CrossProcessMutex | None = None
+_NOTIFICATION_TEST_OPERATION_MUTEX: (
+    notification_anchor_mod.CrossProcessMutex | None
+) = None
+
+_NOTIFICATION_RUNTIME_MUTEX_NAME = "Local\\Alpecca.NotificationRuntimeInitialization"
+_NOTIFICATION_TEST_OPERATION_MUTEX_NAME = (
+    "Local\\Alpecca.NotificationConnectionTest"
+)
+
+_NOTIFICATION_OUTBOX_SEAL_TARGET = "Alpecca/NotificationOutboxSeal"
+_NOTIFICATION_ANCHOR_KEY_TARGET = "Alpecca/NotificationAnchorSeal"
+_NOTIFICATION_ANCHOR_STATE_TARGET = "Alpecca/NotificationAnchorState"
+_NOTIFICATION_PUSH_STORE_KEY_TARGET = "Alpecca/NotificationPushStoreSeal"
+_NOTIFICATION_PUSH_SUBSCRIPTIONS_TARGET = "Alpecca/NotificationPushSubscriptions"
+_NOTIFICATION_PUSH_SUBSCRIPTIONS_ANCHOR_TARGET = (
+    "Alpecca/NotificationPushSubscriptionsAnchor"
+)
+_NOTIFICATION_PUSH_VAPID_TARGET = "Alpecca/NotificationPushVapid"
 
 
 class _DiscordActorStoreUnavailable(RuntimeError):
@@ -2440,6 +2468,156 @@ def _verify_discord_actor_envelope(
         request_body=request_body,
         **bindings.as_store_kwargs(),
     )
+
+
+class _NotificationRuntimeUnavailable(RuntimeError):
+    """The private Phase 11 runtime could not be constructed."""
+
+
+def _notification_credential(target: str, comment: str):
+    return web_push_runtime_mod.WindowsCredentialRecord(target, comment=comment)
+
+
+def _notification_runtime_mutex() -> notification_anchor_mod.CrossProcessMutex:
+    global _NOTIFICATION_RUNTIME_MUTEX
+    mutex = _NOTIFICATION_RUNTIME_MUTEX
+    if mutex is not None:
+        return mutex
+    if os.name != "nt":
+        raise _NotificationRuntimeUnavailable
+    mutex = notification_anchor_mod.WindowsNamedMutex(
+        _NOTIFICATION_RUNTIME_MUTEX_NAME
+    )
+    _NOTIFICATION_RUNTIME_MUTEX = mutex
+    return mutex
+
+
+def _notification_test_operation_mutex() -> notification_anchor_mod.CrossProcessMutex:
+    global _NOTIFICATION_TEST_OPERATION_MUTEX
+    mutex = _NOTIFICATION_TEST_OPERATION_MUTEX
+    if mutex is not None:
+        return mutex
+    if os.name != "nt":
+        raise _NotificationRuntimeUnavailable
+    mutex = notification_anchor_mod.WindowsNamedMutex(
+        _NOTIFICATION_TEST_OPERATION_MUTEX_NAME,
+        timeout_ms=0,
+    )
+    _NOTIFICATION_TEST_OPERATION_MUTEX = mutex
+    return mutex
+
+
+def _notification_runtime() -> dict[str, object]:
+    """Build the Windows-only app-push runtime lazily on a creator request."""
+    global _NOTIFICATION_RUNTIME
+    runtime = _NOTIFICATION_RUNTIME
+    if runtime is not None:
+        return runtime
+    with _NOTIFICATION_RUNTIME_LOCK:
+        runtime = _NOTIFICATION_RUNTIME
+        if runtime is not None:
+            return runtime
+        try:
+            if os.name != "nt" or importlib.util.find_spec("pywebpush") is None:
+                raise _NotificationRuntimeUnavailable
+            mutex = _notification_runtime_mutex()
+            with mutex.locked(timeout_ms=30_000):
+                runtime = _NOTIFICATION_RUNTIME
+                if runtime is not None:
+                    return runtime
+                outbox_seal = web_push_runtime_mod.load_or_create_protected_secret(
+                    _notification_credential(
+                        _NOTIFICATION_OUTBOX_SEAL_TARGET,
+                        "Alpecca notification outbox seal",
+                    )
+                )
+                anchor_key = web_push_runtime_mod.load_or_create_protected_secret(
+                    _notification_credential(
+                        _NOTIFICATION_ANCHOR_KEY_TARGET,
+                        "Alpecca notification anchor seal",
+                    )
+                )
+                push_store_key = web_push_runtime_mod.load_or_create_protected_secret(
+                    _notification_credential(
+                        _NOTIFICATION_PUSH_STORE_KEY_TARGET,
+                        "Alpecca private Web Push store seal",
+                    )
+                )
+                anchor_backend = (
+                    notification_anchor_mod.WindowsCredentialManagerBackend(
+                        _NOTIFICATION_ANCHOR_STATE_TARGET
+                    )
+                )
+                anchor = notification_anchor_mod.CredentialMonotonicAnchor(
+                    anchor_backend,
+                    anchor_key=anchor_key,
+                )
+                subscription_anchor = (
+                    notification_anchor_mod.CredentialMonotonicAnchor(
+                        notification_anchor_mod.WindowsCredentialManagerBackend(
+                            _NOTIFICATION_PUSH_SUBSCRIPTIONS_ANCHOR_TARGET
+                        ),
+                        anchor_key=push_store_key,
+                    )
+                )
+                policy = notification_outbox_mod.OutboxPolicy(
+                    policy_id="creator_app_push",
+                    policy_version=1,
+                    category_registry=frozenset({"connection_test"}),
+                    adapter_registry=frozenset(
+                        {web_push_adapter_mod.ADAPTER_NAME}
+                    ),
+                    category_quotas={"connection_test": 3},
+                    channel_quotas={web_push_adapter_mod.ADAPTER_NAME: 3},
+                    channel_costs={web_push_adapter_mod.ADAPTER_NAME: 0},
+                    adapter_transport_idempotency={
+                        web_push_adapter_mod.ADAPTER_NAME: False
+                    },
+                    max_attempts=2,
+                    lease_seconds=30.0,
+                    backoff_initial_seconds=60.0,
+                    backoff_multiplier=2.0,
+                    backoff_max_seconds=300.0,
+                    quota_window_seconds=3600.0,
+                    global_quota=3,
+                    daily_cost_cap=0,
+                    accounting_timezone="America/Los_Angeles",
+                )
+                outbox = notification_outbox_mod.NotificationOutbox(
+                    HOME / "notification_outbox.sqlite3",
+                    seal_key=outbox_seal,
+                    policy=policy,
+                    anchor=anchor,
+                )
+                store = web_push_runtime_mod.WebPushPrivateStore(
+                    HOME / "notification_web_push.sqlite3",
+                    subscription_record=_notification_credential(
+                        _NOTIFICATION_PUSH_SUBSCRIPTIONS_TARGET,
+                        "Alpecca private Web Push subscriptions",
+                    ),
+                    seal_key=push_store_key,
+                    subscription_anchor=subscription_anchor,
+                )
+                vapid = web_push_runtime_mod.load_or_create_vapid(
+                    _notification_credential(
+                        _NOTIFICATION_PUSH_VAPID_TARGET,
+                        "Alpecca Web Push VAPID private key",
+                    )
+                )
+                transport = web_push_runtime_mod.PyWebPushTransport(vapid)
+                adapter = web_push_adapter_mod.WebPushAdapter(
+                    outbox, store, transport
+                )
+                runtime = {
+                    "outbox": outbox,
+                    "store": store,
+                    "vapid": vapid,
+                    "adapter": adapter,
+                }
+                _NOTIFICATION_RUNTIME = runtime
+        except Exception as exc:
+            raise _NotificationRuntimeUnavailable from exc
+        return runtime
 
 
 _capability_lease_store = capability_leases_mod.CapabilityLeaseStore(
@@ -3307,6 +3485,316 @@ def _require_creator_request(req: Request) -> auth_mod.AuthDecision:
             headers={"Cache-Control": "no-store"},
         )
     return decision
+
+
+def _notification_json(
+    payload: Mapping[str, object], *, status_code: int = 200
+) -> JSONResponse:
+    return JSONResponse(
+        dict(payload),
+        status_code=status_code,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _notification_runtime_component(
+    runtime: Mapping[str, object], name: str, expected_type: type
+):
+    value = runtime.get(name)
+    if not isinstance(value, expected_type):
+        raise _NotificationRuntimeUnavailable
+    return value
+
+
+@app.get("/notifications/push/status")
+def notification_push_status(req: Request) -> JSONResponse:
+    """Return creator-only, destination-free Web Push readiness."""
+    _require_creator_request(req)
+    try:
+        runtime = _notification_runtime()
+        store = _notification_runtime_component(
+            runtime, "store", web_push_runtime_mod.WebPushPrivateStore
+        )
+        outbox = _notification_runtime_component(
+            runtime, "outbox", notification_outbox_mod.NotificationOutbox
+        )
+        vapid = _notification_runtime_component(
+            runtime, "vapid", web_push_runtime_mod.VapidMaterial
+        )
+        private_status = store.public_status()
+        ledger_status = outbox.public_status()
+    except Exception:
+        return _notification_json(
+            {
+                "available": False,
+                "configured": False,
+                "reason": "notification runtime unavailable",
+            }
+        )
+    return _notification_json(
+        {
+            "available": True,
+            "configured": True,
+            "ready": True,
+            "application_server_key": vapid.public_key,
+            "subscription_count": private_status["subscription_count"],
+            "subscription_cap": private_status["subscription_cap"],
+            "template_scope": private_status["template_scope"],
+            "outbox": ledger_status,
+            "acknowledgement": "explicit_notification_click",
+            "autonomous_triggers": False,
+        }
+    )
+
+
+@app.post("/notifications/push/subscription")
+async def notification_push_subscribe(req: Request) -> JSONResponse:
+    """Enroll one creator browser subscription after explicit browser consent."""
+    _require_creator_request(req)
+    body = await _read_bounded_json_object(req, max_bytes=4096)
+    if frozenset(body) != {"subscription"} or type(body["subscription"]) is not dict:
+        raise HTTPException(
+            status_code=400,
+            detail="subscription body has wrong shape",
+            headers={"Cache-Control": "no-store"},
+        )
+    supplied = body["subscription"]
+    allowed = frozenset({"endpoint", "keys", "expirationTime"})
+    if not {"endpoint", "keys"}.issubset(supplied) or not frozenset(supplied).issubset(allowed):
+        raise HTTPException(
+            status_code=400,
+            detail="subscription has wrong shape",
+            headers={"Cache-Control": "no-store"},
+        )
+    expiration = supplied.get("expirationTime")
+    if expiration is not None and (
+        isinstance(expiration, bool)
+        or not isinstance(expiration, (int, float))
+        or not math.isfinite(float(expiration))
+        or float(expiration) <= 0
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="subscription expiration is invalid",
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        runtime = _notification_runtime()
+        store = _notification_runtime_component(
+            runtime, "store", web_push_runtime_mod.WebPushPrivateStore
+        )
+        store.register_subscription(
+            {"endpoint": supplied.get("endpoint"), "keys": supplied.get("keys")}
+        )
+    except (web_push_adapter_mod.WebPushAdapterError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="notification runtime unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    return _notification_json({"subscribed": True})
+
+
+@app.delete("/notifications/push/subscription")
+async def notification_push_unsubscribe(req: Request) -> JSONResponse:
+    """Revoke only the exact creator browser endpoint supplied by PushManager."""
+    _require_creator_request(req)
+    body = await _read_bounded_json_object(req, max_bytes=2300)
+    if frozenset(body) != {"endpoint"}:
+        raise HTTPException(
+            status_code=400,
+            detail="endpoint body has wrong shape",
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        runtime = _notification_runtime()
+        store = _notification_runtime_component(
+            runtime, "store", web_push_runtime_mod.WebPushPrivateStore
+        )
+        removed = store.revoke_endpoint(body["endpoint"])
+    except (web_push_adapter_mod.WebPushAdapterError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="notification runtime unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    return _notification_json({"subscribed": False, "removed": bool(removed)})
+
+
+@app.post("/notifications/push/test")
+async def notification_push_test(req: Request) -> JSONResponse:
+    """Send one fixed creator-requested connection test through the outbox."""
+    _require_creator_request(req)
+    body = await _read_bounded_json_object(req, max_bytes=64)
+    if body:
+        raise HTTPException(
+            status_code=400,
+            detail="connection test accepts no options",
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        runtime = _notification_runtime()
+        store = _notification_runtime_component(
+            runtime, "store", web_push_runtime_mod.WebPushPrivateStore
+        )
+        outbox = _notification_runtime_component(
+            runtime, "outbox", notification_outbox_mod.NotificationOutbox
+        )
+        adapter = _notification_runtime_component(
+            runtime, "adapter", web_push_adapter_mod.WebPushAdapter
+        )
+
+        def perform_connection_test() -> dict[str, object]:
+            if not store.subscriptions():
+                return {
+                    "queued": False,
+                    "reason": "no creator browser subscription",
+                }
+            ledger = outbox.public_status()
+            states = ledger["states"]
+            unresolved = {
+                state: int(states[state])
+                for state in (
+                    notification_outbox_mod.LEASED,
+                    notification_outbox_mod.INDETERMINATE,
+                    notification_outbox_mod.SENT,
+                )
+                if int(states[state]) > 0
+            }
+            if unresolved:
+                return {
+                    "queued": False,
+                    "reason": "an earlier connection test is unresolved",
+                    "states": unresolved,
+                }
+            if int(states[notification_outbox_mod.QUEUED]) > 0:
+                delivery = adapter.deliver_one()
+                return {
+                    "queued": False,
+                    "reason": "retried the existing connection test",
+                    "delivery": delivery,
+                }
+            event = web_push_runtime_mod.enqueue_connection_test(outbox, store)
+            delivery = adapter.deliver_one()
+            return {
+                "queued": True,
+                "event_id": event["event_id"],
+                "delivery": delivery,
+            }
+
+        def enqueue_and_deliver() -> dict[str, object]:
+            mutex = _notification_test_operation_mutex()
+            try:
+                with mutex.locked(timeout_ms=0):
+                    return perform_connection_test()
+            except notification_anchor_mod.CrossProcessMutexTimeout:
+                return {"busy": True}
+
+        result = await _bounded_thread(
+            "notification_push_test",
+            enqueue_and_deliver,
+            timeout=25.0,
+        )
+    except notification_outbox_mod.NotificationOutboxError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="notification outbox rejected the connection test",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="notification delivery unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    if result is None:
+        return _notification_json(
+            {"queued": False, "in_progress": True}, status_code=202
+        )
+    if result.get("busy"):
+        return _notification_json(
+            {"queued": False, "in_progress": True}, status_code=409
+        )
+    if result.get("reason") == "no creator browser subscription":
+        return _notification_json(result, status_code=409)
+    if result.get("states"):
+        return _notification_json(result, status_code=409)
+    return _notification_json(result)
+
+
+@app.post("/notifications/push/ack")
+async def notification_push_acknowledge(req: Request) -> JSONResponse:
+    """Consume one click receipt before acknowledging durable sent evidence."""
+    _require_creator_request(req)
+    body = await _read_bounded_json_object(req, max_bytes=768)
+    if frozenset(body) != {"event_id", "receipt"}:
+        raise HTTPException(
+            status_code=400,
+            detail="acknowledgement body has wrong shape",
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        runtime = _notification_runtime()
+        adapter = _notification_runtime_component(
+            runtime, "adapter", web_push_adapter_mod.WebPushAdapter
+        )
+        def acknowledge_once() -> dict[str, object]:
+            if not _NOTIFICATION_ACK_OPERATION_LOCK.acquire(blocking=False):
+                return {"busy": True}
+            try:
+                return adapter.acknowledge(
+                    event_id=body["event_id"],
+                    receipt=body["receipt"],
+                )
+            finally:
+                _NOTIFICATION_ACK_OPERATION_LOCK.release()
+
+        status = await _bounded_thread(
+            "notification_push_ack",
+            acknowledge_once,
+            timeout=5.0,
+        )
+    except web_push_adapter_mod.WebPushAdapterError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail="acknowledgement receipt rejected",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except notification_outbox_mod.OutboxStateError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="notification is not ready for acknowledgement",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="notification acknowledgement unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    if status is None:
+        return _notification_json(
+            {"acknowledged": False, "in_progress": True}, status_code=202
+        )
+    if status.get("busy"):
+        return _notification_json(
+            {"acknowledged": False, "in_progress": True}, status_code=409
+        )
+    return _notification_json(
+        {"acknowledged": status["state"] == notification_outbox_mod.ACKNOWLEDGED}
+    )
 
 
 def _require_discord_bridge_request(req: Request) -> auth_mod.AuthDecision:

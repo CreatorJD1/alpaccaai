@@ -28,8 +28,9 @@ import json
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from config import Computer as ComputerCfg, OLLAMA_HOST
+from config import Computer as ComputerCfg, OLLAMA_HOST, VISION_CLOUD_MODEL
 from config import Vision as VisionCfg
+from alpecca.local_inference import verified_local_ollama_target
 
 
 # --- One proposed action ----------------------------------------------------
@@ -178,6 +179,14 @@ def screenshot_for_model() -> tuple[Optional[bytes], float]:
     return buf.getvalue(), scale
 
 
+def _vision_target_is_verified_local() -> bool:
+    return verified_local_ollama_target(
+        OLLAMA_HOST,
+        VisionCfg.MODEL,
+        known_cloud_models={VISION_CLOUD_MODEL},
+    )
+
+
 def execute(action: Action, scale: float) -> str:
     """Carry out one (already-approved) action via pyautogui. Returns a short
     result line for the loop's history. Coordinates are scaled back up from the
@@ -232,20 +241,40 @@ def run_task(task: str,
     returns a clean failure rather than doing anything."""
     if not available():
         return TaskResult(False, error="computer use is off (ALPECCA_COMPUTER_USE=1)")
-    from alpecca import vision  # local import: heavy, optional
+    if not _vision_target_is_verified_local():
+        return TaskResult(
+            False,
+            error="computer vision requires a verified loopback Ollama host and non-cloud model",
+        )
 
     steps_cap = max_steps or ComputerCfg.MAX_STEPS
     history: list[str] = []
     try:
         import ollama
-        client = ollama.Client(host=OLLAMA_HOST)
+        client = ollama.Client(
+            host=OLLAMA_HOST,
+            follow_redirects=False,
+            trust_env=False,
+        )
     except Exception:
         return TaskResult(False, error="vision model client unavailable")
 
     for _ in range(steps_cap):
+        if not _vision_target_is_verified_local():
+            return TaskResult(
+                False,
+                steps=history,
+                error="computer vision target is no longer verified local",
+            )
         shot, scale = screenshot_for_model()
         if shot is None:
             return TaskResult(False, summary="", steps=history, error="couldn't capture the screen")
+        if not _vision_target_is_verified_local():
+            return TaskResult(
+                False,
+                steps=history,
+                error="computer vision target is no longer verified local",
+            )
         try:
             resp = client.chat(
                 model=VisionCfg.MODEL,

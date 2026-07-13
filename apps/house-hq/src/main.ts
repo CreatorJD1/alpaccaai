@@ -1693,6 +1693,11 @@ let chatWasPointerLocked = false;
 let alpeccaActiveSystem: AlpeccaSystemId = "overview";
 let alpeccaSystemLoadSequence = 0;
 let alpeccaVoiceLivePoll: ReturnType<typeof setInterval> | null = null;
+let alpeccaServiceWorkerRegistrationPromise: Promise<ServiceWorkerRegistration | null> | null = null;
+let alpeccaPushActionPending = false;
+const ALPECCA_PUSH_ACK_RETRY_MESSAGE_TYPE = "alpecca:notification-ack-retry";
+const ALPECCA_PUSH_ACK_RETRY_COOLDOWN_MS = 5000;
+let alpeccaPushAckRetryLastRequestedAt = 0;
 
 // Keep the Voice viewer live: while it is the open system, re-fetch /voice and
 // repaint the meters in place so her modulation is seen moving, not frozen.
@@ -4010,6 +4015,121 @@ function alpeccaBackendFetch(url: string, init: RequestInit = {}) {
   });
 }
 
+function alpeccaPushBrowserSupported() {
+  return window.isSecureContext
+    && "serviceWorker" in navigator
+    && "PushManager" in window
+    && "Notification" in window;
+}
+
+function alpeccaPushBackendIsSameOrigin() {
+  if (!alpeccaAiBaseUrl) return false;
+  try {
+    return new URL(alpeccaAiBaseUrl, window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+function registerAlpeccaServiceWorker() {
+  if (!("serviceWorker" in navigator)) return Promise.resolve(null);
+  if (!alpeccaServiceWorkerRegistrationPromise) {
+    alpeccaServiceWorkerRegistrationPromise = navigator.serviceWorker.register("/sw.js")
+      .catch((error) => {
+        console.warn("Alpecca service worker registration failed.", error);
+        alpeccaServiceWorkerRegistrationPromise = null;
+        return null;
+      });
+  }
+  return alpeccaServiceWorkerRegistrationPromise;
+}
+
+function requestAlpeccaPushAcknowledgementRetry() {
+  if (!alpeccaPushBackendIsSameOrigin() || !("serviceWorker" in navigator)) return;
+  const now = Date.now();
+  if (now - alpeccaPushAckRetryLastRequestedAt < ALPECCA_PUSH_ACK_RETRY_COOLDOWN_MS) return;
+  alpeccaPushAckRetryLastRequestedAt = now;
+  const message = { type: ALPECCA_PUSH_ACK_RETRY_MESSAGE_TYPE, version: 1 };
+  const controller = navigator.serviceWorker.controller;
+  if (controller) {
+    controller.postMessage(message);
+    return;
+  }
+  void registerAlpeccaServiceWorker().then((registration) => {
+    registration?.active?.postMessage(message);
+  });
+}
+
+if (document.readyState === "complete") {
+  void registerAlpeccaServiceWorker();
+} else {
+  window.addEventListener("load", () => void registerAlpeccaServiceWorker(), { once: true });
+}
+window.addEventListener("online", requestAlpeccaPushAcknowledgementRetry);
+window.addEventListener("focus", requestAlpeccaPushAcknowledgementRetry);
+
+function alpeccaPushApplicationServerKey(status: Record<string, unknown>) {
+  const value = status.application_server_key
+    ?? status.vapid_public_key
+    ?? status.public_key
+    ?? status.applicationServerKey;
+  return typeof value === "string"
+    && value.length >= 32
+    && value.length <= 256
+    && /^[A-Za-z0-9_-]+$/.test(value)
+    ? value
+    : "";
+}
+
+function alpeccaPushServerReady(status: Record<string, unknown>) {
+  if (status.available === false || status.configured === false || status.ready === false) return false;
+  return Boolean(alpeccaPushApplicationServerKey(status));
+}
+
+function decodeAlpeccaPushApplicationServerKey(value: string) {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - value.length % 4) % 4);
+  let decoded = "";
+  try {
+    decoded = window.atob(padded);
+  } catch {
+    throw new Error("The push application key is invalid.");
+  }
+  if (decoded.length !== 65) throw new Error("The push application key is invalid.");
+  return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+}
+
+function alpeccaPushSubscriptionUsesKey(
+  subscription: PushSubscription,
+  applicationServerKey: Uint8Array,
+) {
+  const existingKey = subscription.options.applicationServerKey;
+  if (!existingKey) return false;
+  const existingBytes = new Uint8Array(existingKey);
+  return existingBytes.length === applicationServerKey.length
+    && existingBytes.every((value, index) => value === applicationServerKey[index]);
+}
+
+async function fetchAlpeccaPushStatus() {
+  if (!alpeccaAiBaseUrl) throw new Error("Live backend URL missing");
+  if (!alpeccaPushBackendIsSameOrigin()) {
+    throw new Error("Creator alerts require House HQ and the backend on the same origin.");
+  }
+  const path = "/notifications/push/status";
+  const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}${path}`), {
+    cache: "no-store",
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error(`${path} returned ${response.status}`);
+  const payload = await response.json() as Record<string, unknown>;
+  return { ...payload, ...systemRecord(payload.push) };
+}
+
+async function currentAlpeccaPushSubscription() {
+  const registration = await registerAlpeccaServiceWorker();
+  if (!registration || !("pushManager" in registration)) return null;
+  return registration.pushManager.getSubscription();
+}
+
 const ALPECCA_CAPABILITY_LEASE_HEADER = "X-Alpecca-Capability-Lease";
 const ALPECCA_CAPABILITY_PURPOSE_HEADER = "X-Alpecca-Capability-Purpose";
 const ALPECCA_CAPABILITY_CONNECTION_HEADER = "X-Alpecca-Capability-Connection";
@@ -4418,11 +4538,38 @@ function renderAlpeccaSystem(systemId: AlpeccaSystemId, data: Record<string, unk
     return `${systemIntro("SELF", `Current mood: ${mood}`, narration)}<section><h3>Grounded internal state</h3>${systemObjectRows(data, 18)}</section>`;
   }
   if (systemId === "devices") {
-    const trusted = (data.trusted_device || {}) as Record<string, unknown>;
+    const authorization = systemRecord(data.auth || data);
+    const trusted = systemRecord(authorization.trusted_device);
+    const push = systemRecord(data.push);
+    const pushSupported = alpeccaPushBrowserSupported();
+    const pushReady = alpeccaPushServerReady(push);
+    const pushSubscriptionPresent = push.browser_subscription_present === true;
+    const pushSubscribed = push.browser_subscribed === true;
+    const pushSubscriptionStale = pushSubscriptionPresent && !pushSubscribed;
+    const pushPermission = pushSupported ? Notification.permission : "unsupported";
+    const pushPermissionLabel = pushPermission === "granted"
+      ? "Granted"
+      : pushPermission === "denied"
+        ? "Blocked"
+        : pushPermission === "default"
+          ? "Not requested"
+          : "Unsupported";
+    const canEnablePush = pushSupported && pushReady && !pushSubscribed && pushPermission !== "denied";
+    const canTestPush = pushSupported && pushReady && pushSubscribed && pushPermission === "granted";
+    const pushDetail = !pushSupported
+      ? "This browser cannot receive Web Push alerts."
+      : !pushReady
+        ? systemString(push.reason || push.status, "The notification transport is unavailable.")
+        : pushSubscriptionStale
+          ? "This browser subscription uses an old application key and must be replaced."
+          : pushSubscribed
+          ? "This browser is registered for creator alerts."
+          : "Creator alerts are available but disabled in this browser.";
     return `${systemIntro("DEVICE", "Trusted access", "The current laptop enrolls locally. Other devices validate once, then use an HttpOnly trusted-device session.")}
-      <div class="systems-metrics"><div><span>Trust duration</span><strong>${escapeHudText(systemString(trusted.days, "bounded"))} days</strong></div><div><span>Browser secret</span><strong>${trusted.cookie_http_only ? "HttpOnly" : "Unavailable"}</strong></div></div>
-      <div class="systems-actions"><button type="button" data-system-action="device-page">Device setup</button><button type="button" data-system-action="classic-chat">Classic chat</button></div>
-      <section><h3>Authorization state</h3>${systemObjectRows(data, 12)}</section>`;
+      <div class="systems-metrics"><div><span>Trust duration</span><strong>${escapeHudText(systemString(trusted.days, "bounded"))} days</strong></div><div><span>Browser secret</span><strong>${trusted.cookie_http_only ? "HttpOnly" : "Unavailable"}</strong></div><div><span>Creator alerts</span><strong>${pushSubscribed ? "Enabled" : "Disabled"}</strong></div><div><span>Permission</span><strong>${pushPermissionLabel}</strong></div></div>
+      <div class="systems-actions"><button type="button" data-system-action="device-page">Device setup</button><button type="button" data-system-action="classic-chat">Classic chat</button><button type="button" data-system-action="push-enable"${canEnablePush ? "" : " disabled"}>Enable alerts</button><button type="button" data-system-action="push-disable"${pushSubscriptionPresent ? "" : " disabled"}>Disable alerts</button><button type="button" data-system-action="push-test"${canTestPush ? "" : " disabled"}>Send test</button></div>
+      <section><h3>Creator alerts</h3>${systemRow("Web Push", pushDetail, pushSubscribed ? "ON" : pushReady ? "READY" : "OFF")}</section>
+      <section><h3>Authorization state</h3>${systemObjectRows(authorization, 12)}</section>`;
   }
   if (systemId === "senses") {
     const flags: Array<[string, unknown, string]> = [
@@ -4573,6 +4720,52 @@ async function fetchAlpeccaSystemData(systemId: AlpeccaSystemId) {
     ]);
     const runtime = (state.runtime || state.model_use || {}) as Record<string, unknown>;
     return { home, state, runtime };
+  }
+  if (systemId === "devices") {
+    const auth = await fetchJson("/auth/status");
+    let push: Record<string, unknown>;
+    if (!alpeccaPushBackendIsSameOrigin()) {
+      push = {
+        available: false,
+        reason: "Creator alerts require House HQ and the backend on the same origin.",
+      };
+    } else {
+      try {
+        push = await fetchAlpeccaPushStatus();
+      } catch (error) {
+        push = {
+          available: false,
+          reason: error instanceof Error ? error.message : "Creator alerts are unavailable.",
+        };
+      }
+    }
+    let browserSubscriptionPresent = false;
+    let browserSubscribed = false;
+    if (alpeccaPushBackendIsSameOrigin()) {
+      try {
+        const subscription = await currentAlpeccaPushSubscription();
+        browserSubscriptionPresent = Boolean(subscription);
+        const applicationServerKey = alpeccaPushApplicationServerKey(push);
+        browserSubscribed = Boolean(
+          subscription
+          && applicationServerKey
+          && alpeccaPushSubscriptionUsesKey(
+            subscription,
+            decodeAlpeccaPushApplicationServerKey(applicationServerKey),
+          )
+        );
+      } catch {
+        // The server status remains useful when this browser cannot inspect PushManager.
+      }
+    }
+    return {
+      auth,
+      push: {
+        ...push,
+        browser_subscription_present: browserSubscriptionPresent,
+        browser_subscribed: browserSubscribed,
+      },
+    };
   }
   return fetchJson(alpeccaSystemEndpoints[systemId]);
 }
@@ -14406,6 +14599,105 @@ async function postAlpeccaSystem(
   return await response.json() as Record<string, unknown>;
 }
 
+async function revokeAlpeccaPushEndpoint(endpoint: string) {
+  if (!alpeccaAiBaseUrl) throw new Error("Live backend URL missing");
+  const path = "/notifications/push/subscription";
+  const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}${path}`), {
+    method: "DELETE",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint }),
+  });
+  if (!response.ok) throw new Error(`${path} returned ${response.status}`);
+}
+
+async function removeAlpeccaPushSubscription(
+  registration: ServiceWorkerRegistration,
+  subscription: PushSubscription,
+) {
+  await subscription.unsubscribe();
+  const remaining = await registration.pushManager.getSubscription();
+  if (remaining?.endpoint === subscription.endpoint) {
+    throw new Error("The browser could not remove its previous push subscription.");
+  }
+}
+
+async function enableAlpeccaPushNotifications() {
+  if (!alpeccaPushBrowserSupported()) {
+    throw new Error("Web Push requires a supported browser and secure House HQ connection.");
+  }
+  if (!alpeccaPushBackendIsSameOrigin()) {
+    throw new Error("Creator alerts require House HQ and the backend on the same origin.");
+  }
+  const permission = Notification.permission === "granted"
+    ? "granted"
+    : await Notification.requestPermission();
+  if (permission !== "granted") throw new Error("Notification permission was not granted.");
+
+  const status = await fetchAlpeccaPushStatus();
+  if (!alpeccaPushServerReady(status)) {
+    throw new Error(systemString(status.reason || status.status, "The notification transport is unavailable."));
+  }
+  const applicationServerKey = decodeAlpeccaPushApplicationServerKey(
+    alpeccaPushApplicationServerKey(status),
+  );
+  const registration = await registerAlpeccaServiceWorker();
+  if (!registration) throw new Error("The House HQ service worker is unavailable.");
+
+  let subscription = await registration.pushManager.getSubscription();
+  if (subscription && !alpeccaPushSubscriptionUsesKey(subscription, applicationServerKey)) {
+    await revokeAlpeccaPushEndpoint(subscription.endpoint);
+    await removeAlpeccaPushSubscription(registration, subscription);
+    subscription = null;
+  }
+  let created = false;
+  if (!subscription) {
+    subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey,
+    });
+    created = true;
+  }
+  try {
+    await postAlpeccaSystem("/notifications/push/subscription", { subscription: subscription.toJSON() });
+  } catch (error) {
+    if (created) await removeAlpeccaPushSubscription(registration, subscription).catch(() => {});
+    throw error;
+  }
+  return "Creator alerts are enabled in this browser.";
+}
+
+async function disableAlpeccaPushNotifications() {
+  if (!alpeccaPushBackendIsSameOrigin()) {
+    throw new Error("Creator alerts require House HQ and the backend on the same origin.");
+  }
+  const registration = await registerAlpeccaServiceWorker();
+  const subscription = await registration?.pushManager.getSubscription();
+  if (!subscription) return "Creator alerts are already disabled in this browser.";
+  await revokeAlpeccaPushEndpoint(subscription.endpoint);
+  await removeAlpeccaPushSubscription(registration!, subscription);
+  return "Creator alerts are disabled in this browser.";
+}
+
+async function testAlpeccaPushNotifications() {
+  if (!alpeccaPushBrowserSupported() || Notification.permission !== "granted") {
+    throw new Error("Enable creator alerts in this browser before sending a test.");
+  }
+  if (!alpeccaPushBackendIsSameOrigin()) {
+    throw new Error("Creator alerts require House HQ and the backend on the same origin.");
+  }
+  const status = await fetchAlpeccaPushStatus();
+  const applicationServerKey = decodeAlpeccaPushApplicationServerKey(
+    alpeccaPushApplicationServerKey(status),
+  );
+  const subscription = await currentAlpeccaPushSubscription();
+  if (!subscription || !alpeccaPushSubscriptionUsesKey(subscription, applicationServerKey)) {
+    throw new Error("Enable creator alerts in this browser before sending a test.");
+  }
+  await postAlpeccaSystem("/notifications/push/test", {});
+  return "Test alert requested.";
+}
+
 function setAlpeccaSystemResults(html: string) {
   const results = alpeccaSystemsBody.querySelector<HTMLDivElement>("#alpeccaSystemResults");
   if (results) results.innerHTML = html;
@@ -14706,6 +14998,22 @@ async function handleAlpeccaSystemAction(action: string) {
     if (action === "screen-start") return void startAlpeccaScreenShare();
     if (action === "screen-stop") return void stopAlpeccaScreenShare();
     if (action === "enroll-voice") return void enrollAlpeccaCreatorVoice();
+    if (action === "push-enable" || action === "push-disable" || action === "push-test") {
+      if (alpeccaPushActionPending) return;
+      alpeccaPushActionPending = true;
+      try {
+        const message = action === "push-enable"
+          ? await enableAlpeccaPushNotifications()
+          : action === "push-disable"
+            ? await disableAlpeccaPushNotifications()
+            : await testAlpeccaPushNotifications();
+        await loadAlpeccaSystem("devices");
+        setAlpeccaSystemsNotice(message);
+      } finally {
+        alpeccaPushActionPending = false;
+      }
+      return;
+    }
     if (action === "voice-preview") {
       alpeccaVoiceLastText = "";
       startAlpeccaSpeech("This is my current voice, grounded in how I feel right now.", 3.8);
