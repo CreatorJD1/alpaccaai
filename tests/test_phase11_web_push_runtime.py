@@ -117,6 +117,7 @@ def _store(
     clock: MutableClock | None = None,
     seal_key: bytes = SEAL_KEY,
     anchor: outbox_mod.MonotonicAnchor | None = None,
+    ack_anchor: outbox_mod.MonotonicAnchor | None = None,
     name: str = "web-push-runtime.db",
 ) -> runtime_mod.WebPushPrivateStore:
     return runtime_mod.WebPushPrivateStore(
@@ -124,6 +125,7 @@ def _store(
         subscription_record=record or FakeCredentialRecord(),
         seal_key=seal_key,
         subscription_anchor=anchor,
+        ack_anchor=ack_anchor,
         clock=clock or MutableClock(),
     )
 
@@ -673,6 +675,124 @@ def test_pre_reservation_receipt_row_is_upgraded_when_reserved(tmp_path: Path):
     assert store.verify_ack_receipt(event_id=EVENT_ID, receipt=receipt) is True
     assert store.reserve_ack_receipt(event_id=EVENT_ID, receipt=receipt) is True
     assert store.consume_ack_receipt(event_id=EVENT_ID, receipt=receipt) is True
+
+
+def test_ack_anchor_must_be_a_distinct_failure_domain(tmp_path: Path):
+    shared = outbox_mod.InMemoryMonotonicAnchor()
+    with pytest.raises(ValueError, match="distinct failure domain"):
+        runtime_mod.WebPushPrivateStore(
+            tmp_path / "ack-distinct.db",
+            subscription_record=FakeCredentialRecord(),
+            seal_key=SEAL_KEY,
+            subscription_anchor=shared,
+            ack_anchor=shared,
+        )
+
+
+def test_ack_consumption_anchor_advances_and_reopen_is_idempotent(tmp_path: Path):
+    anchor = outbox_mod.InMemoryMonotonicAnchor()
+    store = _store(tmp_path, ack_anchor=anchor, name="ack-anchor.db")
+    receipt = store.issue_ack_receipt(
+        event_id=EVENT_ID,
+        subscription_id="wps_" + "a" * 32,
+        transport_idempotency_key=TRANSPORT_KEY,
+    )
+    assert store.reserve_ack_receipt(event_id=EVENT_ID, receipt=receipt) is True
+    assert store.consume_ack_receipt(event_id=EVENT_ID, receipt=receipt) is True
+
+    # The external anchor advanced exactly one consumption checkpoint.
+    snapshot = anchor.snapshot()
+    assert snapshot.pending is None
+    assert snapshot.current is not None and snapshot.current.sequence == 1
+    assert snapshot.current.policy_id == runtime_mod._ACK_POLICY_ID
+
+    # A second consume is idempotently rejected, never a duplicate success.
+    assert store.consume_ack_receipt(event_id=EVENT_ID, receipt=receipt) is False
+
+    # Reopening against the same anchor reconciles cleanly and stays consumed.
+    reopened = _store(tmp_path, ack_anchor=anchor, name="ack-anchor.db")
+    assert reopened.verify_ack_receipt(event_id=EVENT_ID, receipt=receipt) is False
+    assert reopened.consume_ack_receipt(event_id=EVENT_ID, receipt=receipt) is False
+    assert anchor.snapshot().current.sequence == 1
+
+
+def test_ack_consumption_anchor_rejects_receipt_db_rollback(tmp_path: Path):
+    anchor = outbox_mod.InMemoryMonotonicAnchor()
+    store = _store(tmp_path, ack_anchor=anchor, name="ack-rollback.db")
+    db_path = store.db_path
+    receipt = store.issue_ack_receipt(
+        event_id=EVENT_ID,
+        subscription_id="wps_" + "b" * 32,
+        transport_idempotency_key=TRANSPORT_KEY,
+    )
+    assert store.reserve_ack_receipt(event_id=EVENT_ID, receipt=receipt) is True
+
+    # A valid pre-consumption database: the receipt is reserved but not consumed.
+    pre_consumption = db_path.read_bytes()
+    assert store.consume_ack_receipt(event_id=EVENT_ID, receipt=receipt) is True
+    assert anchor.snapshot().current.sequence == 1
+
+    # Restore that pre-consumption database. The anchor lives in a separate
+    # failure domain and is untouched, so the restored consumption count no
+    # longer matches it and the store must fail closed rather than allow a
+    # second idempotent acknowledgement success.
+    db_path.write_bytes(pre_consumption)
+    for suffix in ("-journal", "-wal", "-shm"):
+        sibling = db_path.with_name(db_path.name + suffix)
+        if sibling.exists():
+            sibling.unlink()
+
+    with pytest.raises(runtime_mod.WebPushRuntimeError):
+        _store(tmp_path, ack_anchor=anchor, name="ack-rollback.db")
+
+
+def test_ack_consumption_anchor_rejects_missing_anchor_for_consumed_state(
+    tmp_path: Path,
+):
+    anchor = outbox_mod.InMemoryMonotonicAnchor()
+    store = _store(tmp_path, ack_anchor=anchor, name="ack-missing.db")
+    receipt = store.issue_ack_receipt(
+        event_id=EVENT_ID,
+        subscription_id="wps_" + "c" * 32,
+        transport_idempotency_key=TRANSPORT_KEY,
+    )
+    assert store.reserve_ack_receipt(event_id=EVENT_ID, receipt=receipt) is True
+    assert store.consume_ack_receipt(event_id=EVENT_ID, receipt=receipt) is True
+
+    # A fresh, empty anchor cannot vouch for an already-consumed database.
+    with pytest.raises(runtime_mod.WebPushRuntimeError):
+        _store(
+            tmp_path,
+            ack_anchor=outbox_mod.InMemoryMonotonicAnchor(),
+            name="ack-missing.db",
+        )
+
+
+def test_ack_consumption_anchor_rolls_forward_after_interrupted_commit(
+    tmp_path: Path,
+):
+    anchor = FailOnceCommitAnchor()
+    store = _store(tmp_path, ack_anchor=anchor, name="ack-forward.db")
+    receipt = store.issue_ack_receipt(
+        event_id=EVENT_ID,
+        subscription_id="wps_" + "d" * 32,
+        transport_idempotency_key=TRANSPORT_KEY,
+    )
+    assert store.reserve_ack_receipt(event_id=EVENT_ID, receipt=receipt) is True
+
+    # The SQLite consumption commits, then the external anchor commit is
+    # interrupted, leaving a pending checkpoint that matches the database.
+    anchor.fail_next_commit = True
+    with pytest.raises(outbox_mod.OutboxAnchorError):
+        store.consume_ack_receipt(event_id=EVENT_ID, receipt=receipt)
+
+    # Reopening rolls the pending checkpoint forward and keeps the receipt
+    # consumed exactly once.
+    reopened = _store(tmp_path, ack_anchor=anchor, name="ack-forward.db")
+    assert reopened.verify_ack_receipt(event_id=EVENT_ID, receipt=receipt) is False
+    assert reopened.consume_ack_receipt(event_id=EVENT_ID, receipt=receipt) is False
+    assert anchor.snapshot().current.sequence == 1
+    assert anchor.snapshot().pending is None
 
 
 @pytest.mark.parametrize(

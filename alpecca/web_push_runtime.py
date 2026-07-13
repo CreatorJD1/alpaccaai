@@ -57,7 +57,17 @@ _SUBSCRIPTION_META_DOMAIN = b"alpecca.notification-push-meta.v1\x00"
 _SUBSCRIPTION_POLICY_DIGEST = hashlib.sha256(
     b"alpecca.notification-push-subscriptions-policy.v1"
 ).hexdigest()
+# The acknowledgement-consumption anchor lives in a distinct failure domain
+# (its own credential record) and never reuses the subscription domains above.
+_ACK_META_DOMAIN = b"alpecca.notification-push-ack-meta.v1\x00"
+_ACK_CHAIN_DOMAIN = b"alpecca.notification-push-ack-chain.v1\x00"
+_ACK_META_ROW_DOMAIN = b"alpecca.notification-push-ack-meta-row.v1\x00"
+_ACK_POLICY_ID = "push_ack_consumption"
+_ACK_POLICY_DIGEST = hashlib.sha256(
+    b"alpecca.notification-push-ack-consumption-policy.v1"
+).hexdigest()
 _RECEIPT_RE = re.compile(r"^wpa_[A-Za-z0-9_-]{43}$")
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class WebPushRuntimeError(RuntimeError):
@@ -210,6 +220,7 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
         subscription_record: CredentialRecord,
         seal_key: str | bytes,
         subscription_anchor: outbox_mod.MonotonicAnchor | None = None,
+        ack_anchor: outbox_mod.MonotonicAnchor | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if not isinstance(subscription_record, CredentialRecord):
@@ -223,13 +234,37 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
             subscription_anchor, outbox_mod.MonotonicAnchor
         ):
             raise TypeError("subscription_anchor must implement MonotonicAnchor")
+        if ack_anchor is not None and not isinstance(
+            ack_anchor, outbox_mod.MonotonicAnchor
+        ):
+            raise TypeError("ack_anchor must implement MonotonicAnchor")
+        if (
+            subscription_anchor is not None
+            and ack_anchor is not None
+            and subscription_anchor is ack_anchor
+        ):
+            raise ValueError(
+                "ack_anchor must be a distinct failure domain from subscription_anchor"
+            )
         self._subscription_anchor = subscription_anchor
+        self._ack_anchor = ack_anchor
         self._clock = clock
         self._lock = threading.RLock()
         self._ensure_schema()
         if self._subscription_anchor is not None:
             with self._subscription_guard():
                 self._reconcile_subscription_anchor()
+        if self._ack_anchor is not None:
+            with self._lock:
+                with connect(self.db_path) as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        self._reconcile_ack_anchor(conn)
+                    except BaseException:
+                        conn.rollback()
+                        raise
+                    else:
+                        conn.commit()
 
     def _ensure_schema(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -254,6 +289,12 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
                 );
                 CREATE INDEX IF NOT EXISTS notification_push_ack_expiry_idx
                     ON notification_push_ack_receipts(expires_at, consumed_at);
+                CREATE TABLE IF NOT EXISTS notification_push_ack_meta (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                    consume_sequence INTEGER NOT NULL CHECK(consume_sequence>=0),
+                    head_seal TEXT NOT NULL,
+                    row_seal TEXT NOT NULL
+                );
                 """
             )
             columns = {
@@ -733,7 +774,134 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
             )
         return bool(result.rowcount == 1)
 
+    def _ack_checkpoint(
+        self, consume_sequence: int, head_seal: str
+    ) -> outbox_mod.LedgerCheckpoint:
+        """Build the exact monotonic checkpoint for one consumption count.
+
+        The checkpoint is a deterministic function of ``(consume_sequence,
+        head_seal)`` so a snapshot rollback of the SQLite database yields a
+        checkpoint that no longer equals the externally anchored value.
+        """
+        ledger_id = "ledger_" + _domain_hmac(
+            self._key, _ACK_META_DOMAIN, "ledger"
+        )[:32]
+        metadata: dict[str, object] = {
+            "ledger_id": ledger_id,
+            "contract_version": outbox_mod.CONTRACT_VERSION,
+            "policy_id": _ACK_POLICY_ID,
+            "policy_version": 1,
+            "policy_digest": _ACK_POLICY_DIGEST,
+            "sequence": consume_sequence,
+            "event_count": consume_sequence,
+            "receipt_count": consume_sequence,
+            "global_head_seal": "" if consume_sequence == 0 else head_seal,
+        }
+        meta_seal = _domain_hmac(
+            self._key, _ACK_META_DOMAIN, _canonical({"checkpoint": metadata})
+        )
+        return outbox_mod.LedgerCheckpoint(**metadata, meta_seal=meta_seal)
+
+    def _ack_meta_row_seal(self, consume_sequence: int, head_seal: str) -> str:
+        material = {
+            "singleton": 1,
+            "consume_sequence": consume_sequence,
+            "head_seal": head_seal,
+        }
+        return _domain_hmac(self._key, _ACK_META_ROW_DOMAIN, _canonical(material))
+
+    def _read_ack_meta(self, conn: sqlite3.Connection) -> tuple[int, str]:
+        row = conn.execute(
+            "SELECT consume_sequence,head_seal,row_seal "
+            "FROM notification_push_ack_meta WHERE singleton=1"
+        ).fetchone()
+        if row is None:
+            return 0, ""
+        seq = row["consume_sequence"]
+        head = row["head_seal"]
+        if type(seq) is not int or seq < 0 or type(head) is not str:
+            raise WebPushRuntimeError("acknowledgement consumption meta is malformed")
+        if (seq == 0 and head != "") or (
+            seq > 0 and _HEX64_RE.fullmatch(head) is None
+        ):
+            raise WebPushRuntimeError("acknowledgement consumption meta is malformed")
+        expected = self._ack_meta_row_seal(seq, head)
+        if not hmac.compare_digest(str(row["row_seal"]), expected):
+            raise WebPushRuntimeError("acknowledgement consumption meta is corrupt")
+        return seq, head
+
+    def _write_ack_meta(
+        self, conn: sqlite3.Connection, consume_sequence: int, head_seal: str
+    ) -> None:
+        row_seal = self._ack_meta_row_seal(consume_sequence, head_seal)
+        conn.execute(
+            "INSERT INTO notification_push_ack_meta"
+            "(singleton,consume_sequence,head_seal,row_seal) VALUES(1,?,?,?) "
+            "ON CONFLICT(singleton) DO UPDATE SET "
+            "consume_sequence=excluded.consume_sequence,"
+            "head_seal=excluded.head_seal,row_seal=excluded.row_seal",
+            (consume_sequence, head_seal, row_seal),
+        )
+
+    def _next_ack_head(
+        self,
+        previous_head: str,
+        receipt_hmac: str,
+        consumed_at: float,
+        sequence: int,
+    ) -> str:
+        material = {
+            "previous": previous_head,
+            "receipt_hmac": receipt_hmac,
+            "consumed_at": consumed_at,
+            "sequence": sequence,
+        }
+        return _domain_hmac(self._key, _ACK_CHAIN_DOMAIN, _canonical(material))
+
+    def _reconcile_ack_anchor(self, conn: sqlite3.Connection) -> None:
+        """Fail closed when the consumption count regresses below the anchor.
+
+        Called while a SQLite writer transaction is held.  It resolves any
+        crashed pending checkpoint (roll forward if the database already matches,
+        roll back otherwise) and then requires the anchored current checkpoint to
+        equal the database-derived checkpoint.  A restored pre-consumption
+        database yields a lower checkpoint that no longer matches the external
+        anchor, so an already-consumed receipt cannot be consumed a second time.
+        """
+        anchor = self._ack_anchor
+        if anchor is None:
+            return
+        seq, head = self._read_ack_meta(conn)
+        checkpoint = self._ack_checkpoint(seq, head)
+        snapshot = anchor.snapshot()
+        if snapshot.pending is not None:
+            if snapshot.pending == checkpoint:
+                anchor.commit(checkpoint)
+            elif snapshot.current == checkpoint:
+                anchor.abort(snapshot.pending)
+            else:
+                raise WebPushRuntimeError(
+                    "acknowledgement consumption does not match its monotonic anchor"
+                )
+            snapshot = anchor.snapshot()
+        if snapshot.current is None:
+            if seq != 0:
+                raise WebPushRuntimeError(
+                    "protected acknowledgement anchor is missing for consumed state"
+                )
+            anchor.prepare(None, checkpoint)
+            anchor.commit(checkpoint)
+            snapshot = anchor.snapshot()
+        if snapshot.current != checkpoint or snapshot.pending is not None:
+            raise WebPushRuntimeError(
+                "acknowledgement consumption does not match its monotonic anchor"
+            )
+
     def consume_ack_receipt(self, *, event_id: str, receipt: str) -> bool:
+        if self._ack_anchor is not None:
+            return self._consume_ack_receipt_anchored(
+                event_id=event_id, receipt=receipt
+            )
         row = self._receipt_row(event_id=event_id, receipt=receipt)
         if row is None:
             return False
@@ -760,6 +928,70 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
                 (now, row_seal, row["receipt_hmac"], row["reserved_at"]),
             )
         return bool(result.rowcount == 1)
+
+    def _consume_ack_receipt_anchored(
+        self, *, event_id: str, receipt: str
+    ) -> bool:
+        anchor = self._ack_anchor
+        assert anchor is not None
+        with self._lock:
+            row = self._receipt_row(event_id=event_id, receipt=receipt)
+            if row is None:
+                return False
+            now = _now(self._clock())
+            if row["reserved_at"] is None or row["consumed_at"] is not None:
+                return False
+            material = {
+                "receipt_hmac": row["receipt_hmac"],
+                "event_id": row["event_id"],
+                "subscription_id": row["subscription_id"],
+                "transport_hmac": row["transport_hmac"],
+                "expires_at": row["expires_at"],
+                "reserved_at": row["reserved_at"],
+                "consumed_at": now,
+            }
+            row_seal = _domain_hmac(self._key, _ROW_DOMAIN, _canonical(material))
+            committed_candidate: outbox_mod.LedgerCheckpoint | None = None
+            with connect(self.db_path) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    # Resolve any crashed pending and reject a rolled-back count
+                    # before advancing. Prepare the next checkpoint outside the
+                    # SQLite commit so a crash leaves the anchor able to roll the
+                    # committed database forward or the uncommitted attempt back.
+                    self._reconcile_ack_anchor(conn)
+                    seq, head = self._read_ack_meta(conn)
+                    next_seq = seq + 1
+                    next_head = self._next_ack_head(
+                        head, str(row["receipt_hmac"]), now, next_seq
+                    )
+                    current_ckpt = self._ack_checkpoint(seq, head)
+                    candidate_ckpt = self._ack_checkpoint(next_seq, next_head)
+                    anchor.prepare(current_ckpt, candidate_ckpt)
+                except BaseException:
+                    conn.rollback()
+                    raise
+                try:
+                    result = conn.execute(
+                        "UPDATE notification_push_ack_receipts "
+                        "SET consumed_at=?,row_seal=? "
+                        "WHERE receipt_hmac=? AND reserved_at=? "
+                        "AND consumed_at IS NULL",
+                        (now, row_seal, row["receipt_hmac"], row["reserved_at"]),
+                    )
+                    if result.rowcount != 1:
+                        conn.rollback()
+                        anchor.abort(candidate_ckpt)
+                        return False
+                    self._write_ack_meta(conn, next_seq, next_head)
+                    conn.commit()
+                    committed_candidate = candidate_ckpt
+                except BaseException:
+                    conn.rollback()
+                    anchor.abort(candidate_ckpt)
+                    raise
+            anchor.commit(committed_candidate)
+            return True
 
     def public_status(self) -> dict[str, object]:
         return {

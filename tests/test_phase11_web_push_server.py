@@ -571,6 +571,40 @@ def test_delete_revokes_only_the_exact_endpoint(push_server: PushServerHarness):
     assert push_server.store.subscriptions() == ()
 
 
+def test_revoke_blocks_a_later_connection_test_send(
+    push_server: PushServerHarness,
+):
+    _subscribe(push_server)
+
+    # The connection test reaches the enrolled device exactly once.
+    _send_test(push_server)
+    assert len(push_server.transport.calls) == 1
+
+    removed = push_server.client.request(
+        "DELETE",
+        "/notifications/push/subscription",
+        headers=CREATOR_HEADERS,
+        json={"endpoint": ENDPOINT},
+    )
+    assert removed.status_code == 200
+    assert removed.json() == {"subscribed": False, "removed": True}
+    assert push_server.store.subscriptions() == ()
+
+    # After revocation a later connection test cannot dispatch to any device
+    # and does not add a transport send.
+    blocked = push_server.client.post(
+        "/notifications/push/test",
+        headers=CREATOR_HEADERS,
+        json={},
+    )
+    assert blocked.status_code == 409
+    assert blocked.json() == {
+        "queued": False,
+        "reason": "no creator browser subscription",
+    }
+    assert len(push_server.transport.calls) == 1
+
+
 def test_connection_test_requires_empty_object_and_a_subscription(
     push_server: PushServerHarness,
 ):
