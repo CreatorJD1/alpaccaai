@@ -158,6 +158,40 @@ def test_remote_password_exchange_accepts_mobile_same_site_referer(monkeypatch):
     assert "HttpOnly" in enrolled.headers["set-cookie"]
 
 
+def test_remote_password_exchange_accepts_live_preview_origin_without_restart(
+    monkeypatch, tmp_path
+):
+    import json
+    import server
+
+    authority = auth.SessionAuthority(
+        "test-only-preview-secret",
+        session_ttl_s=180 * 24 * 60 * 60,
+        creator_password=TEST_PASSWORD,
+    )
+    monkeypatch.setattr(server, "_AUTHORITY", authority)
+    monkeypatch.setattr(server, "HOME", tmp_path)
+    (tmp_path / "preview.json").write_text(
+        json.dumps({"url": "https://fresh-preview.trycloudflare.com", "port": 8765}),
+        encoding="utf-8",
+    )
+    client = TestClient(
+        server.app,
+        base_url="https://fresh-preview.trycloudflare.com",
+        client=("192.0.2.46", 50104),
+    )
+
+    enrolled = client.post(
+        "/auth/password",
+        data={"password": TEST_PASSWORD, "next": "/house-hq"},
+        headers={"Referer": "https://fresh-preview.trycloudflare.com/house-hq"},
+        follow_redirects=False,
+    )
+
+    assert enrolled.status_code == 303
+    assert enrolled.headers["location"] == "/house-hq"
+
+
 def test_remote_password_exchange_rejects_cleartext_http(monkeypatch):
     import server
 

@@ -2968,6 +2968,27 @@ _EXPLICIT_CORS_ORIGINS = frozenset(
 )
 
 
+def _runtime_public_origins() -> frozenset[str]:
+    """Return explicitly configured origins plus the live preview origin.
+
+    ``scripts/share.py`` may attach a quick tunnel to an already-running
+    backend.  In that case changing the parent process environment cannot
+    update this module's import-time allowlist.  The preview manager writes
+    the URL only after cloudflared has issued it, so reading that small local
+    state record keeps the allowlist current without accepting arbitrary
+    ``Origin`` or forwarded-host values from a request.
+    """
+    origins = set(_EXPLICIT_CORS_ORIGINS)
+    try:
+        preview = json.loads((HOME / "preview.json").read_text(encoding="utf-8"))
+        preview_url = _normalized_origin(str(preview.get("url", "")))
+    except (OSError, TypeError, ValueError, AttributeError):
+        preview_url = ""
+    if preview_url:
+        origins.add(preview_url)
+    return frozenset(origins)
+
+
 def _normalized_origin(origin: str) -> str:
     if not origin:
         return ""
@@ -2990,7 +3011,7 @@ def _allowed_cors_origin(origin: str) -> str:
         return ""
     parsed = urlparse(normalized)
     host = (parsed.hostname or "").lower()
-    if host in _CORS_ALLOWED_HOSTS or normalized in _EXPLICIT_CORS_ORIGINS:
+    if host in _CORS_ALLOWED_HOSTS or normalized in _runtime_public_origins():
         return normalized
     return ""
 
@@ -3094,7 +3115,7 @@ def _cookie_origin_allowed(request: Request, origin: str) -> bool:
         if normalized == request_origin:
             return True
         return (
-            normalized in _EXPLICIT_CORS_ORIGINS
+            normalized in _runtime_public_origins()
             and bool(_allowed_cors_origin(normalized))
         )
 
@@ -3107,7 +3128,7 @@ def _cookie_origin_allowed(request: Request, origin: str) -> bool:
         return False
     if referer == request_origin:
         return True
-    return referer in _EXPLICIT_CORS_ORIGINS and bool(_allowed_cors_origin(referer))
+    return referer in _runtime_public_origins() and bool(_allowed_cors_origin(referer))
 
 
 @app.middleware("http")
@@ -8130,7 +8151,7 @@ async def ws(socket: WebSocket) -> None:
         origin = _normalized_origin(socket.headers.get("origin", ""))
         expected_scheme = "https" if socket.url.scheme == "wss" else "http"
         expected = f"{expected_scheme}://{socket.url.netloc}".rstrip("/")
-        if origin != expected and origin not in _EXPLICIT_CORS_ORIGINS:
+        if origin != expected and origin not in _runtime_public_origins():
             decision = auth_mod.AuthDecision(
                 False,
                 "session_cookie",
