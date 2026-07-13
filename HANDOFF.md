@@ -1,4 +1,4 @@
-# Alpecca — Handoff (updated 2026-07-12)
+# Alpecca — Handoff (updated 2026-07-13)
 
 ## Codex Wave 1 Integration (2026-07-13)
 
@@ -11,12 +11,10 @@
   context budgeting and cancellable page-tier maintenance; Lane I makes routine
   execution atomic with retry/backoff; Lane B adds the byte-bound perception
   consent gate.
-- The corresponding `server.py` / `mind.py` integration is present locally but
-  intentionally remains in the active shared-file worktree with Phase 8 rather
-  than being folded into a blind commit. It adds creator-only no-store snapshots
-  for knowledge, preferences, and workload; wires the push acknowledgement
-  anchor; re-budgets tool rounds; schedules cancellable page maintenance; and
-  uses routine claims. Preserve it when checkpointing Wave 0.
+- Commit `e655cf7` checkpoints the integrated Wave 0 work with the corresponding
+  `server.py` / `mind.py` changes: creator-only no-store snapshots for knowledge,
+  preferences, and workload; the push acknowledgement anchor; per-round tool
+  budgeting; cancellable page maintenance; and durable routine claims.
 - Remote perception remains **inert**. No server egress gate is constructed,
   so all current image, screen, webcam, and Discord vision remains
   verified-local. Do not activate the remote path without an interactive
@@ -28,6 +26,18 @@
   RSI smoke `36 passed`; House HQ build passed. A full `pytest -q tests` run
   exceeded the runner's 120-second cap without an early failure, so it remains
   unconfirmed rather than green.
+
+## Codex Lane K: House Slow-Turn Transaction (2026-07-13)
+
+- House HQ now keeps one original request ID for a chat turn. It no longer aborts
+  the HTTP request at 25 seconds and resends the same message over WebSocket.
+  The 12-second and 35-second messages are nonterminal progress notices; a valid
+  late reply still renders, while duplicate delivery for a completed request is
+  ignored.
+- Verification: `python -m pytest -q tests/test_core.py` (`355 passed`) and
+  `npm.cmd run house:build` passed. The retained Vite chunk-size advisory is not
+  a build failure. This is a frontend transaction fix; an end-to-end delayed
+  backend soak remains useful before declaring the live latency issue closed.
 
 ## Codex Resume Checkpoint: Local Model Honesty And Parallel Stage Review
 

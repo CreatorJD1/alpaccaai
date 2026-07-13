@@ -2715,18 +2715,30 @@ def test_house_living_loop_routes_alpecca_to_activation_terminals():
     assert "else showMessage(line, 5.5)" in living_handler
 
 
-def test_house_chat_late_replies_are_not_background_events():
+def test_house_chat_slow_turns_keep_one_live_transaction():
     root = Path(__file__).resolve().parent.parent
     src = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
-    assert "const ALPECCA_AI_PLAYER_REPLY_TIMEOUT_MS = 35000;" in src
+    assert "const ALPECCA_AI_PLAYER_REPLY_NOTICE_MS = 35000;" in src
     assert "const ALPECCA_AI_SLOW_REPLY_MS = 12000;" in src
     reply_block = src[src.index('if (message.type === "reply")') : src.index('if (message.type === "proactive"')]
+    assert "const alpeccaAiCompletedRequestIds = new Set<string>();" in src
+    assert "function rememberCompletedAlpeccaRequest" in src
+    assert "alpeccaAiCompletedRequestIds.has(replyRequestId)" in reply_block
+    assert "const fromPlayerChat = Boolean(replyRequestId) && replyRequestId === alpeccaAiPendingPlayerRequestId;" in reply_block
+    assert 'message.source === "house-chat"' not in reply_block
     assert "const wasAwaitingPlayerReply = fromPlayerChat || legacyPlayerReply;" in reply_block
     assert "alpeccaAiAwaitingReply && (fromPlayerChat || legacyPlayerReply)" not in reply_block
     assert "Background core event" in reply_block
     timeout_block = src[src.index("function updateHud"):src.index("roomPanelTimer -= dt")]
-    assert "waitingMs > ALPECCA_AI_PLAYER_REPLY_TIMEOUT_MS" in timeout_block
+    assert "waitingMs > ALPECCA_AI_PLAYER_REPLY_NOTICE_MS" in timeout_block
+    assert "alpeccaAiExtendedReplyNoticeShown = true;" in timeout_block
+    assert "alpeccaAiAwaitingReply = false;" not in timeout_block
     assert "waitingMs > 30000" not in timeout_block
+    send_start = src.index("function sendAlpeccaChat")
+    send_block = src[send_start:src.index('if (alpeccaAiStatus === "token")', send_start)]
+    assert "ALPECCA_AI_CHANNEL_INBOUND_TIMEOUT_MS" not in send_block
+    assert "trying websocket fallback" not in send_block
+    assert "one House request ID must remain one model/tool transaction" in send_block
 
 
 def test_house_chat_pauses_background_core_work_while_player_waits():

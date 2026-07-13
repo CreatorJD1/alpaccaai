@@ -1645,17 +1645,19 @@ let alpeccaAiModelUse: AlpeccaModelUse = {};
 let alpeccaAiAwaitingReply = false;
 let alpeccaAiReplyStartedAt = 0;
 let alpeccaAiSlowReplyNoticeShown = false;
+let alpeccaAiExtendedReplyNoticeShown = false;
 let alpeccaAiPendingPlayerRequestId = "";
 let alpeccaAiRequestSequence = 0;
 let alpeccaAiLastPlayerMessage = "";
+const alpeccaAiCompletedRequestIds = new Set<string>();
 let alpeccaPendingSourceRef: AlpeccaSourceRef | null = null;
 let alpeccaCapabilityConnection: AlpeccaCapabilityConnection | null = null;
 const alpeccaCapabilityLeases = new Map<AlpeccaCapabilityPurpose, AlpeccaCapabilityLease>();
 let alpeccaAiPendingCapabilityLease: { requestId: string; lease: AlpeccaCapabilityLease } | null = null;
 let alpeccaCapabilityChannelRequest: AbortController | null = null;
 const ALPECCA_AI_SLOW_REPLY_MS = 12000;
-const ALPECCA_AI_PLAYER_REPLY_TIMEOUT_MS = 35000;
-const ALPECCA_AI_CHANNEL_INBOUND_TIMEOUT_MS = 25000;
+const ALPECCA_AI_PLAYER_REPLY_NOTICE_MS = 35000;
+const ALPECCA_AI_COMPLETED_REQUEST_LIMIT = 64;
 let alpeccaPlayerChatQuietTimer = 0;
 let alpeccaAiOfflineNoticeShown = false;
 let alpeccaAiServerReachable = false;
@@ -4355,6 +4357,16 @@ function releaseAlpeccaPendingCapabilityLease(requestId = "") {
   void stopAlpeccaCapabilityLease(pending.lease);
 }
 
+function rememberCompletedAlpeccaRequest(requestId: string) {
+  if (!requestId) return;
+  alpeccaAiCompletedRequestIds.add(requestId);
+  while (alpeccaAiCompletedRequestIds.size > ALPECCA_AI_COMPLETED_REQUEST_LIMIT) {
+    const oldest = alpeccaAiCompletedRequestIds.values().next().value;
+    if (!oldest) break;
+    alpeccaAiCompletedRequestIds.delete(oldest);
+  }
+}
+
 const alpeccaSystemEndpoints: Record<AlpeccaSystemId, string> = {
   overview: "/home/state",
   self: "/introspect",
@@ -5127,7 +5139,8 @@ function handleAlpeccaAiMessage(raw: string) {
 
   if (message.type === "reply") {
     const replyRequestId = message.request_id || "";
-    const fromPlayerChat = message.source === "house-chat" || (replyRequestId && replyRequestId === alpeccaAiPendingPlayerRequestId);
+    if (replyRequestId && alpeccaAiCompletedRequestIds.has(replyRequestId)) return;
+    const fromPlayerChat = Boolean(replyRequestId) && replyRequestId === alpeccaAiPendingPlayerRequestId;
     const legacyPlayerReply =
       alpeccaAiAwaitingReply &&
       !replyRequestId &&
@@ -5142,10 +5155,12 @@ function handleAlpeccaAiMessage(raw: string) {
       setAlpeccaActivity("Alpecca filed a background core event.", "observe", 2.2);
       return;
     }
+    rememberCompletedAlpeccaRequest(replyRequestId);
     releaseAlpeccaPendingCapabilityLease(replyRequestId);
     alpeccaAiAwaitingReply = false;
     alpeccaAiReplyStartedAt = 0;
     alpeccaAiSlowReplyNoticeShown = false;
+    alpeccaAiExtendedReplyNoticeShown = false;
     alpeccaAiPendingPlayerRequestId = "";
     alpeccaAiLastPlayerMessage = "";
     alpeccaPlayerChatQuietTimer = Math.max(alpeccaPlayerChatQuietTimer, 10);
@@ -5185,10 +5200,12 @@ function handleAlpeccaAiMessage(raw: string) {
     const requestId = message.request_id || "";
     const matchesPending = !requestId || requestId === alpeccaAiPendingPlayerRequestId;
     if (!matchesPending) return;
+    rememberCompletedAlpeccaRequest(requestId);
     releaseAlpeccaPendingCapabilityLease(requestId);
     alpeccaAiAwaitingReply = false;
     alpeccaAiReplyStartedAt = 0;
     alpeccaAiSlowReplyNoticeShown = false;
+    alpeccaAiExtendedReplyNoticeShown = false;
     alpeccaAiPendingPlayerRequestId = "";
     alpeccaAiLastPlayerMessage = "";
     const errorText = message.code === "capability_lease_denied"
@@ -5720,9 +5737,11 @@ function finishAlpeccaChatFailure(
   attachmentStatus = "failed",
 ) {
   if (alpeccaAiPendingPlayerRequestId !== requestId) return;
+  rememberCompletedAlpeccaRequest(requestId);
   alpeccaAiAwaitingReply = false;
   alpeccaAiReplyStartedAt = 0;
   alpeccaAiSlowReplyNoticeShown = false;
+  alpeccaAiExtendedReplyNoticeShown = false;
   alpeccaAiPendingPlayerRequestId = "";
   alpeccaAiLastPlayerMessage = "";
   appendAlpeccaLog("System", message);
@@ -5795,6 +5814,7 @@ async function sendAlpeccaChat(
   alpeccaAiLastPlayerMessage = promptText;
   alpeccaAiReplyStartedAt = performance.now();
   alpeccaAiSlowReplyNoticeShown = false;
+  alpeccaAiExtendedReplyNoticeShown = false;
   alpeccaPlayerChatQuietTimer = Math.max(alpeccaPlayerChatQuietTimer, 42);
   alpeccaWorldTickTimer = Math.max(alpeccaWorldTickTimer, 18);
   alpeccaPerceptionSendTimer = Math.max(alpeccaPerceptionSendTimer, 18);
@@ -5822,9 +5842,10 @@ async function sendAlpeccaChat(
     const headers = capabilityLease
       ? alpeccaCapabilityLeaseHeaders(capabilityLease, { "Content-Type": "application/json" })
       : new Headers({ "Content-Type": "application/json" });
+    // Once the request body has been sent, we cannot know whether the backend
+    // committed work when the transport fails. Never resend it over WebSocket:
+    // one House request ID must remain one model/tool transaction.
     const controller = new AbortController();
-    const timeoutMs = ALPECCA_AI_CHANNEL_INBOUND_TIMEOUT_MS;
-    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
     if (capabilityLease) alpeccaCapabilityChannelRequest = controller;
     try {
       const response = await alpeccaBackendFetch(inboundUrl, {
@@ -5845,9 +5866,9 @@ async function sendAlpeccaChat(
         await releaseCapabilityLease();
         const replyPayload = {
           type: "reply",
+          ...(payload && typeof payload === "object" ? payload : {}),
           request_id: requestId,
           source: "house-chat",
-          ...(payload && typeof payload === "object" ? payload : {}),
         } as AlpeccaAiMessage;
         handleAlpeccaAiMessage(JSON.stringify(replyPayload));
         if (sourceRef) showAlpeccaAttachmentReceipt(payload, sourceRef);
@@ -5875,7 +5896,9 @@ async function sendAlpeccaChat(
         );
         return;
       }
-      appendAlpeccaLog("System", `House live chat channel returned ${response.status}. Falling back to websocket.`);
+      await releaseCapabilityLease();
+      finishAlpeccaChatFailure(requestId, `The live House core could not complete this request (HTTP ${response.status}).`);
+      return;
     } catch {
       if (controller.signal.aborted && alpeccaChat.classList.contains("hidden")) {
         await releaseCapabilityLease();
@@ -5890,9 +5913,11 @@ async function sendAlpeccaChat(
         );
         return;
       }
-      appendAlpeccaLog("System", "House live chat channel failed; trying websocket fallback.");
+      await releaseCapabilityLease();
+      appendAlpeccaLog("System", "The live request was submitted, but its connection is still settling. Waiting for its original result...");
+      showAlpeccaProfileLine("The live request is still running. Waiting for its original result...", "thinking");
+      return;
     } finally {
-      window.clearTimeout(timer);
       if (alpeccaCapabilityChannelRequest === controller) alpeccaCapabilityChannelRequest = null;
     }
   }
@@ -14081,20 +14106,15 @@ function updateHud(dt: number) {
       appendAlpeccaLog("System", "Live Alpecca is still thinking. Waiting for the core reply...");
       showAlpeccaProfileLine("Live Alpecca is still thinking. Waiting for the core reply...", "thinking");
     }
-    if (waitingMs > ALPECCA_AI_PLAYER_REPLY_TIMEOUT_MS) {
-      const timedOutRequestId = alpeccaAiPendingPlayerRequestId;
-      releaseAlpeccaPendingCapabilityLease(timedOutRequestId);
-      alpeccaAiAwaitingReply = false;
-      alpeccaAiReplyStartedAt = 0;
-      alpeccaAiSlowReplyNoticeShown = false;
-      alpeccaAiPendingPlayerRequestId = "";
-      alpeccaAiLastPlayerMessage = "";
-      alpeccaPlayerChatQuietTimer = Math.min(alpeccaPlayerChatQuietTimer, 4);
-      const requestHint = timedOutRequestId ? ` Request ${timedOutRequestId} did not receive a matching live reply.` : "";
-      const timeoutLine = `Live Alpecca did not answer this chat message in time.${requestHint} Try again, or check that the backend was restarted.`;
-      appendAlpeccaLog("System", timeoutLine);
-      showAlpeccaProfileLine(timeoutLine, "listening");
-      showMessage(timeoutLine, 5);
+    if (waitingMs > ALPECCA_AI_PLAYER_REPLY_NOTICE_MS && !alpeccaAiExtendedReplyNoticeShown) {
+      alpeccaAiExtendedReplyNoticeShown = true;
+      const requestHint = alpeccaAiPendingPlayerRequestId
+        ? ` Request ${alpeccaAiPendingPlayerRequestId} remains live.`
+        : "";
+      const noticeLine = `This reply is taking longer than usual, but Alpecca is still working on the original turn.${requestHint}`;
+      appendAlpeccaLog("System", noticeLine);
+      showAlpeccaProfileLine(noticeLine, "thinking");
+      showMessage("Alpecca is still working on this reply.", 4);
     }
   }
 
