@@ -5221,11 +5221,26 @@ function handleAlpeccaAiMessage(raw: string) {
 
   if (message.type === "proactive" && responseText) {
     const proactiveText = responseText;
-    appendAlpeccaLog("System", `Background thought: ${proactiveText}`);
-    setAlpeccaActivity("Alpecca noted a background thought.", "observe", 2.4);
+    // The server only emits this after the shared initiative budget accepted a
+    // grounded, single delivery. Present it as Alpecca's own spoken initiative,
+    // not as an opaque system event.
+    appendAlpeccaLog("Alpecca", proactiveText);
+    setAlpeccaActivity("Alpecca is speaking from her live state.", "think", 2.4);
     pulseAlpeccaSourceDashboard("", 2.4);
     alpecca.glitchTimer = Math.max(alpecca.glitchTimer, 0.22);
     alpeccaProfileGlitchTimer = Math.max(alpeccaProfileGlitchTimer, 0.34);
+    focusAlpecca(2.8, "talkDown");
+    alpecca.expressiveTimer = Math.max(alpecca.expressiveTimer, 2.4);
+    alpeccaChatLine.textContent = proactiveText;
+    showAlpeccaProfileLine(
+      proactiveText,
+      alpeccaSpokenRepliesEnabled ? "talking" : "listening",
+      alpeccaActiveProfileFeature,
+    );
+    showMessage(proactiveText, 7);
+    if (alpeccaSpokenRepliesEnabled) {
+      startAlpeccaSpeech(proactiveText, alpeccaSpeechDuration(proactiveText));
+    }
     return;
   }
 

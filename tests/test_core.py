@@ -2741,6 +2741,16 @@ def test_house_chat_slow_turns_keep_one_live_transaction():
     assert "one House request ID must remain one model/tool transaction" in send_block
 
 
+def test_house_proactive_events_are_presented_as_alpecca_live_voice():
+    root = Path(__file__).resolve().parent.parent
+    src = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    proactive_block = src[src.index('if (message.type === "proactive"') : src.index('if (message.type === "computer_status"')]
+    assert 'appendAlpeccaLog("Alpecca", proactiveText)' in proactive_block
+    assert "Background thought:" not in proactive_block
+    assert 'focusAlpecca(2.8, "talkDown")' in proactive_block
+    assert "startAlpeccaSpeech(proactiveText" in proactive_block
+
+
 def test_house_chat_pauses_background_core_work_while_player_waits():
     root = Path(__file__).resolve().parent.parent
     src = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
