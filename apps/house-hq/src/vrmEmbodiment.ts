@@ -130,6 +130,44 @@ export function shouldScheduleVrmPerformance(activeClip: string, finishedClip: s
   return activeClip !== finishedClip;
 }
 
+export function shouldSettleProceduralPerformance(
+  elapsedSeconds: number,
+  performanceLimitSeconds: number | undefined,
+  hasActiveVrmMotion: boolean,
+): boolean {
+  return !hasActiveVrmMotion
+    && Number.isFinite(elapsedSeconds)
+    && performanceLimitSeconds !== undefined
+    && Number.isFinite(performanceLimitSeconds)
+    && performanceLimitSeconds >= 0
+    && elapsedSeconds >= performanceLimitSeconds;
+}
+
+export function resolveVrmGroundTarget(
+  groundBase: number,
+  groundY: number,
+  lowestSoleY: number,
+  currentOffset: number,
+): number {
+  if (![groundBase, groundY, lowestSoleY, currentOffset].every(Number.isFinite)) return currentOffset;
+  return Math.max(groundBase, groundY - (lowestSoleY - currentOffset));
+}
+
+export function isConfirmedVrmInteractionContact(
+  phase: "approach" | "reach" | "contact" | "retract",
+  targetReachable: boolean,
+  distance: number,
+  threshold: number,
+): boolean {
+  return phase === "contact"
+    && targetReachable
+    && Number.isFinite(distance)
+    && distance >= 0
+    && Number.isFinite(threshold)
+    && threshold >= 0
+    && distance <= threshold;
+}
+
 export type TwoBoneReachSolution = Readonly<{
   valid: boolean;
   reachable: boolean;
@@ -292,6 +330,10 @@ const CLIP_EXPRESSIONS: Record<string, Record<string, number>> = {
 function clipHoldsEyesClosed(clip: string): boolean {
   const e = CLIP_EXPRESSIONS[clip];
   return !!(e && "blink" in e);
+}
+
+export function shouldResetVrmBlinkTiming(previousClip: string, nextClip: string): boolean {
+  return clipHoldsEyesClosed(previousClip) || clipHoldsEyesClosed(nextClip);
 }
 
 // alpecca/vrm.py expressions_for_state: slow mood-driven preset weights.
@@ -707,9 +749,12 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     if (!Number.isFinite(distance)) return;
     interactionContactAvailable = true;
     interactionContactDistance = distance;
-    interactionInContact = interactionPhase === "contact"
-      && interactionTargetReachable
-      && distance <= INTERACTION_CONTACT_THRESHOLD;
+    interactionInContact = isConfirmedVrmInteractionContact(
+      interactionPhase,
+      interactionTargetReachable,
+      distance,
+      INTERACTION_CONTACT_THRESHOLD,
+    );
   }
 
   function advanceInteraction(dt: number): boolean {
@@ -1330,7 +1375,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     if (lowest == null) return;
     // `lowest` was measured WITH the current offset applied; undo it to get
     // the animation's own pose. Lift above base only to fix penetration.
-    const target = Math.max(groundBase, groundY - (lowest - groundOffset));
+    const target = resolveVrmGroundTarget(groundBase, groundY, lowest, groundOffset);
     const rate = target > groundOffset ? 20 : 6;
     groundOffset += (target - groundOffset) * Math.min(1, (dt || 0.016) * rate);
     forVrm.scene.position.y = groundOffset / worldScaleY();
@@ -1613,7 +1658,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
         if (forcedReplayClip && forcedReplayClip !== next) forcedReplayClip = null;
         if (flourishName) { flourishName = null; flourishIn = nextFlourishDelay(); }
         if (previous === "talking" || next === "talking") resetLipTiming();
-        if (clipHoldsEyesClosed(previous) || clipHoldsEyesClosed(next)) resetBlinkTiming();
+        if (shouldResetVrmBlinkTiming(previous, next)) resetBlinkTiming();
       }
       clipTime += dt;
 
@@ -1627,8 +1672,16 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       let vrmaDriven = false;
       let wantVrma: string | null = null;
       let wantMode: PlayMode = "loop";
+      const mapped = CLIP_VRMA[clipName] ?? null;
+      const performanceLimit = PROCEDURAL_PERFORMANCE_SECONDS[clipName];
+      const mappedVrmaActive = mapped !== null && currentVrmaName === mapped;
+      if (shouldScheduleVrmPerformance(clipName, finishedForClip)
+        && shouldSettleProceduralPerformance(clipTime, performanceLimit, mappedVrmaActive)) {
+        // The fallback already completed the gesture. Gate the clip now so a
+        // late animation fetch cannot perform the same one-shot a second time.
+        finishedForClip = clipName;
+      }
       if (!spriteMoving && !interactionActive) {
-        const mapped = CLIP_VRMA[clipName] ?? null;
         if (mapped && shouldScheduleVrmPerformance(clipName, finishedForClip)) {
           wantVrma = mapped;
           wantMode = VRMA_MODE[clipName] ?? "once";
@@ -1667,9 +1720,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       resetFaceValues();
       applyExpressions(dt);
 
-      const performanceLimit = PROCEDURAL_PERFORMANCE_SECONDS[clipName];
-      const performanceSettled = finishedForClip === clipName
-        || (!vrmaDriven && performanceLimit !== undefined && clipTime >= performanceLimit);
+      const performanceSettled = finishedForClip === clipName;
       const resolvedPoseClip = performanceSettled ? settledPoseFor(clipName) : clipName;
       // A terminal solve owns the stationary right arm. Start it from the
       // stable idle skeleton instead of the procedural point/wave pose, whose
