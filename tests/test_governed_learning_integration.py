@@ -303,3 +303,22 @@ def test_soul_senses_governed_status_without_selecting_a_lifecycle_action():
         item for item in idle["slate"] if item["subagent"] == "Improver"
     )
     assert idle_improver["action"] == "review one bounded behavior improvement"
+
+
+def test_coremind_passes_only_a_read_only_governed_signal_to_soul():
+    from alpecca.mind import CoreMind
+
+    mind = CoreMind(governed_learning_supplier=_running_status)
+
+    snapshot = mind._soul_snapshot()
+
+    assert snapshot.governed_learning is not None
+    assert snapshot.governed_learning.phase == "running"
+    assert snapshot.governed_learning.creator_action_required is False
+    assert not hasattr(snapshot.governed_learning, "start")
+
+    mind.set_governed_learning_supplier(lambda: {"recovery_ready": False})
+    unavailable = mind._soul_snapshot().governed_learning
+    assert unavailable is not None
+    assert unavailable.available is False
+    assert unavailable.evidence_code == "recovery_not_ready"

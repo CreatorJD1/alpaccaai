@@ -54,6 +54,19 @@
   tests/test_phase7_pagefile_broker_preparation.py` (`32 passed`) and
   `npm.cmd run house:build` passed.
 
+## Codex Governed Learning Signal (2026-07-13)
+
+- Commit `0a90cc6` adds a fail-closed, read-only projection of the existing
+  Phase 8 trial lifecycle for cognition and the seven-role Soul. The serial
+  integration adds a recovery-gated supplier to CoreMind: the Soul can observe
+  a verified candidate, running trial, settlement, or creator review, but it
+  receives no lifecycle controls and cannot approve, start, settle, retain, or
+  revert any behavior value.
+- Verification: governed-learning and Phase 8 focused tests passed, and
+  `python -c "import server"` succeeds. The transition-observation adapter is
+  available, but broad status polling is intentionally not treated as a new
+  source of autonomous trial activity.
+
 ## Codex Resume Checkpoint: Local Model Honesty And Parallel Stage Review
 
 This block is the newest operational handoff. Preserve the later shared-branch

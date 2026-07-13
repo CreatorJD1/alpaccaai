@@ -89,6 +89,7 @@ from alpecca import soul as soul_mod
 from alpecca import journal as journal_mod
 from alpecca import learning as learning_mod
 from alpecca import cognition as cognition_mod
+from alpecca import governed_learning as governed_learning_mod
 from alpecca import people as people_mod
 from alpecca import core_memory as core_mem
 from alpecca import speech as speech_mod
@@ -1253,6 +1254,7 @@ class CoreMind:
         *,
         host_resource_snapshot_supplier: Callable[[], object] | None = None,
         chatter_chance_supplier: Callable[[], object] | None = None,
+        governed_learning_supplier: Callable[[], object] | None = None,
     ) -> None:
         state_store.init_db()
         cognition_mod.init_db()
@@ -1263,6 +1265,11 @@ class CoreMind:
         self._host_resource_snapshot_supplier = host_resource_snapshot_supplier
         self._chatter_chance_supplier = (
             chatter_chance_supplier if callable(chatter_chance_supplier) else None
+        )
+        self._governed_learning_supplier = (
+            governed_learning_supplier
+            if callable(governed_learning_supplier)
+            else None
         )
         self.llm = _LLM()
         # Guest inference owns separate mutable backend/telemetry state. The
@@ -1357,6 +1364,26 @@ class CoreMind:
     ) -> None:
         """Install a read-only chance supplier for proactive chatter."""
         self._chatter_chance_supplier = supplier if callable(supplier) else None
+
+    def set_governed_learning_supplier(
+        self,
+        supplier: Callable[[], object] | None,
+    ) -> None:
+        """Install a read-only, recovery-gated trial-status supplier for Soul."""
+        self._governed_learning_supplier = supplier if callable(supplier) else None
+
+    def _governed_learning_signal(
+        self,
+    ) -> governed_learning_mod.GovernedLearningSignal | None:
+        supplier = getattr(self, "_governed_learning_supplier", None)
+        if not callable(supplier):
+            return None
+        try:
+            return governed_learning_mod.build_signal(supplier())
+        except Exception:
+            # A status reader is observational only. An unavailable or malformed
+            # snapshot must not change Soul behavior or grant trial authority.
+            return None
 
     def _resolved_chatter_gate(self) -> dict[str, object]:
         """Read one chance together with the runtime generation that supplied it."""
@@ -4869,6 +4896,7 @@ class CoreMind:
             senses_active=self._prev_obs is not None and bool(self._prev_obs.window_title),
             person_fatigue=person_fatigue,
             trial_running=any(r["status"] == "trial" for r in selfmod.history(limit=3)),
+            governed_learning=self._governed_learning_signal(),
             memory_pressure=soul_pressure,
             host_pressure=self._host_pressure_projection(),
         )

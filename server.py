@@ -1024,12 +1024,64 @@ def _host_resource_snapshot_supplier() -> dict[str, object]:
     return _host_resource_sampler.snapshot(force=False)
 
 
+def _governed_learning_status_supplier() -> dict[str, object]:
+    """Return a bounded recovery-gated lifecycle projection for CoreMind.
+
+    This is deliberately read-only. The Soul receives only status facts and
+    cannot register, approve, start, settle, retain, or revert a behavior trial.
+    """
+    if not _behavior_trial_recovery_ready.is_set():
+        return {"recovery_ready": False}
+    snapshot: dict[str, object] = dict(behavior_trial_controller.status_snapshot())
+    snapshot["recovery_ready"] = True
+    try:
+        snapshot["registration_candidate"] = _behavior_trial_candidate_public_summary()
+        snapshot["registration_candidate_available"] = True
+    except Exception:
+        snapshot["registration_candidate"] = None
+        snapshot["registration_candidate_available"] = False
+    try:
+        settlements = behavior_trial_settlement_mod.list_settlements(DB_PATH, limit=5)
+        snapshot["review_settlements"] = [
+            {
+                "trial_id": item.get("trial_id"),
+                "status": item.get("status"),
+                "outcome": item.get("outcome"),
+            }
+            for item in settlements
+            if isinstance(item, Mapping)
+        ]
+        snapshot["review_settlements_available"] = True
+    except Exception:
+        snapshot["review_settlements"] = []
+        snapshot["review_settlements_available"] = False
+    try:
+        decisions = behavior_trial_review_decision_store.list(limit=5)
+        snapshot["profile_decisions"] = [
+            {
+                "trial_id": item.get("trial_id"),
+                "decision": item.get("decision"),
+            }
+            for item in decisions
+            if isinstance(item, Mapping)
+        ]
+        snapshot["profile_decisions_available"] = True
+    except Exception:
+        snapshot["profile_decisions"] = []
+        snapshot["profile_decisions_available"] = False
+    return snapshot
+
+
 if hasattr(mind, "set_host_resource_supplier"):
     mind.set_host_resource_supplier(_host_resource_snapshot_supplier)
 else:
     # CoreMind's transitional constructor seam keeps server startup compatible
     # until the public setter is available in the shared core module.
     mind._host_resource_snapshot_supplier = _host_resource_snapshot_supplier
+if hasattr(mind, "set_governed_learning_supplier"):
+    mind.set_governed_learning_supplier(_governed_learning_status_supplier)
+else:
+    mind._governed_learning_supplier = _governed_learning_status_supplier
 _optional_work_coordinator = resource_coordinator_mod.ResourceCoordinator()
 INITIATIVE_RESPONSE_WINDOW_SECONDS = max(
     30.0,
