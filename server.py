@@ -2914,6 +2914,7 @@ _SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _DISCORD_SERVICE_PATHS = frozenset({
     "/channel/discord",
     "/channel/discord/actor-envelope",
+    "/channel/discord/autonomy",
 })
 
 def _access_html(
@@ -7728,6 +7729,50 @@ async def issue_discord_actor_envelope(req: Request, response: Response) -> dict
     except bridge_actor_identity_mod.BridgeActorIdentityError:
         _raise_discord_actor_denied()
     return {"envelope": envelope.encode()}
+
+
+@app.post("/channel/discord/autonomy")
+async def discord_autonomy_turn(req: Request, response: Response) -> dict:
+    """Run one ephemeral, service-authenticated Discord room initiative.
+
+    Unlike a human Discord event, an autonomous turn has no actor to impersonate.
+    It stays on the guest-only model path, receives no tools or private
+    continuity, and accepts only an opaque room scope plus bounded text prepared
+    by the local bridge.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    _require_discord_bridge_request(req)
+    payload = await _read_bounded_json_object(req, max_bytes=12 * 1024)
+    text = payload.get("text")
+    room_scope = payload.get("room_scope")
+    if (
+        not isinstance(text, str)
+        or not text.strip()
+        or len(text) > 8_000
+        or not isinstance(room_scope, str)
+        or re.fullmatch(r"[a-f0-9]{64}", room_scope) is None
+        or set(payload) != {"text", "room_scope"}
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="invalid Discord autonomy request",
+            headers={"Cache-Control": "no-store"},
+        )
+    turn = turn_context_mod.TurnContext.create(
+        f"discord-autonomy-{room_scope}",
+        principal="guest",
+        surface="discord",
+        privacy_scope=f"guest-discord-room-{room_scope}",
+        portal_epoch="discord-autonomy",
+    )
+    result = await _ws_chat_turn_with_timeout(
+        text.strip(),
+        situation_hint="approved Discord room initiative",
+        reply_tier="fast",
+        activity_recorded=False,
+        turn=turn,
+    )
+    return {"reply": str(result.get("reply") or "")}
 
 
 @app.post("/channel/inbound")

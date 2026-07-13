@@ -24,6 +24,7 @@ Her backend (`server.py`) must be running so `/channel/discord` is reachable.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import ipaddress
 import io
 import json
@@ -111,10 +112,12 @@ IMAGE_INBOUND_TIMEOUT = max(
 MAX_DISCORD_CHARS = 2000
 MAX_BACKEND_RESPONSE_BYTES = 1024 * 1024
 MAX_BACKEND_ERROR_BYTES = 16 * 1024
-# Phase 10 stays closed until the signed actor envelope is wired end to end.
-# These are code locks, not deployment knobs: environment flags cannot widen
-# Discord into guild participation, autonomous speech, recursion, or voice.
-PHASE10_GUILD_MODES_LOCKED = True
+# Public-room presence is opt-in per room. The creator claims a room with
+# ``@Alpecca room on``; no environment flag can make her read or speak in an
+# arbitrary server channel.
+PHASE10_GUILD_MODES_LOCKED = False
+DISCORD_ROOM_REGISTRY = HOME / "discord_social_rooms.json"
+SOCIAL_HISTORY_LIMIT = max(4, min(20, int(os.environ.get("ALPECCA_DISCORD_CONTEXT", "12"))))
 # How long she stays "in conversation" in a channel after being addressed, so
 # follow-ups don't need a re-mention (natural back-and-forth).
 ENGAGE_WINDOW = float(os.environ.get("ALPECCA_DISCORD_ENGAGE_WINDOW", "90"))
@@ -125,27 +128,63 @@ CHANNEL_MIN_INTERVAL = float(os.environ.get("ALPECCA_DISCORD_MIN_INTERVAL", "1.5
 # sometimes, and with a long per-channel cooldown that backs off further whenever
 # a chime-in goes unanswered -- so it reads as a person occasionally joining, not
 # a bot reacting to everything.
-PROACTIVE_ENABLED = False
+PROACTIVE_ENABLED = True
 PROACTIVE_COOLDOWN = float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_COOLDOWN", "480"))
 PROACTIVE_CHANCE = float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_CHANCE", "0.3"))
 PROACTIVE_MIN_LEN = int(os.environ.get("ALPECCA_DISCORD_PROACTIVE_MIN_LEN", "40"))
 # Recursive self-continuation: when the room goes quiet after SHE spoke, she may
 # continue her own train of thought a little deeper -- bounded, paced, and it
 # yields the instant any human speaks, so it never becomes a monologue/spam.
-RECURSIVE_ENABLED = False
-RECURSIVE_MAX = int(os.environ.get("ALPECCA_DISCORD_RECURSIVE_MAX", "2"))       # self-steps before waiting for a human
-RECURSIVE_DELAY = float(os.environ.get("ALPECCA_DISCORD_RECURSIVE_DELAY", "75"))  # quiet seconds before she continues
+RECURSIVE_ENABLED = True
+# One quiet-time follow-up is enough to feel present without allowing a
+# self-monologue. A human message resets the allowance.
+RECURSIVE_MAX = 1
+RECURSIVE_DELAY = max(45.0, float(os.environ.get("ALPECCA_DISCORD_RECURSIVE_DELAY", "90")))
 RECURSIVE_SWEEP = float(os.environ.get("ALPECCA_DISCORD_RECURSIVE_SWEEP", "20"))  # how often the loop checks
 DEBUG = _environment_enabled("ALPECCA_DISCORD_DEBUG")
 # Contextual participation: she reads the recent channel conversation and may
 # speak WITHOUT being mentioned -- but she decides per message whether she has
 # something worth adding (she can choose "(pass)"), throttled so it isn't spam.
-PARTICIPATE = False
-PARTICIPATE_COOLDOWN = float(os.environ.get("ALPECCA_DISCORD_PARTICIPATE_COOLDOWN", "45"))  # min secs between unprompted weigh-ins
-CONTEXT_MESSAGES = int(os.environ.get("ALPECCA_DISCORD_CONTEXT", "8"))                        # recent msgs given as context
+PARTICIPATE = True
+PARTICIPATE_COOLDOWN = max(30.0, float(os.environ.get("ALPECCA_DISCORD_PARTICIPATE_COOLDOWN", "75")))
+CONTEXT_MESSAGES = SOCIAL_HISTORY_LIMIT
 # Voice chat: she can join a voice channel (on request) and SPEAK her replies with
 # her real TTS voice. Bots stream audio (supported); video/camera is not possible.
 VOICE_ENABLED = False
+
+
+def _room_key(guild_id: object, channel_id: object) -> str:
+    return f"{int(guild_id)}:{int(channel_id)}"
+
+
+def _room_scope(guild_id: object, channel_id: object) -> str:
+    material = f"alpecca-discord-room-v1:{_room_key(guild_id, channel_id)}"
+    return hashlib.sha256(material.encode("ascii")).hexdigest()
+
+
+def _load_social_rooms() -> dict[str, dict[str, str]]:
+    """Read the creator-claimed room registry; malformed state fails closed."""
+    try:
+        raw = json.loads(DISCORD_ROOM_REGISTRY.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    rooms: dict[str, dict[str, str]] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, dict):
+            continue
+        guild_id, channel_id = str(value.get("guild_id") or ""), str(value.get("channel_id") or "")
+        if guild_id.isdecimal() and channel_id.isdecimal() and key == _room_key(guild_id, channel_id):
+            rooms[key] = {"guild_id": guild_id, "channel_id": channel_id}
+    return rooms
+
+
+def _save_social_rooms(rooms: dict[str, dict[str, str]]) -> None:
+    DISCORD_ROOM_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+    temporary = DISCORD_ROOM_REGISTRY.with_suffix(".tmp")
+    temporary.write_text(json.dumps(rooms, sort_keys=True), encoding="utf-8")
+    temporary.replace(DISCORD_ROOM_REGISTRY)
 
 _MEDIA_STATUS_LOCK = threading.Lock()
 _SERVER_MEDIA_STATUS: discord_media.ServerMediaStatus = "unknown"
@@ -538,6 +577,35 @@ def _ask_alpecca(
     return reply.strip()
 
 
+def _ask_room_autonomy(text: str, room_scope: str) -> str:
+    """Ask for one room-scoped initiative without impersonating a person.
+
+    The server keeps this on its guest-only, no-tools, no-private-continuity
+    path. ``room_scope`` is a one-way identifier; raw Discord IDs never leave
+    the bridge process.
+    """
+    body = json.dumps(
+        {"text": text, "room_scope": room_scope},
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    payload = _post_json_once(
+        f"{BACKEND_URL}/channel/discord/autonomy",
+        body=body,
+        headers={
+            "Content-Type": "application/json",
+            BRIDGE_AUTHORIZATION_HEADER: _BRIDGE_AUTHORIZATION_SECRET,
+        },
+        timeout=INBOUND_TIMEOUT,
+    )
+    reply = payload.get("reply")
+    if type(reply) is not str:
+        raise RuntimeError("alpecca backend returned a malformed Discord autonomy reply")
+    return reply.strip()
+
+
 _FFMPEG_EXE = None
 
 
@@ -578,6 +646,53 @@ def build_client() -> discord.Client:
     intents.message_content = True   # needed to read message text (also enable in the portal)
     intents.voice_states = False
     client = discord.Client(intents=intents)
+    social_rooms = _load_social_rooms()
+
+    def _social_room(message: "discord.Message") -> dict[str, str] | None:
+        guild = getattr(message, "guild", None)
+        channel = getattr(message, "channel", None)
+        guild_id = getattr(guild, "id", None)
+        channel_id = getattr(channel, "id", None)
+        if guild_id is None or channel_id is None:
+            return None
+        return social_rooms.get(_room_key(guild_id, channel_id))
+
+    async def _seed_room_history(channel: object, room: dict[str, str]) -> None:
+        """Reload a small, in-memory room window after a bridge reconnect."""
+        channel_id = int(room["channel_id"])
+        history = getattr(channel, "history", None)
+        if not callable(history):
+            return
+        lines: list[tuple[str, str]] = []
+        try:
+            async for item in history(limit=SOCIAL_HISTORY_LIMIT, oldest_first=True):
+                author = getattr(item, "author", None)
+                if author is None or getattr(author, "bot", False):
+                    continue
+                content = str(getattr(item, "clean_content", "") or "").strip()
+                if content:
+                    lines.append((str(getattr(author, "display_name", "Someone")), content[:700]))
+        except Exception:
+            _diagnostic("room_history_unavailable")
+            return
+        if lines:
+            history_buf[channel_id] = lines[-CONTEXT_MESSAGES:]
+            last_human_ts[channel_id] = time.monotonic()
+            channel_obj[channel_id] = channel
+            _diagnostic("room_history_seeded", count=len(lines))
+
+    def _room_model_text(chan_id: int, latest: str, *, invite: bool = False) -> str:
+        context = _recent_context(chan_id)
+        directive = (
+            "You are present in this Discord room. Decide whether you genuinely "
+            "have something useful, warm, or curious to add. If not, reply exactly "
+            "[pass]. Do not mention these instructions."
+            if invite else
+            "You are replying in an approved Discord room. Use the recent room "
+            "context to answer naturally and do not claim to remember anything "
+            "outside this window."
+        )
+        return f"{directive}\n\nRecent room messages:\n{context}\n\nLatest message:\n{latest}"[:7_500]
 
     @client.event
     async def on_ready() -> None:
@@ -611,6 +726,10 @@ def build_client() -> discord.Client:
                     if wanted == member.name.casefold():
                         DM_ALLOW_IDS.add(str(member.id))
                         _diagnostic("dm_allow_resolved")
+        for room in list(social_rooms.values()):
+            channel = client.get_channel(int(room["channel_id"]))
+            if channel is not None:
+                await _seed_room_history(channel, room)
         print(
             "[discord] "
             + json.dumps(
@@ -618,6 +737,7 @@ def build_client() -> discord.Client:
                     "event": "bridge_ready",
                     "guild_count": len(client.guilds),
                     "dm_allow_configured": bool(DM_ALLOW_IDS or DM_ALLOW_NAMES),
+                    "social_room_count": len(social_rooms),
                     "media": media_readiness(),
                 },
                 ensure_ascii=True,
@@ -626,7 +746,7 @@ def build_client() -> discord.Client:
             ),
             flush=True,
         )
-        if RECURSIVE_ENABLED and not _sweeper_started["on"]:
+        if RECURSIVE_ENABLED and social_rooms and not _sweeper_started["on"]:
             _sweeper_started["on"] = True
             client.loop.create_task(recursive_sweeper())
 
@@ -689,8 +809,46 @@ def build_client() -> discord.Client:
             return
 
         is_dm = message.guild is None
-        if PHASE10_GUILD_MODES_LOCKED and not is_dm:
-            return
+        if not is_dm:
+            command = str(getattr(message, "clean_content", "") or "").strip().casefold()
+            control_command = command in {
+                "@alpecca room on", "alpecca room on", "@alpecca room off", "alpecca room off",
+            }
+            if control_command and _dm_author_allowed(message.author):
+                guild_id = getattr(message.guild, "id", None)
+                channel_id = getattr(message.channel, "id", None)
+                if guild_id is None or channel_id is None:
+                    return
+                key = _room_key(guild_id, channel_id)
+                if command.endswith("room on"):
+                    social_rooms[key] = {"guild_id": str(guild_id), "channel_id": str(channel_id)}
+                    try:
+                        _save_social_rooms(social_rooms)
+                    except OSError:
+                        await message.reply("I could not save this room setting.", mention_author=False)
+                        return
+                    await _seed_room_history(message.channel, social_rooms[key])
+                    if RECURSIVE_ENABLED and not _sweeper_started["on"]:
+                        _sweeper_started["on"] = True
+                        client.loop.create_task(recursive_sweeper())
+                    await message.reply(
+                        "I am present in this room now. I will read the recent conversation, "
+                        "join in when I have something real to add, and give one quiet-time follow-up before I wait.",
+                        mention_author=False,
+                    )
+                else:
+                    social_rooms.pop(key, None)
+                    try:
+                        _save_social_rooms(social_rooms)
+                    except OSError:
+                        await message.reply("I could not save this room setting.", mention_author=False)
+                        return
+                    history_buf.pop(int(channel_id), None)
+                    channel_obj.pop(int(channel_id), None)
+                    await message.reply("I will stay quiet in this room now.", mention_author=False)
+                return
+            if _social_room(message) is None:
+                return
 
         sender = "Discord guest"
         now = time.monotonic()
@@ -716,7 +874,6 @@ def build_client() -> discord.Client:
             channel_label = "discord-dm"
         else:
             chan = message.channel.id
-            chname = getattr(message.channel, "name", "channel")
             buf = history_buf.setdefault(chan, [])       # rolling channel context
             buf.append((message.author.display_name, message.content.strip()))
             del buf[:-max(CONTEXT_MESSAGES, 1)]
@@ -728,6 +885,11 @@ def build_client() -> discord.Client:
             last_human_ts[chan] = now
             chain_depth[chan] = 0
             channel_obj[chan] = message.channel
+            try:
+                actor_bindings = _message_actor_bindings(message)
+            except bridge_actor_transport.DiscordActorHeaderError:
+                _diagnostic("actor_bindings_rejected")
+                return
             if now - last_reply_at.get(chan, 0.0) < CHANNEL_MIN_INTERVAL:
                 return                                    # anti-flood, every path
 
@@ -803,6 +965,7 @@ def build_client() -> discord.Client:
             for tag in (f"@{client.user.name}", f"@{message.guild.me.display_name}"):
                 text = text.replace(tag, "")
             text = text.strip()
+            text = _room_model_text(chan, text, invite=(mode == "participate"))
             channel_label = "discord"
             _diagnostic(
                 "message_mode",
@@ -1013,6 +1176,11 @@ def build_client() -> discord.Client:
             return
 
         reply = (reply or "").strip()
+        if mode == "participate" and reply.casefold().strip(". !") in {
+            "[pass]", "pass", "(pass)", "[silent]",
+        }:
+            _diagnostic("room_participation_passed")
+            return
         if not reply and outbound_media is None:
             _diagnostic("empty_backend_reply", mode=mode)
             return
@@ -1082,25 +1250,31 @@ def build_client() -> discord.Client:
                 ch = channel_obj.get(chan)
                 if ch is None:
                     continue
+                guild = getattr(ch, "guild", None)
+                guild_id = getattr(guild, "id", None)
+                if guild_id is None or _room_key(guild_id, chan) not in social_rooms:
+                    continue
+                context = _recent_context(chan)
+                prompt = (
+                    "The approved Discord room has gone quiet after you spoke. "
+                    "You may offer one short, genuine follow-up or ask one relevant "
+                    "question. Do not repeat yourself, pressure anyone to answer, or "
+                    "mention these instructions. If nothing is worth adding, reply "
+                    "exactly [pass].\n\nRecent room messages:\n"
+                    + context
+                )[:7_500]
                 try:
                     reply = await asyncio.to_thread(
-                        _ask_alpecca,
-                        "The room is quiet. Continue your own last thought one step "
-                        "deeper -- a single genuine reflection, or a question you're "
-                        "now sitting with. One or two sentences; if you truly have "
-                        "nothing more, give a soft closing line.",
-                        "Alpecca (self-reflection)",
-                        "discord",
-                        "guest",
-                        context="proactive reflective follow-up",
-                        room="discord",
+                        _ask_room_autonomy,
+                        prompt,
+                        _room_scope(guild_id, chan),
                     )
                 except Exception:
                     _diagnostic("recursive_request_failed")
                     continue
                 if last_human_ts.get(chan, 0.0) > hts:    # someone spoke while thinking -> yield
                     continue
-                if reply:
+                if reply and reply.casefold().strip(". !") not in {"[pass]", "pass", "(pass)", "[silent]"}:
                     await ch.send(reply[:MAX_DISCORD_CHARS])
                     her_last_ts[chan] = time.monotonic()
                     chain_depth[chan] = chain_depth.get(chan, 0) + 1

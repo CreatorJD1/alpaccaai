@@ -78,7 +78,7 @@ def _allow_dm(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())
 
 
-def test_environment_flags_cannot_widen_locked_modes_or_voice_intent(tmp_path):
+def test_social_presence_is_creator_room_claimed_and_voice_stays_off(tmp_path):
     env = os.environ.copy()
     env.pop("ALPECCA_DISCORD_DEBUG", None)
     env.update(
@@ -119,10 +119,10 @@ def test_environment_flags_cannot_widen_locked_modes_or_voice_intent(tmp_path):
     assert completed.returncode == 0, completed.stderr
     posture = json.loads(completed.stdout.strip().splitlines()[-1])
     assert posture == {
-        "locked": True,
-        "proactive": False,
-        "recursive": False,
-        "participate": False,
+        "locked": False,
+        "proactive": True,
+        "recursive": True,
+        "participate": True,
         "voice": False,
         "debug": False,
         "voice_states": False,
