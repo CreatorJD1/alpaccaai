@@ -5200,6 +5200,35 @@ def test_llm_last_call_reports_offline_fallback():
     assert "Ollama client" in last["error"]
 
 
+def test_hybrid_ollama_cloud_call_is_reported_as_cloud(monkeypatch):
+    from alpecca import mind as mind_mod
+    from alpecca.mind import _LLM
+
+    class FakeClient:
+        def __init__(self, reply):
+            self.reply = reply
+            self.calls = []
+
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"message": {"content": self.reply}}
+
+    local = FakeClient("local should not be used")
+    cloud = FakeClient("hosted answer")
+    monkeypatch.setattr(mind_mod, "CHAT_CLOUD_MODEL", "gemma4:cloud")
+    monkeypatch.setattr(mind_mod, "CHAT_ZEROGPU", False)
+    llm = _LLM()
+    llm._backend = "ollama"
+    llm._client = local
+    monkeypatch.setattr(_LLM, "_cloud_chat_client", lambda self: cloud)
+
+    assert llm.generate("system", "hello") == "hosted answer"
+    assert local.calls == []
+    assert cloud.calls[0]["model"] == "gemma4:cloud"
+    assert llm.last_call()["backend"] == "ollama-cloud"
+    assert llm.last_call()["model"] == "gemma4:cloud"
+
+
 def test_chat_prompt_does_not_inject_room_context_for_unrelated_message(monkeypatch):
     # Hermetic: every live store that feeds the chat prompt (memory recall,
     # musings, mindpage prefault, journal, people, core memory, mood history)
@@ -5299,6 +5328,63 @@ def test_casual_chat_does_not_offer_actuator_tools():
     mind.chat("Hi Alpecca, answer in one short sentence.", situation="")
     assert captured["tools"] is None
     assert captured["on_tool"] is None
+
+
+def test_runtime_model_question_is_local_nonstreamed_and_code_grounded():
+    from alpecca.mind import CoreMind
+
+    mind = CoreMind()
+    captured = {}
+
+    def fake_generate(
+        system_prompt,
+        user_msg,
+        history=None,
+        tools=None,
+        on_token=None,
+        on_tool=None,
+        tier="reason",
+        local_only=False,
+    ):
+        captured.update({
+            "tools": tools,
+            "on_token": on_token,
+            "local_only": local_only,
+        })
+        return "I am Llama-3.1-8B."
+
+    mind.llm.generate = fake_generate
+    mind.llm._last_call = {
+        "requested_tier": "reason",
+        "used_tier": "reason",
+        "backend": "ollama",
+        "model": "qwen3.5:9b",
+        "ok": True,
+        "fallback": False,
+        "error": "",
+    }
+    streamed = []
+
+    result = mind.chat(
+        "Report the model name you are actually using for this reply.",
+        on_token=streamed.append,
+    )
+
+    assert result["reply"] == (
+        "The language call for this turn used qwen3.5:9b through verified local "
+        "Ollama; this status line comes from the measured call record."
+    )
+    assert "Llama" not in result["reply"]
+    assert captured == {"tools": None, "on_token": None, "local_only": True}
+    assert streamed == []
+
+
+def test_runtime_model_question_detection_does_not_capture_model_advice():
+    from alpecca.mind import _asks_runtime_model
+
+    assert _asks_runtime_model("Which model are you using right now?")
+    assert _asks_runtime_model("What is your LLM?")
+    assert not _asks_runtime_model("Which model should I download for Blender?")
 
 
 def test_keyword_tool_mode_keeps_off_topic_turns_tool_free():

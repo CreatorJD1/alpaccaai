@@ -26,9 +26,9 @@ WHAT IT DOES (pure-Python GLB surgery, no Blender, stdlib only)
        and angular blending between the two nearest chains (no sector seams).
        Existing weights are scaled by (1 - injected), so stripping +
        renormalizing recovers the original weights.
-    8. Appends one VRMC_springBone spring per chain, using only existing
-       hips/lower-torso collider groups verified against the humanoid rig.
-       Head, hair, limb, and accessory colliders are never attached.
+    8. Appends one invisible VRMC_springBone sphere per chain root, attached
+       to the humanoid hips, plus one spring per chain that references only
+       that dedicated hoodie collider group.
     9. Validates the output structurally (see validate_output) and verifies
        that materials, textures, images, meshes and VRMC_vrm are byte-for-byte
        / JSON-identical to the input -- zero visible-design changes.
@@ -71,7 +71,7 @@ CHUNK_BIN = 0x004E4942
 
 INJECT_PREFIX = "J_Inj_HoodieHem"
 MARKER_KEY = "alpecca_hoodie_sway"
-MARKER_VERSION = 1
+MARKER_VERSION = 2
 
 COMPONENT_FMT = {5120: "b", 5121: "B", 5122: "h", 5123: "H", 5125: "I", 5126: "f"}
 TYPE_COUNT = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT2": 4, "MAT3": 9, "MAT4": 16}
@@ -93,6 +93,9 @@ HOODIE_COLLIDER_ATTACHMENTS = (
     ("spine", "J_Bip_C_Spine"),
 )
 MAX_HOODIE_COLLIDER_ROOT_GAP_METERS = 0.025
+HOODIE_COLLIDER_GROUP_NAME = f"{INJECT_PREFIX}_Colliders"
+HOODIE_COLLIDER_RADIUS_METERS = 0.03
+HOODIE_COLLIDER_ROOT_OVERLAP_METERS = 0.005
 
 
 class InjectError(RuntimeError):
@@ -502,6 +505,160 @@ def require_hoodie_collider_reach(gltf, collider_group_indices, chain_roots_worl
     return gaps
 
 
+def append_hoodie_hem_colliders(
+    gltf, hips_index, chain_roots_world, hem_center_world
+):
+    """Append deterministic hips-local sphere volumes for the hoodie hem roots."""
+    nodes = gltf.get("nodes", [])
+    ext_vrm = gltf.get("extensions", {}).get("VRMC_vrm", {})
+    ext_sb = gltf.get("extensions", {}).get("VRMC_springBone", {})
+    expected_hips = (
+        ext_vrm.get("humanoid", {}).get("humanBones", {}).get("hips", {}).get("node")
+    )
+    if (
+        type(hips_index) is not int
+        or hips_index != expected_hips
+        or not (0 <= hips_index < len(nodes))
+        or nodes[hips_index].get("name") != "J_Bip_C_Hips"
+    ):
+        raise InjectError("dedicated hoodie colliders require the verified humanoid hips node")
+    if not isinstance(chain_roots_world, (list, tuple)) or not chain_roots_world:
+        raise InjectError("dedicated hoodie colliders require hem chain roots")
+
+    colliders = ext_sb.setdefault("colliders", [])
+    collider_groups = ext_sb.setdefault("colliderGroups", [])
+    if not isinstance(colliders, list) or not isinstance(collider_groups, list):
+        raise InjectError("VRMC_springBone collider arrays are invalid")
+    if any(
+        isinstance(group, dict) and group.get("name") == HOODIE_COLLIDER_GROUP_NAME
+        for group in collider_groups
+    ):
+        raise InjectError("dedicated hoodie collider group already exists; strip it first")
+
+    center = _finite_vec3(hem_center_world, "hoodie hem center")
+    parent = build_parent_map(gltf)
+    hips_world = world_matrix(gltf, parent, hips_index)
+    hips_world_scale = _uniform_world_scale(hips_world, "hoodie collider hips")
+    inverse_hips = mat4_invert_affine(hips_world)
+    local_radius = HOODIE_COLLIDER_RADIUS_METERS / hips_world_scale
+    radial_inset = (
+        HOODIE_COLLIDER_RADIUS_METERS - HOODIE_COLLIDER_ROOT_OVERLAP_METERS
+    )
+
+    collider_start = len(colliders)
+    for root_index, value in enumerate(chain_roots_world):
+        root = _finite_vec3(value, f"hoodie chain root {root_index}")
+        dx = root[0] - center[0]
+        dz = root[2] - center[2]
+        radial_length = math.hypot(dx, dz)
+        if radial_length <= radial_inset:
+            raise InjectError(
+                f"hoodie chain root {root_index} has no stable outward radial direction"
+            )
+        sphere_center_world = [
+            root[0] - radial_inset * dx / radial_length,
+            root[1],
+            root[2] - radial_inset * dz / radial_length,
+        ]
+        colliders.append({
+            "node": hips_index,
+            "shape": {
+                "sphere": {
+                    "offset": mat4_apply(inverse_hips, sphere_center_world),
+                    "radius": local_radius,
+                }
+            },
+        })
+
+    collider_indices = list(range(collider_start, len(colliders)))
+    group_index = len(collider_groups)
+    collider_groups.append({
+        "name": HOODIE_COLLIDER_GROUP_NAME,
+        "colliders": collider_indices,
+    })
+    return {
+        "collider_start": collider_start,
+        "collider_count": len(collider_indices),
+        "collider_group_start": group_index,
+        "collider_group_count": 1,
+        "collider_group": group_index,
+    }
+
+
+def require_dedicated_hoodie_collider_tail(
+    gltf, collider_start, collider_count, collider_group_index, hips_index
+):
+    """Fail unless the dedicated collider records are the exact owned array tails."""
+    nodes = gltf.get("nodes", [])
+    ext_vrm = gltf.get("extensions", {}).get("VRMC_vrm", {})
+    ext_sb = gltf.get("extensions", {}).get("VRMC_springBone", {})
+    colliders = ext_sb.get("colliders", [])
+    collider_groups = ext_sb.get("colliderGroups", [])
+    expected_hips = (
+        ext_vrm.get("humanoid", {}).get("humanBones", {}).get("hips", {}).get("node")
+    )
+    if (
+        type(hips_index) is not int
+        or hips_index != expected_hips
+        or not (0 <= hips_index < len(nodes))
+        or nodes[hips_index].get("name") != "J_Bip_C_Hips"
+    ):
+        raise InjectError("dedicated hoodie colliders are not on verified humanoid hips")
+    if (
+        type(collider_start) is not int
+        or type(collider_count) is not int
+        or collider_start < 0
+        or collider_count <= 0
+        or collider_start + collider_count != len(colliders)
+    ):
+        raise InjectError("dedicated hoodie colliders are not the exact collider-array tail")
+    if (
+        type(collider_group_index) is not int
+        or collider_group_index < 0
+        or collider_group_index + 1 != len(collider_groups)
+    ):
+        raise InjectError("dedicated hoodie collider group is not the group-array tail")
+
+    expected_refs = list(range(collider_start, collider_start + collider_count))
+    expected_group = {
+        "name": HOODIE_COLLIDER_GROUP_NAME,
+        "colliders": expected_refs,
+    }
+    if collider_groups[collider_group_index] != expected_group:
+        raise InjectError("dedicated hoodie collider group does not match its owned range")
+
+    parent = build_parent_map(gltf)
+    hips_world = world_matrix(gltf, parent, hips_index)
+    hips_world_scale = _uniform_world_scale(hips_world, "hoodie collider hips")
+    for collider_index in expected_refs:
+        collider = colliders[collider_index]
+        if not isinstance(collider, dict) or frozenset(collider) != {"node", "shape"}:
+            raise InjectError("dedicated hoodie collider record has unexpected fields")
+        if collider.get("node") != hips_index:
+            raise InjectError("dedicated hoodie collider is not attached to humanoid hips")
+        shape = collider.get("shape")
+        if not isinstance(shape, dict) or frozenset(shape) != {"sphere"}:
+            raise InjectError("dedicated hoodie collider is not an exact sphere")
+        sphere = shape["sphere"]
+        if not isinstance(sphere, dict) or frozenset(sphere) != {"offset", "radius"}:
+            raise InjectError("dedicated hoodie sphere has unexpected fields")
+        _finite_vec3(sphere["offset"], "dedicated hoodie sphere offset")
+        radius = sphere["radius"]
+        if (
+            isinstance(radius, bool)
+            or not isinstance(radius, (int, float))
+            or not math.isfinite(float(radius))
+            or not math.isclose(
+                float(radius) * hips_world_scale,
+                HOODIE_COLLIDER_RADIUS_METERS,
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            )
+        ):
+            raise InjectError("dedicated hoodie sphere radius is invalid")
+    return expected_refs
+
+
 # --------------------------------------------------------------------------
 # Idempotency: strip a previous injection
 # --------------------------------------------------------------------------
@@ -518,9 +675,19 @@ def strip_previous_injection(gltf, bin_data):
             "found J_Inj_* nodes or marker without the matching counterpart; "
             "cannot strip safely -- re-run on a fresh VRoid export instead"
         )
+    marker_version = marker.get("version") if isinstance(marker, dict) else None
+    if type(marker_version) is not int or marker_version not in (1, MARKER_VERSION):
+        raise InjectError("previous injection marker version is unsupported; cannot strip safely")
 
-    start = marker["node_start"]
-    count = marker["node_count"]
+    start = marker.get("node_start")
+    count = marker.get("node_count")
+    if (
+        type(start) is not int
+        or type(count) is not int
+        or start < 0
+        or count <= 0
+    ):
+        raise InjectError("previous injection marker has an invalid node range")
     if inj_nodes != list(range(start, start + count)) or start + count != len(nodes):
         raise InjectError(
             "previous injection is not the tail of the node array (file was "
@@ -530,6 +697,52 @@ def strip_previous_injection(gltf, bin_data):
 
     # springs
     sb = gltf["extensions"]["VRMC_springBone"]
+    collider_count = 0
+    collider_group_count = 0
+    if marker_version == MARKER_VERSION:
+        collider_start = marker.get("collider_start")
+        collider_count = marker.get("collider_count")
+        collider_group_start = marker.get("collider_group_start")
+        collider_group_count = marker.get("collider_group_count")
+        collider_node = marker.get("collider_node")
+        if (
+            type(collider_count) is not int
+            or collider_count != count // 3
+            or count % 3
+            or type(collider_group_count) is not int
+            or collider_group_count != 1
+            or type(collider_node) is not int
+        ):
+            raise InjectError("previous injection marker has invalid collider ownership")
+        require_dedicated_hoodie_collider_tail(
+            gltf,
+            collider_start,
+            collider_count,
+            collider_group_start,
+            collider_node,
+        )
+        injected_collider_refs = set(
+            range(collider_start, collider_start + collider_count)
+        )
+        for group in sb["colliderGroups"][:collider_group_start]:
+            refs = group.get("colliders", []) if isinstance(group, dict) else []
+            if any(ref in injected_collider_refs for ref in refs):
+                raise InjectError(
+                    "an unowned collider group references dedicated hoodie colliders"
+                )
+        for spring in sb["springs"]:
+            is_injected = (
+                str(spring.get("name", "")).startswith(INJECT_PREFIX)
+                or any(j.get("node") in inj_set for j in spring.get("joints", []))
+            )
+            if (
+                collider_group_start in spring.get("colliderGroups", [])
+                and not is_injected
+            ):
+                raise InjectError(
+                    "an unowned spring references the dedicated hoodie collider group"
+                )
+
     before = len(sb["springs"])
     sb["springs"] = [
         s for s in sb["springs"]
@@ -537,6 +750,11 @@ def strip_previous_injection(gltf, bin_data):
         and not any(j.get("node") in inj_set for j in s.get("joints", []))
     ]
     springs_removed = before - len(sb["springs"])
+    if marker_version == MARKER_VERSION:
+        if springs_removed != count // 3:
+            raise InjectError("injected spring count does not match marker ownership")
+        del sb["colliderGroups"][collider_group_start:]
+        del sb["colliders"][collider_start:]
 
     # children references
     for n in nodes:
@@ -606,6 +824,7 @@ def strip_previous_injection(gltf, bin_data):
 
     info = (
         f"stripped previous injection: {count} nodes, {springs_removed} springs, "
+        f"{collider_count} colliders, {collider_group_count} collider groups, "
         f"{restored} vertices restored (renormalized)"
     )
     return bin_data, info
@@ -668,8 +887,6 @@ def inject(gltf, bin_data, args):
     ext_sb = gltf.get("extensions", {}).get("VRMC_springBone")
     if not ext_vrm or not ext_sb:
         raise InjectError("input is not a VRM 1.0 file (VRMC_vrm/VRMC_springBone missing)")
-
-    hoodie_collider_groups = select_hoodie_collider_groups(gltf)
 
     hips_index = ext_vrm["humanoid"]["humanBones"]["hips"]["node"]
     parent = build_parent_map(gltf)
@@ -770,11 +987,30 @@ def inject(gltf, bin_data, args):
         chain_roots_world.append([rx, band_top, rz])
         chain_labels.append(sector_label(centers[k], n_chains))
     report["chains"] = list(zip(chain_labels, [tuple(round(c, 4) for c in p) for p in chain_roots_world]))
+    collider_info = append_hoodie_hem_colliders(
+        gltf,
+        hips_index,
+        chain_roots_world,
+        [cx, band_top, cz],
+    )
+    hoodie_collider_groups = [collider_info["collider_group"]]
+    require_dedicated_hoodie_collider_tail(
+        gltf,
+        collider_info["collider_start"],
+        collider_info["collider_count"],
+        collider_info["collider_group"],
+        hips_index,
+    )
     collider_root_gaps = require_hoodie_collider_reach(
         gltf, hoodie_collider_groups, chain_roots_world
     )
     report["hoodie_collider_root_gaps"] = collider_root_gaps
     report["hoodie_collider_max_root_gap"] = max(collider_root_gaps)
+    report.update(collider_info)
+    report["colliders_before"] = collider_info["collider_start"]
+    report["colliders_after"] = len(ext_sb["colliders"])
+    report["collider_groups_before"] = collider_info["collider_group_start"]
+    report["collider_groups_after"] = len(ext_sb["colliderGroups"])
 
     # ---- build nodes --------------------------------------------------------
     w_hips = world_matrix(gltf, parent, hips_index)
@@ -928,6 +1164,11 @@ def inject(gltf, bin_data, args):
         "original_ibm_accessor": orig_ibm_acc,
         "ibm_accessor": new_acc_index,
         "ibm_bufferview": new_bv_index,
+        "collider_start": collider_info["collider_start"],
+        "collider_count": collider_info["collider_count"],
+        "collider_group_start": collider_info["collider_group_start"],
+        "collider_group_count": collider_info["collider_group_count"],
+        "collider_node": hips_index,
         "hem_y": hem_y,
         "band_top": band_top,
     }
@@ -948,6 +1189,10 @@ def validate_output(output_path, input_path, report):
     gltf, bin_data = read_glb(output_path)
     src_gltf, src_bin = read_glb(input_path)
     problems = []
+    try:
+        src_bin, _ = strip_previous_injection(src_gltf, src_bin)
+    except (InjectError, KeyError, IndexError, TypeError, ValueError) as exc:
+        return [f"input baseline could not be stripped safely: {exc}"]
 
     n_nodes = len(gltf["nodes"])
 
@@ -1014,33 +1259,57 @@ def validate_output(output_path, input_path, report):
     ]
     if len(injected_springs) != len(report["chains"]):
         problems.append("injected hoodie spring count does not match chain report")
-    expected_groups = report["hoodie_collider_groups"]
+    expected_groups = [report["collider_group"]]
+    if report["hoodie_collider_groups"] != expected_groups:
+        problems.append("hoodie collider group report is internally inconsistent")
     for spring in injected_springs:
         if spring.get("colliderGroups") != expected_groups:
             problems.append(
                 f"spring {spring.get('name')}: hoodie collider groups do not match report"
             )
+
+    src_sb = src_gltf["extensions"]["VRMC_springBone"]
+    src_colliders = src_sb.get("colliders", [])
+    src_collider_groups = src_sb.get("colliderGroups", [])
+    colliders = sb.get("colliders", [])
+    collider_groups = sb.get("colliderGroups", [])
+    if report["collider_start"] != len(src_colliders):
+        problems.append("dedicated collider range does not start after input colliders")
+    if report["collider_group_start"] != len(src_collider_groups):
+        problems.append("dedicated collider group does not start after input groups")
+    if report["collider_count"] != len(report["chains"]):
+        problems.append("dedicated collider count does not match hem chain count")
+    if report["collider_group_count"] != 1:
+        problems.append("dedicated collider group count is not exactly one")
+    if len(colliders) != report["colliders_after"]:
+        problems.append("collider count does not match report")
+    if len(collider_groups) != report["collider_groups_after"]:
+        problems.append("collider group count does not match report")
+    if colliders[:report["collider_start"]] != src_colliders:
+        problems.append("pre-existing collider records changed vs input")
+    if collider_groups[:report["collider_group_start"]] != src_collider_groups:
+        problems.append("pre-existing collider groups changed vs input")
+
     try:
-        verified_groups = select_hoodie_collider_groups(gltf)
-    except InjectError as exc:
-        problems.append(f"hoodie collider verification failed: {exc}")
-    else:
-        if verified_groups != expected_groups:
-            problems.append("hoodie collider groups are not the verified safe set")
-        try:
-            parent = build_parent_map(gltf)
-            chain_roots_world = [
-                mat4_apply(
-                    world_matrix(gltf, parent, spring["joints"][0]["node"]),
-                    [0.0, 0.0, 0.0],
-                )
-                for spring in injected_springs
-            ]
-            require_hoodie_collider_reach(
-                gltf, expected_groups, chain_roots_world
+        hips_index = gltf["extensions"]["VRMC_vrm"]["humanoid"]["humanBones"]["hips"]["node"]
+        require_dedicated_hoodie_collider_tail(
+            gltf,
+            report["collider_start"],
+            report["collider_count"],
+            report["collider_group"],
+            hips_index,
+        )
+        parent = build_parent_map(gltf)
+        chain_roots_world = [
+            mat4_apply(
+                world_matrix(gltf, parent, spring["joints"][0]["node"]),
+                [0.0, 0.0, 0.0],
             )
-        except (InjectError, KeyError, IndexError, TypeError, ValueError) as exc:
-            problems.append(f"hoodie collider spatial validation failed: {exc}")
+            for spring in injected_springs
+        ]
+        require_hoodie_collider_reach(gltf, expected_groups, chain_roots_world)
+    except (InjectError, KeyError, IndexError, TypeError, ValueError) as exc:
+        problems.append(f"hoodie collider spatial validation failed: {exc}")
 
     # weights of the body mesh: all joints in range, sums == 1
     skin = gltf["skins"][report["skin_index"]]

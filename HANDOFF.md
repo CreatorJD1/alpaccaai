@@ -1,5 +1,69 @@
 # Alpecca — Handoff (updated 2026-07-12)
 
+## Codex Resume Checkpoint: Local Model Honesty And Parallel Stage Review
+
+This block is the newest operational handoff. Preserve the later shared-branch
+commits `56106bb` (Codex vision handoff) and `7f491e6` (VRM blink/lip-sync
+independence); they landed after the Phase 11 checkpoint and must not be reset.
+
+- Commit `335a1e3` is pushed on `feat/vrm-preview`. It adds the reviewed Web
+  Push connection-test slice, credential-backed monotonic outbox anchor,
+  rollback-aware subscription state, reserve-before-ack recovery, cross-process
+  first-use/send mutexes, verified-local computer screenshots, service-worker
+  retry/origin/cache hardening, and fail-closed hoodie-collider reach checks.
+  Verification for that exact tree was `1756 passed, 2 skipped`; House HQ built
+  and `web/sw.js` passed `node --check`.
+- The last live smoke ran locally at `http://127.0.0.1:8765/house-hq` with
+  `ALPECCA_MODEL=qwen3.5:9b`, `ALPECCA_FAST_MODEL=qwen3.5:9b`, an 8K context,
+  and chat cloud/ZeroGPU disabled for this smoke. Ollama reports the installed
+  `qwen3.5:9b` (8.95B) resident at 8K. The server was stopped after the smoke
+  for isolated verification. Do not reintroduce Qwen 3 8B.
+- Live smoke exposed a false self-report: the model guessed
+  `Llama-3.1-8B` while the inherited route was actually `gemma4:cloud`.
+  Current uncommitted changes in `alpecca/mind.py` and `tests/test_core.py`
+  force runtime-model questions to verified local inference, suppress streaming
+  and tools for that status turn, label hosted Ollama calls `ollama-cloud`, and
+  replace the draft with a code-grounded line from `llm.last_call()`. Three
+  focused tests pass. A second live smoke now truthfully reports
+  `qwen3.5:9b` through verified local Ollama.
+- The second live smoke still showed a House timeout/fallback notice before the
+  eventual correct 9B reply. Treat that as an open UX/runtime issue: do not send
+  a duplicate request when the primary House channel is merely slow, and do not
+  announce terminal failure before a still-running turn can commit.
+- Discord media code exists, but the current plain `python server.py` launch has
+  media disabled and no bridge process. More importantly, bridge debug logging
+  defaults on and writes raw DM text/captions to disk. Before enabling the
+  bridge, redact message content, default debug off, expose a secret-free media
+  readiness result, and return fixed diagnostics for disabled/vision-unavailable
+  paths. Keep guilds, cloud vision, tools, and durable guest history blocked.
+- Mindpage is durable and bounded for the first request, but two high gaps are
+  verified: tool-result follow-up rounds bypass the context ledger, and indexed
+  buried facts can select a page while `fault_page()` returns only a prefix that
+  omits the match. Fix per-tool-round budgeting first, then match-centered page
+  excerpts. Pressure-to-Soul remains telemetry/urgency rather than a scoped
+  consolidation action.
+- Phase 12 now has dedicated invisible VRM 1.0 hem colliders in the injector:
+  six three-centimetre spheres are hips-attached and overlap the six hem-chain
+  roots without changing locked meshes, materials, textures, images, samplers,
+  or `VRMC_vrm`. Strip/reinject idempotency and V4 output validation pass. The
+  live V4 binary was deliberately not promoted; preserve its design lock until
+  the remaining animation soak gate is complete.
+- Ten distinct parallel review lanes were rotated through the runtime's smaller
+  concurrency cap. Their verified gaps are recorded above and in the Phase 8
+  work below; completed agents should be closed rather than left consuming a
+  slot.
+- Unrelated dirty work remains in
+  `apps/house-hq/public/assets/alpecca-optimized/runtime_matrix_manifest.json`,
+  `config.py`, `tests/test_stage1_security.py`, `.agents/`, `PROJECT.md`,
+  `alpecca/creator_contact.py`, `explorer_phase2_audit/`, and the local PDF
+  builder. Do not stage, revert, or absorb it without a separate decision.
+
+Immediate gate after this narrow checkpoint: complete Phase 8 as a bounded RSI
+cycle whose intervention affects the real proactive path, rejects impossible
+trials, settles conservatively, requires a creator decision to retain or revert,
+archives the cycle, and can issue the next candidate. The House slow-turn,
+Discord readiness, and Mindpage tool-round gaps remain separate follow-on work.
+
 ## Current Active Handoff: Phase 9 Multimodal And Source Perception
 
 This checkpoint supersedes the older active-scope and phase-status language

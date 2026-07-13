@@ -260,6 +260,62 @@ def strip_think(text: str) -> str:
     return cleaned or text.strip()
 
 
+_RUNTIME_MODEL_QUESTION_PATTERNS = (
+    re.compile(
+        r"\b(?:what|which)\s+(?:ai\s+|language\s+)?(?:model|llm)\b"
+        r".{0,56}\b(?:you|your|alpecca|this\s+reply)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:model|llm)(?:\s+name)?\b.{0,56}"
+        r"\b(?:you|your|alpecca|this\s+reply)\b.{0,40}"
+        r"\b(?:use|used|using|run|running|served)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:you|alpecca|this\s+reply)\b.{0,48}"
+        r"\b(?:model|llm)\b.{0,32}\b(?:use|used|using|run|running|served)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bwhat(?:'s|\s+is)\s+your\s+(?:model|llm)\b", re.IGNORECASE),
+)
+
+
+def _asks_runtime_model(user_msg: str) -> bool:
+    """Recognize self-directed runtime-model questions without catching advice."""
+    text = " ".join(str(user_msg or "").split())[:500]
+    return bool(text) and any(
+        pattern.search(text) for pattern in _RUNTIME_MODEL_QUESTION_PATTERNS
+    )
+
+
+def _runtime_model_status_reply(model_use: Mapping[str, object]) -> str:
+    """Build a factual model answer from the completed call record, never the LLM."""
+    raw_model = str(model_use.get("model") or "").strip()
+    model = re.sub(r"[\x00-\x1f\x7f]", "", raw_model)[:160] or "the configured model"
+    backend = str(model_use.get("backend") or "").strip().lower()[:48]
+    fallback = bool(model_use.get("fallback")) or not bool(model_use.get("ok", True))
+    if fallback or backend in {"", "offline", "timeout", "context_refusal"}:
+        return (
+            f"No language model completed this turn; the recorded target was {model}, "
+            "and this status line comes from the fallback record."
+        )
+    if backend == "ollama":
+        route = "verified local Ollama"
+    elif backend == "ollama-cloud":
+        route = "Ollama's hosted cloud route, not the local model"
+    elif backend == "zerogpu":
+        route = "the configured Hugging Face ZeroGPU route"
+    elif backend == "hf":
+        route = "the configured Hugging Face route"
+    else:
+        route = f"the recorded {backend} backend"
+    return (
+        f"The language call for this turn used {model} through {route}; "
+        "this status line comes from the measured call record."
+    )
+
+
 class _StreamPartial(RuntimeError):
     """A streamed generation died AFTER tokens were already shown to the
     person. The caller must not silently retry (the draft can't be unsaid);
@@ -325,6 +381,19 @@ class _LLM:
 
     def last_call(self) -> dict:
         return dict(self._last_call)
+
+    @staticmethod
+    def _ollama_backend_for_model(model: str) -> str:
+        hosted = {
+            value.strip().casefold()
+            for value in (CHAT_CLOUD_MODEL, OLLAMA_CLOUD_MODEL)
+            if isinstance(value, str) and value.strip()
+        }
+        return (
+            "ollama-cloud"
+            if str(model or "").strip().casefold() in hosted
+            else "ollama"
+        )
 
     # --- Local chain-of-thought for her deep self-acts ----------------------
 
@@ -938,7 +1007,7 @@ class _LLM:
             self._mark_model_use(
                 requested=tier,
                 used=used_tier,
-                backend="ollama",
+                backend=self._ollama_backend_for_model(used_model),
                 model=used_model,
             )
             return strip_think(resp["message"]["content"])
@@ -2215,6 +2284,7 @@ class CoreMind:
         history = self._get_history("default") if implicit_turn else self._get_history(turn=turn)
         moved = False
         low = user_msg.lower()
+        runtime_model_question = _asks_runtime_model(user_msg)
         live_house_room, legacy_house_room = self._house_context_room(situation)
         pending_house_room = (
             legacy_house_room if legacy_house_room and legacy_house_room != self._location else ""
@@ -2339,7 +2409,7 @@ class CoreMind:
                 abilities = self.toolkit.describe()
         tool_schema = (
             None
-            if attachment_context
+            if attachment_context or runtime_model_question
             else self._tool_schema(low, turn=None if implicit_turn else turn)
         )
         who_prompt = people_mod.who_prompt(speaker)
@@ -2516,9 +2586,18 @@ class CoreMind:
 
         stream_kwargs = (
             {"on_token": guarded_token}
-            if (on_token is not None and tool_schema is None) else {}
+            if (
+                on_token is not None
+                and tool_schema is None
+                and not runtime_model_question
+            )
+            else {}
         )
-        privacy_kwargs = {"local_only": True} if private_model_context else {}
+        privacy_kwargs = (
+            {"local_only": True}
+            if private_model_context or runtime_model_question
+            else {}
+        )
         reply = self.llm.generate(
             system_prompt, user_msg, prompt_history,
             tools=tool_schema,
@@ -2533,7 +2612,11 @@ class CoreMind:
         # fresh one so she talks like a person, not a looping bot. Plain replies
         # only (tool replies are functional), skipped when the LLM already fell
         # back, and bounded so it can't spin.
-        if tool_schema is None and not self.llm.last_call().get("fallback"):
+        if (
+            tool_schema is None
+            and not runtime_model_question
+            and not self.llm.last_call().get("fallback")
+        ):
             tries = 0
             retry_audits: list[dict] = []
             while tries < 2 and self._too_repetitive(reply):
@@ -2578,6 +2661,8 @@ class CoreMind:
                                           **privacy_kwargs)
                 if self.llm.last_call().get("fallback"):
                     break
+        if runtime_model_question:
+            reply = _runtime_model_status_reply(self.llm.last_call())
         if not turn.begin_commit():
             return self._cancelled_turn_result(turn)
 

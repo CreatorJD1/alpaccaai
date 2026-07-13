@@ -173,11 +173,11 @@ async function acknowledgePending(data) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ event_id: data.event_id, receipt: data.receipt }),
     });
-    if (response.ok || [400, 403, 404].includes(response.status)) {
+    if (response.status === 200 || [400, 403, 404].includes(response.status)) {
       try {
         await deletePendingAcknowledgement(data.event_id);
       } catch {}
-      return response.ok;
+      return response.status === 200;
     }
   } catch {}
   return false;

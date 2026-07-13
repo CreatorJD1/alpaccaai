@@ -178,7 +178,60 @@ def test_spatial_reach_measures_sphere_and_capsule_volumes_in_world_space():
     assert capsule_gaps == pytest.approx([0.0, 0.0], abs=1e-12)
 
 
-def test_real_v4_is_rejected_when_selected_collider_cannot_reach_hem_roots():
+def test_dedicated_hem_colliders_are_invisible_owned_and_reach_each_root():
+    document = _synthetic_vrm_json()
+    locked_before = {
+        key: copy.deepcopy(document[key]) for key in LOCKED_DESIGN_KEYS
+    }
+    nodes_before = copy.deepcopy(document["nodes"])
+    vrm_before = copy.deepcopy(document["extensions"]["VRMC_vrm"])
+    roots = [
+        [-0.08, 0.92, -0.05],
+        [-0.09, 0.92, 0.0],
+        [-0.08, 0.92, 0.05],
+        [0.08, 0.92, 0.05],
+        [0.09, 0.92, 0.0],
+        [0.08, 0.92, -0.05],
+    ]
+
+    info = injector.append_hoodie_hem_colliders(
+        document,
+        hips_index=1,
+        chain_roots_world=roots,
+        hem_center_world=[0.0, 0.92, 0.0],
+    )
+
+    spring_bone = document["extensions"]["VRMC_springBone"]
+    assert info == {
+        "collider_start": 4,
+        "collider_count": 6,
+        "collider_group_start": 4,
+        "collider_group_count": 1,
+        "collider_group": 4,
+    }
+    assert spring_bone["colliderGroups"][4] == {
+        "name": injector.HOODIE_COLLIDER_GROUP_NAME,
+        "colliders": [4, 5, 6, 7, 8, 9],
+    }
+    assert injector.require_dedicated_hoodie_collider_tail(
+        document, 4, 6, 4, 1
+    ) == [4, 5, 6, 7, 8, 9]
+    assert injector.require_hoodie_collider_reach(
+        document, [4], roots
+    ) == pytest.approx([0.0] * 6, abs=1e-12)
+    assert all(collider["node"] == 1 for collider in spring_bone["colliders"][4:])
+    assert all(
+        set(collider["shape"]) == {"sphere"}
+        for collider in spring_bone["colliders"][4:]
+    )
+    assert injector.select_hoodie_collider_groups(document) == [3, 1]
+    assert document["nodes"] == nodes_before
+    assert document["extensions"]["VRMC_vrm"] == vrm_before
+    for key, value in locked_before.items():
+        assert document[key] == value
+
+
+def test_real_v4_passes_with_dedicated_colliders_and_is_idempotent(tmp_path):
     real_v4 = (
         Path(__file__).resolve().parents[1]
         / "data"
@@ -193,10 +246,63 @@ def test_real_v4_is_rejected_when_selected_collider_cannot_reach_hem_roots():
     binary, _ = injector.strip_previous_injection(document, binary)
     selected = injector.select_hoodie_collider_groups(document)
     groups = document["extensions"]["VRMC_springBone"]["colliderGroups"]
+    locked_before = {
+        key: copy.deepcopy(document[key]) for key in LOCKED_DESIGN_KEYS
+    }
+    vrm_before = copy.deepcopy(document["extensions"]["VRMC_vrm"])
+    colliders_before = len(document["extensions"]["VRMC_springBone"]["colliders"])
+    collider_groups_before = len(groups)
 
     assert [groups[index]["name"] for index in selected] == ["J_Bip_C_Spine"]
-    with pytest.raises(injector.InjectError, match="spatially ineffective"):
-        injector.inject(document, binary, _inject_args())
+    binary, report = injector.inject(document, binary, _inject_args())
+
+    spring_bone = document["extensions"]["VRMC_springBone"]
+    assert report["collider_start"] == colliders_before
+    assert report["collider_count"] == 6
+    assert report["collider_group_start"] == collider_groups_before
+    assert report["collider_group_count"] == 1
+    assert report["hoodie_collider_groups"] == [collider_groups_before]
+    assert report["hoodie_collider_group_names"] == [
+        injector.HOODIE_COLLIDER_GROUP_NAME
+    ]
+    assert report["hoodie_collider_max_root_gap"] == pytest.approx(0.0, abs=1e-12)
+    assert len(spring_bone["colliders"]) == colliders_before + 6
+    assert len(spring_bone["colliderGroups"]) == collider_groups_before + 1
+    assert all(
+        spring["colliderGroups"] == [collider_groups_before]
+        for spring in spring_bone["springs"][-6:]
+    )
+    assert document["extensions"]["VRMC_vrm"] == vrm_before
+    for key, value in locked_before.items():
+        assert document[key] == value
+
+    first_output = tmp_path / "v4_hoodie_colliders_first.vrm"
+    injector.write_glb(first_output, document, binary)
+    assert injector.validate_output(first_output, real_v4, report) == []
+
+    second_document, second_binary = injector.read_glb(first_output)
+    first_dedicated_colliders = copy.deepcopy(
+        second_document["extensions"]["VRMC_springBone"]["colliders"][colliders_before:]
+    )
+    second_binary, strip_info = injector.strip_previous_injection(
+        second_document, second_binary
+    )
+    assert "6 colliders, 1 collider groups" in strip_info
+    second_binary, second_report = injector.inject(
+        second_document, second_binary, _inject_args()
+    )
+    second_output = tmp_path / "v4_hoodie_colliders_second.vrm"
+    injector.write_glb(second_output, second_document, second_binary)
+
+    assert injector.validate_output(second_output, first_output, second_report) == []
+    assert second_report["collider_start"] == colliders_before
+    assert second_report["hoodie_collider_max_root_gap"] == pytest.approx(
+        0.0, abs=1e-12
+    )
+    assert (
+        second_document["extensions"]["VRMC_springBone"]["colliders"][colliders_before:]
+        == first_dedicated_colliders
+    )
 
 
 def test_six_spring_assignment_preserves_design_and_bone_transforms():

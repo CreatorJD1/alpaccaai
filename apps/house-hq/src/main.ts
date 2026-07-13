@@ -4546,6 +4546,11 @@ function renderAlpeccaSystem(systemId: AlpeccaSystemId, data: Record<string, unk
     const pushSubscriptionPresent = push.browser_subscription_present === true;
     const pushSubscribed = push.browser_subscribed === true;
     const pushSubscriptionStale = pushSubscriptionPresent && !pushSubscribed;
+    const pushOutbox = systemRecord(push.outbox);
+    const pushStates = systemRecord(pushOutbox.states);
+    const unresolvedPush = ["queued", "leased", "indeterminate", "sent"]
+      .reduce((total, state) => total + Math.max(0, Number(pushStates[state]) || 0), 0);
+    const acknowledgedPush = Math.max(0, Number(pushStates.acknowledged) || 0);
     const pushPermission = pushSupported ? Notification.permission : "unsupported";
     const pushPermissionLabel = pushPermission === "granted"
       ? "Granted"
@@ -4568,7 +4573,7 @@ function renderAlpeccaSystem(systemId: AlpeccaSystemId, data: Record<string, unk
     return `${systemIntro("DEVICE", "Trusted access", "The current laptop enrolls locally. Other devices validate once, then use an HttpOnly trusted-device session.")}
       <div class="systems-metrics"><div><span>Trust duration</span><strong>${escapeHudText(systemString(trusted.days, "bounded"))} days</strong></div><div><span>Browser secret</span><strong>${trusted.cookie_http_only ? "HttpOnly" : "Unavailable"}</strong></div><div><span>Creator alerts</span><strong>${pushSubscribed ? "Enabled" : "Disabled"}</strong></div><div><span>Permission</span><strong>${pushPermissionLabel}</strong></div></div>
       <div class="systems-actions"><button type="button" data-system-action="device-page">Device setup</button><button type="button" data-system-action="classic-chat">Classic chat</button><button type="button" data-system-action="push-enable"${canEnablePush ? "" : " disabled"}>Enable alerts</button><button type="button" data-system-action="push-disable"${pushSubscriptionPresent ? "" : " disabled"}>Disable alerts</button><button type="button" data-system-action="push-test"${canTestPush ? "" : " disabled"}>Send test</button></div>
-      <section><h3>Creator alerts</h3>${systemRow("Web Push", pushDetail, pushSubscribed ? "ON" : pushReady ? "READY" : "OFF")}</section>
+      <section><h3>Creator alerts</h3>${systemRow("Web Push", pushDetail, pushSubscribed ? "ON" : pushReady ? "READY" : "OFF")}${systemRow("Outbox", `${acknowledgedPush} acknowledged; ${unresolvedPush} unresolved`, unresolvedPush > 0 ? "PENDING" : "CLEAR")}</section>
       <section><h3>Authorization state</h3>${systemObjectRows(authorization, 12)}</section>`;
   }
   if (systemId === "senses") {
@@ -14694,8 +14699,32 @@ async function testAlpeccaPushNotifications() {
   if (!subscription || !alpeccaPushSubscriptionUsesKey(subscription, applicationServerKey)) {
     throw new Error("Enable creator alerts in this browser before sending a test.");
   }
-  await postAlpeccaSystem("/notifications/push/test", {});
-  return "Test alert requested.";
+  const result = await postAlpeccaSystem("/notifications/push/test", {});
+  const delivery = systemRecord(result.delivery);
+  const accepted = Math.max(0, Number(delivery.accepted) || 0);
+  const rejected = Math.max(0, Number(delivery.rejected) || 0);
+  const unknown = Math.max(0, Number(delivery.unknown) || 0);
+  const undispatched = Math.max(0, Number(delivery.undispatched) || 0);
+  if (
+    delivery.attempted === true
+    && delivery.state === "sent"
+    && accepted === 1
+    && rejected === 0
+    && unknown === 0
+    && undispatched === 0
+  ) {
+    return "The test alert was accepted by this browser's push provider.";
+  }
+  if (result.in_progress === true) {
+    throw new Error("The test alert is still in progress. Check outbox status before retrying.");
+  }
+  const reason = systemString(
+    result.reason,
+    unknown > 0
+      ? "The push provider outcome is unknown. Do not retry until outbox status is resolved."
+      : "The test alert was not accepted.",
+  );
+  throw new Error(reason);
 }
 
 function setAlpeccaSystemResults(html: string) {
