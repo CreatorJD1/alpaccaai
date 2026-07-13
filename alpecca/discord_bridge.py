@@ -1,7 +1,8 @@
 """Alpecca's Discord presence: a thin, bounded bridge to her mind.
 
 She runs as a proper Discord **bot** (never a self-bot). A message she is allowed
-to hear is forwarded to `POST /channel/inbound` -> her normal chat path (mood +
+to hear is forwarded to `POST /channel/discord` -> her bounded guest chat path
+(mood +
 memory + people + affect) -> her reply is posted back in her own voice.
 
 Current Phase 10 scope = creator-allowlisted DMs only, with the locked safety rails from
@@ -18,7 +19,7 @@ Current Phase 10 scope = creator-allowlisted DMs only, with the locked safety ra
     courteously guarded with strangers on its own.
 
 Run it with `python scripts/run_discord_bridge.py` (loads the gitignored token).
-Her backend (`server.py`) must be running so `/channel/inbound` is reachable.
+Her backend (`server.py`) must be running so `/channel/discord` is reachable.
 """
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ import os
 import random
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -77,6 +79,15 @@ DM_ALLOW_IDS = {entry for entry in DM_ALLOW if entry.isdigit()}
 DM_ALLOW_NAMES = {entry.casefold() for entry in DM_ALLOW if entry and not entry.isdigit()}
 
 
+def _environment_enabled(name: str) -> bool:
+    return os.environ.get(name, "0").strip().lower() not in {
+        "", "0", "false", "no", "off",
+    }
+
+
+MEDIA_ENABLED = _environment_enabled("ALPECCA_DISCORD_MEDIA")
+
+
 def _dm_author_allowed(author: "discord.abc.User") -> bool:
     """Whether this DM author is on the creator allowlist."""
     author_id = str(author.id)
@@ -89,7 +100,7 @@ def _dm_author_allowed(author: "discord.abc.User") -> bool:
     username = str(getattr(author, "name", "") or "").casefold()
     if username in DM_ALLOW_NAMES:
         DM_ALLOW_IDS.add(author_id)
-        print(f"[discord] dm_allow resolved: {getattr(author, 'name', '?')} -> {author_id}", flush=True)
+        _diagnostic("dm_allow_resolved")
         return True
     return False
 INBOUND_TIMEOUT = float(os.environ.get("ALPECCA_DISCORD_INBOUND_TIMEOUT", "45"))
@@ -99,6 +110,7 @@ IMAGE_INBOUND_TIMEOUT = max(
 )
 MAX_DISCORD_CHARS = 2000
 MAX_BACKEND_RESPONSE_BYTES = 1024 * 1024
+MAX_BACKEND_ERROR_BYTES = 16 * 1024
 # Phase 10 stays closed until the signed actor envelope is wired end to end.
 # These are code locks, not deployment knobs: environment flags cannot widen
 # Discord into guild participation, autonomous speech, recursion, or voice.
@@ -124,7 +136,7 @@ RECURSIVE_ENABLED = False
 RECURSIVE_MAX = int(os.environ.get("ALPECCA_DISCORD_RECURSIVE_MAX", "2"))       # self-steps before waiting for a human
 RECURSIVE_DELAY = float(os.environ.get("ALPECCA_DISCORD_RECURSIVE_DELAY", "75"))  # quiet seconds before she continues
 RECURSIVE_SWEEP = float(os.environ.get("ALPECCA_DISCORD_RECURSIVE_SWEEP", "20"))  # how often the loop checks
-DEBUG = os.environ.get("ALPECCA_DISCORD_DEBUG", "1") not in ("", "0", "false", "False")
+DEBUG = _environment_enabled("ALPECCA_DISCORD_DEBUG")
 # Contextual participation: she reads the recent channel conversation and may
 # speak WITHOUT being mentioned -- but she decides per message whether she has
 # something worth adding (she can choose "(pass)"), throttled so it isn't spam.
@@ -134,6 +146,81 @@ CONTEXT_MESSAGES = int(os.environ.get("ALPECCA_DISCORD_CONTEXT", "8"))          
 # Voice chat: she can join a voice channel (on request) and SPEAK her replies with
 # her real TTS voice. Bots stream audio (supported); video/camera is not possible.
 VOICE_ENABLED = False
+
+_MEDIA_STATUS_LOCK = threading.Lock()
+_SERVER_MEDIA_STATUS: discord_media.ServerMediaStatus = "unknown"
+_LOCAL_VISION_STATUS: discord_media.LocalVisionStatus = "unknown"
+
+
+class DiscordMediaUnavailable(RuntimeError):
+    """One fixed media failure that is safe to return to Discord."""
+
+    def __init__(self, reason: discord_media.MediaDiagnostic) -> None:
+        self.reason = reason
+        super().__init__(discord_media.media_diagnostic(reason))
+
+
+def _set_media_status(
+    *,
+    server: discord_media.ServerMediaStatus | None = None,
+    vision: discord_media.LocalVisionStatus | None = None,
+) -> None:
+    global _SERVER_MEDIA_STATUS, _LOCAL_VISION_STATUS
+    with _MEDIA_STATUS_LOCK:
+        if server is not None:
+            _SERVER_MEDIA_STATUS = server
+        if vision is not None:
+            _LOCAL_VISION_STATUS = vision
+
+
+def media_readiness() -> dict[str, object]:
+    """Current secret-free Discord media posture for local diagnostics."""
+
+    with _MEDIA_STATUS_LOCK:
+        server_status = _SERVER_MEDIA_STATUS
+        vision_status = _LOCAL_VISION_STATUS
+    return discord_media.media_readiness(
+        media_enabled=MEDIA_ENABLED,
+        server_status=server_status,
+        local_vision_status=vision_status,
+    )
+
+
+def _diagnostic(event: str, **metadata: object) -> None:
+    """Emit only code-owned labels and bounded scalar metadata when opted in."""
+
+    if not DEBUG:
+        return
+    allowed_fields = {
+        "addressed",
+        "attachment_count",
+        "bytes",
+        "dimensions",
+        "dm",
+        "in_conversation",
+        "mime_type",
+        "mode",
+        "status",
+        "text_bytes",
+    }
+    if (
+        type(event) is not str
+        or not event.isascii()
+        or not event.replace("_", "").isalnum()
+        or any(key not in allowed_fields for key in metadata)
+        or any(
+            type(value) not in {bool, int, str}
+            for value in metadata.values()
+        )
+    ):
+        raise ValueError("Discord diagnostic metadata is not allowlisted")
+    encoded = json.dumps(
+        {"event": event, **metadata},
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    print(f"[discord] {encoded}", file=sys.stderr, flush=True)
 
 
 def _is_reply_to_me(message: "discord.Message", client: "discord.Client") -> bool:
@@ -218,6 +305,56 @@ class _RejectRedirectHandler(urllib.request.HTTPRedirectHandler):
         return self._reject(request, response, code, message, headers)
 
 
+class _BackendRequestRejected(RuntimeError):
+    """Bounded backend rejection metadata; response bodies are never retained."""
+
+    def __init__(
+        self,
+        status: int,
+        *,
+        error_code: str = "",
+        capability: str = "",
+    ) -> None:
+        self.status = status if type(status) is int else 0
+        self.error_code = error_code
+        self.capability = capability
+        super().__init__(f"alpecca backend rejected the request ({self.status})")
+
+
+def _bounded_error_label(value: object) -> str:
+    if type(value) is not str or not value or len(value) > 64 or not value.isascii():
+        return ""
+    compact = value.replace("_", "").replace("-", "")
+    return value if compact.isalnum() else ""
+
+
+def _backend_error_detail(exc: urllib.error.HTTPError) -> tuple[str, str]:
+    """Read only fixed error labels; discard all other backend response data."""
+
+    try:
+        raw = exc.read(MAX_BACKEND_ERROR_BYTES + 1)
+    except Exception:
+        return "", ""
+    finally:
+        try:
+            exc.close()
+        except Exception:
+            pass
+    if type(raw) is not bytes or len(raw) > MAX_BACKEND_ERROR_BYTES:
+        return "", ""
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, ValueError, TypeError, RecursionError):
+        return "", ""
+    if type(payload) is not dict or type(payload.get("detail")) is not dict:
+        return "", ""
+    detail = payload["detail"]
+    return (
+        _bounded_error_label(detail.get("code")),
+        _bounded_error_label(detail.get("capability")),
+    )
+
+
 def _is_loopback_backend_url(url: str) -> bool:
     """Whether an HTTP(S) backend URL names a literal local endpoint."""
     try:
@@ -270,7 +407,12 @@ def _post_json_once(
         with _open_backend_request(request, timeout=timeout) as response:
             raw_response = response.read(MAX_BACKEND_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"alpecca backend rejected the request ({exc.code})") from None
+        error_code, capability = _backend_error_detail(exc)
+        raise _BackendRequestRejected(
+            exc.code,
+            error_code=error_code,
+            capability=capability,
+        ) from None
     except Exception as exc:
         raise RuntimeError(
             f"alpecca bridge request failed: {type(exc).__name__}"
@@ -361,15 +503,35 @@ def _ask_alpecca(
     except bridge_actor_transport.DiscordActorHeaderError as exc:
         raise RuntimeError("alpecca backend returned a malformed actor envelope") from exc
 
-    payload = _post_json_once(
-        f"{backend_url}/channel/discord",
-        body=body,
-        headers={
-            **base_headers,
-            bridge_actor_transport.ENVELOPE_HEADER: envelope,
-        },
-        timeout=IMAGE_INBOUND_TIMEOUT if image else INBOUND_TIMEOUT,
-    )
+    try:
+        payload = _post_json_once(
+            f"{backend_url}/channel/discord",
+            body=body,
+            headers={
+                **base_headers,
+                bridge_actor_transport.ENVELOPE_HEADER: envelope,
+            },
+            timeout=IMAGE_INBOUND_TIMEOUT if image else INBOUND_TIMEOUT,
+        )
+    except _BackendRequestRejected as exc:
+        if (
+            image
+            and exc.status == 403
+            and exc.error_code == "capability_disabled"
+            and exc.capability == "discord_media"
+        ):
+            _set_media_status(server="disabled", vision="unknown")
+            raise DiscordMediaUnavailable("media-disabled") from None
+        raise
+    if image:
+        perception = payload.get("perception")
+        perception_status = (
+            perception.get("status") if type(perception) is dict else None
+        )
+        if perception_status != "described":
+            _set_media_status(server="ready", vision="unavailable")
+            raise DiscordMediaUnavailable("vision-unavailable")
+        _set_media_status(server="ready", vision="ready")
     reply = payload.get("reply")
     if type(reply) is not str:
         raise RuntimeError("alpecca backend returned a malformed Discord reply")
@@ -405,8 +567,8 @@ def _synth_voice_wav(text: str) -> "bytes | None":
             if resp.status != 200:
                 return None
             data = resp.read()
-    except Exception as exc:
-        print(f"[discord] voice synth failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+    except Exception:
+        _diagnostic("voice_synthesis_failed")
         return None
     return data if (data and len(data) > 1024) else None
 
@@ -423,8 +585,8 @@ def build_client() -> discord.Client:
             try:
                 if not discord.opus.is_loaded():
                     discord.opus._load_default()
-            except Exception as exc:
-                print(f"[discord] opus load failed (voice off): {exc}", file=sys.stderr)
+            except Exception:
+                _diagnostic("voice_opus_unavailable")
             try:
                 import discord.voice_client as _vc
                 try:
@@ -432,11 +594,9 @@ def build_client() -> discord.Client:
                     _davey_ok = getattr(_davey, "__version__", "yes")
                 except Exception:
                     _davey_ok = "MISSING"
-                print(f"[discord] voice caps: has_nacl={_vc.has_nacl}, "
-                      f"opus_loaded={discord.opus.is_loaded()}, davey={_davey_ok}",
-                      file=sys.stderr, flush=True)
-            except Exception as exc:
-                print(f"[discord] voice caps check failed: {exc}", file=sys.stderr, flush=True)
+                _diagnostic("voice_capabilities_checked")
+            except Exception:
+                _diagnostic("voice_capabilities_failed")
         # Resolve username allowlist entries to ids up front so DM permission
         # does not depend on the member cache. A non-empty query does not need
         # the privileged members intent; failure just leaves lazy resolution.
@@ -444,17 +604,28 @@ def build_client() -> discord.Client:
             for wanted in list(DM_ALLOW_NAMES):
                 try:
                     members = await guild.query_members(query=wanted, limit=5)
-                except Exception as exc:
-                    print(f"[discord] dm_allow lookup failed for {wanted}: {exc}",
-                          file=sys.stderr, flush=True)
+                except Exception:
+                    _diagnostic("dm_allow_lookup_failed")
                     continue
                 for member in members:
                     if wanted == member.name.casefold():
                         DM_ALLOW_IDS.add(str(member.id))
-                        print(f"[discord] dm_allow resolved: {wanted} -> {member.id}", flush=True)
-        print(f"[discord] online as {client.user} in {len(client.guilds)} server(s); "
-              f"backend={BACKEND_URL}; "
-              f"dm_allow={sorted(DM_ALLOW_IDS | DM_ALLOW_NAMES) or 'none'}", flush=True)
+                        _diagnostic("dm_allow_resolved")
+        print(
+            "[discord] "
+            + json.dumps(
+                {
+                    "event": "bridge_ready",
+                    "guild_count": len(client.guilds),
+                    "dm_allow_configured": bool(DM_ALLOW_IDS or DM_ALLOW_NAMES),
+                    "media": media_readiness(),
+                },
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            flush=True,
+        )
         if RECURSIVE_ENABLED and not _sweeper_started["on"]:
             _sweeper_started["on"] = True
             client.loop.create_task(recursive_sweeper())
@@ -499,8 +670,8 @@ def build_client() -> discord.Client:
                 discord.opus._load_default()
             source = discord.FFmpegPCMAudio(path, executable=_ffmpeg_exe())
             vc.play(source, after=lambda e: os.path.exists(path) and os.remove(path))
-        except Exception as exc:
-            print(f"[discord] voice play failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        except Exception:
+            _diagnostic("voice_playback_failed")
             try:
                 os.remove(path)
             except Exception:
@@ -524,9 +695,14 @@ def build_client() -> discord.Client:
         sender = "Discord guest"
         now = time.monotonic()
         mode = "reply"
-        if DEBUG:
-            print(f"[discord] recv dm={is_dm} from={message.author} "
-                  f"content={message.content!r}", file=sys.stderr, flush=True)
+        message_content = str(getattr(message, "content", "") or "")
+        attachments = list(getattr(message, "attachments", ()) or ())
+        _diagnostic(
+            "message_received",
+            dm=is_dm,
+            text_bytes=len(message_content.encode("utf-8")),
+            attachment_count=len(attachments),
+        )
 
         if is_dm:
             if not _dm_author_allowed(message.author):   # DM allowlist = CreatorJD only
@@ -534,10 +710,9 @@ def build_client() -> discord.Client:
             try:
                 actor_bindings = _message_actor_bindings(message)
             except bridge_actor_transport.DiscordActorHeaderError:
-                if DEBUG:
-                    print("[discord] missing or invalid actor bindings", file=sys.stderr)
+                _diagnostic("actor_bindings_rejected")
                 return
-            text = message.content.strip()
+            text = message_content.strip()
             channel_label = "discord-dm"
         else:
             chan = message.channel.id
@@ -581,9 +756,7 @@ def build_client() -> discord.Client:
                     vch = getattr(av, "channel", None)
                     me = message.guild.me
                     perms = vch.permissions_for(me) if vch else None
-                    print(f"[discord] voice-join req: user_channel={vch}, "
-                          f"connect={getattr(perms, 'connect', None)}, "
-                          f"speak={getattr(perms, 'speak', None)}", file=sys.stderr, flush=True)
+                    _diagnostic("voice_join_requested")
                     if vch is None:
                         await message.reply("I can't see you in a voice channel -- hop into one, "
                                             "then ask me again and I'll join you.",
@@ -600,11 +773,13 @@ def build_client() -> discord.Client:
                             await message.guild.voice_client.move_to(vch)
                         else:
                             await vch.connect()
-                        print(f"[discord] joined voice channel {vch.name}", file=sys.stderr, flush=True)
-                    except Exception as exc:
-                        print(f"[discord] voice join FAILED: {type(exc).__name__}: {exc}",
-                              file=sys.stderr, flush=True)
-                        await message.reply(f"I couldn't join voice: {exc}", mention_author=False)
+                        _diagnostic("voice_joined")
+                    except Exception:
+                        _diagnostic("voice_join_failed")
+                        await message.reply(
+                            "I couldn't join voice.",
+                            mention_author=False,
+                        )
                         return
                     await message.reply(f"Coming into **{vch.name}** -- talk to me and you'll hear me.",
                                         mention_author=False)
@@ -619,8 +794,7 @@ def build_client() -> discord.Client:
                 mode = "participate"                       # she reads context, may pass
                 last_participate_eval[chan] = now
             else:
-                if DEBUG:
-                    print("[discord] gate -> stay quiet", file=sys.stderr, flush=True)
+                _diagnostic("message_gate_closed")
                 return
 
             # Pass the real message; her own rolling history gives conversation
@@ -630,29 +804,80 @@ def build_client() -> discord.Client:
                 text = text.replace(tag, "")
             text = text.strip()
             channel_label = "discord"
-            if DEBUG:
-                print(f"[discord] mode={mode} addressed={addressed} in_convo={in_conversation}",
-                      file=sys.stderr, flush=True)
+            _diagnostic(
+                "message_mode",
+                mode=mode,
+                addressed=addressed,
+                in_conversation=in_conversation,
+            )
 
-        # Creator DM images are locally sniffed and bounded before her normal
-        # vision path sees them. Guild media stays closed until Discord actors
-        # have a server-verifiable guest identity instead of the bridge's shared
-        # backend credential.
+        # One creator-DM image may enter only after explicit media opt-in,
+        # authoritative metadata checks, a bounded CDN read, local byte sniffing,
+        # and content-free audit. File/audio payloads stay closed.
         image_dataurl = ""
-        att = next((a for a in message.attachments
-                    if discord_media.looks_like_image_attachment(
-                        a.filename, a.content_type)), None)
-        if att is not None and is_dm:
+        att = None
+        if len(attachments) > 1:
+            await asyncio.to_thread(
+                discord_media.record_media_event,
+                "inbound",
+                status="rejected",
+                kind="multiple-attachments",
+            )
+            await message.reply(
+                discord_media.media_diagnostic("multiple-attachments"),
+                mention_author=False,
+            )
+            return
+        if attachments:
+            candidate = attachments[0]
+            candidate_kind = discord_media.attachment_media_kind(
+                getattr(candidate, "filename", ""),
+                getattr(candidate, "content_type", None),
+            )
+            if candidate_kind != "image":
+                reason = "audio-disabled" if candidate_kind == "audio" else "file-disabled"
+                await asyncio.to_thread(
+                    discord_media.record_media_event,
+                    "inbound",
+                    status="rejected",
+                    kind=reason,
+                )
+                await message.reply(
+                    discord_media.media_diagnostic(reason),
+                    mention_author=False,
+                )
+                return
+            if not MEDIA_ENABLED:
+                await asyncio.to_thread(
+                    discord_media.record_media_event,
+                    "inbound",
+                    status="rejected",
+                    kind="media-disabled",
+                )
+                await message.reply(
+                    discord_media.media_diagnostic("media-disabled"),
+                    mention_author=False,
+                )
+                return
+            att = candidate
+
+        if att is not None:
             try:
-                if int(getattr(att, "size", 0) or 0) > discord_media.INBOUND_MAX_BYTES:
+                declared_size = discord_media.validate_inbound_attachment_size(
+                    getattr(att, "size", None)
+                )
+                raw = await asyncio.wait_for(
+                    att.read(),
+                    timeout=discord_media.INBOUND_READ_TIMEOUT_SECONDS,
+                )
+                if type(raw) is not bytes or len(raw) != declared_size:
                     raise discord_media.DiscordImageRejected(
-                        "size-limit",
-                        "Discord image exceeds the local perception byte limit",
+                        "size-mismatch",
+                        "Discord image bytes do not match authoritative metadata",
                     )
-                raw = await att.read()
                 prepared = discord_media.prepare_inbound_image(
                     raw,
-                    declared_mime_type=att.content_type,
+                    declared_mime_type=getattr(att, "content_type", None),
                 )
                 audit_id = await asyncio.to_thread(
                     discord_media.record_media_event,
@@ -668,14 +893,12 @@ def build_client() -> discord.Client:
                         "Discord image audit could not be recorded",
                     )
                 image_dataurl = prepared.data_url
-                if DEBUG:
-                    print(
-                        f"[discord] image accepted mime={prepared.mime_type} "
-                        f"bytes={prepared.size_bytes} dimensions="
-                        f"{prepared.width}x{prepared.height}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                _diagnostic(
+                    "image_accepted",
+                    mime_type=prepared.mime_type,
+                    bytes=prepared.size_bytes,
+                    dimensions=f"{prepared.width}x{prepared.height}",
+                )
             except discord_media.DiscordImageRejected as exc:
                 await asyncio.to_thread(
                     discord_media.record_media_event,
@@ -683,43 +906,64 @@ def build_client() -> discord.Client:
                     status="rejected",
                     kind=exc.reason,
                 )
-                limit_mib = discord_media.INBOUND_MAX_BYTES / (1024 * 1024)
-                await message.reply(
-                    "I couldn't inspect that image safely "
-                    f"({exc.reason}). Send one PNG, JPEG, or GIF under "
-                    f"{limit_mib:.0f} MiB.",
-                    mention_author=False,
-                )
+                if exc.reason == "audit-unavailable":
+                    diagnostic = discord_media.media_diagnostic(
+                        "audit-unavailable"
+                    )
+                else:
+                    limit_mib = discord_media.INBOUND_MAX_BYTES / (1024 * 1024)
+                    diagnostic = (
+                        "I couldn't inspect that image safely "
+                        f"({exc.reason}). Send one PNG, JPEG, or GIF under "
+                        f"{limit_mib:.0f} MiB."
+                    )
+                await message.reply(diagnostic, mention_author=False)
                 return
-            except Exception as exc:
-                print(f"[discord] image read failed: {type(exc).__name__}: {exc}",
-                      file=sys.stderr)
-                await message.reply(
-                    "I couldn't read that image from Discord. Please send it again.",
-                    mention_author=False,
+            except Exception:
+                _diagnostic("image_read_failed")
+                await asyncio.to_thread(
+                    discord_media.record_media_event,
+                    "inbound",
+                    status="rejected",
+                    kind="read-failed",
                 )
-                return
-        elif att is not None and not is_dm:
-            if not text:
                 await message.reply(
-                    "I only inspect images in CreatorJD's direct messages right now.",
+                    discord_media.media_diagnostic("read-failed"),
                     mention_author=False,
                 )
                 return
 
         if not text and not image_dataurl:
-            if message.attachments:
-                await message.reply(
-                    "Discord document uploads are not enabled. I can inspect one "
-                    "PNG, JPEG, or GIF in CreatorJD's direct messages; use House "
-                    "HQ Files for source documents.",
-                    mention_author=False,
-                )
             return
         if not text:
             text = "(they shared an image with you)"
 
-        outbound_media = discord_media.resolve_outbound_media(text) if is_dm else None
+        disabled_request = discord_media.requested_disabled_media_kind(text)
+        if disabled_request is not None:
+            await message.reply(
+                discord_media.media_diagnostic(f"{disabled_request}-disabled"),
+                mention_author=False,
+            )
+            return
+
+        requested_image = discord_media.requested_media_kind(text)
+        if requested_image is not None and not MEDIA_ENABLED:
+            await message.reply(
+                discord_media.media_diagnostic("media-disabled"),
+                mention_author=False,
+            )
+            return
+        outbound_media = (
+            discord_media.resolve_outbound_media(text)
+            if requested_image is not None
+            else None
+        )
+        if requested_image is not None and outbound_media is None:
+            await message.reply(
+                discord_media.media_diagnostic("catalog-unavailable"),
+                mention_author=False,
+            )
+            return
         if outbound_media is not None:
             audit_id = await asyncio.to_thread(
                 discord_media.record_media_event,
@@ -731,7 +975,11 @@ def build_client() -> discord.Client:
                 kind=outbound_media.kind,
             )
             if audit_id is None:
-                outbound_media = None
+                await message.reply(
+                    discord_media.media_diagnostic("audit-unavailable"),
+                    mention_author=False,
+                )
+                return
 
         try:
             async with message.channel.typing():
@@ -753,14 +1001,20 @@ def build_client() -> discord.Client:
                     image=image_dataurl,
                     actor_bindings=actor_bindings,
                 )
-        except Exception as exc:
-            print(f"[discord] backend error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        except DiscordMediaUnavailable as exc:
+            _diagnostic("media_backend_unavailable", status=exc.reason)
+            await message.reply(
+                discord_media.media_diagnostic(exc.reason),
+                mention_author=False,
+            )
+            return
+        except Exception:
+            _diagnostic("backend_request_failed")
             return
 
         reply = (reply or "").strip()
         if not reply and outbound_media is None:
-            if DEBUG:
-                print(f"[discord] -> silent (mode={mode})", file=sys.stderr, flush=True)
+            _diagnostic("empty_backend_reply", mode=mode)
             return
 
         outgoing_file = None
@@ -841,8 +1095,8 @@ def build_client() -> discord.Client:
                         context="proactive reflective follow-up",
                         room="discord",
                     )
-                except Exception as exc:
-                    print(f"[discord] recursive error: {type(exc).__name__}: {exc}", file=sys.stderr)
+                except Exception:
+                    _diagnostic("recursive_request_failed")
                     continue
                 if last_human_ts.get(chan, 0.0) > hts:    # someone spoke while thinking -> yield
                     continue

@@ -3,12 +3,14 @@
 Loads her bot token from the git-ignored secret
 (`data/secrets/alpecca_discord.env` -> DISCORD_BOT_TOKEN) or the environment,
 then connects her as a proper Discord bot. Her backend (`server.py`) must be
-running so `/channel/inbound` is reachable.
+running so `/channel/discord` is reachable.
 
     python scripts/run_discord_bridge.py
+    python scripts/run_discord_bridge.py --media-readiness
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -51,7 +53,37 @@ def _acquire_single_instance_lock() -> bool:
         return False
 
 
-def main() -> int:
+def _media_enabled() -> bool:
+    return os.environ.get("ALPECCA_DISCORD_MEDIA", "0").strip().lower() not in {
+        "", "0", "false", "no", "off",
+    }
+
+
+def _print_media_readiness() -> None:
+    from alpecca import discord_media
+
+    print(
+        json.dumps(
+            discord_media.media_readiness(media_enabled=_media_enabled()),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args == ["--media-readiness"]:
+        _print_media_readiness()
+        return 0
+    if args:
+        print(
+            "Usage: python scripts/run_discord_bridge.py [--media-readiness]",
+            file=sys.stderr,
+        )
+        return 2
+
     _load_secret()
     if not _acquire_single_instance_lock():
         print("Another Alpecca Discord bridge is already running; not starting a "

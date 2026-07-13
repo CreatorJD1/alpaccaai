@@ -182,7 +182,10 @@ def test_signed_image_mint_and_delivery_both_stay_on_loopback(monkeypatch):
     responses = iter(
         (
             b'{"envelope":"signed-image-envelope"}',
-            b'{"reply":"I can see it."}',
+            (
+                b'{"perception":{"status":"described"},'
+                b'"reply":"I can see it."}'
+            ),
         )
     )
 
@@ -290,7 +293,9 @@ def test_loopback_image_transport_never_loads_system_proxies(monkeypatch):
             return 200, {"Content-Type": "application/json"}, (
                 b'{"envelope":"signed-actor-envelope"}'
             )
-        return 200, {"Content-Type": "application/json"}, b'{"reply":"direct"}'
+        return 200, {"Content-Type": "application/json"}, (
+            b'{"perception":{"status":"described"},"reply":"direct"}'
+        )
 
     monkeypatch.setattr(discord_bridge.urllib.request, "getproxies", configured_system_proxy)
     with _serve_http(responder) as (backend_url, calls):
@@ -488,7 +493,7 @@ def test_allowlisted_dm_image_passes_only_header_bindings_to_transport(monkeypat
     class Attachment:
         filename = "photo.png"
         content_type = "image/png"
-        size = 20
+        size = len(b"validated-image")
 
         async def read(self):
             return b"validated-image"
@@ -517,6 +522,7 @@ def test_allowlisted_dm_image_passes_only_header_bindings_to_transport(monkeypat
     )
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
     monkeypatch.setattr(discord_bridge, "DEBUG", False)
+    monkeypatch.setattr(discord_bridge, "MEDIA_ENABLED", True)
     monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", {"42"})
     monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())
     monkeypatch.setattr(

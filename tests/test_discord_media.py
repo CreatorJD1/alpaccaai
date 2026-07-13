@@ -168,7 +168,10 @@ def test_bridge_posts_only_image_field_and_uses_extended_image_timeout(monkeypat
         def read(self, *_args):
             if len(calls) == 1:
                 return b'{"envelope":"signed-actor-envelope"}'
-            return b'{"reply":"I can see it."}'
+            return (
+                b'{"perception":{"status":"described"},'
+                b'"reply":"I can see it."}'
+            )
 
     def fake_open_backend(request, *, timeout):
         calls.append((request, timeout))
@@ -279,3 +282,144 @@ def test_media_audit_contains_metadata_but_not_image_bytes(monkeypatch):
         "kind": "portrait",
     }
     assert "base64" not in json.dumps(seen[0].metadata)
+
+
+def test_media_readiness_is_truthful_bounded_and_secret_free():
+    disabled = discord_media.media_readiness(media_enabled=False)
+    unverified = discord_media.media_readiness(media_enabled=True)
+    ready = discord_media.media_readiness(
+        media_enabled=True,
+        server_status="ready",
+        local_vision_status="ready",
+    )
+
+    assert disabled["ready"] is False
+    assert disabled["receive"]["image"]["status"] == "disabled"
+    assert disabled["send"]["image"]["status"] == "disabled"
+    assert unverified["receive"]["image"]["status"] == "unverified"
+    assert ready["ready"] is True
+    assert ready["receive"]["image"] == {
+        "status": "ready",
+        "max_bytes": discord_media.INBOUND_MAX_BYTES,
+        "mime_types": ["image/gif", "image/jpeg", "image/png"],
+        "processing": "verified-local-only",
+        "cloud_egress": "denied",
+    }
+    serialized = json.dumps(ready, sort_keys=True).casefold()
+    assert all(
+        forbidden not in serialized
+        for forbidden in ("token", "secret", "authorization", "endpoint", "path")
+    )
+    assert ready["receive"]["file"] == {"status": "disabled"}
+    assert ready["receive"]["audio"] == {"status": "disabled"}
+    assert ready["send"]["file"] == {"status": "disabled"}
+    assert ready["send"]["audio"] == {"status": "disabled"}
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type", "expected"),
+    (
+        ("photo.png", "application/octet-stream", "image"),
+        ("voice.ogg", "application/octet-stream", "audio"),
+        ("notes.pdf", "application/pdf", "file"),
+    ),
+)
+def test_attachment_metadata_classification_never_claims_file_or_audio_support(
+    filename: str,
+    content_type: str,
+    expected: str,
+):
+    assert discord_media.attachment_media_kind(filename, content_type) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ("send me an audio recording", "audio"),
+        ("!audio voice-note", "audio"),
+        ("attach that PDF document", "file"),
+        ("!file report", "file"),
+        ("tell me about audio", None),
+    ),
+)
+def test_disabled_outbound_payload_requests_are_explicit_only(
+    text: str,
+    expected: str | None,
+):
+    assert discord_media.requested_disabled_media_kind(text) == expected
+
+
+def test_image_backend_requires_verified_local_perception_metadata(monkeypatch):
+    calls = 0
+
+    def fake_post(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {"envelope": "signed-actor-envelope"}
+        return {
+            "reply": "I can definitely see private details.",
+            "perception": {"status": "vision-unavailable"},
+        }
+
+    monkeypatch.setattr(discord_bridge, "_post_json_once", fake_post)
+    monkeypatch.setattr(discord_bridge, "MEDIA_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "_SERVER_MEDIA_STATUS", "unknown")
+    monkeypatch.setattr(discord_bridge, "_LOCAL_VISION_STATUS", "unknown")
+
+    with pytest.raises(discord_bridge.DiscordMediaUnavailable) as caught:
+        discord_bridge._ask_alpecca(
+            "inspect this",
+            "Discord guest",
+            "discord-dm",
+            image="data:image/png;base64,AAAA",
+            actor_bindings=DiscordActorBindings(
+                event_id="1001",
+                actor_id="42",
+                channel_id="3001",
+            ),
+        )
+
+    assert caught.value.reason == "vision-unavailable"
+    assert "private details" not in str(caught.value)
+    assert discord_bridge.media_readiness()["receive"]["image"]["status"] == (
+        "vision-unavailable"
+    )
+
+
+def test_server_media_disablement_maps_only_the_exact_fixed_error(monkeypatch):
+    calls = 0
+
+    def fake_post(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {"envelope": "signed-actor-envelope"}
+        raise discord_bridge._BackendRequestRejected(
+            403,
+            error_code="capability_disabled",
+            capability="discord_media",
+        )
+
+    monkeypatch.setattr(discord_bridge, "_post_json_once", fake_post)
+    monkeypatch.setattr(discord_bridge, "MEDIA_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "_SERVER_MEDIA_STATUS", "unknown")
+    monkeypatch.setattr(discord_bridge, "_LOCAL_VISION_STATUS", "unknown")
+
+    with pytest.raises(discord_bridge.DiscordMediaUnavailable) as caught:
+        discord_bridge._ask_alpecca(
+            "inspect this",
+            "Discord guest",
+            "discord-dm",
+            image="data:image/png;base64,AAAA",
+            actor_bindings=DiscordActorBindings(
+                event_id="1001",
+                actor_id="42",
+                channel_id="3001",
+            ),
+        )
+
+    assert caught.value.reason == "media-disabled"
+    assert discord_bridge.media_readiness()["receive"]["image"]["status"] == (
+        "disabled"
+    )
