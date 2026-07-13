@@ -240,6 +240,31 @@ def test_allowlisted_dm_text_still_reaches_guest_backend_and_replies(monkeypatch
     assert message.replies == [("bounded DM reply", {"mention_author": False})]
 
 
+def test_creator_mention_claims_a_discord_room(monkeypatch, tmp_path):
+    client = _client(monkeypatch)
+    _allow_dm(monkeypatch)
+    monkeypatch.setattr(discord_bridge, "DISCORD_ROOM_REGISTRY", tmp_path / "rooms.json")
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_ENABLED", False)
+
+    class Guild:
+        id = 777
+
+    class Channel(_Channel):
+        id = 3001
+
+    message = _Message(content="@Alpecca_ai room on")
+    message.guild = Guild()
+    message.channel = Channel()
+    message.mentions = [client.user]
+    message.clean_content = "@Alpecca_ai room on"
+
+    asyncio.run(client.on_message(message))
+
+    stored = json.loads((tmp_path / "rooms.json").read_text(encoding="utf-8"))
+    assert stored == {"777:3001": {"channel_id": "3001", "guild_id": "777"}}
+    assert message.replies and "present in this room" in message.replies[0][0]
+
+
 def test_allowlisted_dm_image_and_approved_outbound_media_still_flow(monkeypatch):
     class Attachment:
         filename = "photo.png"

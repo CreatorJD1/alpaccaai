@@ -811,9 +811,11 @@ def build_client() -> discord.Client:
         is_dm = message.guild is None
         if not is_dm:
             command = str(getattr(message, "clean_content", "") or "").strip().casefold()
-            control_command = command in {
-                "@alpecca room on", "alpecca room on", "@alpecca room off", "alpecca room off",
-            }
+            mentioned = client.user in (getattr(message, "mentions", ()) or ())
+            control_command = (
+                (mentioned or command.startswith("alpecca"))
+                and command.endswith(("room on", "room off"))
+            )
             if control_command and _dm_author_allowed(message.author):
                 guild_id = getattr(message.guild, "id", None)
                 channel_id = getattr(message.channel, "id", None)
