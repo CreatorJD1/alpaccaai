@@ -1,9 +1,11 @@
-# Wave 1 Integration Handback (Claude Code coordinator → Codex / CreatorJD)
+# Lane Integration Handback — Wave 1 + Foundation Lanes (Claude Code coordinator → Codex / CreatorJD)
 
-**Date:** 2026-07-13. **Status:** three lanes complete on **isolated branches — nothing merged.**
-Each carries an integration patch for a **lane-0 (Codex-owned) file** (`mind.py` / `server.py`),
-so integration is Codex's call, applied serially after review. All three report **PARTIAL** (owned
-code + scoped tests green, but not live-wired). Honest-status rule enforced: code alone ≠ DONE.
+**Date:** 2026-07-13. **Status:** SIX lanes complete on **isolated branches — nothing merged.**
+Three Wave-1 lanes (A Phase 6, B Phase 9, C Phase 11) + three foundation lanes (O knowledge,
+Q preferences, I routines). Each carries an integration patch for a **lane-0 (Codex-owned) file**
+(`mind.py` / `server.py`), so integration is Codex's call, applied serially after review. All six
+report **PARTIAL** (owned code + scoped tests green, but not live-wired). Honest-status rule
+enforced: code alone ≠ DONE. ~139 new tests across the six lanes, all green.
 
 **Shared note — worktree base:** the harness created each lane worktree at a stale commit
 `30226c6` (a divergent lineage lacking the phase files). All three lane owners detected this and
@@ -111,12 +113,82 @@ credentials untouched.
 
 ---
 
-## Recommended integration order (Codex / CreatorJD)
-1. **Lane C** first — smallest, lowest-risk, additive optional kwarg; 3-line `server.py` wiring.
-2. **Lane A** next — Patch A (`mind.py` tool loop) + Patch B (`server.py` maintenance schedule).
-   Note `mind.py` is Codex's live Phase 8 file — apply after the Wave-0 RSI checkpoint to avoid churn.
-3. **Lane B** last — security-critical; do **not** wire a live gate until a real interactive creator
-   authority + attested cloud route policy + production anchor exist. Until then it ships inert
-   (vision stays verified-local), which is safe to merge.
+---
 
-Each lane branch is preserved for review/cherry-pick; re-run each lane's gate after wiring.
+## Lane O — Knowledge foundation (Track D)
+- **Branch:** `worktree-agent-a179519d2abd0dacc` @ `827ba3c`
+- **New files only:** `alpecca/knowledge_blocks.py` (brain-section blocks; sections = memory kinds;
+  state locked/unlockable/populated; unlock `risk/reward/rate_limit/guarded` **recorded, not
+  enforced**; `brain_map_snapshot()`), `alpecca/taught_facts.py` (authenticated-speaker teaching +
+  honest recall), `apps/house-hq/src/brainMap.ts` (read-only canvas map, **not** imported into
+  main.ts), 3 test files.
+- **Teaching contract:** a fact is writable only via `teach_fact(text, speaker, ...)` where
+  `speaker` is minted **only** by `authenticate_speaker(auth_decision)` from a positive creator
+  decision; a hand-built identity (what a self-prompt could fabricate) lacks the module-private
+  witness and is refused; provenance must be genuine input (`spoken|typed|authenticated_input`),
+  `model|self|inference|latent` refused. Recall returns effective (age-decayed, reinforced)
+  confidence: below 0.35 → `hedged`; no match → `unknown` ("haven't learned that"); `text` is only
+  ever a genuinely stored fact — never fabricated.
+- **Tests:** knowledge suite **27 passed**; `house:build` clean (brainMap.ts type-checks).
+- **Residual:** unwired (PARTIAL); unlock costs recorded but not enforced (governed learning =
+  Phase 8, gate before any non-creator teacher); witness is defense-in-depth, not airtight; recall
+  keyword-only (embeddings later via `memory.py`'s `embed_fn`); creator scope only (Rygen widening
+  is a one-line `ALLOWED_TEACHER_PRINCIPALS` change deferred to the identity lane).
+- **Patches:** `mind.py` — mint speaker from the existing AuthDecision on an explicit teach intent,
+  and consult `recall_answer(...)` before answering a factual question (unknown → "say you haven't
+  learned it, don't guess"; hedged → hedge; confident → recall), injected as a grounding block
+  **before** cappable sections. `server.py` — read-only `GET /knowledge/brain-map` →
+  `knowledge_blocks.brain_map_snapshot(scope="creator")` (global auth middleware already applies).
+
+## Lane Q — Preferences + grounded read-the-room (Track F)
+- **Branch:** `worktree-agent-a911ba084612bd040` @ `b9bc798`
+- **New files only:** `alpecca/preferences.py` (favorites store; guarded writes via injected
+  authorizer, **fail-closed** default mirroring `turn.principal == "creator"`), `alpecca/overload.py`
+  (read-the-room signal derived **only** from real cues — message volume, concurrent actors,
+  context pressure, host pressure; **unknown stays unknown**, cited evidence, framed
+  `workload_pressure` not emotion), `apps/house-hq/src/preferencesPanel.ts` (read-only, not wired),
+  2 test files.
+- **Tests:** preferences suite **30 passed**; `house:build` clean.
+- **Residual:** unwired (PARTIAL). **Instrumentation gap it surfaced:** concurrent-actor count only
+  exists as `len(ws_clients)` and turn-rate is unmeasured — those cues correctly stay `unknown`
+  rather than fabricated; a real turn-rate meter is net-new work.
+- **Patches:** route through the *existing* `response_strategy`/`working_memory` prompt envelope
+  (already labeled "not a feeling") + read-only `GET /api/preferences/snapshot` and
+  `GET /api/overload/read-the-room`. Never alter affect math/identity/initiative.
+
+## Lane I — Durable routine execution (Stage 5)
+- **Branch:** `worktree-agent-a1bcbe731fd5bd82c` @ `95ba57a`
+- **Files:** new `alpecca/routine_ledger.py` (atomic expiring-claim ledger) + reworked
+  `alpecca/routines.py` (`due()`→`mark_ran()` becomes a claim protocol; legacy calls kept
+  compatible) + new test file. Two pollers run a due routine **exactly once**; deferred/cancelled
+  **stays due**; success/terminal-failure advances once; crash-recovery via expired-lease reclaim;
+  retry/backoff; explicit missed-run policy (no offline burst); DST-deterministic via injectable
+  clock.
+- **Tests:** ledger suite **15 passed** (concurrency stable ×3); existing routine test still green.
+- **Residual:** single-process exactly-once (relies on SQLite single-writer — fine for current
+  deployment); compatible-by-design with Lane A's cooperative-cancel coordinator.
+- **Patches — more entangled than the others:** `server.py` `_run_due_routines_once` rewrite (an
+  errored routine now **retries/backs-off** instead of being silently marked done — a behavior
+  change to confirm) **plus a REQUIRED coupled update** to the existing
+  `tests/test_phase6_resource_server.py` (it monkeypatches the now-removed `due`/`mark_ran`). Both
+  patches supplied.
+
+---
+
+## Recommended integration order (Codex / CreatorJD)
+Independent, low-coupling foundation lanes first; Codex-hot-path lanes after the Wave-0 checkpoint;
+security/enforcement last.
+1. **Q, O** (foundation, additive) — new modules + two read-only GET endpoints each; nothing
+   existing changes except new prompt-envelope reads. Lowest risk.
+2. **C** (Phase 11) — additive optional `ack_anchor` kwarg; 3-line `server.py` wiring.
+3. **A** (Phase 6) — `mind.py` tool loop + `server.py` maintenance schedule; apply **after Codex's
+   Wave-0 RSI checkpoint** since it touches the live `mind.py`.
+4. **I** (routines) — apply with its **coupled** `test_phase6_resource_server.py` update; confirm the
+   errored-routine retry behavior change is intended.
+5. **B** (Phase 9) — security-critical; ships **inert/safe** now (vision stays verified-local). Do
+   **not** wire a live egress gate until a real interactive creator authority + attested cloud route
+   policy + production monotonic anchor exist.
+
+**Enforcement still gated (not in these lanes):** governed learning / unlock-cost enforcement for O
+(Phase 8), a real turn-rate meter for Q, and live egress for B — each needs its spine gate or a
+creator decision. Each lane branch is preserved for review/cherry-pick; re-run its gate after wiring.
