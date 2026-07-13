@@ -2946,7 +2946,7 @@ def _access_html(
     )
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="referrer" content="no-referrer"><title>Alpecca sign in</title></head>
+<meta name="referrer" content="same-origin"><title>Alpecca sign in</title></head>
 <body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#070b14;color:#cfe0ff;font-family:system-ui,sans-serif">
 <main style="box-sizing:border-box;width:min(360px,calc(100vw - 32px));background:#0b1220;padding:28px 26px;border-radius:8px;border:1px solid #263653">
   <div style="font-size:22px;font-weight:700;margin-bottom:6px">Alpecca</div>

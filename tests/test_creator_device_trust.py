@@ -151,6 +151,8 @@ def test_remote_password_page_can_be_opened_directly(monkeypatch):
     assert page.status_code == 200
     assert 'action="/auth/password"' in page.text
     assert 'name="next" value="/house-hq"' in page.text
+    assert '<meta name="referrer" content="same-origin">' in page.text
+    assert '<meta name="referrer" content="no-referrer">' not in page.text
     assert TEST_PASSWORD not in page.text
 
 
