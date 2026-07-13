@@ -2723,6 +2723,113 @@ class EgressConsentLedger:
         return result
 
 
+# ---------------------------------------------------------------------------
+# Perception-egress gate: the single fail-closed chokepoint every private
+# perception provider attempt must pass through before any pixels/audio leave
+# the laptop. It wraps one EgressConsentLedger so a caller cannot forget to
+# both (a) obtain a fresh interactive creator decision and (b) atomically
+# consume exactly one bounded use immediately before the outbound attempt.
+# ---------------------------------------------------------------------------
+
+
+def _perception_payload_metadata(payload: bytes) -> bytes:
+    """Derive content-free binding metadata for one exact outbound payload."""
+    digest = hashlib.sha256(payload).hexdigest()
+    return json.dumps(
+        {"sha256": digest, "byte_count": len(payload)},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+
+
+@dataclass(frozen=True, slots=True)
+class PerceptionEgressAuthorization:
+    """Attested facts for one permitted remote perception attempt."""
+
+    route_id: str
+    provider: str
+    deployment: str
+    model: str
+    capability: str
+    purpose: str
+    processing_location: str
+    destination_class: str
+    transport_route: str
+    byte_count: int
+    attempt_evidence: Mapping[str, object] = field(default_factory=dict)
+
+
+class PerceptionEgressGate:
+    """Fail closed unless an exact route and exact payload receive fresh consent."""
+
+    __slots__ = ("_ledger",)
+
+    def __init__(self, ledger: EgressConsentLedger) -> None:
+        if not isinstance(ledger, EgressConsentLedger):
+            raise EgressConsentError("invalid_consent_ledger")
+        object.__setattr__(self, "_ledger", ledger)
+
+    @property
+    def ledger(self) -> EgressConsentLedger:
+        return self._ledger
+
+    def authorize_attempt(
+        self,
+        *,
+        operation_id: str,
+        route_id: str,
+        payload: bytes,
+    ) -> PerceptionEgressAuthorization:
+        if isinstance(payload, (bytearray, memoryview)):
+            payload = bytes(payload)
+        if not isinstance(payload, bytes) or not payload:
+            raise EgressConsentDenied("payload_missing")
+        byte_count = len(payload)
+        metadata = _perception_payload_metadata(payload)
+        try:
+            grant = self._ledger.request_consent(
+                operation_id=operation_id,
+                route_id=route_id,
+                payload_metadata=metadata,
+                byte_count=byte_count,
+            )
+            token = grant.get("token")
+            if not grant.get("granted") or not token:
+                raise EgressConsentDenied("creator_denied")
+            use = self._ledger.consume(
+                str(token),
+                operation_id=operation_id,
+                route_id=route_id,
+                payload_metadata=metadata,
+                byte_count=byte_count,
+            )
+        except EgressConsentIntegrityError:
+            raise
+        except EgressConsentDenied:
+            raise
+        except EgressConsentError as exc:
+            raise EgressConsentDenied(
+                _reason(str(exc), fallback="consent_unavailable")
+            ) from exc
+        route = self._ledger.policy.resolve(route_id)
+        evidence = use.get("attempt_evidence")
+        return PerceptionEgressAuthorization(
+            route_id=route.route_id,
+            provider=route.provider,
+            deployment=route.deployment,
+            model=route.model,
+            capability=route.capability,
+            purpose=route.purpose,
+            processing_location=route.processing_location,
+            destination_class=route.destination_class,
+            transport_route=route.transport_route,
+            byte_count=byte_count,
+            attempt_evidence=MappingProxyType(
+                dict(evidence) if isinstance(evidence, Mapping) else {}
+            ),
+        )
+
+
 __all__ = [
     "ANCHOR_FORMAT_VERSION",
     "CONTRACT_VERSION",
@@ -2745,6 +2852,8 @@ __all__ = [
     "EgressPolicy",
     "ExternalAnchorError",
     "MonotonicAnchor",
+    "PerceptionEgressAuthorization",
+    "PerceptionEgressGate",
     "SQLiteMonotonicAnchor",
     "TrustedClock",
 ]
