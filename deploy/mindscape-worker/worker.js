@@ -101,14 +101,17 @@ export default {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
-    if (!authorized(request, env)) {
-      return json({ ok: false, error: "unauthorized" }, 401);
-    }
+
+    // Keep the shell public so a browser can open the cloud page. All
+    // continuity data and mutation routes remain behind MINDSCAPE_TOKEN.
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/") {
       return new Response(html(), {
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
       });
+    }
+    if (!authorized(request, env)) {
+      return json({ ok: false, error: "unauthorized" }, 401);
     }
     if (request.method === "GET" && url.pathname === "/snapshot") {
       const snap = await readSnapshot(env);
