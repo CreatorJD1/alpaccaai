@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  isConfirmedVrmInteractionContact,
   isRotationOnlyVrmTrack,
+  resolveVrmGroundTarget,
   resolveVrmMotionTelemetry,
+  shouldResetVrmBlinkTiming,
   shouldScheduleVrmPerformance,
+  shouldSettleProceduralPerformance,
   solveTwoBoneReach,
   v4MoodMouthCorrectionWeights,
   vowelWeightsForSpeech,
@@ -30,14 +34,44 @@ test("speech stop closes every vowel and cancels V4 mood mouth components", () =
   near(mood.angry + correction.Fcl_MTH_Angry, 0);
 });
 
-test("completed one-shots stay complete and VRMA root translation is rejected", () => {
+test("completed and fallback one-shots stay complete", () => {
   assert.equal(shouldScheduleVrmPerformance("wave", null), true);
   assert.equal(shouldScheduleVrmPerformance("wave", "wave"), false);
   assert.equal(shouldScheduleVrmPerformance("point", "wave"), true);
 
+  assert.equal(shouldSettleProceduralPerformance(1.79, 1.8, false), false);
+  assert.equal(shouldSettleProceduralPerformance(1.8, 1.8, true), false);
+  assert.equal(shouldSettleProceduralPerformance(1.8, 1.8, false), true);
+
+  let finished = null;
+  if (shouldSettleProceduralPerformance(1.8, 1.8, false)) finished = "wave";
+  assert.equal(shouldScheduleVrmPerformance("wave", finished), false);
+});
+
+test("VRMA root translation is rejected while bone rotation is retained", () => {
   assert.equal(isRotationOnlyVrmTrack("Normalized_J_Bip_C_Hips.quaternion"), true);
   assert.equal(isRotationOnlyVrmTrack("Normalized_J_Bip_C_Hips.position"), false);
+  assert.equal(isRotationOnlyVrmTrack("Root.position"), false);
+  assert.equal(isRotationOnlyVrmTrack("Normalized_J_Bip_R_Hand.position"), false);
   assert.equal(isRotationOnlyVrmTrack("Root.scale"), false);
+});
+
+test("blink timing resets only when entering or leaving an eye-hold clip", () => {
+  assert.equal(shouldResetVrmBlinkTiming("idle", "sleep"), true);
+  assert.equal(shouldResetVrmBlinkTiming("sleep", "idle"), true);
+  assert.equal(shouldResetVrmBlinkTiming("idle", "wave"), false);
+});
+
+test("grounding raises penetrated soles and preserves the resting base in airtime", () => {
+  near(resolveVrmGroundTarget(0.12, 0, -0.04, 0.12), 0.16);
+  near(resolveVrmGroundTarget(0.12, 0, 0.3, 0.12), 0.12);
+});
+
+test("terminal contact requires contact phase, reachability, and measured distance", () => {
+  assert.equal(isConfirmedVrmInteractionContact("contact", true, 0.2, 0.2), true);
+  assert.equal(isConfirmedVrmInteractionContact("reach", true, 0.1, 0.2), false);
+  assert.equal(isConfirmedVrmInteractionContact("contact", false, 0.1, 0.2), false);
+  assert.equal(isConfirmedVrmInteractionContact("contact", true, 0.201, 0.2), false);
 });
 
 test("VRMA telemetry remains explicit until a fading action is reaped", () => {
