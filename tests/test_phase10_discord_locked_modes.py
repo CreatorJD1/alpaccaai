@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -35,6 +36,29 @@ class _Channel:
     def typing(self) -> _Typing:
         self.typing_calls += 1
         return _Typing()
+
+
+class _HistoryChannel(_Channel):
+    def __init__(self, lines: list[str]) -> None:
+        super().__init__()
+        self.guild = SimpleNamespace(id=777)
+        self.sent: list[str] = []
+        self._history_lines = list(lines)
+
+    def history(self, *, limit: int, oldest_first: bool):
+        del limit, oldest_first
+
+        async def records():
+            for index, content in enumerate(self._history_lines, start=1):
+                yield SimpleNamespace(
+                    author=_Author(user_id=100 + index, name=f"person{index}"),
+                    clean_content=content,
+                )
+
+        return records()
+
+    async def send(self, content: str) -> None:
+        self.sent.append(content)
 
 
 class _Author:
@@ -306,6 +330,202 @@ def test_room_command_without_message_content_fails_closed():
     )
 
     assert discord_bridge._room_control_action(message, 9001) is None
+
+
+def test_proactive_backoff_is_bounded(monkeypatch):
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_COOLDOWN", 10.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_GLOBAL_COOLDOWN", 0.0)
+
+    assert discord_bridge._proactive_backoff_seconds(0) == 10.0
+    assert discord_bridge._proactive_backoff_seconds(1) == 20.0
+    assert discord_bridge._proactive_backoff_seconds(3) == 80.0
+    assert discord_bridge._proactive_backoff_seconds(999) == 80.0
+
+
+def test_claimed_quiet_room_can_start_one_grounded_conversation(monkeypatch):
+    room = {"guild_id": "777", "channel_id": "3001"}
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_COOLDOWN", 10.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_GLOBAL_COOLDOWN", 0.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_QUIET_MIN", 5.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_MIN_LEN", 1)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_CHANCE", 1.0)
+    monkeypatch.setattr(discord_bridge.random, "random", lambda: 0.0)
+    calls: list[tuple[str, str]] = []
+
+    def ask(prompt: str, room_scope: str) -> str:
+        calls.append((prompt, room_scope))
+        return "What part of the model should we improve next?"
+
+    monkeypatch.setattr(discord_bridge, "_ask_room_autonomy", ask)
+    client = _client(monkeypatch)
+    channel = _HistoryChannel(["We were comparing the current model textures."])
+    monkeypatch.setattr(client, "get_channel", lambda channel_id: channel if channel_id == 3001 else None)
+    sweep = getattr(client, "_alpecca_proactive_sweep_once")
+
+    asyncio.run(sweep(now=100.0))
+    asyncio.run(sweep(now=111.0))
+    asyncio.run(sweep(now=122.0))
+
+    assert channel.sent == ["What part of the model should we improve next?"]
+    assert len(calls) == 1
+    assert "current model textures" in calls[0][0]
+    assert len(calls[0][1]) == 64
+
+
+def test_unclaimed_room_never_runs_a_proactive_decision(monkeypatch):
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {})
+    backend_calls: list[str] = []
+    random_calls: list[str] = []
+    monkeypatch.setattr(
+        discord_bridge,
+        "_ask_room_autonomy",
+        lambda *_args: backend_calls.append("backend") or "unexpected",
+    )
+    monkeypatch.setattr(
+        discord_bridge.random,
+        "random",
+        lambda: random_calls.append("random") or 0.0,
+    )
+    client = _client(monkeypatch)
+    channel = _HistoryChannel(["This channel was never claimed."])
+    monkeypatch.setattr(client, "get_channel", lambda _channel_id: channel)
+
+    asyncio.run(getattr(client, "_alpecca_proactive_sweep_once")(now=999.0))
+
+    assert backend_calls == []
+    assert random_calls == []
+    assert channel.sent == []
+
+
+def test_one_proactive_sweep_cannot_burst_across_claimed_rooms(monkeypatch):
+    rooms = {
+        "777:3001": {"guild_id": "777", "channel_id": "3001"},
+        "777:3002": {"guild_id": "777", "channel_id": "3002"},
+    }
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: rooms)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_COOLDOWN", 10.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_GLOBAL_COOLDOWN", 0.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_QUIET_MIN", 5.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_MIN_LEN", 1)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_CHANCE", 1.0)
+    monkeypatch.setattr(discord_bridge.random, "random", lambda: 0.0)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        discord_bridge,
+        "_ask_room_autonomy",
+        lambda _prompt, scope: calls.append(scope) or "One bounded opener.",
+    )
+    client = _client(monkeypatch)
+    channels = {
+        3001: _HistoryChannel(["First claimed room has enough context."]),
+        3002: _HistoryChannel(["Second claimed room has enough context."]),
+    }
+    channels[3002].id = 3002
+    monkeypatch.setattr(client, "get_channel", channels.get)
+    sweep = getattr(client, "_alpecca_proactive_sweep_once")
+
+    asyncio.run(sweep(now=100.0))
+    asyncio.run(sweep(now=111.0))
+
+    assert len(calls) == 1
+    assert sum(len(channel.sent) for channel in channels.values()) == 1
+
+
+def test_quiet_room_proactive_turn_yields_when_a_human_speaks(monkeypatch):
+    room = {"guild_id": "777", "channel_id": "3001"}
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_COOLDOWN", 10.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_GLOBAL_COOLDOWN", 0.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_QUIET_MIN", 5.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_MIN_LEN", 1)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_CHANCE", 1.0)
+    monkeypatch.setattr(discord_bridge, "PARTICIPATE", False)
+    monkeypatch.setattr(discord_bridge.random, "random", lambda: 0.0)
+    started = threading.Event()
+    release = threading.Event()
+
+    def ask(_prompt: str, _room_scope: str) -> str:
+        started.set()
+        assert release.wait(timeout=2.0)
+        return "This stale question must not be sent."
+
+    monkeypatch.setattr(discord_bridge, "_ask_room_autonomy", ask)
+    client = _client(monkeypatch)
+    channel = _HistoryChannel(["We were discussing animation timing."])
+    monkeypatch.setattr(client, "get_channel", lambda channel_id: channel if channel_id == 3001 else None)
+    sweep = getattr(client, "_alpecca_proactive_sweep_once")
+
+    message = _Message(content="I have a new thought while you are deciding.")
+    message.guild = SimpleNamespace(id=777)
+    message.channel = channel
+    message.clean_content = message.content
+    message.mentions = []
+    message.reference = None
+
+    async def scenario() -> None:
+        await sweep(now=100.0)
+        proactive = asyncio.create_task(sweep(now=111.0))
+        assert await asyncio.to_thread(started.wait, 2.0)
+        await client.on_message(message)
+        release.set()
+        await proactive
+
+    asyncio.run(scenario())
+
+    assert channel.sent == []
+
+
+def test_quiet_room_proactive_turn_yields_if_creator_turns_room_off(
+    monkeypatch,
+    tmp_path,
+):
+    room = {"guild_id": "777", "channel_id": "3001"}
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    monkeypatch.setattr(discord_bridge, "DISCORD_ROOM_REGISTRY", tmp_path / "rooms.json")
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_COOLDOWN", 10.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_GLOBAL_COOLDOWN", 0.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_QUIET_MIN", 5.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_MIN_LEN", 1)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_CHANCE", 1.0)
+    monkeypatch.setattr(discord_bridge.random, "random", lambda: 0.0)
+    started = threading.Event()
+    release = threading.Event()
+
+    def ask(_prompt: str, _room_scope: str) -> str:
+        started.set()
+        assert release.wait(timeout=2.0)
+        return "This revoked-room question must not be sent."
+
+    monkeypatch.setattr(discord_bridge, "_ask_room_autonomy", ask)
+    client = _client(monkeypatch)
+    _allow_dm(monkeypatch)
+    channel = _HistoryChannel(["This room is currently approved."])
+    monkeypatch.setattr(client, "get_channel", lambda channel_id: channel if channel_id == 3001 else None)
+    sweep = getattr(client, "_alpecca_proactive_sweep_once")
+
+    room_off = _Message(content="<@9001> room off")
+    room_off.guild = SimpleNamespace(id=777)
+    room_off.channel = channel
+    room_off.clean_content = "@Alpecca room off"
+    room_off.mentions = [SimpleNamespace(id=9001)]
+
+    async def scenario() -> None:
+        await sweep(now=100.0)
+        proactive = asyncio.create_task(sweep(now=111.0))
+        assert await asyncio.to_thread(started.wait, 2.0)
+        await client.on_message(room_off)
+        release.set()
+        await proactive
+
+    asyncio.run(scenario())
+
+    assert channel.sent == []
+    assert json.loads((tmp_path / "rooms.json").read_text(encoding="utf-8")) == {}
 
 
 def test_room_registry_failure_rolls_back_in_memory_claim(monkeypatch, tmp_path):

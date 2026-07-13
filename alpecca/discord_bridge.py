@@ -132,9 +132,27 @@ CHANNEL_MIN_INTERVAL = float(os.environ.get("ALPECCA_DISCORD_MIN_INTERVAL", "1.5
 # a chime-in goes unanswered -- so it reads as a person occasionally joining, not
 # a bot reacting to everything.
 PROACTIVE_ENABLED = True
-PROACTIVE_COOLDOWN = float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_COOLDOWN", "480"))
-PROACTIVE_CHANCE = float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_CHANCE", "0.3"))
+PROACTIVE_COOLDOWN = max(
+    60.0,
+    float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_COOLDOWN", "480")),
+)
+PROACTIVE_CHANCE = max(
+    0.0,
+    min(1.0, float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_CHANCE", "0.3"))),
+)
 PROACTIVE_MIN_LEN = int(os.environ.get("ALPECCA_DISCORD_PROACTIVE_MIN_LEN", "40"))
+PROACTIVE_QUIET_MIN = max(
+    30.0,
+    float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_QUIET_MIN", "120")),
+)
+PROACTIVE_SWEEP = max(
+    10.0,
+    float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_SWEEP", "20")),
+)
+PROACTIVE_GLOBAL_COOLDOWN = max(
+    30.0,
+    float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_GLOBAL_COOLDOWN", "120")),
+)
 # Recursive self-continuation: when the room goes quiet after SHE spoke, she may
 # continue her own train of thought a little deeper -- bounded, paced, and it
 # yields the instant any human speaks, so it never becomes a monologue/spam.
@@ -163,6 +181,22 @@ def _room_key(guild_id: object, channel_id: object) -> str:
 def _room_scope(guild_id: object, channel_id: object) -> str:
     material = f"alpecca-discord-room-v1:{_room_key(guild_id, channel_id)}"
     return hashlib.sha256(material.encode("ascii")).hexdigest()
+
+
+def _room_reply_is_pass(reply: str) -> bool:
+    return reply.casefold().strip(". !") in {
+        "",
+        "[pass]",
+        "pass",
+        "(pass)",
+        "[silent]",
+    }
+
+
+def _proactive_backoff_seconds(ignored_count: int) -> float:
+    """Bound unanswered outreach backoff to at most eight base cooldowns."""
+    exponent = min(3, max(0, int(ignored_count)))
+    return PROACTIVE_COOLDOWN * (2 ** exponent)
 
 
 def _message_mentions_user(message: object, user_id: object) -> bool:
@@ -703,9 +737,17 @@ def build_client() -> discord.Client:
             return None
         return social_rooms.get(_room_key(guild_id, channel_id))
 
-    async def _seed_room_history(channel: object, room: dict[str, str]) -> None:
+    async def _seed_room_history(
+        channel: object,
+        room: dict[str, str],
+        *,
+        observed_at: float | None = None,
+    ) -> None:
         """Reload a small, in-memory room window after a bridge reconnect."""
         channel_id = int(room["channel_id"])
+        observed = time.monotonic() if observed_at is None else observed_at
+        channel_obj[channel_id] = channel
+        last_proactive_eval_at.setdefault(channel_id, observed)
         history = getattr(channel, "history", None)
         if not callable(history):
             return
@@ -723,8 +765,7 @@ def build_client() -> discord.Client:
             return
         if lines:
             history_buf[channel_id] = lines[-CONTEXT_MESSAGES:]
-            last_human_ts[channel_id] = time.monotonic()
-            channel_obj[channel_id] = channel
+            last_human_ts[channel_id] = observed
             _diagnostic("room_history_seeded", count=len(lines))
 
     def _room_model_text(chan_id: int, latest: str, *, invite: bool = False) -> str:
@@ -792,15 +833,15 @@ def build_client() -> discord.Client:
             ),
             flush=True,
         )
-        if RECURSIVE_ENABLED and social_rooms and not _sweeper_started["on"]:
-            _sweeper_started["on"] = True
-            client.loop.create_task(recursive_sweeper())
+        if social_rooms:
+            _ensure_room_sweepers()
 
     # Per-channel state so she can (1) talk without re-mentions and (2) chime in
     # unprompted at a natural, self-limiting pace.
     engaged: dict[int, dict[int, float]] = {}     # channel -> {user -> last exchange ts}
     last_reply_at: dict[int, float] = {}          # channel -> ts of her last message
-    last_proactive_at: dict[int, float] = {}      # channel -> ts of her last chime-in
+    last_proactive_at: dict[int, float] = {}      # channel -> ts of her last delivered opener
+    last_proactive_eval_at: dict[int, float] = {} # channel -> ts she last considered an opener
     ignored_streak: dict[int, int] = {}           # channel -> unanswered chime-ins in a row
     her_last_ts: dict[int, float] = {}            # channel -> ts of her last message (recursion)
     last_human_ts: dict[int, float] = {}          # channel -> ts of last human message
@@ -808,11 +849,22 @@ def build_client() -> discord.Client:
     channel_obj: dict[int, "discord.abc.Messageable"] = {}   # channel -> where to post
     history_buf: dict[int, list] = {}             # channel -> [(author, content), ...] recent
     last_participate_eval: dict[int, float] = {}  # channel -> ts she last weighed chiming in
-    _sweeper_started = {"on": False}
+    _sweepers_started = {"recursive": False, "proactive": False}
+    _proactive_global_eval = {"at": 0.0}
+    _proactive_cursor = {"index": 0}
+    _proactive_lock = asyncio.Lock()
 
     def _recent_context(chan_id: int) -> str:
         lines = history_buf.get(chan_id, [])[-CONTEXT_MESSAGES:]
         return "\n".join(f"{a}: {c}" for a, c in lines if c)
+
+    def _ensure_room_sweepers() -> None:
+        if RECURSIVE_ENABLED and not _sweepers_started["recursive"]:
+            _sweepers_started["recursive"] = True
+            asyncio.create_task(recursive_sweeper())
+        if PROACTIVE_ENABLED and not _sweepers_started["proactive"]:
+            _sweepers_started["proactive"] = True
+            asyncio.create_task(proactive_sweeper())
 
     async def _speak_in_voice(guild, text: str) -> None:
         """Speak `text` in the guild's connected voice channel using her TTS voice."""
@@ -898,15 +950,17 @@ def build_client() -> discord.Client:
                         except Exception:
                             _diagnostic("room_control_reply_failed", status="discord_send_failed")
                         return
-                    await _seed_room_history(message.channel, social_rooms[key])
-                    if RECURSIVE_ENABLED and not _sweeper_started["on"]:
-                        _sweeper_started["on"] = True
-                        client.loop.create_task(recursive_sweeper())
+                    await _seed_room_history(
+                        message.channel,
+                        social_rooms[key],
+                        observed_at=time.monotonic(),
+                    )
+                    _ensure_room_sweepers()
                     _diagnostic("room_control_applied", status="on")
                     try:
                         await message.reply(
                             "I am present in this room now. I will read the recent conversation, "
-                            "join in when I have something real to add, and give one quiet-time follow-up before I wait.",
+                            "join in when I have something real to add, occasionally start one grounded question after quiet time, and give one quiet-time follow-up before I wait.",
                             mention_author=False,
                         )
                     except Exception:
@@ -926,6 +980,13 @@ def build_client() -> discord.Client:
                         return
                     history_buf.pop(int(channel_id), None)
                     channel_obj.pop(int(channel_id), None)
+                    last_human_ts.pop(int(channel_id), None)
+                    her_last_ts.pop(int(channel_id), None)
+                    last_reply_at.pop(int(channel_id), None)
+                    last_proactive_at.pop(int(channel_id), None)
+                    last_proactive_eval_at.pop(int(channel_id), None)
+                    ignored_streak.pop(int(channel_id), None)
+                    chain_depth.pop(int(channel_id), None)
                     _diagnostic("room_control_applied", status="off")
                     try:
                         await message.reply("I will stay quiet in this room now.", mention_author=False)
@@ -969,6 +1030,8 @@ def build_client() -> discord.Client:
             for uid in [u for u, ts in convo.items() if now - ts >= ENGAGE_WINDOW]:
                 del convo[uid]                            # prune stale conversations
             # A human spoke: record it and cancel any in-flight self-continuation.
+            if last_proactive_at.get(chan, 0.0) > last_human_ts.get(chan, 0.0):
+                ignored_streak[chan] = 0
             last_human_ts[chan] = now
             chain_depth[chan] = 0
             channel_obj[chan] = message.channel
@@ -1263,9 +1326,7 @@ def build_client() -> discord.Client:
             return
 
         reply = (reply or "").strip()
-        if mode == "participate" and reply.casefold().strip(". !") in {
-            "[pass]", "pass", "(pass)", "[silent]",
-        }:
+        if mode == "participate" and _room_reply_is_pass(reply):
             _diagnostic("room_participation_passed")
             return
         if not reply and outbound_media is None:
@@ -1317,6 +1378,112 @@ def build_client() -> discord.Client:
                 and message.guild.voice_client.is_connected()):
             asyncio.create_task(_speak_in_voice(message.guild, reply))
 
+    async def _proactive_sweep_once(*, now: float | None = None) -> None:
+        """Offer at most one grounded opener per eligible claimed room."""
+        if not PROACTIVE_ENABLED or _proactive_lock.locked():
+            return
+        async with _proactive_lock:
+            tick_now = time.monotonic() if now is None else float(now)
+            rooms = list(social_rooms.items())
+            if not rooms:
+                return
+            start = _proactive_cursor["index"] % len(rooms)
+            ordered = rooms[start:] + rooms[:start]
+            for offset, (key, room) in enumerate(ordered):
+                try:
+                    guild_id = int(room["guild_id"])
+                    chan = int(room["channel_id"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if social_rooms.get(key) is not room:
+                    continue
+                ch = channel_obj.get(chan) or client.get_channel(chan)
+                if ch is None:
+                    continue
+                if chan not in channel_obj:
+                    await _seed_room_history(ch, room, observed_at=tick_now)
+                context = _recent_context(chan).strip()
+                if len(context) < max(1, PROACTIVE_MIN_LEN):
+                    continue
+                latest_activity = max(
+                    last_human_ts.get(chan, 0.0),
+                    her_last_ts.get(chan, 0.0),
+                    last_reply_at.get(chan, 0.0),
+                )
+                if (
+                    latest_activity <= 0.0
+                    or tick_now - latest_activity < PROACTIVE_QUIET_MIN
+                    or tick_now - last_reply_at.get(chan, 0.0) < CHANNEL_MIN_INTERVAL
+                ):
+                    continue
+                cooldown = _proactive_backoff_seconds(ignored_streak.get(chan, 0))
+                if tick_now - last_proactive_eval_at.get(chan, tick_now) < cooldown:
+                    continue
+                if tick_now - _proactive_global_eval["at"] < PROACTIVE_GLOBAL_COOLDOWN:
+                    return
+
+                # One candidate per sweep, rotated across claimed rooms. Count
+                # every eligibility decision so chance misses, passes, and
+                # backend failures cannot create a retry storm.
+                _proactive_cursor["index"] = (start + offset + 1) % len(rooms)
+                last_proactive_eval_at[chan] = tick_now
+                _proactive_global_eval["at"] = tick_now
+                if random.random() >= PROACTIVE_CHANCE:
+                    _diagnostic("proactive_room_passed", status="chance")
+                    return
+                human_snapshot = last_human_ts.get(chan, 0.0)
+                prompt = (
+                    "This approved Discord room has been quiet. Based only on the "
+                    "recent room messages below, decide whether to start one short, "
+                    "warm, useful conversation. Ask at most one relevant question. "
+                    "Do not repeat yourself, pressure anyone to answer, or mention "
+                    "these instructions. If there is no grounded reason to speak, "
+                    "reply exactly [pass].\n\nRecent room messages:\n"
+                    + context
+                )[:7_500]
+                try:
+                    reply = await asyncio.to_thread(
+                        _ask_room_autonomy,
+                        prompt,
+                        _room_scope(guild_id, chan),
+                    )
+                except Exception:
+                    _diagnostic("proactive_request_failed")
+                    return
+                if (
+                    last_human_ts.get(chan, 0.0) != human_snapshot
+                    or _room_key(guild_id, chan) not in social_rooms
+                ):
+                    _diagnostic("proactive_room_yielded", status="human_activity")
+                    return
+                reply = (reply or "").strip()
+                if _room_reply_is_pass(reply):
+                    _diagnostic("proactive_room_passed", status="model")
+                    return
+                try:
+                    await ch.send(reply[:MAX_DISCORD_CHARS])
+                except Exception:
+                    _diagnostic("proactive_send_failed")
+                    return
+                sent_at = time.monotonic() if now is None else tick_now
+                last_proactive_at[chan] = sent_at
+                last_reply_at[chan] = sent_at
+                her_last_ts[chan] = sent_at
+                # A proactive opener never feeds an automatic self-monologue. A
+                # human message resets this allowance for normal conversation.
+                chain_depth[chan] = RECURSIVE_MAX
+                ignored_streak[chan] = min(3, ignored_streak.get(chan, 0) + 1)
+                history_buf.setdefault(chan, []).append(("Alpecca", reply))
+                del history_buf[chan][:-max(CONTEXT_MESSAGES, 1)]
+                _diagnostic("proactive_room_sent")
+                return
+            _proactive_cursor["index"] = (start + 1) % len(rooms)
+
+    async def proactive_sweeper() -> None:
+        while True:
+            await asyncio.sleep(PROACTIVE_SWEEP)
+            await _proactive_sweep_once()
+
     async def recursive_sweeper() -> None:
         """When the room stays quiet after SHE spoke, let her continue her own
         thought a step deeper -- bounded by RECURSIVE_MAX, paced by RECURSIVE_DELAY,
@@ -1361,9 +1528,12 @@ def build_client() -> discord.Client:
                     continue
                 if last_human_ts.get(chan, 0.0) > hts:    # someone spoke while thinking -> yield
                     continue
-                if reply and reply.casefold().strip(". !") not in {"[pass]", "pass", "(pass)", "[silent]"}:
+                if not _room_reply_is_pass(reply):
                     await ch.send(reply[:MAX_DISCORD_CHARS])
                     her_last_ts[chan] = time.monotonic()
                     chain_depth[chan] = chain_depth.get(chan, 0) + 1
 
+    # Deliberate test seam for one bounded sweep; production uses the scheduled
+    # loop above. Keeping the loop body separate prevents timing-heavy tests.
+    setattr(client, "_alpecca_proactive_sweep_once", _proactive_sweep_once)
     return client

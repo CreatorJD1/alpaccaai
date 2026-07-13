@@ -75,9 +75,12 @@ retained elsewhere for historical context.
 - The live Discord bridge accepts creator-allowlisted DMs and explicitly
   creator-claimed guild rooms. A room is added or removed only by CreatorJD's
   exact raw bot-mention `room on` / `room off` command; all other guild rooms
-  fail closed. Claimed-room participation, proactive speech, and at most one
-  paced recursive continuation remain cooldown-bound and enter the backend as
-  guest authority. Discord voice remains off. The current creator account
+  fail closed. Claimed-room participation, quiet-room proactive speech, and at
+  most one paced recursive continuation remain cooldown-bound and enter the
+  backend as guest authority. Proactive speech is recent-context-grounded,
+  limited to one globally serialized room evaluation per sweep, backs off when
+  ignored, yields to new human activity, and cannot start a recursive monologue.
+  Discord voice remains off. The current creator account
   allowlist resolves the Discord username `realcreatorjd` to its numeric id.
   A dedicated actor-identity seal credential remains separate from creator,
   bridge-service, and bot credentials.

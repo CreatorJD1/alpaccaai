@@ -7,6 +7,11 @@
   CreatorJD (`realcreatorjd`) can claim or release one channel with the exact
   `@Alpecca room on` / `room off` command. Registry writes roll back on failure;
   a missing Discord send permission does not undo a successful durable claim.
+- Claimed rooms now have a real quiet-room proactive loop. It uses bounded
+  recent room context, quiet/cooldown/chance/model gates, one global in-flight
+  decision, one rotated room per sweep, and exponential ignored-outreach
+  backoff. Human activity or `room off` cancels an in-flight post, and an
+  opener cannot feed the recursive continuation path into a monologue.
 - House voice now has one bounded session coordinator. Direct replies and voice
   previews can interrupt stale speech, proactive speech queues without flooding,
   push-to-talk barges in, and listening/thinking/speaking/unavailable are visible.
@@ -20,8 +25,9 @@
   and automatic Mindscape snapshots defer during active/recent chat. This keeps
   the socket usable for an immediate retry without disabling manual or shutdown
   continuity sync.
-- Verification on this tree: `npm.cmd run house:build`; the focused Discord,
-  voice, drive, source-workspace, source-tool, attachment, and WebSocket-retry
+- Verification on this tree: `npm.cmd run house:build`; 30 focused Discord
+  presence tests; the focused voice, drive, source-workspace, source-tool,
+  attachment, and WebSocket-retry
   suites; six Void consolidation tests; and `python -m pytest -q
   tests/test_core.py` (`356 passed`).
 
