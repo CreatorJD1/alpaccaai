@@ -3,13 +3,21 @@
 This is the canonical project context for coding agents working on Alpecca.
 Read this before `AGENTS.md`, `CLAUDE.md`, `HANDOFF.md`, or implementation files.
 
-## Current Implementation Checkpoint (2026-07-12)
+## Current Implementation Checkpoint (2026-07-13)
 
 This checkpoint supersedes older route, access, and phase-status language
 retained elsewhere for historical context.
 
 - `/house-hq` now serves the **Void Prototype**, with a native categorized
   **Alpecca Systems** center and an orthographic view.
+- House voice now uses one bounded speech coordinator with interruptible direct
+  replies, queued proactive speech, browser-unavailable state, and avatar talk
+  timing driven by actual audio playback rather than synthesis estimates.
+- The Files system now mounts a visual **Alpecca Drive**. Its virtual-drive tab
+  uses the existing sandboxed desktop API and receipt-backed rename/move path.
+  Its separate creator-only source-workspace tab exposes metadata for approved
+  repository roots only, is read-only, blocks credentials/traversal/symlinks,
+  and attaches eligible text through the existing one-use House file lease.
 - The former internal House HQ page is archived at
   `web/archive/house_hq_internal_legacy.html` and is no longer routed.
 - Loopback access uses trusted-device bootstrap; remote access requires HTTPS
@@ -64,11 +72,15 @@ retained elsewhere for historical context.
   in-process exact-turn envelope and remain ephemeral. Phase 10 remains partial
   for retained guest context, guilds, rates, approvals, voice, and a production
   external anchor.
-- The live Discord bridge is hard-locked to creator-allowlisted DMs. Guild and
-  thread messages return before media or backend work; environment flags cannot
-  enable participation, proactive speech, recursion, or voice. DM payloads are
-  always guest authority. A dedicated actor-identity seal credential now exists
-  without changing the creator, bridge-service, or bot credentials.
+- The live Discord bridge accepts creator-allowlisted DMs and explicitly
+  creator-claimed guild rooms. A room is added or removed only by CreatorJD's
+  exact raw bot-mention `room on` / `room off` command; all other guild rooms
+  fail closed. Claimed-room participation, proactive speech, and at most one
+  paced recursive continuation remain cooldown-bound and enter the backend as
+  guest authority. Discord voice remains off. The current creator account
+  allowlist resolves the Discord username `realcreatorjd` to its numeric id.
+  A dedicated actor-identity seal credential remains separate from creator,
+  bridge-service, and bot credentials.
 - Every generic image, screen, webcam, pose, self-recognition, and Studio vision
   wrapper is now verified-local regardless of `ALPECCA_VISION_BACKEND`.
   Computer-use screenshots now pass the same verified-loopback/non-cloud check

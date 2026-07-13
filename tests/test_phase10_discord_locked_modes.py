@@ -265,6 +265,110 @@ def test_creator_mention_claims_a_discord_room(monkeypatch, tmp_path):
     assert message.replies and "present in this room" in message.replies[0][0]
 
 
+def test_real_discord_raw_mention_claims_room_without_clean_content_or_object_identity(
+    monkeypatch,
+    tmp_path,
+):
+    client = _client(monkeypatch)
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", set())
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", {"realcreatorjd"})
+    monkeypatch.setattr(discord_bridge, "DISCORD_ROOM_REGISTRY", tmp_path / "rooms.json")
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_ENABLED", False)
+
+    message = _Message(content="<@9001> room on")
+    message.author = _Author(name="realcreatorjd")
+    message.guild = SimpleNamespace(id=777)
+    message.channel = _Channel()
+    message.clean_content = ""
+    message.mentions = [SimpleNamespace(id=9001)]
+
+    asyncio.run(client.on_message(message))
+
+    stored = json.loads((tmp_path / "rooms.json").read_text(encoding="utf-8"))
+    assert stored == {"777:3001": {"channel_id": "3001", "guild_id": "777"}}
+    assert discord_bridge.DM_ALLOW_IDS == {"42"}
+    assert message.replies and "present in this room" in message.replies[0][0]
+
+
+@pytest.mark.parametrize("raw", ("<@9001> room on", "<@!9001> room on."))
+def test_room_command_parser_accepts_discord_protocol_mentions(raw):
+    message = SimpleNamespace(content=raw, clean_content="", mentions=[])
+
+    assert discord_bridge._room_control_action(message, 9001) == "on"
+    assert discord_bridge._message_mentions_user(message, 9001) is True
+
+
+def test_room_command_without_message_content_fails_closed():
+    message = SimpleNamespace(
+        content="",
+        clean_content="",
+        mentions=[SimpleNamespace(id=9001)],
+    )
+
+    assert discord_bridge._room_control_action(message, 9001) is None
+
+
+def test_room_registry_failure_rolls_back_in_memory_claim(monkeypatch, tmp_path):
+    client = _client(monkeypatch)
+    _allow_dm(monkeypatch)
+    monkeypatch.setattr(discord_bridge, "DISCORD_ROOM_REGISTRY", tmp_path / "rooms.json")
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_ENABLED", False)
+    monkeypatch.setattr(
+        discord_bridge,
+        "_save_social_rooms",
+        lambda _rooms: (_ for _ in ()).throw(OSError("read only")),
+    )
+    backend_calls: list[str] = []
+    monkeypatch.setattr(
+        discord_bridge,
+        "_ask_alpecca",
+        lambda *_args, **_kwargs: backend_calls.append("called") or "unexpected",
+    )
+
+    message = _Message(content="<@9001> room on")
+    message.guild = SimpleNamespace(id=777)
+    message.channel = _Channel()
+    message.clean_content = "@Alpecca room on"
+    message.mentions = [SimpleNamespace(id=9001)]
+
+    asyncio.run(client.on_message(message))
+
+    assert not (tmp_path / "rooms.json").exists()
+    assert message.replies == [
+        ("I could not save this room setting.", {"mention_author": False})
+    ]
+
+    followup = _Message(content="ordinary room message")
+    followup.guild = SimpleNamespace(id=777)
+    followup.channel = _Channel()
+    followup.clean_content = followup.content
+    followup.mentions = []
+    asyncio.run(client.on_message(followup))
+    assert backend_calls == []
+
+
+def test_room_claim_survives_missing_discord_send_permission(monkeypatch, tmp_path):
+    client = _client(monkeypatch)
+    _allow_dm(monkeypatch)
+    monkeypatch.setattr(discord_bridge, "DISCORD_ROOM_REGISTRY", tmp_path / "rooms.json")
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_ENABLED", False)
+
+    message = _Message(content="<@9001> room on")
+    message.guild = SimpleNamespace(id=777)
+    message.channel = _Channel()
+    message.clean_content = "@Alpecca room on"
+    message.mentions = [SimpleNamespace(id=9001)]
+
+    async def forbidden_reply(*_args, **_kwargs):
+        raise RuntimeError("missing send permission")
+
+    message.reply = forbidden_reply
+    asyncio.run(client.on_message(message))
+
+    stored = json.loads((tmp_path / "rooms.json").read_text(encoding="utf-8"))
+    assert stored == {"777:3001": {"channel_id": "3001", "guild_id": "777"}}
+
+
 def test_allowlisted_dm_image_and_approved_outbound_media_still_flow(monkeypatch):
     class Attachment:
         filename = "photo.png"

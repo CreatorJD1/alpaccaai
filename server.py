@@ -1112,6 +1112,7 @@ _mindscape_sync_status = {
     "event_triggers": 0,
     "event_skips": 0,
 }
+_mindscape_event_sync_task: asyncio.Task | None = None
 
 # How often the background sense ticks (seconds). This is what gives Alpecca a
 # life of its own between messages -- it keeps watching and feeling.
@@ -1411,6 +1412,14 @@ def _consume_late_turn(task: "asyncio.Task") -> None:
         pass
 
 
+def _finish_late_ws_chat_turn(task: "asyncio.Task") -> None:
+    """Release foreground priority only after a timed-out worker really exits."""
+    global active_chat_turns
+    _consume_late_turn(task)
+    active_chat_turns = max(0, active_chat_turns - 1)
+    _sync_optional_work_foreground()
+
+
 async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = None,
                                      attachment_context: str = "",
                                      situation_hint: str = "",
@@ -1447,18 +1456,26 @@ async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = No
             **attachment_kwargs,
         )
     )
+    release_priority_on_exit = True
     try:
         return await asyncio.wait_for(
             asyncio.shield(worker), timeout=WS_CHAT_REPLY_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError:
         turn.cancel("timeout")
-        worker.add_done_callback(_consume_late_turn)
+        release_priority_on_exit = False
+        worker.add_done_callback(_finish_late_ws_chat_turn)
         return _ws_chat_timeout_result(user_text, turn=turn)
+    except asyncio.CancelledError:
+        turn.cancel("cancelled")
+        release_priority_on_exit = False
+        worker.add_done_callback(_finish_late_ws_chat_turn)
+        raise
     finally:
-        active_chat_turns = max(0, active_chat_turns - 1)
-        # Keep the short quiet grace period authoritative after the turn ends.
-        _sync_optional_work_foreground()
+        if release_priority_on_exit:
+            active_chat_turns = max(0, active_chat_turns - 1)
+            # Keep the short quiet grace period authoritative after the turn ends.
+            _sync_optional_work_foreground()
 
 
 async def _pump_reply_tokens(socket: WebSocket, q: "asyncio.Queue",
@@ -1897,6 +1914,10 @@ async def _mindscape_sync_once(reason: str = "manual", check_models: bool = Fals
         _mindscape_sync_status["last_status"] = "not_configured"
         _mindscape_sync_status["last_error"] = ""
         return {"ok": False, "status": "not_configured"}
+    if reason not in {"manual", "shutdown"} and _player_chat_priority_active():
+        _mindscape_sync_status["last_status"] = "deferred_for_chat"
+        _mindscape_sync_status["last_error"] = ""
+        return {"ok": False, "status": "deferred_for_chat"}
     async with mind_lock:
         snap = await _bounded_thread(
             "mindscape_snapshot",
@@ -1916,7 +1937,20 @@ async def _mindscape_sync_once(reason: str = "manual", check_models: bool = Fals
     return mirror or {"ok": False, "status": "mirror_timeout"}
 
 
+async def _mindscape_sync_after_chat(reason: str) -> None:
+    """Run one coalesced event mirror after foreground chat becomes quiet."""
+    global _mindscape_event_sync_task
+    try:
+        while _player_chat_priority_active():
+            await asyncio.sleep(0.5)
+        await _mindscape_sync_once(reason=reason, check_models=False)
+    finally:
+        if _mindscape_event_sync_task is asyncio.current_task():
+            _mindscape_event_sync_task = None
+
+
 def _mindscape_request_event_sync(reason: str, force: bool = False) -> bool:
+    global _mindscape_event_sync_task
     if not (MINDSCAPE_ENABLED and MINDSCAPE_CLOUD_URL):
         return False
     now = _time.time()
@@ -1932,7 +1966,12 @@ def _mindscape_request_event_sync(reason: str, force: bool = False) -> bool:
     _mindscape_sync_status["event_triggers"] += 1
     _mindscape_sync_status["last_trigger"] = now
     _mindscape_sync_status["last_trigger_reason"] = reason
-    loop.create_task(_mindscape_sync_once(reason=reason, check_models=False))
+    if _mindscape_event_sync_task is None or _mindscape_event_sync_task.done():
+        _mindscape_event_sync_task = loop.create_task(
+            _mindscape_sync_after_chat(reason),
+        )
+    else:
+        _mindscape_sync_status["event_skips"] += 1
     return True
 
 
@@ -2519,6 +2558,8 @@ async def lifespan(app: FastAPI):
                 if not (MINDSCAPE_ENABLED and MINDSCAPE_CLOUD_URL and MINDSCAPE_AUTO_SYNC_INTERVAL > 0):
                     continue
                 mirror = await _mindscape_sync_once(reason="interval", check_models=False)
+                if mirror.get("status") == "deferred_for_chat":
+                    continue
                 await _broadcast({
                     "type": "activity",
                     "text": (
@@ -2578,9 +2619,15 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        global _mindscape_event_sync_task
         task.cancel()
         mindscape_task.cancel()
         automation_task.cancel()
+        deferred_mindscape_task = _mindscape_event_sync_task
+        _mindscape_event_sync_task = None
+        if deferred_mindscape_task is not None:
+            deferred_mindscape_task.cancel()
+            await asyncio.gather(deferred_mindscape_task, return_exceptions=True)
         outcome_tasks = list(_initiative_outcome_tasks)
         for outcome_task in outcome_tasks:
             outcome_task.cancel()
@@ -6087,6 +6134,51 @@ async def desktop_rename(req: Request) -> dict:
     return _desktop.rename(b.get("root", ""), b.get("rel", ""), b.get("new_name", ""))
 
 
+@app.get("/source-workspace")
+def source_workspace(req: Request) -> JSONResponse:
+    """Creator-only metadata view of approved Alpecca repository areas."""
+    _require_creator_request(req)
+    from alpecca import source_workspace as _source_workspace
+
+    return JSONResponse(
+        _source_workspace.overview(),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/source-workspace/list")
+def source_workspace_list(
+    req: Request,
+    root: str,
+    rel: str = "",
+    limit: int = 200,
+) -> JSONResponse:
+    """List names and metadata only; never return source contents or paths."""
+    _require_creator_request(req)
+    from alpecca import source_workspace as _source_workspace
+
+    payload = _source_workspace.list_entries(
+        root,
+        rel,
+        limit=max(1, min(200, int(limit))),
+    )
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/source-workspace/search")
+def source_workspace_search(
+    req: Request,
+    q: str,
+    limit: int = 80,
+) -> JSONResponse:
+    """Search only approved source names; selected text still uses file ingress."""
+    _require_creator_request(req)
+    from alpecca import source_workspace as _source_workspace
+
+    payload = _source_workspace.search(q, limit=max(1, min(100, int(limit))))
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
 _GAMES = [
     {"name": "2048", "url": "https://play2048.co/", "emoji": "🔢"},
     {"name": "Chess", "url": "https://lichess.org/", "emoji": "♟"},
@@ -7920,22 +8012,41 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         )
         if not await _record_capability_use(
             "file_access",
-            action="read",
+            action="attempt",
             principal=decision.principal,
             source="api",
         ):
             _raise_capability_audit_unavailable()
         from alpecca import desktop as desktop_mod
+        from alpecca import source_workspace as source_workspace_mod
 
         try:
+            allowed_roots = desktop_mod.inspection_roots()
+            source_roots = source_workspace_mod.inspection_roots()
+            if root_id in source_roots:
+                try:
+                    source_workspace_mod.reference_allowed(root_id, relative_path)
+                except source_workspace_mod.SourceWorkspaceRejected as exc:
+                    _raise_file_rejection_reason(
+                        exc.reason,
+                        status_code=_file_rejection_status(exc.reason),
+                    )
+                allowed_roots = {**allowed_roots, **source_roots}
             inspected_file = file_ingress_mod.ingest_file(
                 root_id,
                 relative_path,
-                allowed_roots=desktop_mod.inspection_roots(),
+                allowed_roots=allowed_roots,
                 scope=_attachment_turn_scope(turn),
             )
         except file_ingress_mod.FileIngressRejected as exc:
             _raise_file_rejection(exc)
+        if not await _record_capability_use(
+            "file_access",
+            action="read",
+            principal=decision.principal,
+            source="api",
+        ):
+            _raise_capability_audit_unavailable()
         attachment_context = (
             f"File reference: {root_id}/{relative_path}\n"
             f"MIME: {inspected_file.mime_type}; encoding: {inspected_file.encoding}; "
@@ -8154,8 +8265,12 @@ def _file_rejection_status(reason: str) -> int:
         return 404
     if reason in {
         "root-not-allowed", "traversal", "symlink-not-allowed", "path-escape",
+        "blocked-path", "credential-path", "project-file-not-allowed",
+        "path-alias-not-allowed",
     }:
         return 403
+    if reason == "path-unavailable":
+        return 404
     if reason in {"stat-failed", "read-failed", "root-unavailable"}:
         return 422
     return 400

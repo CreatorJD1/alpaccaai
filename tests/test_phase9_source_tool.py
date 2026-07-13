@@ -167,6 +167,24 @@ def test_traversal_data_and_unapproved_roots_are_denied_without_inspection(monke
     assert calls == []
 
 
+def test_windows_path_alias_is_denied_before_source_inspection(monkeypatch):
+    toolkit = _toolkit(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        toolkit_mod.source_perception_mod,
+        "inspect_local_source",
+        lambda *_args, **_kwargs: calls.append("read"),
+    )
+
+    result = toolkit.execute(
+        "source_inspect", {"root": "source", "path": "mind.py::$DATA"},
+        turn=_turn("creator"),
+    )
+
+    assert result == "error: source_inspect path is not an approved source file"
+    assert calls == []
+
+
 def test_cancelled_creator_turn_never_calls_source_inspection(monkeypatch):
     toolkit = _toolkit(monkeypatch)
     calls = []

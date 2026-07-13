@@ -5,6 +5,22 @@ import {
   type VrmEmbodiment,
   type VrmEmbodimentDebug,
 } from "./vrmEmbodiment";
+import {
+  VoiceQueueFullError,
+  createHouseVoiceSessionCoordinator,
+  type VoicePlaybackMoment,
+  type VoiceSessionState,
+} from "./voiceSession";
+import {
+  createDesktopHttpDataSource,
+  createDesktopPanel,
+  createSourceWorkspaceHttpDataSource,
+  type DesktopActionIntent,
+  type DesktopActionReceipt,
+  type DesktopPanelController,
+  type DesktopPanelItem,
+  type DesktopPanelMode,
+} from "./desktopPanel";
 
 type AlpeccaRuntimeProbe = {
   ready: boolean;
@@ -1665,12 +1681,14 @@ let alpeccaLiveAttentionTimer = 0;
 let alpeccaVoiceAudio: HTMLAudioElement | null = null;
 let alpeccaVoiceObjectUrl = "";
 let alpeccaVoiceLastText = "";
-let alpeccaVoiceRequestSequence = 0;
 let alpeccaVoiceAudioContext: AudioContext | null = null;
 let alpeccaVoicePlaybackUnlocked = false;
+let alpeccaVoiceSessionState: VoiceSessionState = "idle";
 const alpeccaSpokenRepliesStorageKey = "alpeccaHouseSpokenReplies";
 let alpeccaSpokenRepliesEnabled = localStorage.getItem(alpeccaSpokenRepliesStorageKey) !== "off";
 const ALPECCA_PUSH_TO_TALK_MAX_MS = 60_000;
+const ALPECCA_TTS_REQUEST_TIMEOUT_MS = 45_000;
+const ALPECCA_DRIVE_REQUEST_TIMEOUT_MS = 12_000;
 let alpeccaPushToTalkRecorder: MediaRecorder | null = null;
 let alpeccaPushToTalkStream: MediaStream | null = null;
 let alpeccaPushToTalkChunks: Blob[] = [];
@@ -1693,9 +1711,53 @@ let alpeccaVoiceBreath = "";
 let alpeccaVoiceModulationStrength = "";
 let alpeccaVoiceEmotionTimer = 0;
 let alpeccaVoiceEmotionState: Record<string, number> = {};
+type AlpeccaSpeechPriority = "reply" | "proactive" | "preview";
+
+function alpeccaPlaybackRemaining(moment: VoicePlaybackMoment) {
+  const fallback = Number(moment.audio.dataset.alpeccaFallbackDuration || 0);
+  const duration = moment.duration && moment.duration > 0 ? moment.duration : Math.max(0.35, fallback);
+  return Math.max(0.05, duration - moment.currentTime);
+}
+
+function setVisibleAlpeccaVoiceSession(state: VoiceSessionState) {
+  alpeccaVoiceSessionState = state;
+  document.body.dataset.alpeccaVoiceSession = state;
+  updateAlpeccaVoiceReadout();
+}
+
+const alpeccaVoiceSession = createHouseVoiceSessionCoordinator({
+  maxQueueSize: 4,
+  onStateChange: ({ current }) => setVisibleAlpeccaVoiceSession(current),
+  onPlaybackStart: (moment) => {
+    alpeccaVoiceAudio = moment.audio;
+    setAlpeccaProfileMode("talking", alpeccaActiveProfileFeature);
+    const remaining = alpeccaPlaybackRemaining(moment);
+    alpecca.talkTimer = Math.max(alpecca.talkTimer, remaining + 0.14);
+    alpeccaLiveAttentionTimer = Math.max(alpeccaLiveAttentionTimer, Math.min(remaining, 4.2));
+  },
+  onPlaybackProgress: (moment) => {
+    alpecca.talkTimer = Math.max(alpecca.talkTimer, alpeccaPlaybackRemaining(moment) + 0.14);
+  },
+  onPlaybackStop: () => {
+    alpecca.talkTimer = 0;
+    setAlpeccaProfileMode("listening", alpeccaActiveProfileFeature);
+  },
+  onUnavailable: ({ reason }) => {
+    alpeccaVoiceEngine = "server voice unavailable";
+    alpeccaVoiceName = "af_heart";
+    alpeccaVoiceProfile = "original voice unavailable";
+    alpeccaVoiceStyle = "warming";
+    setAlpeccaProfileMode("listening", alpeccaActiveProfileFeature);
+    updateAlpeccaVoiceReadout();
+    showMessage(`Alpecca's original voice is warming or unavailable: ${reason}`, 3.4);
+  },
+});
 let chatWasPointerLocked = false;
 let alpeccaActiveSystem: AlpeccaSystemId = "overview";
 let alpeccaSystemLoadSequence = 0;
+let alpeccaDriveMode: DesktopPanelMode = "virtual-drive";
+let alpeccaDrivePanel: DesktopPanelController | null = null;
+let alpeccaDriveRequestController: AbortController | null = null;
 let alpeccaVoiceLivePoll: ReturnType<typeof setInterval> | null = null;
 let alpeccaServiceWorkerRegistrationPromise: Promise<ServiceWorkerRegistration | null> | null = null;
 let alpeccaPushActionPending = false;
@@ -4503,7 +4565,7 @@ function renderAlpeccaVoiceViewer(data: Record<string, unknown>): string {
       <div><span>Engine</span><strong>${escapeHudText(engine)}</strong></div>
       <div><span>Profile</span><strong>${escapeHudText(profile)}</strong></div>
       <div><span>Pace</span><strong>${rate}%${semis ? ` / ${semis > 0 ? "+" : ""}${semis} st` : ""}</strong></div>
-      <div><span>Modulation</span><strong>${num("modulation_strength", 1).toFixed(2)}x</strong></div>
+      <div><span>Session</span><strong>${escapeHudText(alpeccaVoiceSessionState)}</strong></div>
     </div>
     <section><h3>Voice modulation (live)</h3>
       <div class="voice-meters">
@@ -4703,10 +4765,13 @@ function renderAlpeccaSystem(systemId: AlpeccaSystemId, data: Record<string, unk
       <section><h3>Evidence and proposals</h3>${[...lessons, ...proposals].slice(0, 12).map((item) => systemRow(systemString(item.status || item.kind, "evidence"), systemString(item.text || item.action || item.evidence))).join("") || systemEmpty("No current proposal evidence.")}</section>`;
   }
   if (systemId === "files") {
-    const rooms = systemArray(data.rooms);
-    return `${systemIntro("FILES", "Read-only workstation", systemString(data.note, "Search only within Alpecca's allowed local rooms."))}
-      <div class="systems-input-row"><input id="alpeccaFileQuery" placeholder="Search Desktop, Pictures, or Documents" aria-label="Search allowed files"><button type="button" data-system-action="file-search">Search</button></div>
-      <div id="alpeccaSystemResults"></div><section><h3>Allowed rooms</h3>${rooms.slice(0, 16).map((item) => systemRow(systemString(item.root || item.name, "room"), `${systemString(item.count, "0")} items`)).join("") || systemEmpty("No allowed file rooms are available.")}</section>`;
+    const sourceActive = alpeccaDriveMode === "source-workspace";
+    return `${systemIntro("FILES", "Alpecca Drive", sourceActive ? "Approved source workspace" : "Sandboxed virtual workstation")}
+      <div class="systems-actions alpecca-drive-tabs" role="tablist" aria-label="Drive view">
+        <button type="button" role="tab" data-drive-mode="virtual-drive" aria-selected="${String(!sourceActive)}"${sourceActive ? "" : " class=\"active\""}>Virtual drive</button>
+        <button type="button" role="tab" data-drive-mode="source-workspace" aria-selected="${String(sourceActive)}"${sourceActive ? " class=\"active\"" : ""}>Source workspace</button>
+      </div>
+      <div id="alpeccaDriveMount" class="alpecca-drive-mount"></div>`;
   }
   if (systemId === "games") {
     const games = systemArray(data.games);
@@ -4789,6 +4854,111 @@ async function fetchAlpeccaSystemData(systemId: AlpeccaSystemId) {
   return fetchJson(alpeccaSystemEndpoints[systemId]);
 }
 
+async function alpeccaDriveRequest(input: RequestInfo | URL, init?: RequestInit) {
+  const url = typeof input === "string"
+    ? input
+    : input instanceof URL
+      ? input.toString()
+      : input.url;
+  const controller = new AbortController();
+  const lifecycleSignal = alpeccaDriveRequestController?.signal;
+  const inputSignal = init?.signal;
+  const forwardAbort = (signal: AbortSignal) => () => controller.abort(signal.reason);
+  const lifecycleAbort = lifecycleSignal ? forwardAbort(lifecycleSignal) : null;
+  const inputAbort = inputSignal ? forwardAbort(inputSignal) : null;
+  if (lifecycleSignal?.aborted) lifecycleAbort?.();
+  else lifecycleSignal?.addEventListener("abort", lifecycleAbort!, { once: true });
+  if (inputSignal?.aborted) inputAbort?.();
+  else inputSignal?.addEventListener("abort", inputAbort!, { once: true });
+  const timer = window.setTimeout(() => {
+    controller.abort(new DOMException("Drive request timed out.", "TimeoutError"));
+  }, ALPECCA_DRIVE_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await alpeccaBackendFetch(url, { ...init, signal: controller.signal });
+    const body = await response.arrayBuffer();
+    return new Response(body.byteLength ? body : null, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  } finally {
+    window.clearTimeout(timer);
+    if (lifecycleAbort) lifecycleSignal?.removeEventListener("abort", lifecycleAbort);
+    if (inputAbort) inputSignal?.removeEventListener("abort", inputAbort);
+  }
+}
+
+function alpeccaDriveParent(relativePath: string) {
+  return relativePath.replace(/\\/g, "/").split("/").filter(Boolean).slice(0, -1).join("/");
+}
+
+function alpeccaDriveName(relativePath: string) {
+  return relativePath.replace(/\\/g, "/").split("/").filter(Boolean).pop() || relativePath;
+}
+
+async function handleAlpeccaDriveIntent(intent: DesktopActionIntent): Promise<DesktopActionReceipt> {
+  if (intent.type === "rename") {
+    const result = await postAlpeccaSystem("/desktop/rename", {
+      root: intent.root,
+      rel: intent.rel,
+      new_name: intent.newName,
+    });
+    const parent = alpeccaDriveParent(intent.rel);
+    const destination = [parent, intent.newName].filter(Boolean).join("/");
+    return {
+      action: "rename",
+      status: result.ok === true ? "success" : "error",
+      message: result.ok === true
+        ? `${alpeccaDriveName(intent.rel)} was renamed to ${intent.newName}.`
+        : systemString(result.error, "Rename was not confirmed."),
+      from: { root: intent.root, rel: intent.rel },
+      to: result.ok === true ? { root: intent.root, rel: destination } : undefined,
+    };
+  }
+
+  const result = await postAlpeccaSystem("/desktop/move", {
+    src_root: intent.srcRoot,
+    src_rel: intent.srcRel,
+    dst_root: intent.dstRoot,
+    dst_rel: intent.dstRel,
+  });
+  const destination = [intent.dstRel, alpeccaDriveName(intent.srcRel)].filter(Boolean).join("/");
+  return {
+    action: "move",
+    status: result.ok === true ? "success" : "error",
+    message: result.ok === true
+      ? `${alpeccaDriveName(intent.srcRel)} was moved.`
+      : systemString(result.error, "Move was not confirmed."),
+    from: { root: intent.srcRoot, rel: intent.srcRel },
+    to: result.ok === true ? { root: intent.dstRoot, rel: destination } : undefined,
+  };
+}
+
+function mountAlpeccaDrive() {
+  alpeccaDrivePanel?.destroy();
+  alpeccaDrivePanel = null;
+  alpeccaDriveRequestController?.abort();
+  alpeccaDriveRequestController = new AbortController();
+  const mount = alpeccaSystemsBody.querySelector<HTMLDivElement>("#alpeccaDriveMount");
+  if (!mount || !alpeccaAiBaseUrl) return;
+  const sourceMode = alpeccaDriveMode === "source-workspace";
+  const dataSource = sourceMode
+    ? createSourceWorkspaceHttpDataSource(alpeccaAiBaseUrl, alpeccaDriveRequest)
+    : createDesktopHttpDataSource(alpeccaAiBaseUrl, alpeccaDriveRequest);
+  alpeccaDrivePanel = createDesktopPanel({
+    mode: alpeccaDriveMode,
+    dataSource,
+    initialLocation: { root: sourceMode ? "source" : "desktop", rel: "" },
+    actionsEnabled: !sourceMode,
+    onActionIntent: sourceMode ? undefined : handleAlpeccaDriveIntent,
+    canAttachFile: (item: DesktopPanelItem) => !item.isDir && isAlpeccaAttachableTextFile(item.rel),
+    onAttachFile: (item: DesktopPanelItem) => {
+      prepareAlpeccaFileAttachment({ root: item.root, rel: item.rel });
+    },
+  });
+  mount.appendChild(alpeccaDrivePanel.element);
+}
+
 async function refreshAlpeccaSystemsAffect() {
   if (!alpeccaAiBaseUrl) return;
   try {
@@ -4813,6 +4983,10 @@ async function refreshAlpeccaSystemsAffect() {
 async function loadAlpeccaSystem(systemId: AlpeccaSystemId = alpeccaActiveSystem) {
   alpeccaActiveSystem = systemId;
   const requestId = ++alpeccaSystemLoadSequence;
+  alpeccaDrivePanel?.destroy();
+  alpeccaDrivePanel = null;
+  alpeccaDriveRequestController?.abort();
+  alpeccaDriveRequestController = null;
   alpeccaSystemsNav.querySelectorAll<HTMLButtonElement>("button[data-system-id]").forEach((button) => {
     button.classList.toggle("active", button.dataset.systemId === systemId);
   });
@@ -4823,6 +4997,7 @@ async function loadAlpeccaSystem(systemId: AlpeccaSystemId = alpeccaActiveSystem
     const data = await fetchAlpeccaSystemData(systemId);
     if (requestId !== alpeccaSystemLoadSequence) return;
     alpeccaSystemsBody.innerHTML = renderAlpeccaSystem(systemId, data);
+    if (systemId === "files") mountAlpeccaDrive();
     const host = alpeccaAiBaseUrl ? new URL(alpeccaAiBaseUrl).host : "offline";
     alpeccaSystemsStatus.textContent = `${alpeccaSystemLabels[systemId]} - live from ${host}`;
     if (systemId === "voice") startAlpeccaVoiceLivePoll();
@@ -4855,6 +5030,10 @@ function closeAlpeccaSystems() {
   alpeccaSystems.classList.add("hidden");
   document.body.classList.remove("alpecca-systems-open");
   alpeccaSystemLoadSequence += 1;
+  alpeccaDrivePanel?.destroy();
+  alpeccaDrivePanel = null;
+  alpeccaDriveRequestController?.abort();
+  alpeccaDriveRequestController = null;
   stopAlpeccaVoiceLivePoll();
   recordAlpeccaSystemsReturn();
 }
@@ -5063,6 +5242,11 @@ function connectAlpeccaAi() {
       alpeccaAiSlowReplyNoticeShown = false;
       alpeccaAiPendingPlayerRequestId = "";
       alpeccaAiLastPlayerMessage = "";
+      alpeccaVoiceLastText = "";
+      alpeccaVoiceSession.interrupt({ clearQueue: true, reason: "backend disconnected" });
+      alpeccaVoiceSession.reset("idle", "backend disconnected");
+      alpecca.talkTimer = 0;
+      setAlpeccaProfileMode("listening", alpeccaActiveProfileFeature);
       if (event.code === 1008 || (!opened && alpeccaAiServerReachable)) {
         setAlpeccaAiStatus("token", "session");
         showMessage("Alpecca needs an authorized backend session. Sign in through the live app, then reconnect.", 5);
@@ -5183,6 +5367,8 @@ function handleAlpeccaAiMessage(raw: string) {
     const spokenReplyText = (message.spoken_reply || message.spoken_text || replyText).trim();
     if (alpeccaSpokenRepliesEnabled) {
       startAlpeccaSpeech(spokenReplyText, alpeccaSpeechDuration(spokenReplyText));
+    } else {
+      alpeccaVoiceSession.setConversationState("listening", "spoken replies are muted");
     }
     alpecca.glitchTimer = Math.max(alpecca.glitchTimer, 0.3);
     alpeccaProfileGlitchTimer = Math.max(alpeccaProfileGlitchTimer, 0.45);
@@ -5193,7 +5379,7 @@ function handleAlpeccaAiMessage(raw: string) {
       setAlpeccaAnimation(activatedRooms >= activeRoomTotal() ? "victory" : "waveDown");
     }
     alpeccaChatLine.textContent = replyText;
-    showAlpeccaProfileLine(replyText, alpeccaSpokenRepliesEnabled ? "talking" : "listening", alpeccaActiveProfileFeature);
+    showAlpeccaProfileLine(replyText, "listening", alpeccaActiveProfileFeature);
     showMessage(replyText, 7);
     return;
   }
@@ -5214,6 +5400,7 @@ function handleAlpeccaAiMessage(raw: string) {
       ? "Camera permission was rejected or expired."
       : (message.error || message.detail || "Alpecca could not process that attachment.");
     appendAlpeccaLog("System", errorText);
+    alpeccaVoiceSession.setConversationState("listening", "reply failed");
     showAlpeccaProfileLine(errorText, "listening");
     showMessage(errorText, 5);
     return;
@@ -5234,12 +5421,12 @@ function handleAlpeccaAiMessage(raw: string) {
     alpeccaChatLine.textContent = proactiveText;
     showAlpeccaProfileLine(
       proactiveText,
-      alpeccaSpokenRepliesEnabled ? "talking" : "listening",
+      "listening",
       alpeccaActiveProfileFeature,
     );
     showMessage(proactiveText, 7);
     if (alpeccaSpokenRepliesEnabled) {
-      startAlpeccaSpeech(proactiveText, alpeccaSpeechDuration(proactiveText));
+      startAlpeccaSpeech(proactiveText, alpeccaSpeechDuration(proactiveText), "", "proactive");
     }
     return;
   }
@@ -5318,10 +5505,13 @@ function toggleAlpeccaSpokenReplies() {
   localStorage.setItem(alpeccaSpokenRepliesStorageKey, alpeccaSpokenRepliesEnabled ? "on" : "off");
   updateAlpeccaSpokenRepliesButton();
   if (!alpeccaSpokenRepliesEnabled) {
-    alpeccaVoiceRequestSequence += 1;
     alpeccaVoiceLastText = "";
-    alpeccaVoiceAudio?.pause();
+    alpeccaVoiceSession.interrupt({ clearQueue: true, reason: "spoken replies muted" });
+    alpeccaVoiceSession.reset("listening", "spoken replies muted");
     alpecca.talkTimer = 0;
+    setAlpeccaProfileMode("listening", alpeccaActiveProfileFeature);
+  } else {
+    alpeccaVoiceSession.reset("listening", "spoken replies enabled");
   }
   appendAlpeccaLog("System", `Spoken replies ${alpeccaSpokenRepliesEnabled ? "enabled" : "muted"}.`);
 }
@@ -5333,6 +5523,9 @@ function setAlpeccaPushToTalkState(state: "idle" | "recording" | "processing") {
   alpeccaPushToTalkButton.setAttribute("aria-pressed", String(recording));
   alpeccaPushToTalkButton.setAttribute("aria-label", recording ? "Stop and send voice input" : "Start push-to-talk");
   alpeccaPushToTalkButton.title = recording ? "Stop and send voice input" : state === "processing" ? "Transcribing voice input" : "Start push-to-talk";
+  if (state === "recording") alpeccaVoiceSession.setConversationState("listening", "microphone recording");
+  else if (state === "processing") alpeccaVoiceSession.setConversationState("thinking", "transcribing microphone input");
+  else if (!alpeccaAiAwaitingReply) alpeccaVoiceSession.setConversationState("listening", "ready for voice input");
 }
 
 function stopAlpeccaPushToTalkStream() {
@@ -5434,6 +5627,7 @@ async function toggleAlpeccaPushToTalk() {
   }
   await closeAlpeccaCamera();
   await cancelAlpeccaVoiceEnrollment();
+  alpeccaVoiceSession.interrupt({ clearQueue: true, reason: "creator started speaking" });
   if (alpeccaChat.classList.contains("hidden")) return;
   const sequence = ++alpeccaPushToTalkSequence;
   let lease: AlpeccaCapabilityLease | null = null;
@@ -5715,6 +5909,27 @@ function isAlpeccaAttachableTextFile(relativePath: string) {
   return ALPECCA_ATTACHABLE_TEXT_EXTENSIONS.has(extension);
 }
 
+function prepareAlpeccaFileAttachment(sourceRef: AlpeccaSourceRef) {
+  if (alpeccaAiAwaitingReply) {
+    setAlpeccaSystemsNotice("Wait for the current reply before attaching another file.");
+    return;
+  }
+  if (!sourceRef.root || !sourceRef.rel) {
+    setAlpeccaSystemsNotice("That file reference is incomplete.");
+    return;
+  }
+  closeAlpeccaSystems();
+  openAlpeccaChat();
+  alpeccaPendingSourceRef = sourceRef;
+  alpeccaChatInput.value = "Please inspect this file.";
+  const fileName = alpeccaSourceRefFileName(sourceRef);
+  alpeccaChatInput.placeholder = `Ask about ${fileName}`;
+  showAlpeccaProfileLine(`${fileName} from ${sourceRef.root} is ready to attach by server reference.`, "listening", "files");
+  appendAlpeccaLog("System", `Selected ${alpeccaSourceRefLabel(sourceRef)} by server reference.`);
+  alpeccaChatInput.focus();
+  alpeccaChatInput.select();
+}
+
 function compactAlpeccaAttachmentProvenance(value: unknown) {
   const provenance = boundedAlpeccaChatRejectionField(value);
   const sha256 = provenance.match(/^(?:sha256:)?([a-f0-9]{64})$/i);
@@ -5761,6 +5976,7 @@ function finishAlpeccaChatFailure(
   alpeccaAiExtendedReplyNoticeShown = false;
   alpeccaAiPendingPlayerRequestId = "";
   alpeccaAiLastPlayerMessage = "";
+  alpeccaVoiceSession.setConversationState("listening", "chat request failed");
   appendAlpeccaLog("System", message);
   showAlpeccaProfileLine(message, "listening");
   if (attachmentLabel) alpeccaProfileSeenEl.textContent = `${attachmentLabel}: ${attachmentStatus}`;
@@ -5815,6 +6031,8 @@ async function sendAlpeccaChat(
       ? (trimmed ? `${trimmed} [camera frame]` : "Shared a camera frame.")
       : trimmed;
 
+  alpeccaVoiceSession.interrupt({ clearQueue: true, reason: "new creator turn" });
+  alpeccaVoiceSession.setConversationState("thinking", "waiting for Alpecca's reply");
   focusAlpecca(4.2, "idleDown");
   alpecca.expressiveTimer = 0;
   alpecca.walkPauseTimer = Math.max(alpecca.walkPauseTimer, 5.5);
@@ -5993,18 +6211,20 @@ async function sendAlpeccaChat(
     alpeccaAiSlowReplyNoticeShown = false;
     alpeccaAiPendingPlayerRequestId = "";
     alpeccaAiLastPlayerMessage = "";
+    alpeccaVoiceSession.setConversationState("listening", "backend session required");
     appendAlpeccaLog("System", sessionLine);
     showAlpeccaProfileLine(sessionLine, "listening");
     showMessage("Alpecca backend session required.", 4.5);
     return;
   }
 
+  alpeccaAiAwaitingReply = false;
+  alpeccaAiReplyStartedAt = 0;
+  alpeccaAiSlowReplyNoticeShown = false;
+  alpeccaAiPendingPlayerRequestId = "";
+  alpeccaAiLastPlayerMessage = "";
+  alpeccaVoiceSession.setConversationState("listening", "offline fallback");
   if (!alpeccaAiOfflineNoticeShown) {
-    alpeccaAiAwaitingReply = false;
-    alpeccaAiReplyStartedAt = 0;
-    alpeccaAiSlowReplyNoticeShown = false;
-    alpeccaAiPendingPlayerRequestId = "";
-    alpeccaAiLastPlayerMessage = "";
     showMessage("Live Alpecca is offline. Using local game dialogue.", 3.5);
     alpeccaAiOfflineNoticeShown = true;
   }
@@ -6012,7 +6232,7 @@ async function sendAlpeccaChat(
     const localLine = getAlpeccaDialogue();
     appendAlpeccaLog("Alpecca", localLine);
     if (alpeccaSpokenRepliesEnabled) startAlpeccaSpeech(localLine);
-    showAlpeccaProfileLine(localLine, alpeccaSpokenRepliesEnabled ? "talking" : "listening");
+    showAlpeccaProfileLine(localLine, "listening");
     showMessage(localLine, 5);
   }, 250);
 }
@@ -11442,8 +11662,8 @@ function updateAlpeccaVoiceReadout() {
   const style = alpeccaVoiceStyle && !["content", "offline"].includes(alpeccaVoiceStyle.toLowerCase()) ? alpeccaVoiceStyle : "present";
   const warmthText = alpeccaVoiceWarmth ? `, warmth ${alpeccaVoiceWarmth}` : "";
   alpeccaVoiceModulationEl.textContent = original
-    ? `Original voice present: ${style}${warmthText}`
-    : "Original voice warming";
+    ? `${alpeccaVoiceSessionState}: ${style}${warmthText}`
+    : `${alpeccaVoiceSessionState}: Original voice warming`;
 }
 
 function numberHeader(response: Response, name: string, fallback = 0) {
@@ -11515,73 +11735,108 @@ function unlockAlpeccaVoicePlayback() {
   }
 }
 
-async function playAlpeccaVoice(text: string, preview = "") {
+async function prepareAlpeccaVoiceAudio(
+  text: string,
+  preview: string,
+  fallbackDuration: number,
+  signal: AbortSignal,
+) {
   const clean = text.trim();
-  const requestKey = `${preview || "current"}:${clean}`;
-  if (!clean || requestKey === alpeccaVoiceLastText) return;
-  alpeccaVoiceLastText = requestKey;
-  const voiceRequestId = ++alpeccaVoiceRequestSequence;
-  const originalVoiceUnavailable = (why: string) => {
-    if (voiceRequestId !== alpeccaVoiceRequestSequence) return;
-    alpeccaVoiceEngine = "server voice unavailable";
-    alpeccaVoiceName = "af_heart";
-    alpeccaVoiceProfile = "original voice unavailable";
-    alpeccaVoiceStyle = "warming";
-    updateAlpeccaVoiceReadout();
-    showMessage(`Alpecca's original voice is warming or unavailable: ${why}`, 3.4);
-  };
+  if (!clean) throw new Error("voice text is empty");
+  const payload: { text: string; preview?: string; exact_text: boolean } = { text: clean, exact_text: true };
+  if (preview) payload.preview = preview;
+  const request = new AbortController();
+  let timedOut = false;
+  const forwardAbort = () => request.abort(signal.reason);
+  if (signal.aborted) forwardAbort();
+  else signal.addEventListener("abort", forwardAbort, { once: true });
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    request.abort(new DOMException("Voice synthesis timed out.", "TimeoutError"));
+  }, ALPECCA_TTS_REQUEST_TIMEOUT_MS);
+  let response: Response;
+  let blob: Blob;
   try {
-    const payload: { text: string; preview?: string; exact_text: boolean } = { text: clean, exact_text: true };
-    if (preview) payload.preview = preview;
-    const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/tts`), {
+    response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/tts`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal: request.signal,
     });
     if (!response.ok || response.status === 204) {
-      const why = response.headers.get("X-Alpecca-TTS-Error") || "browser blocked or server voice unavailable";
-      originalVoiceUnavailable(why);
-      return;
+      throw new Error(response.headers.get("X-Alpecca-TTS-Error") || "server voice unavailable");
     }
-    const blob = await response.blob();
-    if (voiceRequestId !== alpeccaVoiceRequestSequence || requestKey !== alpeccaVoiceLastText) return;
-    captureAlpeccaVoiceHeaders(response);
-    if (alpeccaVoiceAudio) {
-      try {
-        alpeccaVoiceAudio.pause();
-      } catch {}
-    }
-    if (alpeccaVoiceObjectUrl) {
-      try {
-        URL.revokeObjectURL(alpeccaVoiceObjectUrl);
-      } catch {}
-    }
-    alpeccaVoiceObjectUrl = URL.createObjectURL(blob);
-    alpeccaVoiceAudio = new Audio(alpeccaVoiceObjectUrl);
-    alpeccaVoiceAudio.setAttribute("playsinline", "true");
-    alpeccaVoiceAudio.onplay = () => {
-      const previewText = alpeccaVoicePreview && alpeccaVoicePreview !== "current" ? ` / ${alpeccaVoicePreview}` : "";
-      showMessage(`Alpecca voice playing${previewText}.`, 2.4);
-    };
+    blob = await response.blob();
+    if (request.signal.aborted) throw request.signal.reason;
+  } catch (error) {
+    if (timedOut) throw new Error("voice synthesis timed out");
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+    signal.removeEventListener("abort", forwardAbort);
+  }
+  if (signal.aborted) throw new DOMException("Voice request was interrupted.", "AbortError");
+  captureAlpeccaVoiceHeaders(response);
+  const objectUrl = URL.createObjectURL(blob);
+  const audio = new Audio(objectUrl);
+  audio.dataset.alpeccaFallbackDuration = String(Math.max(0.35, fallbackDuration));
+  audio.setAttribute("playsinline", "true");
+  alpeccaVoiceObjectUrl = objectUrl;
+  alpeccaVoiceAudio = audio;
+  return audio;
+}
+
+function releaseAlpeccaVoiceAudio(audio: HTMLAudioElement) {
+  const objectUrl = audio.src;
+  if (alpeccaVoiceAudio === audio) alpeccaVoiceAudio = null;
+  if (objectUrl) {
     try {
-      await alpeccaVoiceAudio.play();
-      alpeccaVoicePlaybackUnlocked = true;
-    } catch (error) {
-      alpeccaVoiceLastText = "";
-      alpecca.talkTimer = 0;
-      const reason = error instanceof Error ? error.name || error.message : "playback blocked";
-      appendAlpeccaLog("System", `Voice playback was blocked by this browser (${reason}). Tap Hear voice once, then try again.`);
-      showMessage("Voice playback was blocked by this browser. Tap Hear voice once, then try again.", 5);
-    }
-  } catch {
-    originalVoiceUnavailable("server voice request failed or audio playback was blocked");
+      URL.revokeObjectURL(objectUrl);
+    } catch {}
+  }
+  if (alpeccaVoiceObjectUrl === objectUrl) alpeccaVoiceObjectUrl = "";
+}
+
+function playAlpeccaVoice(
+  text: string,
+  preview = "",
+  duration = alpeccaSpeechDuration(text),
+  priority: AlpeccaSpeechPriority = "reply",
+) {
+  const clean = text.trim();
+  const requestKey = `${preview || "current"}:${clean}`;
+  if (!clean || (requestKey === alpeccaVoiceLastText && alpeccaVoiceSession.state !== "idle")) return;
+  if (priority !== "proactive") {
+    alpeccaVoiceSession.interrupt({ clearQueue: true, reason: `${priority} speech took focus` });
+  }
+  alpeccaVoiceLastText = requestKey;
+  try {
+    const speech = alpeccaVoiceSession.enqueueSpeech({
+      label: priority,
+      preparePlayback: ({ signal }) => prepareAlpeccaVoiceAudio(clean, preview, duration, signal),
+      releasePlayback: releaseAlpeccaVoiceAudio,
+    });
+    void speech.completion.then((result) => {
+      if (alpeccaVoiceLastText === requestKey) alpeccaVoiceLastText = "";
+      if (result.outcome === "completed") alpeccaVoicePlaybackUnlocked = true;
+      if (result.outcome === "unavailable" && /notallowed|gesture/i.test(result.reason)) {
+        appendAlpeccaLog("System", "Voice playback was blocked by this browser. Tap Hear voice once, then try again.");
+      }
+    });
+  } catch (error) {
+    if (error instanceof VoiceQueueFullError && priority === "proactive") return;
+    alpeccaVoiceLastText = "";
+    alpeccaVoiceSession.markUnavailable(error instanceof Error ? error.message : "voice queue unavailable");
   }
 }
 
-function startAlpeccaSpeech(text: string, duration = alpeccaSpeechDuration(text), preview = "") {
-  alpecca.talkTimer = Math.max(alpecca.talkTimer, duration);
-  alpeccaLiveAttentionTimer = Math.max(alpeccaLiveAttentionTimer, Math.min(duration, 4.2));
-  void playAlpeccaVoice(text, preview);
+function startAlpeccaSpeech(
+  text: string,
+  duration = alpeccaSpeechDuration(text),
+  preview = "",
+  priority: AlpeccaSpeechPriority = "reply",
+) {
+  playAlpeccaVoice(text, preview, duration, priority);
 }
 
 function isAlpeccaTalking() {
@@ -15208,7 +15463,7 @@ async function handleAlpeccaSystemAction(action: string) {
     }
     if (action === "voice-preview") {
       alpeccaVoiceLastText = "";
-      startAlpeccaSpeech("This is my current voice, grounded in how I feel right now.", 3.8);
+      startAlpeccaSpeech("This is my current voice, grounded in how I feel right now.", 3.8, "", "preview");
       return;
     }
     if (action === "device-page" || action === "classic-chat") {
@@ -15282,6 +15537,12 @@ alpeccaSystems.addEventListener("click", (event) => {
     void loadAlpeccaSystem(systemButton.dataset.systemId as AlpeccaSystemId);
     return;
   }
+  const driveModeButton = target.closest<HTMLButtonElement>("button[data-drive-mode]");
+  if (driveModeButton?.dataset.driveMode) {
+    alpeccaDriveMode = driveModeButton.dataset.driveMode as DesktopPanelMode;
+    void loadAlpeccaSystem("files");
+    return;
+  }
   const actionButton = target.closest<HTMLButtonElement>("button[data-system-action]");
   if (actionButton?.dataset.systemAction) {
     void handleAlpeccaSystemAction(actionButton.dataset.systemAction);
@@ -15289,10 +15550,6 @@ alpeccaSystems.addEventListener("click", (event) => {
   }
   const fileAttachButton = target.closest<HTMLButtonElement>("button[data-file-attach]");
   if (fileAttachButton) {
-    if (alpeccaAiAwaitingReply) {
-      setAlpeccaSystemsNotice("Wait for the current reply before attaching another file.");
-      return;
-    }
     let root = "";
     let rel = "";
     try {
@@ -15306,17 +15563,7 @@ alpeccaSystems.addEventListener("click", (event) => {
       setAlpeccaSystemsNotice("That file reference is incomplete.");
       return;
     }
-    const sourceRef = { root, rel };
-    closeAlpeccaSystems();
-    openAlpeccaChat();
-    alpeccaPendingSourceRef = sourceRef;
-    alpeccaChatInput.value = "Please inspect this file.";
-    const fileName = alpeccaSourceRefFileName(sourceRef);
-    alpeccaChatInput.placeholder = `Ask about ${fileName}`;
-    showAlpeccaProfileLine(`${fileName} from ${root} is ready to attach by server reference.`, "listening", "files");
-    appendAlpeccaLog("System", `Selected ${alpeccaSourceRefLabel(sourceRef)} by server reference.`);
-    alpeccaChatInput.focus();
-    alpeccaChatInput.select();
+    prepareAlpeccaFileAttachment({ root, rel });
     return;
   }
   const commitmentButton = target.closest<HTMLButtonElement>("button[data-commitment-action]");

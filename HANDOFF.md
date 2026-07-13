@@ -1,5 +1,30 @@
 # Alpecca — Handoff (updated 2026-07-13)
 
+## Codex House Voice, Drive, Source, And Discord Recovery (2026-07-13)
+
+- Discord guild activation now parses Discord's raw numeric mention protocol
+  instead of relying on cached mention-object identity or presentation text.
+  CreatorJD (`realcreatorjd`) can claim or release one channel with the exact
+  `@Alpecca room on` / `room off` command. Registry writes roll back on failure;
+  a missing Discord send permission does not undo a successful durable claim.
+- House voice now has one bounded session coordinator. Direct replies and voice
+  previews can interrupt stale speech, proactive speech queues without flooding,
+  push-to-talk barges in, and listening/thinking/speaking/unavailable are visible.
+  VRM mouth and attention timing follow real audio playback progress.
+- Alpecca Systems > Files now presents a visual virtual drive and a separate
+  read-only source workspace. Source listing/search is creator-only, no-store,
+  metadata-only, root allowlisted, traversal/symlink/credential blocked, and
+  cannot mutate source. Eligible selected text files reuse the existing exact
+  `{root, rel}` lease-bound attachment path; content remains ephemeral.
+- WebSocket timeout recovery now keeps a late worker counted as foreground work,
+  and automatic Mindscape snapshots defer during active/recent chat. This keeps
+  the socket usable for an immediate retry without disabling manual or shutdown
+  continuity sync.
+- Verification on this tree: `npm.cmd run house:build`; the focused Discord,
+  voice, drive, source-workspace, source-tool, attachment, and WebSocket-retry
+  suites; six Void consolidation tests; and `python -m pytest -q
+  tests/test_core.py` (`356 passed`).
+
 ## Codex Wave 1 Integration (2026-07-13)
 
 - The six coordinator lanes were reviewed and integrated in dependency order.

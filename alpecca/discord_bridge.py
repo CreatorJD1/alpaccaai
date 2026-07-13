@@ -5,11 +5,13 @@ to hear is forwarded to `POST /channel/discord` -> her bounded guest chat path
 (mood +
 memory + people + affect) -> her reply is posted back in her own voice.
 
-Current Phase 10 scope = creator-allowlisted DMs only, with the locked safety rails from
-`docs/ALPECCA_DISCORD_PRESENCE.md`:
+Current Phase 10 scope = creator-allowlisted DMs plus explicitly claimed guild
+rooms, with the bounded rails from `docs/ALPECCA_DISCORD_PRESENCE.md`:
 
-  - **Guilds/threads:** all messages hard-return before media or backend work until
-    signed actor identity and scoped conversation wiring are live.
+  - **Guilds:** fail closed until CreatorJD sends the exact raw mention command
+    ``<@bot-id> room on`` in that channel. ``room off`` removes the durable claim.
+    Claimed rooms have bounded context, cooldowns, one recursive continuation,
+    and no creator authority in the backend.
   - **DMs:** allowlist only. She answers DMs *only* from CreatorJD
     (`ALPECCA_DISCORD_DM_ALLOW` = comma-separated Discord user ids or unique
     usernames). Empty = no DMs. One byte-validated image can enter her vision;
@@ -30,6 +32,7 @@ import io
 import json
 import os
 import random
+import re
 import sys
 import tempfile
 import threading
@@ -162,6 +165,45 @@ def _room_scope(guild_id: object, channel_id: object) -> str:
     return hashlib.sha256(material.encode("ascii")).hexdigest()
 
 
+def _message_mentions_user(message: object, user_id: object) -> bool:
+    """Match Discord mentions by numeric id, independent of object identity."""
+
+    wanted = str(user_id)
+    for mentioned in getattr(message, "mentions", ()) or ():
+        if str(getattr(mentioned, "id", "")) == wanted:
+            return True
+    raw = str(getattr(message, "content", "") or "")
+    return bool(re.search(rf"<@!?{re.escape(wanted)}>", raw))
+
+
+def _room_control_action(message: object, user_id: object) -> str | None:
+    """Parse one exact creator room command from a real Discord payload.
+
+    Discord's ``clean_content`` is presentation text and can differ by client,
+    cache state, nickname, and library version. The raw ``<@id>`` form is the
+    stable protocol representation, so it is authoritative here. A populated
+    mentions collection plus a cleaned tail remains a compatibility fallback.
+    """
+
+    wanted = str(user_id)
+    raw = str(getattr(message, "content", "") or "").strip()
+    raw_match = re.fullmatch(
+        rf"<@!?{re.escape(wanted)}>\s+room\s+(on|off)\s*[.!]?",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if raw_match:
+        return raw_match.group(1).casefold()
+    if not _message_mentions_user(message, wanted):
+        return None
+    clean = str(getattr(message, "clean_content", "") or "").strip()
+    for candidate in (raw, clean):
+        tail = re.search(r"(?:^|\s)room\s+(on|off)\s*[.!]?$", candidate, re.IGNORECASE)
+        if tail:
+            return tail.group(1).casefold()
+    return None
+
+
 def _load_social_rooms() -> dict[str, dict[str, str]]:
     """Read the creator-claimed room registry; malformed state fails closed."""
     try:
@@ -234,9 +276,13 @@ def _diagnostic(event: str, **metadata: object) -> None:
         "addressed",
         "attachment_count",
         "bytes",
+        "content_available",
+        "control",
+        "creator_allowed",
         "dimensions",
         "dm",
         "in_conversation",
+        "mentioned",
         "mime_type",
         "mode",
         "status",
@@ -810,45 +856,84 @@ def build_client() -> discord.Client:
 
         is_dm = message.guild is None
         if not is_dm:
-            command = str(getattr(message, "clean_content", "") or "").strip().casefold()
-            mentioned = client.user in (getattr(message, "mentions", ()) or ())
-            control_command = (
-                (mentioned or command.startswith("alpecca"))
-                and command.endswith(("room on", "room off"))
+            message_content = str(getattr(message, "content", "") or "")
+            mentioned = _message_mentions_user(message, client.user.id)
+            control_action = _room_control_action(message, client.user.id)
+            creator_allowed = _dm_author_allowed(message.author)
+            _diagnostic(
+                "guild_message_gate",
+                dm=False,
+                mentioned=mentioned,
+                content_available=bool(message_content),
+                creator_allowed=creator_allowed,
+                control=bool(control_action),
+                status=(
+                    "control"
+                    if control_action
+                    else "unclaimed_room"
+                    if _social_room(message) is None
+                    else "claimed_room"
+                ),
             )
-            if control_command and _dm_author_allowed(message.author):
+            if control_action and creator_allowed:
                 guild_id = getattr(message.guild, "id", None)
                 channel_id = getattr(message.channel, "id", None)
                 if guild_id is None or channel_id is None:
+                    _diagnostic("room_control_rejected", status="missing_channel")
                     return
                 key = _room_key(guild_id, channel_id)
-                if command.endswith("room on"):
+                if control_action == "on":
+                    previous = social_rooms.get(key)
                     social_rooms[key] = {"guild_id": str(guild_id), "channel_id": str(channel_id)}
                     try:
                         _save_social_rooms(social_rooms)
                     except OSError:
-                        await message.reply("I could not save this room setting.", mention_author=False)
+                        if previous is None:
+                            social_rooms.pop(key, None)
+                        else:
+                            social_rooms[key] = previous
+                        _diagnostic("room_control_rejected", status="registry_write_failed")
+                        try:
+                            await message.reply("I could not save this room setting.", mention_author=False)
+                        except Exception:
+                            _diagnostic("room_control_reply_failed", status="discord_send_failed")
                         return
                     await _seed_room_history(message.channel, social_rooms[key])
                     if RECURSIVE_ENABLED and not _sweeper_started["on"]:
                         _sweeper_started["on"] = True
                         client.loop.create_task(recursive_sweeper())
-                    await message.reply(
-                        "I am present in this room now. I will read the recent conversation, "
-                        "join in when I have something real to add, and give one quiet-time follow-up before I wait.",
-                        mention_author=False,
-                    )
+                    _diagnostic("room_control_applied", status="on")
+                    try:
+                        await message.reply(
+                            "I am present in this room now. I will read the recent conversation, "
+                            "join in when I have something real to add, and give one quiet-time follow-up before I wait.",
+                            mention_author=False,
+                        )
+                    except Exception:
+                        _diagnostic("room_control_reply_failed", status="discord_send_failed")
                 else:
-                    social_rooms.pop(key, None)
+                    previous = social_rooms.pop(key, None)
                     try:
                         _save_social_rooms(social_rooms)
                     except OSError:
-                        await message.reply("I could not save this room setting.", mention_author=False)
+                        if previous is not None:
+                            social_rooms[key] = previous
+                        _diagnostic("room_control_rejected", status="registry_write_failed")
+                        try:
+                            await message.reply("I could not save this room setting.", mention_author=False)
+                        except Exception:
+                            _diagnostic("room_control_reply_failed", status="discord_send_failed")
                         return
                     history_buf.pop(int(channel_id), None)
                     channel_obj.pop(int(channel_id), None)
-                    await message.reply("I will stay quiet in this room now.", mention_author=False)
+                    _diagnostic("room_control_applied", status="off")
+                    try:
+                        await message.reply("I will stay quiet in this room now.", mention_author=False)
+                    except Exception:
+                        _diagnostic("room_control_reply_failed", status="discord_send_failed")
                 return
+            if control_action and not creator_allowed:
+                _diagnostic("room_control_rejected", status="creator_mismatch")
             if _social_room(message) is None:
                 return
 

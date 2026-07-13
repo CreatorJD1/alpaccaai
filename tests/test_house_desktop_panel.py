@@ -232,6 +232,7 @@ source.setListing({{
   ok: true,
   root: "source",
   rel: "src/ui",
+  truncated: true,
   entries: [
     {{ name: literalName, is_dir: false, size: 72 }},
     {{ name: "components", is_dir: true, size: 0 }},
@@ -241,6 +242,7 @@ const sourceRoot = source.element;
 const breadcrumbText = findAll(sourceRoot, (node) => node.dataset.desktopBreadcrumbs === "true")[0].textContent;
 const sourceTiles = findAll(sourceRoot, (node) => Boolean(node.dataset.desktopTile));
 const literalWasText = sourceRoot.textContent.includes(literalName);
+const sourceLimited = sourceRoot.textContent.includes("limited");
 const imageElementCount = findAll(sourceRoot, (node) => node.tagName === "IMG").length;
 sourceTiles[0].emit("click");
 const readOnlyActions = findAll(sourceRoot, (node) => Boolean(node.dataset.desktopAction));
@@ -299,6 +301,7 @@ setTimeout(() => {{
   console.log(JSON.stringify({{
     breadcrumbText,
     literalWasText,
+    sourceLimited,
     imageElementCount,
     readOnlyActionCount: readOnlyActions.length,
     readOnlySelection,
@@ -315,6 +318,7 @@ setTimeout(() => {{
 
     assert result["breadcrumbText"] == "Source/src/ui"
     assert result["literalWasText"] is True
+    assert result["sourceLimited"] is True
     assert result["imageElementCount"] == 0
     assert result["readOnlyActionCount"] == 0
     assert "cannot be renamed or moved here" in result["readOnlySelection"]

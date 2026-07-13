@@ -417,10 +417,10 @@ def test_house_source_ref_reads_server_root_and_returns_metadata_only(
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert response.json()["delivered"] is False
-    assert audit_calls == [(
-        "file_access",
-        {"action": "read", "principal": "creator", "source": "api"},
-    )]
+    assert audit_calls == [
+        ("file_access", {"action": "attempt", "principal": "creator", "source": "api"}),
+        ("file_access", {"action": "read", "principal": "creator", "source": "api"}),
+    ]
     assert len(isolated_server) == 1
     call = isolated_server[0]
     assert call["text"] == "Summarize the attached note."
@@ -442,6 +442,38 @@ def test_house_source_ref_reads_server_root_and_returns_metadata_only(
     serialized = json.dumps(response.json(), sort_keys=True)
     assert attached_text not in serialized
     assert str(tmp_path) not in serialized
+
+
+def test_house_source_ref_can_use_approved_read_only_repository_root(
+    client, monkeypatch, tmp_path, isolated_server
+):
+    from alpecca import source_workspace as source_workspace_mod
+
+    source_root = tmp_path / "alpecca"
+    source_root.mkdir()
+    source_file = source_root / "status.py"
+    source_file.write_text("CURRENT_STAGE = 10", encoding="utf-8")
+    monkeypatch.setattr(source_workspace_mod, "SOURCE_ROOTS", {"source": source_root})
+
+    response = client.post(
+        "/channel/house-hq",
+        headers=_auth_headers(),
+        json={
+            "text": "Read the current stage marker.",
+            "source_ref": {"root": "source", "rel": "status.py"},
+        },
+    )
+
+    assert response.status_code == 200
+    attachment = response.json()["attachment"]
+    assert attachment["source"] == {
+        "root_id": "source",
+        "relative_path": "status.py",
+        "size_bytes": len("CURRENT_STAGE = 10"),
+        "sha256": hashlib.sha256(b"CURRENT_STAGE = 10").hexdigest(),
+    }
+    assert isolated_server[-1]["private_context"] is True
+    assert "CURRENT_STAGE = 10" in isolated_server[-1]["attachment_context"]
 
 
 def test_source_ref_is_house_creator_only_and_raw_file_payload_is_retired(
@@ -544,6 +576,34 @@ def test_house_source_ref_rejects_untrusted_paths_before_chat(
         "code": "attachment_rejected",
         "reason": expected_reason,
     }
+    assert isolated_server == []
+
+
+def test_rejected_source_ref_records_attempt_but_not_successful_read(
+    client, monkeypatch, tmp_path, isolated_server
+):
+    audit_calls = []
+
+    async def fake_audit(capability: str, **kwargs: str) -> bool:
+        audit_calls.append((capability, kwargs))
+        return True
+
+    monkeypatch.setattr(server, "_record_capability_use", fake_audit)
+    monkeypatch.setattr(desktop_mod, "ROOTS", {"general": tmp_path})
+
+    response = client.post(
+        "/channel/house-hq",
+        headers=_auth_headers(),
+        json={
+            "text": "Read this",
+            "source_ref": {"root": "general", "rel": "missing.md"},
+        },
+    )
+
+    assert response.status_code == 404
+    assert audit_calls == [
+        ("file_access", {"action": "attempt", "principal": "creator", "source": "api"}),
+    ]
     assert isolated_server == []
 
 

@@ -30,6 +30,7 @@ export interface DesktopRoom {
   readonly root: string;
   readonly label?: string;
   readonly count?: number;
+  readonly truncated?: boolean;
   readonly available?: boolean;
 }
 
@@ -44,6 +45,7 @@ export interface DesktopListingResponse {
   readonly root: string;
   readonly rel: string;
   readonly entries: ReadonlyArray<DesktopEntry>;
+  readonly truncated?: boolean;
   readonly error?: string;
 }
 
@@ -125,6 +127,8 @@ export interface DesktopPanelOptions {
     intent: DesktopActionIntent,
   ) => void | DesktopActionReceipt | Promise<void | DesktopActionReceipt>;
   readonly onSelectionChange?: (item: DesktopPanelItem | null) => void;
+  readonly canAttachFile?: (item: DesktopPanelItem) => boolean;
+  readonly onAttachFile?: (item: DesktopPanelItem) => void | Promise<void>;
 }
 
 export interface DesktopPanelController {
@@ -153,6 +157,11 @@ const ROOT_LABELS: Readonly<Record<string, string>> = {
   video: "Videos",
   general: "Documents",
   source: "Source",
+  house: "House UI",
+  tests: "Tests",
+  scripts: "Scripts",
+  docs: "Documents",
+  project: "Project",
   workspace: "Workspace",
 };
 
@@ -521,6 +530,7 @@ function normalizeRooms(rooms: ReadonlyArray<DesktopRoom>): DesktopRoom[] {
         count: typeof room.count === "number" && Number.isFinite(room.count)
           ? Math.max(0, Math.round(room.count))
           : undefined,
+        truncated: room.truncated === true,
         available: room.available !== false,
       });
     } catch {
@@ -623,6 +633,39 @@ export function createDesktopHttpDataSource(
   };
 }
 
+
+/** Read adapter for the separate, creator-only repository workspace. */
+export function createSourceWorkspaceHttpDataSource(
+  baseUrl: string,
+  request: typeof fetch = fetch,
+): DesktopPanelDataSource {
+  const read = async <T>(path: string): Promise<T> => {
+    const response = await request(endpoint(baseUrl, path), {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) throw new Error(`Source workspace request returned ${response.status}.`);
+    return await response.json() as T;
+  };
+  return {
+    overview: async () => {
+      const payload = await read<{
+        roots?: ReadonlyArray<DesktopRoom>;
+        note?: string;
+      }>("/source-workspace");
+      return { rooms: payload.roots ?? [], note: payload.note };
+    },
+    list: (location) => {
+      const params = new URLSearchParams({ root: location.root, rel: location.rel });
+      return read<DesktopListingResponse>(`/source-workspace/list?${params.toString()}`);
+    },
+    search: (query) => {
+      const params = new URLSearchParams({ q: query, limit: "80" });
+      return read<DesktopSearchResponse>(`/source-workspace/search?${params.toString()}`);
+    },
+  };
+}
+
 /** Build an unattached panel and its controller. */
 export function createDesktopPanel(
   options: DesktopPanelOptions = {},
@@ -721,7 +764,8 @@ export function createDesktopPanel(
     const roomSelect = dom("select", "alpecca-drive__root");
     roomSelect.setAttribute("aria-label", "Drive root");
     for (const room of state.rooms) {
-      const choice = dom("option", "", room.label ?? desktopRootLabel(room.root));
+      const count = room.count === undefined ? "" : ` (${room.count}${room.truncated ? "+" : ""})`;
+      const choice = dom("option", "", `${room.label ?? desktopRootLabel(room.root)}${count}`);
       choice.value = room.root;
       choice.disabled = room.available === false;
       choice.selected = room.root === state.location.root;
@@ -1025,6 +1069,28 @@ export function createDesktopPanel(
       });
       actions.appendChild(open);
     }
+    if (
+      !item.isDir
+      && typeof options.onAttachFile === "function"
+      && (typeof options.canAttachFile !== "function" || options.canAttachFile(item))
+    ) {
+      const attach = dom("button", "alpecca-drive__button alpecca-drive__button--primary", "Attach to chat");
+      attach.type = "button";
+      attach.dataset.desktopAttach = "true";
+      attach.addEventListener("click", () => {
+        try {
+          const result = options.onAttachFile?.(item);
+          void Promise.resolve(result).catch((error) => {
+            state.warning = errorText(error, "The selected file could not be attached.");
+            render();
+          });
+        } catch (error) {
+          state.warning = errorText(error, "The selected file could not be attached.");
+          render();
+        }
+      });
+      actions.appendChild(attach);
+    }
 
     const handlerConnected = typeof options.onActionIntent === "function";
     if (!readOnly && state.actionsEnabled && handlerConnected) {
@@ -1150,7 +1216,7 @@ export function createDesktopPanel(
     state.statusMessage = "";
     state.view = "folder";
     state.query = "";
-    state.truncated = false;
+    state.truncated = listing.truncated === true;
     state.items = normalized.items;
     state.warning = normalized.rejected > 0
       ? `${normalized.rejected} item${normalized.rejected === 1 ? " was" : "s were"} omitted because the returned path was invalid.`

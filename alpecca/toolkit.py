@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 from typing import Any
 
 from config import Actions as ActionsCfg
@@ -19,42 +18,14 @@ from alpecca import journal as journal_mod
 from alpecca import memory as memory_store
 from alpecca import mindpage as mindpage_mod
 from alpecca import source_perception as source_perception_mod
+from alpecca import source_workspace as source_workspace_mod
 from alpecca.turn_context import TurnContext
 
 
-_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-_SOURCE_INSPECTION_ROOTS = {
-    "source": _REPOSITORY_ROOT / "alpecca",
-    "house": _REPOSITORY_ROOT / "apps" / "house-hq" / "src",
-    "tests": _REPOSITORY_ROOT / "tests",
-    "scripts": _REPOSITORY_ROOT / "scripts",
-    "docs": _REPOSITORY_ROOT / "docs",
-    "project": _REPOSITORY_ROOT,
-}
-_SOURCE_PROJECT_FILES = frozenset({
-    "agents.md",
-    "app.py",
-    "claude.md",
-    "config.py",
-    "handoff.md",
-    "package.json",
-    "project.md",
-    "project_context.md",
-    "readme.md",
-    "requirements.txt",
-    "requirements-core.txt",
-    "requirements-mcp.txt",
-    "requirements-mindpage-optional.txt",
-    "server.py",
-})
-_SOURCE_BLOCKED_PARTS = {
-    ".agents", ".codex", ".git", ".venv", "build", "credentials", "data",
-    "dist", "node_modules", "secrets", "venv",
-}
-_SOURCE_BLOCKED_NAMES = {
-    ".env", ".env.local", "access_token.txt", "credentials.json",
-    "id_rsa", "secrets.json", "token.json",
-}
+_SOURCE_INSPECTION_ROOTS = source_workspace_mod.inspection_roots()
+_SOURCE_PROJECT_FILES = source_workspace_mod.PROJECT_FILES
+_SOURCE_BLOCKED_PARTS = source_workspace_mod.BLOCKED_PARTS
+_SOURCE_BLOCKED_NAMES = source_workspace_mod.BLOCKED_NAMES
 
 CAPABILITY_DENIED = "error: capability unavailable for this turn"
 
@@ -547,6 +518,10 @@ class InnateToolkit:
             len(parts) != 1 or filename not in _SOURCE_PROJECT_FILES
         ):
             return "error: source_inspect project root allows only canonical top-level source files"
+        try:
+            source_workspace_mod.reference_allowed(root, relative_path)
+        except source_workspace_mod.SourceWorkspaceRejected:
+            return "error: source_inspect path is not an approved source file"
         result = source_perception_mod.inspect_local_source(
             root,
             relative_path,
