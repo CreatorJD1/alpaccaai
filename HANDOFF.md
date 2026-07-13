@@ -39,6 +39,21 @@
   a build failure. This is a frontend transaction fix; an end-to-end delayed
   backend soak remains useful before declaring the live latency issue closed.
 
+## Codex Phase 7: Pagefile Broker Preparation (2026-07-13)
+
+- Commit `eeda7a1` adds only a read-only prerequisite assessment for the future
+  pagefile broker. The latest 8K measurement stopped at `host_assessment_high`,
+  so the assessment reports `blocked`; even a structurally complete report only
+  reports `review_required`. No UAC helper, approval consumer, command, or
+  pagefile mutation path exists in this commit.
+- A later isolated broker still needs a completed locally measured `qwen3.5:9b`
+  8K run, explicit one-use `CreatorJD` approval, UAC, fresh host readback, a
+  single +4,096 MiB bounded adjustment, and post-write verification. Do not
+  describe the existing 38,000 MiB allocation as an autonomous Alpecca action.
+- Verification: `python -m pytest -q tests/test_phase7_system_pressure.py
+  tests/test_phase7_pagefile_broker_preparation.py` (`32 passed`) and
+  `npm.cmd run house:build` passed.
+
 ## Codex Resume Checkpoint: Local Model Honesty And Parallel Stage Review
 
 This block is the newest operational handoff. Preserve the later shared-branch
