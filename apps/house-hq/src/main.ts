@@ -1666,6 +1666,8 @@ let alpeccaVoiceAudio: HTMLAudioElement | null = null;
 let alpeccaVoiceObjectUrl = "";
 let alpeccaVoiceLastText = "";
 let alpeccaVoiceRequestSequence = 0;
+let alpeccaVoiceAudioContext: AudioContext | null = null;
+let alpeccaVoicePlaybackUnlocked = false;
 const alpeccaSpokenRepliesStorageKey = "alpeccaHouseSpokenReplies";
 let alpeccaSpokenRepliesEnabled = localStorage.getItem(alpeccaSpokenRepliesStorageKey) !== "off";
 const ALPECCA_PUSH_TO_TALK_MAX_MS = 60_000;
@@ -11472,6 +11474,32 @@ function captureAlpeccaVoiceHeaders(response: Response) {
   updateAlpeccaVoiceReadout();
 }
 
+function unlockAlpeccaVoicePlayback() {
+  if (alpeccaVoicePlaybackUnlocked) return;
+  const AudioContextCtor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextCtor) return;
+  try {
+    alpeccaVoiceAudioContext = alpeccaVoiceAudioContext || new AudioContextCtor();
+    if (alpeccaVoiceAudioContext.state === "suspended") {
+      void alpeccaVoiceAudioContext.resume()
+        .then(() => {
+          alpeccaVoicePlaybackUnlocked = true;
+        })
+        .catch(() => undefined);
+    } else {
+      alpeccaVoicePlaybackUnlocked = true;
+    }
+    const buffer = alpeccaVoiceAudioContext.createBuffer(1, 1, 22050);
+    const source = alpeccaVoiceAudioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(alpeccaVoiceAudioContext.destination);
+    source.start(0);
+  } catch {
+    // Some mobile browsers reject audio unlock outside a direct tap. The next
+    // explicit voice tap will try again.
+  }
+}
+
 async function playAlpeccaVoice(text: string, preview = "") {
   const clean = text.trim();
   const requestKey = `${preview || "current"}:${clean}`;
@@ -11515,13 +11543,23 @@ async function playAlpeccaVoice(text: string, preview = "") {
     }
     alpeccaVoiceObjectUrl = URL.createObjectURL(blob);
     alpeccaVoiceAudio = new Audio(alpeccaVoiceObjectUrl);
+    alpeccaVoiceAudio.setAttribute("playsinline", "true");
     alpeccaVoiceAudio.onplay = () => {
       const previewText = alpeccaVoicePreview && alpeccaVoicePreview !== "current" ? ` / ${alpeccaVoicePreview}` : "";
       showMessage(`Alpecca voice playing${previewText}.`, 2.4);
     };
-    await alpeccaVoiceAudio.play();
+    try {
+      await alpeccaVoiceAudio.play();
+      alpeccaVoicePlaybackUnlocked = true;
+    } catch (error) {
+      alpeccaVoiceLastText = "";
+      alpecca.talkTimer = 0;
+      const reason = error instanceof Error ? error.name || error.message : "playback blocked";
+      appendAlpeccaLog("System", `Voice playback was blocked by this browser (${reason}). Tap Hear voice once, then try again.`);
+      showMessage("Voice playback was blocked by this browser. Tap Hear voice once, then try again.", 5);
+    }
   } catch {
-    originalVoiceUnavailable("server voice request failed; no browser voice substitute was used");
+    originalVoiceUnavailable("server voice request failed or audio playback was blocked");
   }
 }
 
@@ -14531,6 +14569,7 @@ for (const hudEventName of ["pointerdown", "click", "touchstart"]) {
 
 alpeccaChat.addEventListener("submit", (event) => {
   event.preventDefault();
+  unlockAlpeccaVoicePlayback();
   const sourceRef = alpeccaPendingSourceRef;
   alpeccaPendingSourceRef = null;
   alpeccaChatInput.placeholder = "Message Alpecca...";
@@ -14555,6 +14594,7 @@ alpeccaChat.addEventListener("click", (event) => {
   }
   if (target.closest("#alpeccaSpokenReplies")) {
     event.preventDefault();
+    unlockAlpeccaVoicePlayback();
     toggleAlpeccaSpokenReplies();
     return;
   }
@@ -14572,6 +14612,7 @@ alpeccaChat.addEventListener("click", (event) => {
   const hearVoiceButton = target.closest<HTMLButtonElement>("button[data-hear-voice]");
   if (hearVoiceButton) {
     event.preventDefault();
+    unlockAlpeccaVoicePlayback();
     const currentLine = alpeccaChatLine.textContent?.trim() || "";
     const sample = currentLine && currentLine.length > 12
       ? currentLine
@@ -14589,6 +14630,7 @@ alpeccaChat.addEventListener("click", (event) => {
   const voiceButton = target.closest<HTMLButtonElement>("button[data-voice-preview]");
   if (voiceButton?.dataset.voicePreview) {
     event.preventDefault();
+    unlockAlpeccaVoicePlayback();
     const preview = voiceButton.dataset.voicePreview;
     const sampleText: Record<string, string> = {
       current: "This is my current Alpecca voice state, using my F5 reference voice and original identity.",
