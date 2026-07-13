@@ -1455,6 +1455,20 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     vrmLib.VRMUtils.removeUnnecessaryVertices(loaded.scene);
     vrmLib.VRMUtils.combineSkeletons(loaded.scene);
     loaded.scene.traverse((o) => { o.frustumCulled = false; });
+
+    // VRoid exports the mood presets (happy/relaxed/sad/...) with
+    // overrideBlink/overrideMouth = "block": whenever one is held even
+    // partway, three-vrm scales blink/lip output by (1 - weight), so a
+    // relaxed hold of 0.7 crushes a blink to 30% and a happy hold near her
+    // cap erases it entirely -- which reads as "she never blinks". Her face
+    // is a continuous mood readout, not a costume, so the presets must NOT
+    // suppress the involuntary channels. Clear the flags once at load; blink,
+    // lip-sync, and eye look then run independently of mood weight.
+    for (const expression of loaded.expressionManager?.expressions ?? []) {
+      expression.overrideBlink = "none";
+      expression.overrideMouth = "none";
+      expression.overrideLookAt = "none";
+    }
     return loaded;
   }
 
