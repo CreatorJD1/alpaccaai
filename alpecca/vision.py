@@ -36,6 +36,7 @@ from config import (
     VISION_CLOUD_MODEL,
 )
 from alpecca.local_inference import verified_local_ollama_target
+from alpecca.egress_consent import EgressConsentDenied, PerceptionEgressGate
 
 
 # --- The shared eye: one image in, a short description out ------------------
@@ -172,6 +173,75 @@ def describe_image(image_bytes: bytes, prompt: str = _DESCRIBE_PROMPT,
 
     result = describe_image_result(image_bytes, prompt=prompt, ambient=ambient)
     return result.text if result else None
+
+
+# --- Consented remote vision: the ONLY reachable private-provider path -------
+#
+# The generic wrappers above are verified-local only. A remote provider
+# (Ollama-cloud or the ZeroGPU Space) is reachable exclusively through the
+# function below, and only after a PerceptionEgressGate authorizes exactly one
+# creator-approved, byte-bound, single-use egress on an allowlisted route that
+# attests the exact provider, deployment, model, processing location,
+# destination, and HTTPS transport. Configuration alone never reaches here.
+
+# Route "provider" identifiers map to the transport helper that performs the
+# actual outbound call. The helper is resolved by name at call time so tests
+# (and the fail-closed guard tests) that monkeypatch the module-level helpers
+# are honored.
+CONSENTED_REMOTE_PROVIDERS = ("ollama-cloud", "zerogpu")
+
+
+def _remote_transport(provider: str) -> Optional[Callable[[bytes, str], Optional[str]]]:
+    """Resolve the outbound transport for an attested provider, or None."""
+    if provider == "ollama-cloud":
+        return _describe_ollama_cloud
+    if provider == "zerogpu":
+        return _describe_zerogpu
+    return None
+
+
+def describe_image_via_consent(
+    image_bytes: bytes,
+    *,
+    gate: PerceptionEgressGate,
+    route_id: str,
+    operation_id: str,
+    provider: str,
+    prompt: str = _DESCRIBE_PROMPT,
+) -> Optional[VisionDescription]:
+    """Attempt one CONSENTED remote vision description, or return None.
+
+    Fail-closed. The private provider is invoked only after ``gate`` authorizes
+    exactly one bounded, creator-approved egress use bound to *these exact bytes*
+    and *this exact* allowlisted route. Any denial (no consent, creator refusal,
+    binding mismatch, expiry, replay, or an unready ledger) means the provider is
+    NEVER called and this returns None, so the caller falls back to
+    verified-local vision. The returned description reports the route's attested
+    processing location and destination -- it is never relabelled local-only.
+    """
+    transport = _remote_transport(provider)
+    if transport is None:
+        return None
+    if not isinstance(image_bytes, (bytes, bytearray)) or not image_bytes:
+        return None
+    payload = bytes(image_bytes)
+    try:
+        authorization = gate.authorize_attempt(
+            operation_id=operation_id,
+            route_id=route_id,
+            payload=payload,
+        )
+    except EgressConsentDenied:
+        return None
+    text = transport(payload, prompt)
+    if not text:
+        return None
+    return VisionDescription(
+        text=text,
+        backend=f"{authorization.provider}:{authorization.deployment}",
+        processing_location=authorization.processing_location,
+        cloud_egress=authorization.destination_class,
+    )
 
 
 def _self_recognition_prompt() -> str:
