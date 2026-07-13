@@ -3087,17 +3087,27 @@ def issue_local_bootstrap_url(path: str = "/") -> str:
 
 def _cookie_origin_allowed(request: Request, origin: str) -> bool:
     normalized = _normalized_origin(origin)
-    if not normalized:
-        return False
     request_origin = _normalized_origin(
         f"{request.url.scheme}://{request.url.netloc}"
     )
-    if normalized == request_origin:
+    if normalized:
+        if normalized == request_origin:
+            return True
+        return (
+            normalized in _EXPLICIT_CORS_ORIGINS
+            and bool(_allowed_cors_origin(normalized))
+        )
+
+    # Some mobile browsers omit Origin on a normal same-origin form POST.
+    # Referer is accepted only when its origin is the request origin or an
+    # explicitly configured public tunnel origin; arbitrary cross-site forms
+    # remain rejected.
+    referer = _normalized_origin(request.headers.get("referer", ""))
+    if not referer:
+        return False
+    if referer == request_origin:
         return True
-    return (
-        normalized in _EXPLICIT_CORS_ORIGINS
-        and bool(_allowed_cors_origin(normalized))
-    )
+    return referer in _EXPLICIT_CORS_ORIGINS and bool(_allowed_cors_origin(referer))
 
 
 @app.middleware("http")
