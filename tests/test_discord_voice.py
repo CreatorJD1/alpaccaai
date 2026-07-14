@@ -427,7 +427,9 @@ def test_creator_join_command_uses_receive_client_and_starts_listener(monkeypatc
         channel=channel,
         content="<@9001> join voice",
         clean_content="@Alpecca join voice",
-        mentions=[client.user],
+        # Discord may hydrate an equivalent mention object instead of reusing
+        # client.user; command routing must compare the numeric id.
+        mentions=[SimpleNamespace(id=9001)],
         attachments=[],
         reference=None,
         reply=reply,

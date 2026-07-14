@@ -1459,7 +1459,7 @@ def build_client() -> discord.Client:
                 return                                    # anti-flood, every path
 
             addressed = (
-                client.user in message.mentions
+                mentioned
                 or _is_reply_to_me(message, client)
                 or "alpecca" in message.content.lower()
             )

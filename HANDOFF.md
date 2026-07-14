@@ -32,6 +32,12 @@
   reaction directives, or pass. The bridge turns a valid reaction directive into
   one Discord reaction and suppresses malformed directives; this is not a hard
   feedback-consent gate.
+- Live mobile retry exposed one command-routing defect: the bridge computed a
+  correct raw numeric bot mention but the later voice gate rechecked Python
+  object identity, allowing `@Alpecca_ai join voice` to fall through to the
+  model. The gate now reuses the numeric result, and the regression test uses a
+  distinct mention object with the same Discord id. The bridge was restarted
+  from this corrected source and reconnected in `duplex` mode.
 - The persistent F5 worker now suppresses third-party `ref_text`/`gen_text`
   console chatter so synthesized Discord or House text does not enter worker
   logs; content-free worker errors and readiness remain visible.
