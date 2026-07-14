@@ -1,10 +1,11 @@
 # Alpecca — Handoff (updated 2026-07-14)
 
-## Codex Discord Voice Output Enablement (2026-07-14)
+## Codex Discord Duplex Voice Baseline (2026-07-14)
 
 - `ALPECCA_DISCORD_VOICE=1` now enables Discord voice-state intent and the
-  existing claimed-room join/leave commands. `START_HERE.bat` sets this for the
-  normal full-stack launch.
+  existing claimed-room join/leave commands. The new independent
+  `ALPECCA_DISCORD_VOICE_RECEIVE=1` switch enables creator-only receive;
+  `START_HERE.bat` sets both for the normal full-stack launch.
 - While connected, Alpecca speaks reactive, proactive, and the single bounded
   recursive text turn through the backend's local `/tts` route. Playback is
   serialized per guild, has a 16 MiB response cap, a server-aligned 105-second
@@ -12,21 +13,50 @@
   WAV. The join greeting runs asynchronously so a cold voice does not block
   Discord event handling.
 - `requirements-discord.txt` declares the voice extras, DAVE encryption support,
-  and the bundled FFmpeg provider. `scripts/run_discord_bridge.py
-  --voice-readiness` reports only content-free dependency status.
-- This is **output-only**. Discord microphone receive/transcription is not
-  implemented, and join confirmation says so explicitly.
+  bundled FFmpeg provider, pinned `discord-ext-voice-recv` alpha, and local
+  Faster-Whisper. `scripts/run_discord_bridge.py --voice-readiness` reports only
+  content-free dependency status and reports `duplex` only when both directions
+  are ready.
+- Creator-only receive is implemented behind the claimed-room and creator
+  allowlist boundary. Other users are rejected before buffering. Creator PCM is
+  held in RAM, capped at 12 seconds, validated, queued two utterances deep,
+  transcribed off the Discord event loop, and discarded. The transcript enters
+  the same signed guest actor path as Discord text, then the reply is sent in the
+  claimed text room and spoken. Creator speech interrupts current playback.
+- Every accepted/transcribed/dropped/failed transition writes a content-free
+  cognition observation; if that audit is unavailable, transcription/model work
+  fails closed. No audio or transcript is written to bridge logs.
+- Claimed-room participation now carries a soft social guideline around
+  unsolicited evaluative feedback. Alpecca may ask whether feedback is wanted,
+  answer directly when context warrants it, return one of four allowlisted
+  reaction directives, or pass. The bridge turns a valid reaction directive into
+  one Discord reaction and suppresses malformed directives; this is not a hard
+  feedback-consent gate.
 - The persistent F5 worker now suppresses third-party `ref_text`/`gen_text`
   console chatter so synthesized Discord or House text does not enter worker
   logs; content-free worker errors and readiness remain visible.
-- Live smoke: exactly one Discord bridge and one warmed F5 worker are running;
+- Previous output smoke: exactly one Discord bridge and one warmed F5 worker were running;
   the bridge connected to one guild, loaded one claimed room, and reported all
   voice dependencies ready. An authenticated bridge `/tts` probe returned a
   502,828-byte WAV in 5.62 seconds, and its redaction canary was absent from both
   worker logs.
-- Verification: the combined Phase 5/Discord set passed (`96 passed`),
-  `python -m pytest -q tests/test_core.py` passed (`356 passed`), and
+- Verification: the full Discord/Phase 10/initiative selection passed (`305
+  passed`); `python -m pytest -q tests/test_core.py` passed (`356 passed`); and
   `npm.cmd run house:build` passed with only the retained chunk-size advisory.
+  Coverage includes the PCM collector, dependency posture, barge-in, full
+  validate/audit/transcribe/sign/reply cleanup path, audit-unavailable denial,
+  creator join wiring, and soft feedback/reaction behavior.
+- Live smoke: exactly one backend, F5 worker, Discord bridge, and Ollama daemon
+  are listening locally. The bridge connected to one guild, loaded one claimed
+  room, and reported `mode=duplex` with receive dependencies ready. An
+  authenticated `/tts` probe returned a valid 485,420-byte WAV in 7.64 seconds.
+  A real CreatorJD Discord microphone packet/latency soak remains pending and
+  must not be inferred from mocked PCM.
+- `python -m pip check` still reports five pre-existing cross-feature dependency
+  conflicts in cached-path/descript-audiotools/F5/fish-speech/x-transformers.
+  The pinned Discord receive, Faster-Whisper, discord.py, DAVE, and FFmpeg
+  packages are installed at their declared versions; do not treat the global
+  environment as dependency-clean.
 
 ## Codex House Voice, Drive, Source, And Discord Recovery (2026-07-13)
 
@@ -594,11 +624,12 @@ one paced recursive continuation; unclaimed rooms still fail closed. Every
 backend body remains labeled guest. The dedicated actor-identity seal credential
 is separate from creator authorization, bridge service authentication, and the
 bot token; no existing credential was changed or revoked.
-Discord voice output is explicitly enabled by the full launcher. Alpecca can
-join a voice channel from a claimed room and speak those text turns through
-local TTS, but she cannot receive or transcribe voice-channel audio. Retained
-cross-session guest context, persistent cross-process rates, nonce-bound creator
-approvals, inbound audio, and a production external anchor remain unfinished.
+Discord voice output and creator-only local receive are explicitly enabled by
+the full launcher. Alpecca can join from a claimed room, speak text turns through
+local TTS, locally transcribe bounded CreatorJD utterances, and answer through
+the signed guest path. Retained cross-session guest context, persistent
+cross-process rates, nonce-bound creator approvals, a real receive soak, and a
+production external anchor remain unfinished.
 
 ### Phase 11: creator contact and notification outbox - PARTIAL; APP PUSH IMPLEMENTED
 

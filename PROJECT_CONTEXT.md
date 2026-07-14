@@ -71,7 +71,8 @@ retained elsewhere for historical context.
   Server-validated Discord image descriptions can enter only through an
   in-process exact-turn envelope and remain ephemeral. Phase 10 remains partial
   for retained cross-session guest context, persistent cross-process rates,
-  nonce-bound approvals, inbound voice, and a production external anchor.
+  nonce-bound approvals, a completed live Discord receive soak, and a production
+  external anchor.
 - The live Discord bridge accepts creator-allowlisted DMs and explicitly
   creator-claimed guild rooms. A room is added or removed only by CreatorJD's
   raw bot-mention `room on` / `room off` command line. Identical duplicate lines
@@ -82,12 +83,22 @@ retained elsewhere for historical context.
   backend as guest authority. Proactive speech is recent-context-grounded,
   limited to one globally serialized room evaluation per sweep, backs off when
   ignored, yields to new human activity, and cannot start a recursive monologue.
-  Discord voice **output** is opt-in through `ALPECCA_DISCORD_VOICE=1`; the
-  standard `START_HERE.bat` launch enables it. In a claimed room, an addressed
-  `join voice` request joins the creator's voice channel and speaks normal,
-  proactive, and bounded recursive text turns through local TTS. The bridge
-  does not receive or transcribe Discord microphone audio. The current creator
-  account allowlist resolves the Discord username `realcreatorjd` to its numeric id.
+  Discord voice output is opt-in through `ALPECCA_DISCORD_VOICE=1`, and bounded
+  receive is separately gated by `ALPECCA_DISCORD_VOICE_RECEIVE=1`; the standard
+  `START_HERE.bat` launch enables both. In a claimed room, an addressed `join
+  voice` request joins the creator's channel and speaks normal, proactive, and
+  bounded recursive text turns through local TTS. When the receiver dependency
+  is ready, only the allowlisted CreatorJD account is decoded. Each utterance is
+  capped at 12 seconds, held in RAM, validated, transcribed locally with
+  Faster-Whisper, audited without content, and discarded before its signed guest
+  turn is answered in text and voice. Other users are rejected before buffering.
+  The current creator account allowlist resolves the Discord username
+  `realcreatorjd` to its numeric id. A live Discord packet/latency soak remains
+  required before calling the receive path operationally complete.
+  In unaddressed claimed-room participation, offering unsolicited evaluative
+  feedback is a soft social preference: the model may ask whether feedback is
+  wanted, answer directly when context supports it, choose one allowlisted
+  lightweight reaction, or pass. It is not a hard authorization rule.
   A dedicated actor-identity seal credential remains separate from creator,
   bridge-service, and bot credentials.
 - Every generic image, screen, webcam, pose, self-recognition, and Studio vision

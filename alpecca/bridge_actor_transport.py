@@ -84,7 +84,12 @@ def _canonical_discord_id(value: object, field: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class DiscordActorBindings:
-    """Exact raw Discord bindings carried only in dedicated HTTP headers."""
+    """Exact Discord transport bindings carried only in dedicated headers.
+
+    Text events use Discord's message snowflake. A locally segmented voice
+    utterance uses a bridge-minted, unique uint64 event id because Discord does
+    not provide a message id for microphone packets.
+    """
 
     event_id: str
     actor_id: str

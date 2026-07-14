@@ -52,9 +52,10 @@ set ALPECCA_VISION_MODEL=qwen3.5:9b
 REM Discord image ingress remains opt-in and locally processed.
 set ALPECCA_DISCORD_MEDIA=1
 set ALPECCA_DISCORD_CLOUD_VISION=
-REM Discord voice is output-only: she may join a claimed room's voice channel
-REM and speak text replies through local TTS. Incoming voice audio is not read.
+REM Discord voice is creator-only on input: she may join a claimed room, speak
+REM local TTS, transcribe CreatorJD locally, and discard each raw utterance.
 set ALPECCA_DISCORD_VOICE=1
+set ALPECCA_DISCORD_VOICE_RECEIVE=1
 
 REM --- Her voice: free + local. 'auto' blends her F5 clone (high-emotion
 REM moments) with Kokoro af_heart (calm/everyday), each the other's fallback,

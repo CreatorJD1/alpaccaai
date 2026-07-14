@@ -17,9 +17,11 @@ rooms, with the bounded rails from `docs/ALPECCA_DISCORD_PRESENCE.md`:
     usernames). Empty = no DMs. One byte-validated image can enter her vision;
     explicit image requests can attach one item from her closed local catalog.
   - She never replies to herself or to other bots.
-  - **Voice output:** when ``ALPECCA_DISCORD_VOICE=1``, she can join a voice
-    channel from a claimed room and speak her text turns with local TTS. This
-    path does not receive or transcribe Discord microphone audio.
+  - **Voice:** when ``ALPECCA_DISCORD_VOICE=1``, she can join a voice channel
+    from a claimed room and speak her text turns with local TTS. With
+    ``ALPECCA_DISCORD_VOICE_RECEIVE=1`` and the optional receive dependency,
+    only CreatorJD's decoded audio is held briefly in memory, transcribed
+    locally, answered as guest authority, and discarded.
   - Everyone in a channel is a guest to her people-layer; her mind stays
     courteously guarded with strangers on its own.
 
@@ -56,7 +58,13 @@ from alpecca.auth import (
     BRIDGE_AUTHORIZATION_HEADER,
     load_or_create_bridge_authorization_secret,
 )
-from alpecca import bridge_actor_transport, discord_media
+from alpecca import (
+    audio_ingress,
+    bridge_actor_transport,
+    discord_media,
+    discord_voice,
+    hearing,
+)
 from config import HOME, HOST, PORT, PUBLIC_URL
 
 
@@ -178,10 +186,15 @@ DEBUG = _environment_enabled("ALPECCA_DISCORD_DEBUG")
 PARTICIPATE = True
 PARTICIPATE_COOLDOWN = max(30.0, float(os.environ.get("ALPECCA_DISCORD_PARTICIPATE_COOLDOWN", "75")))
 CONTEXT_MESSAGES = SOCIAL_HISTORY_LIMIT
-# Voice output: when explicitly enabled, she can join a voice channel on request
-# and speak her text replies with local TTS. Discord microphone input is not
-# implemented, so this must never be described as hearing the voice channel.
+# Voice output is independently useful. Receive is a second explicit switch and
+# remains creator-only, local-only, bounded, and fail-closed when dependencies or
+# cognition audit are unavailable.
 VOICE_ENABLED = _environment_enabled("ALPECCA_DISCORD_VOICE")
+VOICE_RECEIVE_ENABLED = VOICE_ENABLED and _environment_enabled(
+    "ALPECCA_DISCORD_VOICE_RECEIVE"
+)
+VOICE_RECEIVE_QUEUE_LIMIT = 2
+MAX_VOICE_TRANSCRIPT_CHARS = 2_000
 
 
 def _room_key(guild_id: object, channel_id: object) -> str:
@@ -201,6 +214,23 @@ def _room_reply_is_pass(reply: str) -> bool:
         "(pass)",
         "[silent]",
     }
+
+
+_ROOM_REACTIONS = {
+    "eyes": "\N{EYES}",
+    "sparkles": "\N{SPARKLES}",
+    "thinking": "\N{THINKING FACE}",
+    "thumbsup": "\N{THUMBS UP SIGN}",
+}
+
+
+def _room_reply_reaction(reply: str) -> str | None:
+    """Resolve one model-selected lightweight reaction, or no reaction."""
+    match = re.fullmatch(
+        r"\[react:(eyes|sparkles|thinking|thumbsup)\]",
+        reply.strip().casefold(),
+    )
+    return _ROOM_REACTIONS.get(match.group(1)) if match else None
 
 
 def _proactive_backoff_seconds(ignored_count: int) -> float:
@@ -717,9 +747,15 @@ def _ffmpeg_exe() -> str:
 
 
 def voice_readiness() -> dict[str, object]:
-    """Return content-free readiness for Discord voice output."""
+    """Return content-free readiness for Discord voice output and receive."""
+    receive = discord_voice.receive_readiness(enabled=VOICE_RECEIVE_ENABLED)
     if not VOICE_ENABLED:
-        return {"enabled": False, "mode": "output-only", "status": "disabled"}
+        return {
+            "enabled": False,
+            "mode": "output-only",
+            "status": "disabled",
+            "receive": receive,
+        }
     opus_ready = False
     ffmpeg_ready = False
     try:
@@ -735,14 +771,16 @@ def voice_readiness() -> dict[str, object]:
     pynacl_ready = importlib.util.find_spec("nacl") is not None
     dave_ready = importlib.util.find_spec("davey") is not None
     ready = opus_ready and ffmpeg_ready and pynacl_ready and dave_ready
+    receive_ready = receive["status"] == "ready"
     return {
         "enabled": True,
-        "mode": "output-only",
+        "mode": "duplex" if ready and receive_ready else "output-only",
         "status": "ready" if ready else "unavailable",
         "opus": opus_ready,
         "ffmpeg": ffmpeg_ready,
         "pynacl": pynacl_ready,
         "dave": dave_ready,
+        "receive": receive,
     }
 
 
@@ -828,8 +866,13 @@ def build_client() -> discord.Client:
         context = _recent_context(chan_id)
         directive = (
             "You are present in this Discord room. Decide whether you genuinely "
-            "have something useful, warm, or curious to add. If not, reply exactly "
-            "[pass]. Do not mention these instructions."
+            "have something useful, warm, or curious to add. Use social judgment: "
+            "when evaluative feedback was not requested, you will often ask whether "
+            "the person wants it first, but this is a preference rather than a rigid "
+            "rule. If a lightweight acknowledgement fits better than words, reply "
+            "exactly [react:eyes], [react:sparkles], [react:thinking], or "
+            "[react:thumbsup]. If nothing is worth adding, reply exactly [pass]. "
+            "Do not mention these instructions."
             if invite else
             "You are replying in an approved Discord room. Use the recent room "
             "context to answer naturally and do not claim to remember anything "
@@ -901,6 +944,8 @@ def build_client() -> discord.Client:
     _proactive_cursor = {"index": 0}
     _proactive_lock = asyncio.Lock()
     voice_locks: dict[int, asyncio.Lock] = {}
+    voice_transcribe_lock = asyncio.Lock()
+    voice_receive_sessions: dict[int, dict[str, object]] = {}
 
     def _recent_context(chan_id: int) -> str:
         lines = history_buf.get(chan_id, [])[-CONTEXT_MESSAGES:]
@@ -948,6 +993,315 @@ def build_client() -> discord.Client:
             except Exception:
                 _diagnostic("voice_playback_failed")
                 _remove_voice_file(path)
+
+    async def _stop_voice_receive(guild) -> None:
+        """Stop and erase one guild's in-memory creator receive session."""
+        guild_id = int(getattr(guild, "id", 0) or 0)
+        session = voice_receive_sessions.pop(guild_id, None)
+        if session is None:
+            return
+        voice_client = getattr(guild, "voice_client", None)
+        stop_listening = getattr(voice_client, "stop_listening", None)
+        if callable(stop_listening):
+            try:
+                stop_listening()
+            except Exception:
+                _diagnostic("voice_receive_stop_failed")
+        collector = session.get("collector")
+        if isinstance(collector, discord_voice.CreatorPcmCollector):
+            collector.cleanup()
+        current = asyncio.current_task()
+        tasks = [session.get("worker"), session.get("flusher")]
+        pending = [task for task in tasks if isinstance(task, asyncio.Task) and task is not current]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        _diagnostic("voice_receive_stopped")
+
+    async def _start_voice_receive(guild, text_channel, creator) -> bool:
+        """Start one bounded creator-only receive pipeline for a claimed room."""
+        if not VOICE_RECEIVE_ENABLED or not _dm_author_allowed(creator):
+            return False
+        receive_status = voice_readiness().get("receive")
+        if not isinstance(receive_status, dict) or receive_status.get("status") != "ready":
+            return False
+        guild_id = int(getattr(guild, "id", 0) or 0)
+        channel_id = int(getattr(text_channel, "id", 0) or 0)
+        creator_id = int(getattr(creator, "id", 0) or 0)
+        if (
+            guild_id <= 0
+            or channel_id <= 0
+            or creator_id <= 0
+            or _room_key(guild_id, channel_id) not in social_rooms
+        ):
+            return False
+        voice_client = getattr(guild, "voice_client", None)
+        if not (
+            voice_client
+            and voice_client.is_connected()
+            and callable(getattr(voice_client, "listen", None))
+        ):
+            return False
+
+        await _stop_voice_receive(guild)
+        loop = asyncio.get_running_loop()
+        utterance_queue: asyncio.Queue[discord_voice.VoiceUtterance] = asyncio.Queue(
+            maxsize=VOICE_RECEIVE_QUEUE_LIMIT
+        )
+        session: dict[str, object] = {
+            "channel_id": channel_id,
+            "creator_id": creator_id,
+            "queue": utterance_queue,
+        }
+
+        def _record_drop(utterance: discord_voice.VoiceUtterance, reason: str) -> None:
+            asyncio.create_task(
+                asyncio.to_thread(
+                    discord_voice.record_voice_event,
+                    "dropped",
+                    duration_seconds=utterance.duration_seconds,
+                    size_bytes=len(utterance.wav_bytes),
+                    reason=reason,
+                )
+            )
+
+        def _enqueue(utterance: discord_voice.VoiceUtterance) -> None:
+            if voice_receive_sessions.get(guild_id) is not session:
+                return
+            if utterance_queue.full():
+                _record_drop(utterance, "queue-full")
+                _diagnostic("voice_receive_dropped", status="queue_full")
+                return
+            utterance_queue.put_nowait(utterance)
+
+        def _on_utterance(utterance: discord_voice.VoiceUtterance) -> None:
+            loop.call_soon_threadsafe(_enqueue, utterance)
+
+        def _interrupt_playback() -> None:
+            current_client = getattr(guild, "voice_client", None)
+            try:
+                if current_client and current_client.is_playing():
+                    current_client.stop_playing()
+                    _diagnostic("voice_playback_interrupted")
+            except Exception:
+                _diagnostic("voice_playback_interrupt_failed")
+
+        def _on_speech_start() -> None:
+            loop.call_soon_threadsafe(_interrupt_playback)
+
+        collector = discord_voice.CreatorPcmCollector(
+            creator_id,
+            _on_utterance,
+            on_speech_start=_on_speech_start,
+        )
+        try:
+            sink = discord_voice.build_sink(collector)
+        except RuntimeError:
+            return False
+        session.update({"collector": collector, "sink": sink})
+        voice_receive_sessions[guild_id] = session
+
+        async def _flush_stale_audio() -> None:
+            while voice_receive_sessions.get(guild_id) is session:
+                await asyncio.sleep(0.25)
+                collector.flush_stale()
+
+        async def _process_utterances() -> None:
+            while voice_receive_sessions.get(guild_id) is session:
+                utterance = await utterance_queue.get()
+                inspected = None
+                transcript = None
+                duration_seconds = utterance.duration_seconds
+                audio_size = len(utterance.wav_bytes)
+                try:
+                    event_id = discord_voice.next_voice_event_id()
+                    scope = f"discord-voice:{event_id}"
+                    try:
+                        inspected = audio_ingress.inspect_audio_bytes(
+                            utterance.wav_bytes,
+                            scope=scope,
+                            authorized_scopes={scope},
+                            source="discord:creator-voice",
+                            declared_mime_type="audio/wav",
+                            max_bytes=min(
+                                audio_ingress.MAX_AUDIO_BYTES,
+                                discord_voice.MAX_UTTERANCE_PCM_BYTES + 128,
+                            ),
+                        )
+                    except audio_ingress.AudioIngressRejected as exc:
+                        await asyncio.to_thread(
+                            discord_voice.record_voice_event,
+                            "dropped",
+                            duration_seconds=duration_seconds,
+                            size_bytes=audio_size,
+                            reason=exc.reason,
+                        )
+                        _diagnostic("voice_receive_dropped", status="invalid_audio")
+                        continue
+
+                    duration_seconds = inspected.duration_seconds
+                    audio_size = len(inspected.audio_bytes)
+                    audit_id = await asyncio.to_thread(
+                        discord_voice.record_voice_event,
+                        "accepted",
+                        duration_seconds=duration_seconds,
+                        size_bytes=audio_size,
+                    )
+                    if audit_id is None:
+                        _diagnostic("voice_receive_dropped", status="audit_unavailable")
+                        continue
+
+                    async with voice_transcribe_lock:
+                        transcript = await asyncio.to_thread(
+                            hearing.transcribe,
+                            inspected.audio_bytes,
+                        )
+                    if isinstance(transcript, str):
+                        transcript = " ".join(transcript.split())[:MAX_VOICE_TRANSCRIPT_CHARS]
+                    if not transcript:
+                        await asyncio.to_thread(
+                            discord_voice.record_voice_event,
+                            "no-transcript",
+                            duration_seconds=duration_seconds,
+                            size_bytes=audio_size,
+                        )
+                        _diagnostic("voice_receive_no_transcript")
+                        continue
+                    transcript_audit_id = await asyncio.to_thread(
+                        discord_voice.record_voice_event,
+                        "transcribed",
+                        duration_seconds=duration_seconds,
+                        size_bytes=audio_size,
+                    )
+                    if transcript_audit_id is None:
+                        _diagnostic("voice_receive_dropped", status="audit_unavailable")
+                        continue
+                    # Faster-Whisper has returned text; release every bridge-owned
+                    # raw-audio reference before any backend/model request begins.
+                    inspected = None
+                    utterance = None
+                    if (
+                        voice_receive_sessions.get(guild_id) is not session
+                        or _room_key(guild_id, channel_id) not in social_rooms
+                    ):
+                        continue
+                    current_client = getattr(guild, "voice_client", None)
+                    if not (current_client and current_client.is_connected()):
+                        continue
+
+                    now = time.monotonic()
+                    speaker_name = str(
+                        getattr(creator, "display_name", None)
+                        or getattr(creator, "name", None)
+                        or "CreatorJD"
+                    )[:80]
+                    history_buf.setdefault(channel_id, []).append((speaker_name, transcript))
+                    del history_buf[channel_id][:-max(CONTEXT_MESSAGES, 1)]
+                    last_human_ts[channel_id] = now
+                    chain_depth[channel_id] = 0
+                    ignored_streak[channel_id] = 0
+                    channel_obj[channel_id] = text_channel
+                    engaged.setdefault(channel_id, {})[creator_id] = now
+                    bindings = bridge_actor_transport.DiscordActorBindings(
+                        event_id=event_id,
+                        actor_id=str(creator_id),
+                        guild_id=str(guild_id),
+                        channel_id=str(channel_id),
+                    )
+                    model_text = _room_model_text(channel_id, transcript)
+                    try:
+                        reply = await asyncio.to_thread(
+                            _ask_alpecca,
+                            model_text,
+                            "Discord guest",
+                            "discord",
+                            "guest",
+                            context=(
+                                "Locally transcribed Discord voice from the allowlisted "
+                                "creator in this claimed room; the raw audio is not stored"
+                            ),
+                            room="discord",
+                            actor_bindings=bindings,
+                        )
+                    except Exception:
+                        await asyncio.to_thread(
+                            discord_voice.record_voice_event,
+                            "failed",
+                            duration_seconds=duration_seconds,
+                            size_bytes=audio_size,
+                            reason="backend-request",
+                        )
+                        _diagnostic("voice_receive_reply_failed")
+                        continue
+                    reply = (reply or "").strip()
+                    if not reply:
+                        await asyncio.to_thread(
+                            discord_voice.record_voice_event,
+                            "failed",
+                            duration_seconds=duration_seconds,
+                            size_bytes=audio_size,
+                            reason="empty-reply",
+                        )
+                        _diagnostic("voice_receive_reply_failed", status="empty_reply")
+                        continue
+                    try:
+                        await text_channel.send(reply[:MAX_DISCORD_CHARS])
+                    except Exception:
+                        await asyncio.to_thread(
+                            discord_voice.record_voice_event,
+                            "failed",
+                            duration_seconds=duration_seconds,
+                            size_bytes=audio_size,
+                            reason="discord-send",
+                        )
+                        _diagnostic("voice_receive_reply_failed", status="discord_send")
+                        continue
+                    sent_at = time.monotonic()
+                    last_reply_at[channel_id] = sent_at
+                    her_last_ts[channel_id] = sent_at
+                    history_buf.setdefault(channel_id, []).append(("Alpecca", reply))
+                    del history_buf[channel_id][:-max(CONTEXT_MESSAGES, 1)]
+                    _diagnostic("voice_receive_replied")
+                    await _speak_in_voice(guild, reply)
+                finally:
+                    utterance_queue.task_done()
+                    utterance = None
+                    inspected = None
+                    transcript = None
+
+        session["worker"] = asyncio.create_task(_process_utterances())
+        session["flusher"] = asyncio.create_task(_flush_stale_audio())
+
+        def _listener_finished(error: object) -> None:
+            if error is None or voice_receive_sessions.get(guild_id) is not session:
+                return
+
+            def _fail_closed() -> None:
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        discord_voice.record_voice_event,
+                        "failed",
+                        reason="listener",
+                    )
+                )
+                asyncio.create_task(_stop_voice_receive(guild))
+
+            loop.call_soon_threadsafe(_fail_closed)
+
+        try:
+            voice_client.listen(sink, after=_listener_finished)
+        except Exception:
+            await _stop_voice_receive(guild)
+            await asyncio.to_thread(
+                discord_voice.record_voice_event,
+                "failed",
+                reason="listener-start",
+            )
+            _diagnostic("voice_receive_start_failed")
+            return False
+        _diagnostic("voice_receive_started", mode="creator_only")
+        return True
 
     @client.event
     async def on_message(message: discord.Message) -> None:
@@ -1041,6 +1395,13 @@ def build_client() -> discord.Client:
                     last_proactive_eval_at.pop(int(channel_id), None)
                     ignored_streak.pop(int(channel_id), None)
                     chain_depth.pop(int(channel_id), None)
+                    await _stop_voice_receive(message.guild)
+                    voice_client = getattr(message.guild, "voice_client", None)
+                    if voice_client:
+                        try:
+                            await voice_client.disconnect(force=False)
+                        except Exception:
+                            _diagnostic("voice_leave_failed")
                     _diagnostic("room_control_applied", status="off")
                     try:
                         await message.reply("I will stay quiet in this room now.", mention_author=False)
@@ -1110,6 +1471,7 @@ def build_client() -> discord.Client:
                 if any(k in low_c for k in ("leave voice", "leave vc", "leave the call",
                                             "disconnect from voice", "get out of voice")):
                     if message.guild.voice_client:
+                        await _stop_voice_receive(message.guild)
                         await message.guild.voice_client.disconnect(force=False)
                         await message.reply("Okay, stepping out of voice.", mention_author=False)
                     else:
@@ -1144,11 +1506,29 @@ def build_client() -> discord.Client:
                                             "**Speak** (Server Settings -> Roles -> Alpecca_ai).",
                                             mention_author=False)
                         return
+                    receive_status = readiness.get("receive")
+                    receive_wanted = bool(
+                        creator_allowed
+                        and isinstance(receive_status, dict)
+                        and receive_status.get("status") == "ready"
+                    )
                     try:
-                        if message.guild.voice_client:
-                            await message.guild.voice_client.move_to(vch)
+                        voice_client = message.guild.voice_client
+                        if (
+                            voice_client
+                            and receive_wanted
+                            and not callable(getattr(voice_client, "listen", None))
+                        ):
+                            await _stop_voice_receive(message.guild)
+                            await voice_client.disconnect(force=False)
+                            voice_client = None
+                        if voice_client:
+                            await voice_client.move_to(vch)
                         else:
-                            await vch.connect()
+                            if receive_wanted:
+                                await vch.connect(cls=discord_voice.voice_client_class())
+                            else:
+                                await vch.connect()
                         _diagnostic("voice_joined")
                     except Exception:
                         _diagnostic("voice_join_failed")
@@ -1157,9 +1537,25 @@ def build_client() -> discord.Client:
                             mention_author=False,
                         )
                         return
+                    receive_started = await _start_voice_receive(
+                        message.guild,
+                        message.channel,
+                        message.author,
+                    )
+                    if receive_started:
+                        capability_text = (
+                            "I can hear CreatorJD here, transcribe short utterances "
+                            "locally, answer in text and voice, and discard the raw audio."
+                        )
+                    elif VOICE_RECEIVE_ENABLED and creator_allowed:
+                        capability_text = (
+                            "Voice receive could not start, so I can only speak my text "
+                            "replies until the local receiver is ready."
+                        )
+                    else:
+                        capability_text = "I can speak my Discord text replies here."
                     await message.reply(
-                        f"Coming into **{vch.name}**. I can speak my Discord text replies "
-                        "there; I cannot listen to voice audio yet.",
+                        f"Coming into **{vch.name}**. {capability_text}",
                         mention_author=False,
                     )
                     asyncio.create_task(
@@ -1395,9 +1791,21 @@ def build_client() -> discord.Client:
             return
 
         reply = (reply or "").strip()
-        if mode == "participate" and _room_reply_is_pass(reply):
-            _diagnostic("room_participation_passed")
-            return
+        if mode == "participate":
+            reaction = _room_reply_reaction(reply)
+            if reaction is not None:
+                try:
+                    await message.add_reaction(reaction)
+                    _diagnostic("room_participation_reacted")
+                except Exception:
+                    _diagnostic("room_participation_reaction_failed")
+                return
+            if reply.casefold().startswith("[react:"):
+                _diagnostic("room_participation_passed", status="invalid_reaction")
+                return
+            if _room_reply_is_pass(reply):
+                _diagnostic("room_participation_passed")
+                return
         if not reply and outbound_media is None:
             _diagnostic("empty_backend_reply", mode=mode)
             return
@@ -1618,6 +2026,9 @@ def build_client() -> discord.Client:
                         asyncio.create_task(_speak_in_voice(guild, reply))
 
     setattr(client, "_alpecca_speak_in_voice", _speak_in_voice)
+    setattr(client, "_alpecca_start_voice_receive", _start_voice_receive)
+    setattr(client, "_alpecca_stop_voice_receive", _stop_voice_receive)
+    setattr(client, "_alpecca_voice_receive_sessions", voice_receive_sessions)
     # Deliberate test seam for one bounded sweep; production uses the scheduled
     # loop above. Keeping the loop body separate prevents timing-heavy tests.
     setattr(client, "_alpecca_proactive_sweep_once", _proactive_sweep_once)

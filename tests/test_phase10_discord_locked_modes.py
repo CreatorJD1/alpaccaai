@@ -90,9 +90,13 @@ class _Message:
         self.attachments = list(attachments or [])
         self.channel = _Channel()
         self.replies: list[tuple[str, dict[str, object]]] = []
+        self.reactions: list[str] = []
 
     async def reply(self, content: str, **kwargs: object) -> None:
         self.replies.append((content, kwargs))
+
+    async def add_reaction(self, reaction: str) -> None:
+        self.reactions.append(reaction)
 
 
 def _client(monkeypatch: pytest.MonkeyPatch):
@@ -360,6 +364,46 @@ def test_creator_mention_claims_a_discord_room(monkeypatch, tmp_path):
     stored = json.loads((tmp_path / "rooms.json").read_text(encoding="utf-8"))
     assert stored == {"777:3001": {"channel_id": "3001", "guild_id": "777"}}
     assert message.replies and "present in this room" in message.replies[0][0]
+
+
+def test_claimed_room_participation_can_choose_a_lightweight_reaction(monkeypatch):
+    room = {"guild_id": "777", "channel_id": "3001"}
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    monkeypatch.setattr(discord_bridge, "PARTICIPATE", True)
+    prompts: list[str] = []
+
+    def ask(text: str, *_args: object, **_kwargs: object) -> str:
+        prompts.append(text)
+        return "[react:eyes]"
+
+    monkeypatch.setattr(discord_bridge, "_ask_alpecca", ask)
+    monkeypatch.setattr(
+        discord_bridge.discord_media,
+        "resolve_outbound_media",
+        lambda _text: None,
+    )
+    client = _client(monkeypatch)
+    message = _Message(content="I finally fixed the animation issue.")
+    message.guild = SimpleNamespace(
+        id=777,
+        voice_client=None,
+        me=SimpleNamespace(display_name="Alpecca"),
+    )
+    message.clean_content = message.content
+    message.mentions = []
+    message.reference = None
+
+    asyncio.run(client.on_message(message))
+
+    assert message.reactions == ["\N{EYES}"]
+    assert message.replies == []
+    assert prompts and "preference rather than a rigid rule" in prompts[0]
+    assert "[react:eyes]" in prompts[0]
+
+
+def test_unknown_room_reaction_directive_is_not_posted_as_text():
+    assert discord_bridge._room_reply_reaction("[react:party]") is None
+    assert discord_bridge._room_reply_reaction("some text [react:eyes]") is None
 
 
 def test_real_discord_raw_mention_claims_room_without_clean_content_or_object_identity(

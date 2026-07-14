@@ -124,11 +124,13 @@ default app allowlist. Plain `python server.py` stays the private, senses-off pa
 
 **Discord presence.** Install `requirements-discord.txt` and configure the bot
 token in the gitignored Discord secret file before using the full launcher.
-`START_HERE.bat` enables output-only Discord voice: in a creator-claimed room,
-Alpecca can join a voice channel and speak her text replies through local TTS.
-She does not yet receive or transcribe Discord voice-channel audio. Run
-`python scripts/run_discord_bridge.py --voice-readiness` for a secret-free
-dependency check.
+`START_HERE.bat` enables bounded Discord duplex voice in a creator-claimed room.
+Alpecca speaks replies through local TTS and receives only the allowlisted
+CreatorJD account. Decoded PCM stays in RAM for at most 12 seconds, is validated
+and transcribed with local Faster-Whisper, then is discarded; other users are
+filtered before buffering. Run `python scripts/run_discord_bridge.py
+--voice-readiness` for a secret-free dependency check. A `duplex` result means
+both output and creator-only receive dependencies are ready.
 
 **Reach her from your phone.** She's local-only by default. Use
 `python scripts/share.py --tunnel` (or another HTTPS reverse proxy) for remote

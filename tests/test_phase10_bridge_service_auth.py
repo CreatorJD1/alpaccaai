@@ -333,7 +333,10 @@ def test_image_bridge_uses_service_header_and_loopback_transport(monkeypatch) ->
         calls.append(request)
         if request.full_url.endswith("/actor-envelope"):
             return FakeResponse({"envelope": "{}"})
-        return FakeResponse({"reply": "I can see it."})
+        return FakeResponse({
+            "reply": "I can see it.",
+            "perception": {"status": "described"},
+        })
 
     monkeypatch.setattr(discord_bridge, "_open_backend_request", fake_open_backend)
     monkeypatch.setattr(discord_bridge, "BACKEND_URL", "https://example.invalid")
