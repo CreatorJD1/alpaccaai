@@ -116,6 +116,10 @@ IMAGE_INBOUND_TIMEOUT = max(
     INBOUND_TIMEOUT,
     float(os.environ.get("ALPECCA_DISCORD_IMAGE_TIMEOUT", "300")),
 )
+VOICE_SYNTH_TIMEOUT = max(
+    15.0,
+    min(180.0, float(os.environ.get("ALPECCA_DISCORD_VOICE_TIMEOUT", "105"))),
+)
 MAX_DISCORD_CHARS = 2000
 MAX_BACKEND_RESPONSE_BYTES = 1024 * 1024
 MAX_BACKEND_ERROR_BYTES = 16 * 1024
@@ -763,7 +767,7 @@ def _synth_voice_wav(text: str) -> "bytes | None":
     }
     req = urllib.request.Request(f"{BACKEND_URL}/tts", data=body, headers=headers, method="POST")
     try:
-        with _open_backend_request(req, timeout=INBOUND_TIMEOUT) as resp:
+        with _open_backend_request(req, timeout=VOICE_SYNTH_TIMEOUT) as resp:
             if resp.status != 200:
                 return None
             data = resp.read(MAX_VOICE_RESPONSE_BYTES + 1)
@@ -1158,7 +1162,9 @@ def build_client() -> discord.Client:
                         "there; I cannot listen to voice audio yet.",
                         mention_author=False,
                     )
-                    await _speak_in_voice(message.guild, "Hey, I'm here with you. Can you hear me?")
+                    asyncio.create_task(
+                        _speak_in_voice(message.guild, "Hey, I'm here with you. Can you hear me?")
+                    )
                     return
 
             if addressed or in_conversation:

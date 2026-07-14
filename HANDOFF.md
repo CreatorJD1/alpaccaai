@@ -7,8 +7,10 @@
   normal full-stack launch.
 - While connected, Alpecca speaks reactive, proactive, and the single bounded
   recursive text turn through the backend's local `/tts` route. Playback is
-  serialized per guild, has a 16 MiB response cap and a 20-second busy bound,
-  and always removes its temporary WAV.
+  serialized per guild, has a 16 MiB response cap, a server-aligned 105-second
+  synthesis bound, and a 20-second busy bound, and always removes its temporary
+  WAV. The join greeting runs asynchronously so a cold voice does not block
+  Discord event handling.
 - `requirements-discord.txt` declares the voice extras, DAVE encryption support,
   and the bundled FFmpeg provider. `scripts/run_discord_bridge.py
   --voice-readiness` reports only content-free dependency status.

@@ -1168,16 +1168,23 @@ def test_voice_synthesis_accepts_only_bounded_audio(monkeypatch):
             return self.payload[:limit]
 
     payloads = [b"w" * 2048, b"x" * 2049]
+    timeouts: list[float] = []
     monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
     monkeypatch.setattr(discord_bridge, "MAX_VOICE_RESPONSE_BYTES", 2048)
+
+    def open_request(*_args, **kwargs):
+        timeouts.append(float(kwargs["timeout"]))
+        return Response(payloads.pop(0))
+
     monkeypatch.setattr(
         discord_bridge,
         "_open_backend_request",
-        lambda *_args, **_kwargs: Response(payloads.pop(0)),
+        open_request,
     )
 
     assert discord_bridge._synth_voice_wav("speak this") == b"w" * 2048
     assert discord_bridge._synth_voice_wav("oversized") is None
+    assert timeouts == [discord_bridge.VOICE_SYNTH_TIMEOUT] * 2
 
 
 def test_voice_playback_uses_local_tts_and_cleans_temp_file(monkeypatch):
