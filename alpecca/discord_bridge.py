@@ -20,8 +20,9 @@ rooms, with the bounded rails from `docs/ALPECCA_DISCORD_PRESENCE.md`:
   - **Voice:** when ``ALPECCA_DISCORD_VOICE=1``, she can join a voice channel
     from a claimed room and speak her text turns with local TTS. With
     ``ALPECCA_DISCORD_VOICE_RECEIVE=1`` and the optional receive dependency,
-    only CreatorJD's decoded audio is held briefly in memory, transcribed
-    locally, answered as guest authority, and discarded.
+    human participants' decoded audio is held briefly in memory, transcribed
+    locally, answered as guest authority, and discarded. Bounded transcripts
+    are retained only in the AES-GCM encrypted voice-memory store.
   - Everyone in a channel is a guest to her people-layer; her mind stays
     courteously guarded with strangers on its own.
 
@@ -63,6 +64,7 @@ from alpecca import (
     bridge_actor_transport,
     discord_media,
     discord_voice,
+    discord_voice_memory,
     hearing,
 )
 from config import HOME, HOST, PORT, PUBLIC_URL
@@ -191,15 +193,56 @@ DEBUG = _environment_enabled("ALPECCA_DISCORD_DEBUG")
 PARTICIPATE = True
 PARTICIPATE_COOLDOWN = max(30.0, float(os.environ.get("ALPECCA_DISCORD_PARTICIPATE_COOLDOWN", "75")))
 CONTEXT_MESSAGES = SOCIAL_HISTORY_LIMIT
-# Voice output is independently useful. Receive is a second explicit switch and
-# remains creator-only, local-only, bounded, and fail-closed when dependencies or
-# cognition audit are unavailable.
+# Voice output is independently useful. Receive is a second explicit switch,
+# starts only on a creator command in a claimed room, and then hears bounded
+# human-participant utterances. Audio processing stays local and fail-closed.
 VOICE_ENABLED = _environment_enabled("ALPECCA_DISCORD_VOICE")
 VOICE_RECEIVE_ENABLED = VOICE_ENABLED and _environment_enabled(
     "ALPECCA_DISCORD_VOICE_RECEIVE"
 )
+VOICE_MEMORY_ENABLED = VOICE_RECEIVE_ENABLED and os.environ.get(
+    "ALPECCA_DISCORD_VOICE_MEMORY", "1"
+).strip().lower() not in {"", "0", "false", "no", "off"}
 VOICE_RECEIVE_QUEUE_LIMIT = 2
 MAX_VOICE_TRANSCRIPT_CHARS = 2_000
+VOICE_MEMORY_MAX_RECORDS = max(
+    32,
+    min(
+        100_000,
+        int(os.environ.get("ALPECCA_DISCORD_VOICE_MEMORY_LIMIT", "10000")),
+    ),
+)
+
+_voice_memory_lock = threading.Lock()
+_voice_memory_instance: discord_voice_memory.EncryptedVoiceMemoryStore | None = None
+
+
+def _voice_memory_store() -> discord_voice_memory.EncryptedVoiceMemoryStore | None:
+    global _voice_memory_instance
+    if not VOICE_MEMORY_ENABLED:
+        return None
+    with _voice_memory_lock:
+        if _voice_memory_instance is None:
+            _voice_memory_instance = discord_voice_memory.EncryptedVoiceMemoryStore(
+                HOME / "discord_voice_memory.db",
+                secret=_BRIDGE_AUTHORIZATION_SECRET,
+                max_records=VOICE_MEMORY_MAX_RECORDS,
+            )
+        return _voice_memory_instance
+
+
+def _recent_voice_context(guild_id: int, channel_id: int) -> list[tuple[str, str]]:
+    store = _voice_memory_store()
+    if store is None:
+        return []
+    return [
+        (f"[voice] {memory.speaker_name}", memory.transcript)
+        for memory in store.recent(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            limit=CONTEXT_MESSAGES,
+        )
+    ]
 
 
 def _room_key(guild_id: object, channel_id: object) -> str:
@@ -209,6 +252,57 @@ def _room_key(guild_id: object, channel_id: object) -> str:
 def _room_scope(guild_id: object, channel_id: object) -> str:
     material = f"alpecca-discord-room-v1:{_room_key(guild_id, channel_id)}"
     return hashlib.sha256(material.encode("ascii")).hexdigest()
+
+
+_VOICE_DENIAL_RE = re.compile(
+    r"(?:can(?:not|'t)\s+(?:join|enter|see you in|hear).*voice|"
+    r"not\s+in\s+(?:a\s+)?voice\s+channel|"
+    r"do(?:n't| not)\s+have\s+the\s+ability\s+to\s+(?:enter|join).*voice|"
+    r"text[- ]based\s+ai)",
+    re.IGNORECASE,
+)
+
+
+def _voice_live_context(
+    *,
+    connected: bool,
+    channel_name: str,
+    listener_active: bool,
+) -> str:
+    if not connected:
+        return "Authoritative live Discord state: Alpecca is not connected to voice."
+    name = " ".join(str(channel_name or "the current voice channel").split())[:80]
+    hearing = (
+        "Her inbound listener is active for human participants; she can hear "
+        "short utterances after local transcription."
+        if listener_active
+        else "Her inbound listener is not active, so she can speak but cannot hear audio."
+    )
+    return (
+        "Authoritative live Discord state: Alpecca is currently connected to "
+        f"voice channel {name}. {hearing} Do not contradict these facts."
+    )
+
+
+def _enforce_voice_live_state(
+    reply: str,
+    *,
+    connected: bool,
+    channel_name: str,
+    listener_active: bool,
+) -> str:
+    if not connected or _VOICE_DENIAL_RE.search(reply or "") is None:
+        return reply
+    name = " ".join(str(channel_name or "this voice channel").split())[:80]
+    if listener_active:
+        return (
+            f"I'm in **{name}** with you now, and my voice listener is active. "
+            "I can hear short utterances, transcribe them locally, and answer in text and voice."
+        )
+    return (
+        f"I'm in **{name}** now. I can speak here, but my inbound voice "
+        "listener is not active at this moment."
+    )
 
 
 def _room_reply_is_pass(reply: str) -> bool:
@@ -628,12 +722,16 @@ def _ask_alpecca(
     if channel not in {"discord", "discord-dm"}:
         raise ValueError("Discord channel label is not allowed")
 
+    trusted_context = (
+        f"{bridge_actor_transport.TRUSTED_CONTEXT_PREFIX}{context}"
+        if context else ""
+    )
     body_obj = {
         "text": text,
         "sender": "Discord guest",
         "channel": channel,
-        "situation": context,
-        "context": context,
+        "situation": trusted_context,
+        "context": trusted_context,
         "room": room,
         "speaker": "guest",
     }
@@ -754,6 +852,19 @@ def _ffmpeg_exe() -> str:
 def voice_readiness() -> dict[str, object]:
     """Return content-free readiness for Discord voice output and receive."""
     receive = discord_voice.receive_readiness(enabled=VOICE_RECEIVE_ENABLED)
+    if VOICE_MEMORY_ENABLED:
+        try:
+            store = _voice_memory_store()
+            memory_status = store.status() if store is not None else {"ready": False}
+        except Exception:
+            memory_status = {
+                "ready": False,
+                "encryption": "AES-256-GCM",
+                "raw_audio_persistence": "none",
+            }
+        receive = {**receive, "encrypted_memory": memory_status}
+        if not memory_status.get("ready"):
+            receive["status"] = "unavailable"
     if not VOICE_ENABLED:
         return {
             "enabled": False,
@@ -848,20 +959,27 @@ def build_client() -> discord.Client:
         channel_obj[channel_id] = channel
         last_proactive_eval_at.setdefault(channel_id, observed)
         history = getattr(channel, "history", None)
-        if not callable(history):
-            return
         lines: list[tuple[str, str]] = []
+        if callable(history):
+            try:
+                async for item in history(limit=SOCIAL_HISTORY_LIMIT, oldest_first=True):
+                    author = getattr(item, "author", None)
+                    if author is None or getattr(author, "bot", False):
+                        continue
+                    content = str(getattr(item, "clean_content", "") or "").strip()
+                    if content:
+                        lines.append((str(getattr(author, "display_name", "Someone")), content[:700]))
+            except Exception:
+                _diagnostic("room_history_unavailable")
         try:
-            async for item in history(limit=SOCIAL_HISTORY_LIMIT, oldest_first=True):
-                author = getattr(item, "author", None)
-                if author is None or getattr(author, "bot", False):
-                    continue
-                content = str(getattr(item, "clean_content", "") or "").strip()
-                if content:
-                    lines.append((str(getattr(author, "display_name", "Someone")), content[:700]))
+            voice_lines = await asyncio.to_thread(
+                _recent_voice_context,
+                int(room["guild_id"]),
+                channel_id,
+            )
+            lines.extend(voice_lines)
         except Exception:
-            _diagnostic("room_history_unavailable")
-            return
+            _diagnostic("voice_memory_unavailable")
         if lines:
             history_buf[channel_id] = lines[-CONTEXT_MESSAGES:]
             last_human_ts[channel_id] = observed
@@ -956,6 +1074,40 @@ def build_client() -> discord.Client:
         lines = history_buf.get(chan_id, [])[-CONTEXT_MESSAGES:]
         return "\n".join(f"{a}: {c}" for a, c in lines if c)
 
+    def _voice_presence_context(guild: object) -> str:
+        guild_id = int(getattr(guild, "id", 0) or 0)
+        voice_client = getattr(guild, "voice_client", None)
+        connected = bool(
+            voice_client
+            and callable(getattr(voice_client, "is_connected", None))
+            and voice_client.is_connected()
+        )
+        channel = getattr(voice_client, "channel", None)
+        return _voice_live_context(
+            connected=connected,
+            channel_name=str(
+                getattr(channel, "name", None) or "the current voice channel"
+            ),
+            listener_active=guild_id in voice_receive_sessions,
+        )
+
+    def _ground_voice_presence_reply(reply: str, guild: object) -> str:
+        voice_client = getattr(guild, "voice_client", None)
+        connected = bool(
+            voice_client
+            and callable(getattr(voice_client, "is_connected", None))
+            and voice_client.is_connected()
+        )
+        channel = getattr(voice_client, "channel", None)
+        return _enforce_voice_live_state(
+            reply,
+            connected=connected,
+            channel_name=str(getattr(channel, "name", None) or "this voice channel"),
+            listener_active=(
+                int(getattr(guild, "id", 0) or 0) in voice_receive_sessions
+            ),
+        )
+
     def _ensure_room_sweepers() -> None:
         if RECURSIVE_ENABLED and not _sweepers_started["recursive"]:
             _sweepers_started["recursive"] = True
@@ -1013,7 +1165,10 @@ def build_client() -> discord.Client:
             except Exception:
                 _diagnostic("voice_receive_stop_failed")
         collector = session.get("collector")
-        if isinstance(collector, discord_voice.CreatorPcmCollector):
+        if isinstance(
+            collector,
+            (discord_voice.CreatorPcmCollector, discord_voice.RoomPcmCollector),
+        ):
             collector.cleanup()
         current = asyncio.current_task()
         tasks = [session.get("worker"), session.get("flusher")]
@@ -1025,7 +1180,7 @@ def build_client() -> discord.Client:
         _diagnostic("voice_receive_stopped")
 
     async def _start_voice_receive(guild, text_channel, creator) -> bool:
-        """Start one bounded creator-only receive pipeline for a claimed room."""
+        """Creator-started bounded receive for humans in one claimed room."""
         if not VOICE_RECEIVE_ENABLED or not _dm_author_allowed(creator):
             return False
         receive_status = voice_readiness().get("receive")
@@ -1051,7 +1206,7 @@ def build_client() -> discord.Client:
 
         await _stop_voice_receive(guild)
         loop = asyncio.get_running_loop()
-        utterance_queue: asyncio.Queue[discord_voice.VoiceUtterance] = asyncio.Queue(
+        utterance_queue: asyncio.Queue[discord_voice.SpeakerVoiceUtterance] = asyncio.Queue(
             maxsize=VOICE_RECEIVE_QUEUE_LIMIT
         )
         session: dict[str, object] = {
@@ -1060,7 +1215,10 @@ def build_client() -> discord.Client:
             "queue": utterance_queue,
         }
 
-        def _record_drop(utterance: discord_voice.VoiceUtterance, reason: str) -> None:
+        def _record_drop(
+            utterance: discord_voice.SpeakerVoiceUtterance,
+            reason: str,
+        ) -> None:
             asyncio.create_task(
                 asyncio.to_thread(
                     discord_voice.record_voice_event,
@@ -1071,7 +1229,7 @@ def build_client() -> discord.Client:
                 )
             )
 
-        def _enqueue(utterance: discord_voice.VoiceUtterance) -> None:
+        def _enqueue(utterance: discord_voice.SpeakerVoiceUtterance) -> None:
             if voice_receive_sessions.get(guild_id) is not session:
                 return
             if utterance_queue.full():
@@ -1080,7 +1238,7 @@ def build_client() -> discord.Client:
                 return
             utterance_queue.put_nowait(utterance)
 
-        def _on_utterance(utterance: discord_voice.VoiceUtterance) -> None:
+        def _on_utterance(utterance: discord_voice.SpeakerVoiceUtterance) -> None:
             loop.call_soon_threadsafe(_enqueue, utterance)
 
         def _interrupt_playback() -> None:
@@ -1095,8 +1253,7 @@ def build_client() -> discord.Client:
         def _on_speech_start() -> None:
             loop.call_soon_threadsafe(_interrupt_playback)
 
-        collector = discord_voice.CreatorPcmCollector(
-            creator_id,
+        collector = discord_voice.RoomPcmCollector(
             _on_utterance,
             on_speech_start=_on_speech_start,
         )
@@ -1119,6 +1276,8 @@ def build_client() -> discord.Client:
                 transcript = None
                 duration_seconds = utterance.duration_seconds
                 audio_size = len(utterance.wav_bytes)
+                speaker_id = utterance.user_id
+                speaker_name = utterance.speaker_name
                 try:
                     event_id = discord_voice.next_voice_event_id()
                     scope = f"discord-voice:{event_id}"
@@ -1127,7 +1286,7 @@ def build_client() -> discord.Client:
                             utterance.wav_bytes,
                             scope=scope,
                             authorized_scopes={scope},
-                            source="discord:creator-voice",
+                            source="discord:claimed-room-voice",
                             declared_mime_type="audio/wav",
                             max_bytes=min(
                                 audio_ingress.MAX_AUDIO_BYTES,
@@ -1182,6 +1341,44 @@ def build_client() -> discord.Client:
                     if transcript_audit_id is None:
                         _diagnostic("voice_receive_dropped", status="audit_unavailable")
                         continue
+                    if VOICE_MEMORY_ENABLED:
+                        try:
+                            store = _voice_memory_store()
+                            if store is None:
+                                raise RuntimeError("encrypted voice memory is unavailable")
+                            await asyncio.to_thread(
+                                store.remember,
+                                transcript,
+                                guild_id=guild_id,
+                                channel_id=channel_id,
+                                speaker_id=speaker_id,
+                                speaker_name=speaker_name,
+                                duration_seconds=duration_seconds,
+                            )
+                            remembered_audit_id = await asyncio.to_thread(
+                                discord_voice.record_voice_event,
+                                "remembered",
+                                duration_seconds=duration_seconds,
+                                size_bytes=audio_size,
+                                reason="aes-256-gcm",
+                            )
+                            if remembered_audit_id is None:
+                                _diagnostic(
+                                    "voice_receive_dropped",
+                                    status="audit_unavailable",
+                                )
+                                continue
+                            _diagnostic("voice_memory_remembered")
+                        except Exception:
+                            await asyncio.to_thread(
+                                discord_voice.record_voice_event,
+                                "failed",
+                                duration_seconds=duration_seconds,
+                                size_bytes=audio_size,
+                                reason="encrypted-memory",
+                            )
+                            _diagnostic("voice_memory_failed")
+                            continue
                     # Faster-Whisper has returned text; release every bridge-owned
                     # raw-audio reference before any backend/model request begins.
                     inspected = None
@@ -1196,25 +1393,23 @@ def build_client() -> discord.Client:
                         continue
 
                     now = time.monotonic()
-                    speaker_name = str(
-                        getattr(creator, "display_name", None)
-                        or getattr(creator, "name", None)
-                        or "CreatorJD"
-                    )[:80]
                     history_buf.setdefault(channel_id, []).append((speaker_name, transcript))
                     del history_buf[channel_id][:-max(CONTEXT_MESSAGES, 1)]
                     last_human_ts[channel_id] = now
                     chain_depth[channel_id] = 0
                     ignored_streak[channel_id] = 0
                     channel_obj[channel_id] = text_channel
-                    engaged.setdefault(channel_id, {})[creator_id] = now
+                    engaged.setdefault(channel_id, {})[speaker_id] = now
                     bindings = bridge_actor_transport.DiscordActorBindings(
                         event_id=event_id,
-                        actor_id=str(creator_id),
+                        actor_id=str(speaker_id),
                         guild_id=str(guild_id),
                         channel_id=str(channel_id),
                     )
-                    model_text = _room_model_text(channel_id, transcript)
+                    model_text = _room_model_text(
+                        channel_id,
+                        f"{speaker_name} said aloud: {transcript}",
+                    )
                     try:
                         reply = await asyncio.to_thread(
                             _ask_alpecca,
@@ -1223,8 +1418,9 @@ def build_client() -> discord.Client:
                             "discord",
                             "guest",
                             context=(
-                                "Locally transcribed Discord voice from the allowlisted "
-                                "creator in this claimed room; the raw audio is not stored"
+                                f"{_voice_presence_context(guild)} The current input is "
+                                f"locally transcribed speech from {speaker_name}. Raw audio "
+                                "is discarded; the bounded transcript is encrypted at rest."
                             ),
                             room="discord",
                             actor_bindings=bindings,
@@ -1239,7 +1435,7 @@ def build_client() -> discord.Client:
                         )
                         _diagnostic("voice_receive_reply_failed")
                         continue
-                    reply = (reply or "").strip()
+                    reply = _ground_voice_presence_reply((reply or "").strip(), guild)
                     if not reply:
                         await asyncio.to_thread(
                             discord_voice.record_voice_event,
@@ -1549,8 +1745,9 @@ def build_client() -> discord.Client:
                     )
                     if receive_started:
                         capability_text = (
-                            "I can hear CreatorJD here, transcribe short utterances "
-                            "locally, answer in text and voice, and discard the raw audio."
+                            "I can hear human participants here, transcribe short utterances "
+                            "locally, answer in text and voice, discard raw audio, and keep "
+                            "bounded transcripts in encrypted memory."
                         )
                     elif VOICE_RECEIVE_ENABLED and creator_allowed:
                         capability_text = (
@@ -1767,6 +1964,8 @@ def build_client() -> discord.Client:
         try:
             async with message.channel.typing():
                 context = f"Discord message from {sender} via {channel_label}"
+                if not is_dm and message.guild is not None:
+                    context += f"; {_voice_presence_context(message.guild)}"
                 if outbound_media is not None:
                     context += (
                         "; a validated image from your approved local media catalog "
@@ -1796,6 +1995,8 @@ def build_client() -> discord.Client:
             return
 
         reply = (reply or "").strip()
+        if not is_dm and message.guild is not None:
+            reply = _ground_voice_presence_reply(reply, message.guild)
         if mode == "participate":
             reaction = _room_reply_reaction(reply)
             if reaction is not None:

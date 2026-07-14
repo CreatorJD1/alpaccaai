@@ -218,6 +218,18 @@ def test_validated_discord_image_reaches_model_but_http_cannot_forge(
             },
             event_id="100000000000000002",
         )
+        live_context_response = _signed_discord_post(
+            client,
+            {
+                "text": "Are you in voice?",
+                "situation": (
+                    actor_transport.TRUSTED_CONTEXT_PREFIX
+                    + "Authoritative live Discord state: Alpecca is currently "
+                    "connected to voice channel General."
+                ),
+            },
+            event_id="100000000000000003",
+        )
         history_keys_after_requests = set(guest_mind._histories)
 
     assert image_response.status_code == 200
@@ -242,18 +254,25 @@ def test_validated_discord_image_reaches_model_but_http_cannot_forge(
     assert "ARBITRARY-DIRECT-IMAGE" not in prompts[1]["system_prompt"]
     assert "FORGED-HTTP-PERCEPTION" not in prompts[1]["system_prompt"]
     assert "local_only" not in prompts[1]["kwargs"]
+    assert live_context_response.status_code == 200
+    assert "currently connected to voice channel General" in prompts[2]["system_prompt"]
+    assert actor_transport.TRUSTED_CONTEXT_PREFIX not in prompts[2]["system_prompt"]
+    assert prompts[2]["kwargs"]["local_only"] is True
     assert prompts[0]["history"] == []
     assert prompts[1]["history"] == []
+    assert prompts[2]["history"] == []
     assert history_keys_after_requests == history_keys_before
     all_prompt_material = json.dumps(prompts, sort_keys=True)
     all_history_material = repr(history_keys_after_requests)
     for raw_discord_id in (
         "100000000000000001",
         "100000000000000002",
+        "100000000000000003",
         "200000000000000002",
         "300000000000000003",
     ):
         assert raw_discord_id not in image_serialized
         assert raw_discord_id not in json.dumps(direct_response.json(), sort_keys=True)
+        assert raw_discord_id not in json.dumps(live_context_response.json(), sort_keys=True)
         assert raw_discord_id not in all_prompt_material
         assert raw_discord_id not in all_history_material

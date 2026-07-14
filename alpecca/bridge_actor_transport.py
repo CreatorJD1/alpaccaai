@@ -22,6 +22,7 @@ GUILD_ID_HEADER = "X-Alpecca-Discord-Guild-Id"
 CHANNEL_ID_HEADER = "X-Alpecca-Discord-Channel-Id"
 THREAD_ID_HEADER = "X-Alpecca-Discord-Thread-Id"
 ENVELOPE_HEADER = "X-Alpecca-Discord-Actor-Envelope"
+TRUSTED_CONTEXT_PREFIX = "alpecca-bridge-live-context-v1:"
 
 POLICY_VERSION = actor_identity.SUPPORTED_POLICY_VERSION
 KEY_VERSION = 1
@@ -286,6 +287,7 @@ __all__ = [
     "POLICY_VERSION",
     "SQLITE_ANCHOR_LIMITATION",
     "THREAD_ID_HEADER",
+    "TRUSTED_CONTEXT_PREFIX",
     "build_actor_store",
     "guest_scope",
     "parse_binding_headers",

@@ -4,7 +4,7 @@
 
 - `ALPECCA_DISCORD_VOICE=1` now enables Discord voice-state intent and the
   existing claimed-room join/leave commands. The new independent
-  `ALPECCA_DISCORD_VOICE_RECEIVE=1` switch enables creator-only receive;
+  `ALPECCA_DISCORD_VOICE_RECEIVE=1` switch enables bounded claimed-room receive;
   `START_HERE.bat` sets both for the normal full-stack launch.
 - While connected, Alpecca speaks reactive, proactive, and the single bounded
   recursive text turn through the backend's local `/tts` route. Playback is
@@ -17,15 +17,25 @@
   Faster-Whisper. `scripts/run_discord_bridge.py --voice-readiness` reports only
   content-free dependency status and reports `duplex` only when both directions
   are ready.
-- Creator-only receive is implemented behind the claimed-room and creator
-  allowlist boundary. Other users are rejected before buffering. Creator PCM is
-  held in RAM, capped at 12 seconds, validated, queued two utterances deep,
-  transcribed off the Discord event loop, and discarded. The transcript enters
-  the same signed guest actor path as Discord text, then the reply is sent in the
-  claimed text room and spoken. Creator speech interrupts current playback.
-- Every accepted/transcribed/dropped/failed transition writes a content-free
+- Receive starts only from CreatorJD's allowlisted command in a claimed room,
+  then keeps separate bounded PCM buffers for up to eight human participants.
+  PCM is held in RAM, capped at 12 seconds per utterance, validated, queued two
+  utterances deep, transcribed off the Discord event loop, and discarded. Each
+  speaker remains guest authority through the signed actor path. Human speech
+  interrupts current playback.
+- Bounded voice transcripts and speaker identity are retained in a dedicated
+  AES-256-GCM SQLite store. Its key is domain-derived from the bridge credential
+  protected by Windows Credential Manager; only opaque room/speaker HMACs and
+  content-free timing metadata remain outside ciphertext. Recent records restore
+  room context after a bridge restart. Raw audio is never persisted.
+- Every accepted/transcribed/remembered/dropped/failed transition writes a content-free
   cognition observation; if that audit is unavailable, transcription/model work
   fails closed. No audio or transcript is written to bridge logs.
+- Discord.py 2.7 inbound DAVE is bridged locally before Opus decode because the
+  pinned receive alpha predates DAVE. A corrupt/early frame is dropped without
+  killing the listener. Signed, prefix-bound live voice state is now injected as
+  server-validated ephemeral context and forces local guest inference; a final
+  deterministic guard prevents connected Alpecca from claiming she is outside VC.
 - Claimed-room participation now carries a soft social guideline around
   unsolicited evaluative feedback. Alpecca may ask whether feedback is wanted,
   answer directly when context warrants it, return one of four allowlisted
@@ -630,10 +640,10 @@ one paced recursive continuation; unclaimed rooms still fail closed. Every
 backend body remains labeled guest. The dedicated actor-identity seal credential
 is separate from creator authorization, bridge service authentication, and the
 bot token; no existing credential was changed or revoked.
-Discord voice output and creator-only local receive are explicitly enabled by
+Discord voice output and bounded claimed-room local receive are explicitly enabled by
 the full launcher. Alpecca can join from a claimed room, speak text turns through
-local TTS, locally transcribe bounded CreatorJD utterances, and answer through
-the signed guest path. Retained cross-session guest context, persistent
+local TTS, locally transcribe bounded human utterances, retain only encrypted
+transcript memory, and answer through the signed guest path. Persistent
 cross-process rates, nonce-bound creator approvals, a real receive soak, and a
 production external anchor remain unfinished.
 

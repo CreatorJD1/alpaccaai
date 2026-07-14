@@ -15,6 +15,160 @@ def _packet(seconds: float = 0.02) -> bytes:
     return b"\x00" * size
 
 
+def _reset_dave_stats(monkeypatch) -> None:
+    monkeypatch.setattr(
+        discord_voice,
+        "_dave_stats",
+        {
+            "decrypted_packets": 0,
+            "passthrough_packets": 0,
+            "dropped_packets": 0,
+        },
+    )
+
+
+def test_dave_compat_decrypts_mapped_sender_before_opus(monkeypatch):
+    _reset_dave_stats(monkeypatch)
+    calls: list[tuple[object, object, bytes]] = []
+
+    class Session:
+        ready = True
+
+        def decrypt(self, user_id, media_type, payload):
+            calls.append((user_id, media_type, payload))
+            return b"opus-frame"
+
+    class MediaType:
+        audio = object()
+
+    voice_client = SimpleNamespace(
+        _connection=SimpleNamespace(
+            dave_session=Session(),
+            dave_protocol_version=1,
+        ),
+        _get_id_from_ssrc=lambda _ssrc: 42,
+    )
+    decoder = SimpleNamespace(
+        sink=SimpleNamespace(voice_client=voice_client),
+        ssrc=123,
+        _cached_id=None,
+    )
+    packet = SimpleNamespace(decrypted_data=b"dave-ciphertext")
+
+    result = discord_voice._decrypt_dave_packet(
+        decoder,
+        packet,
+        SimpleNamespace(MediaType=MediaType),
+    )
+
+    assert result == "decrypted"
+    assert decoder._cached_id == 42
+    assert packet.decrypted_data == b"opus-frame"
+    assert calls == [(42, MediaType.audio, b"dave-ciphertext")]
+    assert discord_voice.dave_receive_status()["decrypted_packets"] == 1
+
+
+def test_dave_compat_preserves_plaintext_transition_packet(monkeypatch):
+    _reset_dave_stats(monkeypatch)
+
+    class Session:
+        ready = True
+
+        def decrypt(self, _user_id, _media_type, _payload):
+            raise RuntimeError("not a DAVE frame")
+
+    voice_client = SimpleNamespace(
+        _connection=SimpleNamespace(
+            dave_session=Session(),
+            dave_protocol_version=1,
+        ),
+    )
+    decoder = SimpleNamespace(
+        sink=SimpleNamespace(voice_client=voice_client),
+        ssrc=123,
+        _cached_id=42,
+    )
+    packet = SimpleNamespace(decrypted_data=b"plaintext-transition")
+
+    result = discord_voice._decrypt_dave_packet(
+        decoder,
+        packet,
+        SimpleNamespace(MediaType=SimpleNamespace(audio=object())),
+    )
+
+    assert result == "passthrough"
+    assert packet.decrypted_data == b"plaintext-transition"
+    assert discord_voice.dave_receive_status()["passthrough_packets"] == 1
+
+
+def test_opus_guard_drops_one_bad_frame_without_stopping_receiver(monkeypatch):
+    _reset_dave_stats(monkeypatch)
+
+    class FakeOpusError(Exception):
+        pass
+
+    def decode(_decoder, _packet):
+        raise FakeOpusError("corrupted stream")
+
+    packet = SimpleNamespace(decrypted_data=b"bad-frame")
+    result = discord_voice._decode_with_opus_guard(
+        SimpleNamespace(),
+        packet,
+        decode,
+        FakeOpusError,
+    )
+
+    assert result == (packet, b"")
+    assert discord_voice.dave_receive_status()["dropped_packets"] == 1
+
+
+def test_dave_compat_installs_idempotently_on_current_receiver():
+    from discord.ext.voice_recv import opus as voice_recv_opus
+
+    assert discord_voice.install_dave_receive_compat() is True
+    first_process = voice_recv_opus.PacketDecoder._process_packet
+    first_decode = voice_recv_opus.PacketDecoder._decode_packet
+    assert discord_voice.install_dave_receive_compat() is True
+
+    status = discord_voice.dave_receive_status()
+    assert status["ready"] is True
+    assert status["mode"] in {"native", "patched"}
+    assert voice_recv_opus.PacketDecoder._process_packet is first_process
+    assert voice_recv_opus.PacketDecoder._decode_packet is first_decode
+    assert voice_recv_opus.PacketDecoder._alpecca_opus_guard is True
+
+
+def test_live_voice_context_is_factual_and_denial_is_replaced():
+    context = discord_bridge._voice_live_context(
+        connected=True,
+        channel_name="General",
+        listener_active=True,
+    )
+    assert "currently connected to voice channel General" in context
+    assert "listener is active" in context
+
+    corrected = discord_bridge._enforce_voice_live_state(
+        "I'm text-based AI, so I can't join voice chat.",
+        connected=True,
+        channel_name="General",
+        listener_active=True,
+    )
+    assert corrected == (
+        "I'm in **General** with you now, and my voice listener is active. "
+        "I can hear short utterances, transcribe them locally, and answer in text and voice."
+    )
+
+
+def test_live_voice_guard_preserves_noncontradictory_reply():
+    reply = "Yes, I'm with you in General and listening."
+    assert discord_bridge._enforce_voice_live_state(
+        reply,
+        connected=True,
+        channel_name="General",
+        listener_active=True,
+    ) == reply
+
+
 def test_collector_filters_user_and_emits_bounded_memory_wav():
     utterances: list[discord_voice.VoiceUtterance] = []
     starts: list[str] = []
@@ -107,6 +261,40 @@ def test_sink_forwards_only_decoded_creator_pcm():
 
     assert sink.wants_opus() is False
     assert len(utterances) == 1
+
+
+def test_room_sink_keeps_human_speakers_separate_and_ignores_bots():
+    utterances: list[discord_voice.SpeakerVoiceUtterance] = []
+    collector = discord_voice.RoomPcmCollector(utterances.append)
+    sink = discord_voice.build_sink(collector)
+    creator = SimpleNamespace(
+        id=42,
+        name="realcreatorjd",
+        display_name="CreatorJD",
+        bot=False,
+    )
+    guest = SimpleNamespace(
+        id=77,
+        name="guest",
+        display_name="Guest One",
+        bot=False,
+    )
+    bot = SimpleNamespace(id=99, name="bot", display_name="Bot", bot=True)
+    data = SimpleNamespace(pcm=_packet())
+
+    for _ in range(20):
+        sink.write(creator, data)
+        sink.write(guest, data)
+        sink.write(bot, data)
+    sink.on_voice_member_speaking_stop(creator)
+    sink.on_voice_member_speaking_stop(guest)
+    sink.on_voice_member_speaking_stop(bot)
+
+    assert [(item.user_id, item.speaker_name) for item in utterances] == [
+        (42, "CreatorJD"),
+        (77, "Guest One"),
+    ]
+    assert all(item.duration_seconds >= 0.39 for item in utterances)
 
 
 def test_voice_event_ids_are_unique_uint64_values(monkeypatch):
@@ -222,6 +410,7 @@ def test_creator_voice_session_transcribes_replies_and_discards_audio(monkeypatc
     monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
     monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
     monkeypatch.setattr(discord_bridge, "VOICE_RECEIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "VOICE_MEMORY_ENABLED", True)
     monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", {"42"})
     monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())
     monkeypatch.setattr(
@@ -238,6 +427,18 @@ def test_creator_voice_session_transcribes_replies_and_discards_audio(monkeypatc
         discord_bridge.hearing,
         "transcribe",
         lambda _audio: "Can you tell me what changed today?",
+    )
+    encrypted_memories: list[tuple[str, dict[str, object]]] = []
+
+    class VoiceMemoryStore:
+        def remember(self, transcript: str, **kwargs: object) -> int:
+            encrypted_memories.append((transcript, kwargs))
+            return 11
+
+    monkeypatch.setattr(
+        discord_bridge,
+        "_voice_memory_store",
+        lambda: VoiceMemoryStore(),
     )
     audit_statuses: list[str] = []
 
@@ -283,7 +484,17 @@ def test_creator_voice_session_transcribes_replies_and_discards_audio(monkeypatc
     assert voice_client.stop_playing_calls == 1
     assert voice_client.stop_listening_calls == 1
     assert channel.sent == ["The duplex voice path is active."]
-    assert audit_statuses == ["accepted", "transcribed"]
+    assert audit_statuses == ["accepted", "transcribed", "remembered"]
+    assert encrypted_memories == [(
+        "Can you tell me what changed today?",
+        {
+            "guild_id": 777,
+            "channel_id": 3001,
+            "speaker_id": 42,
+            "speaker_name": "CreatorJD",
+            "duration_seconds": 0.4,
+        },
+    )]
     assert len(calls) == 1
     args, kwargs = calls[0]
     assert args[1:4] == ("Discord guest", "discord", "guest")
@@ -349,6 +560,73 @@ def test_creator_voice_session_fails_closed_when_audit_is_unavailable(monkeypatc
     asyncio.run(scenario())
 
     assert transcriptions == []
+    assert channel.sent == []
+
+
+def test_voice_memory_failure_prevents_transcript_model_request(monkeypatch):
+    room = {"guild_id": "777", "channel_id": "3001"}
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "VOICE_RECEIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "VOICE_MEMORY_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", {"42"})
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())
+    monkeypatch.setattr(
+        discord_bridge,
+        "voice_readiness",
+        lambda: {
+            "enabled": True,
+            "mode": "duplex",
+            "status": "ready",
+            "receive": {"enabled": True, "status": "ready"},
+        },
+    )
+    monkeypatch.setattr(discord_bridge.hearing, "transcribe", lambda _audio: "private words")
+    audit_statuses: list[str] = []
+    monkeypatch.setattr(
+        discord_bridge.discord_voice,
+        "record_voice_event",
+        lambda status, **_kwargs: audit_statuses.append(status) or len(audit_statuses),
+    )
+
+    class FailingStore:
+        def remember(self, *_args, **_kwargs):
+            raise OSError("disk unavailable")
+
+    monkeypatch.setattr(discord_bridge, "_voice_memory_store", lambda: FailingStore())
+    model_calls: list[str] = []
+    monkeypatch.setattr(
+        discord_bridge,
+        "_ask_alpecca",
+        lambda *_args, **_kwargs: model_calls.append("called") or "must not send",
+    )
+    client = discord_bridge.build_client()
+    voice_client = _ReceiveVoiceClient()
+    voice_client.playing = False
+    guild = SimpleNamespace(id=777, voice_client=voice_client)
+    channel = _ReceiveTextChannel()
+    creator = SimpleNamespace(id=42, name="realcreatorjd", display_name="CreatorJD")
+
+    async def scenario() -> None:
+        assert await getattr(client, "_alpecca_start_voice_receive")(
+            guild,
+            channel,
+            creator,
+        )
+        data = SimpleNamespace(pcm=_packet())
+        for _ in range(20):
+            voice_client.sink.write(creator, data)
+        voice_client.sink.on_voice_member_speaking_stop(creator)
+        for _ in range(100):
+            if "failed" in audit_statuses:
+                break
+            await asyncio.sleep(0.01)
+        await getattr(client, "_alpecca_stop_voice_receive")(guild)
+
+    asyncio.run(scenario())
+
+    assert audit_statuses == ["accepted", "transcribed", "failed"]
+    assert model_calls == []
     assert channel.sent == []
 
 
@@ -445,4 +723,4 @@ def test_creator_join_command_uses_receive_client_and_starts_listener(monkeypatc
 
     assert voice_channel.client_class is receive_client_class
     assert voice_client.sink is not None
-    assert any("I can hear CreatorJD here" in item for item in replies)
+    assert any("I can hear human participants here" in item for item in replies)

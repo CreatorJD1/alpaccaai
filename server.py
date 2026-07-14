@@ -7925,6 +7925,16 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         "/channel/house-hq": "house-hq",
         "/channel/discord": "discord",
     }.get(req.url.path, "channel")
+    trusted_discord_live_context = ""
+    if (
+        route_surface == "discord"
+        and situation_hint.startswith(
+            bridge_actor_transport_mod.TRUSTED_CONTEXT_PREFIX
+        )
+    ):
+        trusted_discord_live_context = situation_hint[
+            len(bridge_actor_transport_mod.TRUSTED_CONTEXT_PREFIX):
+        ]
     if has_legacy_file_payload:
         raise HTTPException(
             status_code=400,
@@ -8173,13 +8183,19 @@ async def channel_inbound(req: Request, response: Response) -> dict:
             "the local vision model could not make the image out; no visual "
             "details were inferred"
         )
-        if route_surface == "discord":
-            trusted_perception = _server_validated_discord_perception(
-                turn,
-                image_desc,
-            )
         if not text:
             text = "(they sent an image without any words)"
+
+    if route_surface == "discord":
+        trusted_context_parts = []
+        if trusted_discord_live_context:
+            trusted_context_parts.append(trusted_discord_live_context)
+        if image_desc:
+            trusted_context_parts.append(f"Validated image description: {image_desc}")
+        trusted_perception = _server_validated_discord_perception(
+            turn,
+            " ".join(trusted_context_parts),
+        )
 
     if principal == "creator":
         if not situation_hint:
