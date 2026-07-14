@@ -7,6 +7,7 @@ running so `/channel/discord` is reachable.
 
     python scripts/run_discord_bridge.py
     python scripts/run_discord_bridge.py --media-readiness
+    python scripts/run_discord_bridge.py --voice-readiness
 """
 from __future__ import annotations
 
@@ -72,14 +73,31 @@ def _print_media_readiness() -> None:
     )
 
 
+def _print_voice_readiness() -> None:
+    from alpecca.discord_bridge import voice_readiness
+
+    print(
+        json.dumps(
+            voice_readiness(),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args == ["--media-readiness"]:
         _print_media_readiness()
         return 0
+    if args == ["--voice-readiness"]:
+        _print_voice_readiness()
+        return 0
     if args:
         print(
-            "Usage: python scripts/run_discord_bridge.py [--media-readiness]",
+            "Usage: python scripts/run_discord_bridge.py "
+            "[--media-readiness|--voice-readiness]",
             file=sys.stderr,
         )
         return 2

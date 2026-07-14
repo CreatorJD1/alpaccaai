@@ -17,6 +17,9 @@ rooms, with the bounded rails from `docs/ALPECCA_DISCORD_PRESENCE.md`:
     usernames). Empty = no DMs. One byte-validated image can enter her vision;
     explicit image requests can attach one item from her closed local catalog.
   - She never replies to herself or to other bots.
+  - **Voice output:** when ``ALPECCA_DISCORD_VOICE=1``, she can join a voice
+    channel from a claimed room and speak her text turns with local TTS. This
+    path does not receive or transcribe Discord microphone audio.
   - Everyone in a channel is a guest to her people-layer; her mind stays
     courteously guarded with strangers on its own.
 
@@ -27,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib.util
 import ipaddress
 import io
 import json
@@ -115,6 +119,7 @@ IMAGE_INBOUND_TIMEOUT = max(
 MAX_DISCORD_CHARS = 2000
 MAX_BACKEND_RESPONSE_BYTES = 1024 * 1024
 MAX_BACKEND_ERROR_BYTES = 16 * 1024
+MAX_VOICE_RESPONSE_BYTES = 16 * 1024 * 1024
 # Public-room presence is opt-in per room. The creator claims a room with
 # ``@Alpecca room on``; no environment flag can make her read or speak in an
 # arbitrary server channel.
@@ -169,9 +174,10 @@ DEBUG = _environment_enabled("ALPECCA_DISCORD_DEBUG")
 PARTICIPATE = True
 PARTICIPATE_COOLDOWN = max(30.0, float(os.environ.get("ALPECCA_DISCORD_PARTICIPATE_COOLDOWN", "75")))
 CONTEXT_MESSAGES = SOCIAL_HISTORY_LIMIT
-# Voice chat: she can join a voice channel (on request) and SPEAK her replies with
-# her real TTS voice. Bots stream audio (supported); video/camera is not possible.
-VOICE_ENABLED = False
+# Voice output: when explicitly enabled, she can join a voice channel on request
+# and speak her text replies with local TTS. Discord microphone input is not
+# implemented, so this must never be described as hearing the voice channel.
+VOICE_ENABLED = _environment_enabled("ALPECCA_DISCORD_VOICE")
 
 
 def _room_key(guild_id: object, channel_id: object) -> str:
@@ -705,6 +711,43 @@ def _ffmpeg_exe() -> str:
     return _FFMPEG_EXE
 
 
+def voice_readiness() -> dict[str, object]:
+    """Return content-free readiness for Discord voice output."""
+    if not VOICE_ENABLED:
+        return {"enabled": False, "mode": "output-only", "status": "disabled"}
+    opus_ready = False
+    ffmpeg_ready = False
+    try:
+        if not discord.opus.is_loaded():
+            discord.opus._load_default()
+        opus_ready = discord.opus.is_loaded()
+    except Exception:
+        pass
+    try:
+        ffmpeg_ready = bool(_ffmpeg_exe())
+    except Exception:
+        pass
+    pynacl_ready = importlib.util.find_spec("nacl") is not None
+    dave_ready = importlib.util.find_spec("davey") is not None
+    ready = opus_ready and ffmpeg_ready and pynacl_ready and dave_ready
+    return {
+        "enabled": True,
+        "mode": "output-only",
+        "status": "ready" if ready else "unavailable",
+        "opus": opus_ready,
+        "ffmpeg": ffmpeg_ready,
+        "pynacl": pynacl_ready,
+        "dave": dave_ready,
+    }
+
+
+def _remove_voice_file(path: str) -> None:
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _synth_voice_wav(text: str) -> "bytes | None":
     """Ask the backend /tts to synthesize her voice; return audio bytes or None.
 
@@ -722,17 +765,17 @@ def _synth_voice_wav(text: str) -> "bytes | None":
         with _open_backend_request(req, timeout=INBOUND_TIMEOUT) as resp:
             if resp.status != 200:
                 return None
-            data = resp.read()
+            data = resp.read(MAX_VOICE_RESPONSE_BYTES + 1)
     except Exception:
         _diagnostic("voice_synthesis_failed")
         return None
-    return data if (data and len(data) > 1024) else None
+    return data if (1024 < len(data) <= MAX_VOICE_RESPONSE_BYTES) else None
 
 
 def build_client() -> discord.Client:
     intents = discord.Intents.default()
     intents.message_content = True   # needed to read message text (also enable in the portal)
-    intents.voice_states = False
+    intents.voice_states = VOICE_ENABLED
     client = discord.Client(intents=intents)
     social_rooms = _load_social_rooms()
 
@@ -791,22 +834,12 @@ def build_client() -> discord.Client:
 
     @client.event
     async def on_ready() -> None:
+        voice_status = voice_readiness()
         if VOICE_ENABLED:
-            try:
-                if not discord.opus.is_loaded():
-                    discord.opus._load_default()
-            except Exception:
-                _diagnostic("voice_opus_unavailable")
-            try:
-                import discord.voice_client as _vc
-                try:
-                    import davey as _davey
-                    _davey_ok = getattr(_davey, "__version__", "yes")
-                except Exception:
-                    _davey_ok = "MISSING"
-                _diagnostic("voice_capabilities_checked")
-            except Exception:
-                _diagnostic("voice_capabilities_failed")
+            _diagnostic(
+                "voice_capabilities_checked",
+                status=str(voice_status["status"]),
+            )
         # Resolve username allowlist entries to ids up front so DM permission
         # does not depend on the member cache. A non-empty query does not need
         # the privileged members intent; failure just leaves lazy resolution.
@@ -834,6 +867,7 @@ def build_client() -> discord.Client:
                     "dm_allow_configured": bool(DM_ALLOW_IDS or DM_ALLOW_NAMES),
                     "social_room_count": len(social_rooms),
                     "media": media_readiness(),
+                    "voice": voice_status,
                 },
                 ensure_ascii=True,
                 separators=(",", ":"),
@@ -861,6 +895,7 @@ def build_client() -> discord.Client:
     _proactive_global_eval = {"at": 0.0}
     _proactive_cursor = {"index": 0}
     _proactive_lock = asyncio.Lock()
+    voice_locks: dict[int, asyncio.Lock] = {}
 
     def _recent_context(chan_id: int) -> str:
         lines = history_buf.get(chan_id, [])[-CONTEXT_MESSAGES:]
@@ -880,28 +915,34 @@ def build_client() -> discord.Client:
                 and guild and guild.voice_client
                 and guild.voice_client.is_connected()):
             return
-        vc = guild.voice_client
-        wav = await asyncio.to_thread(_synth_voice_wav, text[:600])
-        if not wav:
-            return
-        fd, path = tempfile.mkstemp(suffix=".wav")
-        with os.fdopen(fd, "wb") as f:
-            f.write(wav)
-        for _ in range(80):                       # wait out any current utterance
-            if not vc.is_playing():
-                break
-            await asyncio.sleep(0.25)
-        try:
-            if not discord.opus.is_loaded():
-                discord.opus._load_default()
-            source = discord.FFmpegPCMAudio(path, executable=_ffmpeg_exe())
-            vc.play(source, after=lambda e: os.path.exists(path) and os.remove(path))
-        except Exception:
-            _diagnostic("voice_playback_failed")
+        guild_id = int(getattr(guild, "id", 0) or 0)
+        lock = voice_locks.setdefault(guild_id, asyncio.Lock())
+        async with lock:
+            vc = guild.voice_client
+            if not (vc and vc.is_connected()):
+                return
+            wav = await asyncio.to_thread(_synth_voice_wav, text[:600])
+            if not wav or not vc.is_connected():
+                return
+            fd, path = tempfile.mkstemp(suffix=".wav")
+            with os.fdopen(fd, "wb") as f:
+                f.write(wav)
+            for _ in range(80):                   # wait out any current utterance
+                if not vc.is_playing():
+                    break
+                await asyncio.sleep(0.25)
+            if vc.is_playing() or not vc.is_connected():
+                _remove_voice_file(path)
+                _diagnostic("voice_playback_skipped", status="busy")
+                return
             try:
-                os.remove(path)
+                if not discord.opus.is_loaded():
+                    discord.opus._load_default()
+                source = discord.FFmpegPCMAudio(path, executable=_ffmpeg_exe())
+                vc.play(source, after=lambda _error: _remove_voice_file(path))
             except Exception:
-                pass
+                _diagnostic("voice_playback_failed")
+                _remove_voice_file(path)
 
     @client.event
     async def on_message(message: discord.Message) -> None:
@@ -1072,6 +1113,16 @@ def build_client() -> discord.Client:
                 if any(k in low_c for k in ("join voice", "come to voice", "join vc",
                                             "hop in voice", "get in voice", "talk in voice",
                                             "come talk in voice", "voice chat")):
+                    readiness = voice_readiness()
+                    if readiness["status"] != "ready":
+                        _diagnostic("voice_join_failed", status="dependencies_unavailable")
+                        await message.reply(
+                            "Discord voice output is enabled, but its local audio "
+                            "dependencies are not ready. Install requirements-discord.txt "
+                            "on the Alpecca host and restart her.",
+                            mention_author=False,
+                        )
+                        return
                     av = getattr(message.author, "voice", None)
                     vch = getattr(av, "channel", None)
                     me = message.guild.me
@@ -1101,8 +1152,11 @@ def build_client() -> discord.Client:
                             mention_author=False,
                         )
                         return
-                    await message.reply(f"Coming into **{vch.name}** -- talk to me and you'll hear me.",
-                                        mention_author=False)
+                    await message.reply(
+                        f"Coming into **{vch.name}**. I can speak my Discord text replies "
+                        "there; I cannot listen to voice audio yet.",
+                        mention_author=False,
+                    )
                     await _speak_in_voice(message.guild, "Hey, I'm here with you. Can you hear me?")
                     return
 
@@ -1483,6 +1537,14 @@ def build_client() -> discord.Client:
                 ignored_streak[chan] = min(3, ignored_streak.get(chan, 0) + 1)
                 history_buf.setdefault(chan, []).append(("Alpecca", reply))
                 del history_buf[chan][:-max(CONTEXT_MESSAGES, 1)]
+                guild = getattr(ch, "guild", None)
+                if (
+                    VOICE_ENABLED
+                    and guild is not None
+                    and getattr(guild, "voice_client", None)
+                    and guild.voice_client.is_connected()
+                ):
+                    asyncio.create_task(_speak_in_voice(guild, reply))
                 _diagnostic("proactive_room_sent")
                 return
             _proactive_cursor["index"] = (start + 1) % len(rooms)
@@ -1540,7 +1602,15 @@ def build_client() -> discord.Client:
                     await ch.send(reply[:MAX_DISCORD_CHARS])
                     her_last_ts[chan] = time.monotonic()
                     chain_depth[chan] = chain_depth.get(chan, 0) + 1
+                    if (
+                        VOICE_ENABLED
+                        and guild is not None
+                        and getattr(guild, "voice_client", None)
+                        and guild.voice_client.is_connected()
+                    ):
+                        asyncio.create_task(_speak_in_voice(guild, reply))
 
+    setattr(client, "_alpecca_speak_in_voice", _speak_in_voice)
     # Deliberate test seam for one bounded sweep; production uses the scheduled
     # loop above. Keeping the loop body separate prevents timing-heavy tests.
     setattr(client, "_alpecca_proactive_sweep_once", _proactive_sweep_once)

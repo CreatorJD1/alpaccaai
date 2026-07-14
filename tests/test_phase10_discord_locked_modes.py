@@ -20,6 +20,15 @@ from alpecca.bridge_actor_transport import DiscordActorBindings
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def _isolate_room_registry(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        discord_bridge,
+        "DISCORD_ROOM_REGISTRY",
+        tmp_path / "discord_social_rooms.json",
+    )
+
+
 class _Typing:
     async def __aenter__(self):
         return self
@@ -102,7 +111,7 @@ def _allow_dm(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())
 
 
-def test_social_presence_is_creator_room_claimed_and_voice_stays_off(tmp_path):
+def test_social_presence_and_voice_output_can_be_enabled(tmp_path):
     env = os.environ.copy()
     env.pop("ALPECCA_DISCORD_DEBUG", None)
     env.update(
@@ -147,10 +156,74 @@ def test_social_presence_is_creator_room_claimed_and_voice_stays_off(tmp_path):
         "proactive": True,
         "recursive": True,
         "participate": True,
-        "voice": False,
+        "voice": True,
         "debug": False,
+        "voice_states": True,
+    }
+
+
+def test_discord_voice_output_defaults_off_without_explicit_flag(tmp_path):
+    env = os.environ.copy()
+    env.pop("ALPECCA_DISCORD_VOICE", None)
+    env["ALPECCA_HOME"] = str(tmp_path)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json; "
+                "from alpecca import discord_bridge as bridge; "
+                "client = bridge.build_client(); "
+                "print(json.dumps({'voice': bridge.VOICE_ENABLED, "
+                "'voice_states': client.intents.voice_states}))"
+            ),
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout.strip().splitlines()[-1]) == {
+        "voice": False,
         "voice_states": False,
     }
+
+
+def test_voice_readiness_command_is_secret_free(tmp_path):
+    env = os.environ.copy()
+    env.update(
+        {
+            "ALPECCA_HOME": str(tmp_path),
+            "ALPECCA_DISCORD_VOICE": "1",
+            "DISCORD_BOT_TOKEN": "voice-secret-must-not-appear",
+        }
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_discord_bridge.py",
+            "--voice-readiness",
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    readiness = json.loads(completed.stdout.strip())
+    assert readiness["enabled"] is True
+    assert readiness["mode"] == "output-only"
+    assert readiness["status"] in {"ready", "unavailable"}
+    serialized = completed.stdout.casefold()
+    assert "voice-secret-must-not-appear" not in serialized
+    assert "discord_bot_token" not in serialized
 
 
 def test_readiness_command_is_offline_and_secret_free(tmp_path):
@@ -1066,10 +1139,71 @@ def test_every_backend_body_is_guest_even_for_claimed_creator(monkeypatch):
     assert body["sender"] == "Discord guest"
 
 
-def test_voice_synthesis_is_a_hard_noop(monkeypatch):
-    def fail(*_args, **_kwargs):
-        raise AssertionError("locked Discord voice attempted backend synthesis")
+def test_voice_synthesis_accepts_only_bounded_audio(monkeypatch):
+    class Response:
+        status = 200
 
-    monkeypatch.setattr(discord_bridge.urllib.request, "urlopen", fail)
+        def __init__(self, payload: bytes) -> None:
+            self.payload = payload
 
-    assert discord_bridge._synth_voice_wav("speak this") is None
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, limit: int) -> bytes:
+            return self.payload[:limit]
+
+    payloads = [b"w" * 2048, b"x" * 2049]
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "MAX_VOICE_RESPONSE_BYTES", 2048)
+    monkeypatch.setattr(
+        discord_bridge,
+        "_open_backend_request",
+        lambda *_args, **_kwargs: Response(payloads.pop(0)),
+    )
+
+    assert discord_bridge._synth_voice_wav("speak this") == b"w" * 2048
+    assert discord_bridge._synth_voice_wav("oversized") is None
+
+
+def test_voice_playback_uses_local_tts_and_cleans_temp_file(monkeypatch):
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "PHASE10_GUILD_MODES_LOCKED", False)
+    monkeypatch.setattr(discord_bridge, "_synth_voice_wav", lambda _text: b"w" * 2048)
+    monkeypatch.setattr(discord_bridge, "_ffmpeg_exe", lambda: "ffmpeg-test")
+    monkeypatch.setattr(discord_bridge.discord.opus, "is_loaded", lambda: True)
+    source_paths: list[Path] = []
+
+    def fake_audio(path: str, *, executable: str):
+        assert executable == "ffmpeg-test"
+        source_paths.append(Path(path))
+        assert source_paths[-1].exists()
+        return SimpleNamespace(path=path)
+
+    monkeypatch.setattr(discord_bridge.discord, "FFmpegPCMAudio", fake_audio)
+
+    class VoiceClient:
+        def __init__(self) -> None:
+            self.played: list[object] = []
+
+        def is_connected(self) -> bool:
+            return True
+
+        def is_playing(self) -> bool:
+            return False
+
+        def play(self, source: object, *, after) -> None:
+            self.played.append(source)
+            after(None)
+
+    voice_client = VoiceClient()
+    client = _client(monkeypatch)
+    guild = SimpleNamespace(id=777, voice_client=voice_client)
+
+    asyncio.run(getattr(client, "_alpecca_speak_in_voice")(guild, "Hello from Alpecca."))
+
+    assert len(voice_client.played) == 1
+    assert len(source_paths) == 1
+    assert not source_paths[0].exists()

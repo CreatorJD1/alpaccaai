@@ -122,6 +122,14 @@ pull a model.
 her with screen sight, webcam expression sense, voice-tone sensing, and a safe
 default app allowlist. Plain `python server.py` stays the private, senses-off path.
 
+**Discord presence.** Install `requirements-discord.txt` and configure the bot
+token in the gitignored Discord secret file before using the full launcher.
+`START_HERE.bat` enables output-only Discord voice: in a creator-claimed room,
+Alpecca can join a voice channel and speak her text replies through local TTS.
+She does not yet receive or transcribe Discord voice-channel audio. Run
+`python scripts/run_discord_bridge.py --voice-readiness` for a secret-free
+dependency check.
+
 **Reach her from your phone.** She's local-only by default. Use
 `python scripts/share.py --tunnel` (or another HTTPS reverse proxy) for remote
 trusted-device enrollment. `ALPECCA_REMOTE=1` only binds the LAN interface;

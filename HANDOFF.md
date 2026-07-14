@@ -1,4 +1,22 @@
-# Alpecca — Handoff (updated 2026-07-13)
+# Alpecca — Handoff (updated 2026-07-14)
+
+## Codex Discord Voice Output Enablement (2026-07-14)
+
+- `ALPECCA_DISCORD_VOICE=1` now enables Discord voice-state intent and the
+  existing claimed-room join/leave commands. `START_HERE.bat` sets this for the
+  normal full-stack launch.
+- While connected, Alpecca speaks reactive, proactive, and the single bounded
+  recursive text turn through the backend's local `/tts` route. Playback is
+  serialized per guild, has a 16 MiB response cap and a 20-second busy bound,
+  and always removes its temporary WAV.
+- `requirements-discord.txt` declares the voice extras, DAVE encryption support,
+  and the bundled FFmpeg provider. `scripts/run_discord_bridge.py
+  --voice-readiness` reports only content-free dependency status.
+- This is **output-only**. Discord microphone receive/transcription is not
+  implemented, and join confirmation says so explicitly.
+- Verification: the combined Phase 5/Discord set passed (`95 passed`),
+  `python -m pytest -q tests/test_core.py` passed (`356 passed`), and
+  `npm.cmd run house:build` passed with only the retained chunk-size advisory.
 
 ## Codex House Voice, Drive, Source, And Discord Recovery (2026-07-13)
 
@@ -547,7 +565,7 @@ Current Ollama-cloud-through-loopback and dynamically selected ZeroGPU routes do
 not meet that contract. Art and Studio paths remain local; do not upload art to
 Cloudflare.
 
-### Phase 10: Discord presence and voice - PARTIAL; AUTONOMY STILL BLOCKED
+### Phase 10: Discord presence and voice - PARTIAL; OUTPUT VOICE IMPLEMENTED
 
 Reactive creator-DM text and bounded creator-DM image seeing/sending work.
 The current non-creator CoreMind path is now a reply-only conversation boundary:
@@ -559,16 +577,18 @@ mutation. Arbitrary caller image descriptions are ignored; a Discord image can
 reach the guest model only through a server-created exact-turn envelope, and
 that image-derived turn is not persisted. This is capability denial, not actor
 authentication or Discord autonomy.
-The bridge itself is now hard-locked to allowlisted DMs: guild/thread messages
-return before media or backend work, and environment flags cannot enable
-participation, proactive speech, recursion, or voice. Every DM body is labeled
-guest. The dedicated actor-identity seal credential is separate from creator
-authorization, bridge service authentication, and the bot token; no existing
-credential was changed or revoked.
-Keep guild image access plus Discord participation/recursion disabled until
-creator/guild/channel allowlists, retained conversation partitioning, persistent
-rate limits, and nonce-bound creator approvals work. Add audio queues and live
-receive only after those text-participation gates pass.
+The bridge accepts allowlisted creator DMs and only those guild rooms explicitly
+claimed by CreatorJD with the bot-mention `room on` command. Claimed rooms have
+bounded recent context, participation, quiet-room proactive speech, and at most
+one paced recursive continuation; unclaimed rooms still fail closed. Every
+backend body remains labeled guest. The dedicated actor-identity seal credential
+is separate from creator authorization, bridge service authentication, and the
+bot token; no existing credential was changed or revoked.
+Discord voice output is explicitly enabled by the full launcher. Alpecca can
+join a voice channel from a claimed room and speak those text turns through
+local TTS, but she cannot receive or transcribe voice-channel audio. Retained
+cross-session guest context, persistent cross-process rates, nonce-bound creator
+approvals, inbound audio, and a production external anchor remain unfinished.
 
 ### Phase 11: creator contact and notification outbox - PARTIAL; APP PUSH IMPLEMENTED
 

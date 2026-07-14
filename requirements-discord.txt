@@ -1,0 +1,5 @@
+# Optional Discord bridge with encrypted voice-output support.
+#   python -m pip install -r requirements-discord.txt
+discord.py[voice]>=2.7.1
+davey>=0.1.6
+imageio-ffmpeg>=0.6.0

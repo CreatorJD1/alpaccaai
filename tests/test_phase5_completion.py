@@ -426,7 +426,7 @@ def test_generic_help_request_does_not_inject_distress_posture():
     assert "calm, support-focused response strategy" not in metadata["response_strategy"]
 
 
-def test_discord_autonomous_defaults_are_off(tmp_path):
+def test_discord_claimed_room_features_are_live_but_voice_is_opt_in(tmp_path):
     env = os.environ.copy()
     for key in (
         "ALPECCA_DISCORD_PROACTIVE",
@@ -443,7 +443,8 @@ def test_discord_autonomous_defaults_are_off(tmp_path):
             "-c",
             (
                 "from alpecca import discord_bridge as bridge; "
-                "print(bridge.PROACTIVE_ENABLED, bridge.RECURSIVE_ENABLED, "
+                "print(bridge.PHASE10_GUILD_MODES_LOCKED, "
+                "bridge.PROACTIVE_ENABLED, bridge.RECURSIVE_ENABLED, "
                 "bridge.PARTICIPATE, bridge.VOICE_ENABLED)"
             ),
         ],
@@ -456,4 +457,4 @@ def test_discord_autonomous_defaults_are_off(tmp_path):
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip().splitlines()[-1] == "False False False False"
+    assert completed.stdout.strip().splitlines()[-1] == "False True True True False"
