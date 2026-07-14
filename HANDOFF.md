@@ -19,6 +19,11 @@
 - The persistent F5 worker now suppresses third-party `ref_text`/`gen_text`
   console chatter so synthesized Discord or House text does not enter worker
   logs; content-free worker errors and readiness remain visible.
+- Live smoke: exactly one Discord bridge and one warmed F5 worker are running;
+  the bridge connected to one guild, loaded one claimed room, and reported all
+  voice dependencies ready. An authenticated bridge `/tts` probe returned a
+  502,828-byte WAV in 5.62 seconds, and its redaction canary was absent from both
+  worker logs.
 - Verification: the combined Phase 5/Discord set passed (`96 passed`),
   `python -m pytest -q tests/test_core.py` passed (`356 passed`), and
   `npm.cmd run house:build` passed with only the retained chunk-size advisory.
