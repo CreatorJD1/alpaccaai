@@ -324,31 +324,26 @@ def _catalog_path(kind: MediaKind, avatar_dir: Path, character_dir: Path) -> Pat
     return _latest_gallery_image(character_dir)
 
 
-def resolve_outbound_media(
-    text: str,
+def _load_approved_outbound_image(
+    kind: MediaKind,
+    path: Path | None,
     *,
-    avatar_dir: Path = AVATAR_DIR,
-    character_dir: Path = CHARACTER_DIR,
+    expected_parent: Path,
 ) -> OutboundDiscordImage | None:
-    """Resolve an explicit request through the closed local media catalog."""
+    """Read one catalog entry after resolving it inside its fixed directory."""
 
-    kind = requested_media_kind(text)
-    if kind is None:
-        return None
-    path = _catalog_path(kind, Path(avatar_dir), Path(character_dir))
     if path is None or not path.is_file():
         return None
-    expected_parent = (
-        Path(avatar_dir) / "portraits"
-        if kind == "portrait"
-        else Path(character_dir) / ("gallery" if kind == "gallery" else "reference")
-    ).resolve()
     resolved = path.resolve()
-    if resolved.parent != expected_parent:
+    if resolved.parent != expected_parent.resolve():
         return None
     if kind == "gallery" and not _GALLERY_NAME_RE.fullmatch(resolved.name):
         return None
-    declared = "image/jpeg" if resolved.suffix.lower() in {".jpg", ".jpeg"} else f"image/{resolved.suffix.lower().lstrip('.')}"
+    declared = (
+        "image/jpeg"
+        if resolved.suffix.lower() in {".jpg", ".jpeg"}
+        else f"image/{resolved.suffix.lower().lstrip('.')}"
+    )
     try:
         raw = resolved.read_bytes()
         inspected = inspect_image_bytes(
@@ -368,6 +363,55 @@ def resolve_outbound_media(
         mime_type=inspected.mime_type,
         size_bytes=len(inspected.image_bytes),
         sha256=inspected.envelope.sha256,
+    )
+
+
+def resolve_self_portrait() -> OutboundDiscordImage | None:
+    """Resolve only Alpecca's approved local portrait, or return ``None``.
+
+    Integration contract for the Discord bridge:
+    - Call this only after an explicit request for Alpecca's own image.
+    - Attach only the returned bounded ``image_bytes`` under ``filename``;
+      never accept a path, URL, attachment, or model-provided asset choice.
+    - A ``None`` result means no image may be sent; use the code-owned
+      ``catalog-unavailable`` diagnostic instead of a fallback source.
+
+    The public resolver has no caller-controlled path parameter.  The only
+    permitted source is ``data/avatar/portraits/idle.png`` under ``AVATAR_DIR``.
+    """
+
+    avatar_dir = Path(AVATAR_DIR)
+    portraits_dir = avatar_dir / "portraits"
+    return _load_approved_outbound_image(
+        "portrait",
+        portraits_dir / "idle.png",
+        expected_parent=portraits_dir,
+    )
+
+
+def resolve_outbound_media(
+    text: str,
+    *,
+    avatar_dir: Path = AVATAR_DIR,
+    character_dir: Path = CHARACTER_DIR,
+) -> OutboundDiscordImage | None:
+    """Resolve an explicit request through the closed local media catalog."""
+
+    kind = requested_media_kind(text)
+    if kind is None:
+        return None
+    avatar_dir = Path(avatar_dir)
+    character_dir = Path(character_dir)
+    path = _catalog_path(kind, avatar_dir, character_dir)
+    expected_parent = (
+        avatar_dir / "portraits"
+        if kind == "portrait"
+        else character_dir / ("gallery" if kind == "gallery" else "reference")
+    )
+    return _load_approved_outbound_image(
+        kind,
+        path,
+        expected_parent=expected_parent,
     )
 
 
@@ -428,6 +472,7 @@ __all__ = [
     "record_media_event",
     "requested_disabled_media_kind",
     "requested_media_kind",
+    "resolve_self_portrait",
     "resolve_outbound_media",
     "validate_inbound_attachment_size",
 ]
