@@ -87,6 +87,12 @@ def _print_voice_readiness() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Read the gitignored launch configuration before selecting the normal
+    # direct-launch default.  ``_load_secret`` deliberately uses ``setdefault``
+    # so an exported value still wins over the file, and an explicit false in
+    # either place remains a valid muted-media override.
+    _load_secret()
+    os.environ.setdefault("ALPECCA_DISCORD_MEDIA", "1")
     args = list(sys.argv[1:] if argv is None else argv)
     if args == ["--media-readiness"]:
         _print_media_readiness()
@@ -102,7 +108,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    _load_secret()
     if not _acquire_single_instance_lock():
         print("Another Alpecca Discord bridge is already running; not starting a "
               "second (it would double-reply).", file=sys.stderr)

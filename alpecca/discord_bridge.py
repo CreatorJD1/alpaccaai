@@ -1707,6 +1707,11 @@ def build_client() -> discord.Client:
         now = time.monotonic()
         mode = "reply"
         message_content = str(getattr(message, "content", "") or "")
+        # Media controls must be derived from this event alone.  ``text`` is
+        # intentionally expanded with rolling room history below so the model
+        # can answer in context; using that expanded prompt for capability
+        # routing would let a prior media request leak into later turns.
+        media_request_text = ""
         attachments = list(getattr(message, "attachments", ()) or ())
         _diagnostic(
             "message_received",
@@ -1724,6 +1729,7 @@ def build_client() -> discord.Client:
                 _diagnostic("actor_bindings_rejected")
                 return
             text = message_content.strip()
+            media_request_text = text
             channel_label = "discord-dm"
         else:
             chan = message.channel.id
@@ -1871,6 +1877,7 @@ def build_client() -> discord.Client:
             for tag in (f"@{client.user.name}", f"@{message.guild.me.display_name}"):
                 text = text.replace(tag, "")
             text = text.strip()
+            media_request_text = text
             text = _room_model_text(chan, text, invite=(mode == "participate"))
             channel_label = "discord"
             _diagnostic(
@@ -2007,7 +2014,7 @@ def build_client() -> discord.Client:
         if not text:
             text = "(they shared an image with you)"
 
-        disabled_request = discord_media.requested_disabled_media_kind(text)
+        disabled_request = discord_media.requested_disabled_media_kind(media_request_text)
         if disabled_request is not None:
             await message.reply(
                 discord_media.media_diagnostic(f"{disabled_request}-disabled"),
@@ -2015,7 +2022,7 @@ def build_client() -> discord.Client:
             )
             return
 
-        requested_image = discord_media.requested_media_kind(text)
+        requested_image = discord_media.requested_media_kind(media_request_text)
         if requested_image is not None and not MEDIA_ENABLED:
             await message.reply(
                 discord_media.media_diagnostic("media-disabled"),
@@ -2023,7 +2030,7 @@ def build_client() -> discord.Client:
             )
             return
         outbound_media = (
-            discord_media.resolve_outbound_media(text)
+            discord_media.resolve_outbound_media(media_request_text)
             if requested_image is not None
             else None
         )
@@ -2136,9 +2143,32 @@ def build_client() -> discord.Client:
 
         chan = message.channel.id
         if mode == "participate":
-            await message.channel.send(reply[:MAX_DISCORD_CHARS])   # natural chime-in, no ping
+            if outgoing_file is None:
+                await message.channel.send(content)  # natural chime-in, no ping
+            else:
+                await message.channel.send(
+                    content,
+                    file=outgoing_file,
+                )  # natural chime-in, no ping
         else:
-            await message.reply(reply[:MAX_DISCORD_CHARS], mention_author=False)
+            if outgoing_file is None:
+                await message.reply(content, mention_author=False)
+            else:
+                await message.reply(
+                    content,
+                    file=outgoing_file,
+                    mention_author=False,
+                )
+        if outbound_media is not None:
+            await asyncio.to_thread(
+                discord_media.record_media_event,
+                "outbound",
+                status="sent",
+                mime_type=outbound_media.mime_type,
+                size_bytes=outbound_media.size_bytes,
+                sha256=outbound_media.sha256,
+                kind=outbound_media.kind,
+            )
         engaged.setdefault(chan, {})[message.author.id] = time.monotonic()
         last_reply_at[chan] = time.monotonic()
         her_last_ts[chan] = time.monotonic()
