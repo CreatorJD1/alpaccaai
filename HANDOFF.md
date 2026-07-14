@@ -16,6 +16,9 @@
   --voice-readiness` reports only content-free dependency status.
 - This is **output-only**. Discord microphone receive/transcription is not
   implemented, and join confirmation says so explicitly.
+- The persistent F5 worker now suppresses third-party `ref_text`/`gen_text`
+  console chatter so synthesized Discord or House text does not enter worker
+  logs; content-free worker errors and readiness remain visible.
 - Verification: the combined Phase 5/Discord set passed (`96 passed`),
   `python -m pytest -q tests/test_core.py` passed (`356 passed`), and
   `npm.cmd run house:build` passed with only the retained chunk-size advisory.

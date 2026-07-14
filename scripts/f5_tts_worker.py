@@ -6,6 +6,7 @@ vocoder resident so normal House HQ speech pays only inference time.
 """
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import sys
@@ -43,6 +44,21 @@ class _Progress:
 _progress = _Progress()
 
 
+class _DiscardWriter:
+    """Drop third-party inference chatter that may include synthesized text."""
+
+    @staticmethod
+    def write(value: str) -> int:
+        return len(value)
+
+    @staticmethod
+    def flush() -> None:
+        return None
+
+
+_discard_writer = _DiscardWriter()
+
+
 def load_once() -> None:
     global _ready, _load_error, _model, _vocoder, _load_seconds
     if _ready:
@@ -76,19 +92,29 @@ def synth(text: str, ref_audio: str, ref_text: str, nfe_step: int) -> tuple[byte
     from f5_tts.infer.utils_infer import infer_process, preprocess_ref_audio_text
     import soundfile as sf
 
-    ref_audio2, ref_text2 = preprocess_ref_audio_text(ref_audio, ref_text, show_info=_noop)
     with _lock:
-        wave, sr, _spectrogram = infer_process(
-            ref_audio2,
-            ref_text2,
-            text,
-            _model,
-            _vocoder,
-            show_info=_noop,
-            progress=_progress,
-            nfe_step=max(4, int(nfe_step or OPEN_TTS_NFE_STEP)),
-            device=OPEN_TTS_DEVICE,
-        )
+        # F5's helpers print ref_text/gen_text even when show_info is disabled.
+        # Those strings can contain private conversation, so suppress only the
+        # library output while the outer handler retains content-free failures.
+        with contextlib.redirect_stdout(_discard_writer), contextlib.redirect_stderr(
+            _discard_writer
+        ):
+            ref_audio2, ref_text2 = preprocess_ref_audio_text(
+                ref_audio,
+                ref_text,
+                show_info=_noop,
+            )
+            wave, sr, _spectrogram = infer_process(
+                ref_audio2,
+                ref_text2,
+                text,
+                _model,
+                _vocoder,
+                show_info=_noop,
+                progress=_progress,
+                nfe_step=max(4, int(nfe_step or OPEN_TTS_NFE_STEP)),
+                device=OPEN_TTS_DEVICE,
+            )
     if wave is None:
         raise RuntimeError("F5 produced no waveform")
     buf = io.BytesIO()
