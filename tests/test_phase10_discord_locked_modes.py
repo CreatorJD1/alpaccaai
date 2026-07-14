@@ -528,6 +528,8 @@ def test_claimed_quiet_room_can_start_one_grounded_conversation(monkeypatch):
 
     assert channel.sent == ["What part of the model should we improve next?"]
     assert len(calls) == 1
+    assert "Initiative kind: quiet-room opener." in calls[0][0]
+    assert "reply exactly" not in calls[0][0]
     assert "current model textures" in calls[0][0]
     assert len(calls[0][1]) == 64
 

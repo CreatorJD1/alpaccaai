@@ -92,6 +92,7 @@ from alpecca import attachment_ingress as attachment_ingress_mod
 from alpecca import audio_ingress as audio_ingress_mod
 from alpecca import bridge_actor_identity as bridge_actor_identity_mod
 from alpecca import bridge_actor_transport as bridge_actor_transport_mod
+from alpecca import discord_autonomy as discord_autonomy_mod
 from alpecca import file_ingress as file_ingress_mod
 from alpecca import notification_anchor as notification_anchor_mod
 from alpecca import notification_outbox as notification_outbox_mod
@@ -7837,6 +7838,108 @@ async def issue_discord_actor_envelope(req: Request, response: Response) -> dict
     return {"envelope": envelope.encode()}
 
 
+def _record_discord_autonomy_outcome(
+    room_scope: str,
+    outcome: str,
+    *,
+    decision: discord_autonomy_mod.Decision | None = None,
+    calls: int,
+) -> bool:
+    """Write one content-free initiative receipt before any message is released."""
+    try:
+        observation_id = cognition_mod.record_observation(
+            cognition_mod.CognitionObservation(
+                source="discord_autonomy",
+                content=(
+                    f"Discord initiative {outcome}; "
+                    f"intent={(decision.intent if decision is not None else 'none')}."
+                ),
+                room="Discord",
+                confidence=0.9,
+                privacy_class="guest",
+                scope=f"guest-discord-room-{room_scope}",
+                metadata={
+                    "outcome": str(outcome)[:40],
+                    "intent_index": decision.pick if decision is not None else None,
+                    "model_calls": max(0, min(2, int(calls))),
+                    "content_retained": False,
+                },
+            )
+        )
+    except Exception:
+        return False
+    return observation_id is not None
+
+
+async def _deliberated_discord_autonomy(text: str, room_scope: str) -> str:
+    """Run a compact local decision gate before composing autonomous speech."""
+    privacy_scope = f"guest-discord-room-{room_scope}"
+    decision_turn = turn_context_mod.TurnContext.create(
+        f"discord-autonomy-deliberation-{room_scope}",
+        principal="guest",
+        surface="discord",
+        privacy_scope=privacy_scope,
+        portal_epoch="discord-autonomy-deliberation",
+    )
+    decision_result = await _ws_chat_turn_with_timeout(
+        discord_autonomy_mod.decision_prompt(text),
+        situation_hint="approved Discord room initiative decision",
+        reply_tier="fast",
+        activity_recorded=False,
+        turn=decision_turn,
+    )
+    decision = discord_autonomy_mod.parse_decision(
+        str(decision_result.get("reply") or "")
+    )
+    if decision is None:
+        _record_discord_autonomy_outcome(
+            room_scope,
+            "invalid-decision-pass",
+            calls=1,
+        )
+        return "[pass]"
+    if not decision.speak:
+        _record_discord_autonomy_outcome(
+            room_scope,
+            "deliberate-pass",
+            decision=decision,
+            calls=1,
+        )
+        return "[pass]"
+
+    composition_turn = turn_context_mod.TurnContext.create(
+        f"discord-autonomy-composition-{room_scope}",
+        principal="guest",
+        surface="discord",
+        privacy_scope=privacy_scope,
+        portal_epoch="discord-autonomy-composition",
+    )
+    composition_result = await _ws_chat_turn_with_timeout(
+        discord_autonomy_mod.composition_prompt(text, decision),
+        situation_hint="approved Discord room initiative composition",
+        reply_tier="reason",
+        activity_recorded=False,
+        turn=composition_turn,
+    )
+    draft = str(composition_result.get("reply") or "").strip()
+    if not discord_autonomy_mod.publishable_draft(draft):
+        _record_discord_autonomy_outcome(
+            room_scope,
+            "draft-rejected-pass",
+            decision=decision,
+            calls=2,
+        )
+        return "[pass]"
+    if not _record_discord_autonomy_outcome(
+        room_scope,
+        "approved",
+        decision=decision,
+        calls=2,
+    ):
+        return "[pass]"
+    return draft
+
+
 @app.post("/channel/discord/autonomy")
 async def discord_autonomy_turn(req: Request, response: Response) -> dict:
     """Run one ephemeral, service-authenticated Discord room initiative.
@@ -7864,21 +7967,8 @@ async def discord_autonomy_turn(req: Request, response: Response) -> dict:
             detail="invalid Discord autonomy request",
             headers={"Cache-Control": "no-store"},
         )
-    turn = turn_context_mod.TurnContext.create(
-        f"discord-autonomy-{room_scope}",
-        principal="guest",
-        surface="discord",
-        privacy_scope=f"guest-discord-room-{room_scope}",
-        portal_epoch="discord-autonomy",
-    )
-    result = await _ws_chat_turn_with_timeout(
-        text.strip(),
-        situation_hint="approved Discord room initiative",
-        reply_tier="fast",
-        activity_recorded=False,
-        turn=turn,
-    )
-    return {"reply": str(result.get("reply") or "")}
+    reply = await _deliberated_discord_autonomy(text.strip(), room_scope)
+    return {"reply": reply}
 
 
 @app.post("/channel/inbound")

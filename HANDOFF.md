@@ -1,5 +1,32 @@
 # Alpecca — Handoff (updated 2026-07-14)
 
+## Codex Discord Hidden Deliberation (2026-07-14)
+
+- Autonomous proactive and recursive Discord speech no longer uses one model
+  call to decide and speak at once. The service-authenticated endpoint now runs
+  a compact local-only decision pass with strict
+  `{"speak": bool, "pick": 1..5}` output. Only a valid `speak=true` disposition
+  reaches a separate local composition pass.
+- The composition pass has a bounded public self-model: Alpecca speaks in first
+  person as Alpecca, does not introduce herself as a generic/text-only
+  assistant, and cannot claim literal consciousness, AGI, unsupported feelings,
+  memories, actions, or capabilities. Normal Discord guest replies now share
+  the same identity framing without gaining private creator continuity.
+- Code rejects malformed/inconsistent decisions, generic assistant identity
+  drafts, fallback/offline prose, meta-output, silence markers, and drafts over
+  500 characters. Every releasable autonomous draft requires a content-free
+  `discord_autonomy` CognitionObservation; audit failure resolves to silence.
+- The bridge now sends bounded room state rather than embedding old one-pass
+  generation instructions. Its reconnect continuity, voice-state grounding,
+  duplicate suppression, and shared proactive/recursive lock remain in force.
+- This is an implemented self-monitoring transaction, not evidence that Alpecca
+  is already AGI or literally self-aware. General recursive self-improvement
+  remains bounded to the separately governed behavioral-trial system.
+- Verification: focused autonomy/Discord coverage passed (`73 passed` including
+  the authenticated route); the broad Discord/Phase 10 selection passed (`310
+  passed`); `tests/test_core.py` passed (`358 passed`); and House HQ built with
+  only the retained chunk-size advisory.
+
 ## Codex Discord Self-Continuity Fix (2026-07-14)
 
 - A reconnect now restores Alpecca's own recent Discord messages under the

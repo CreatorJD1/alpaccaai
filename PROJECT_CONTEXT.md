@@ -83,6 +83,12 @@ retained elsewhere for historical context.
   backend as guest authority. Proactive speech is recent-context-grounded,
   limited to one globally serialized room evaluation per sweep, backs off when
   ignored, yields to new human activity, and cannot start a recursive monologue.
+  Proactive and recursive Discord speech now passes through a local-only hidden
+  decision transaction before composition: strict tiny JSON selects silence or
+  one bounded intent, a second pass composes under Alpecca's public grounded
+  self-model, and deterministic identity/length/fallback checks plus a
+  content-free cognition receipt must pass before release. This is functional
+  pre-speech self-monitoring, not a claim of literal consciousness or AGI.
   Discord voice output is opt-in through `ALPECCA_DISCORD_VOICE=1`, and bounded
   receive is separately gated by `ALPECCA_DISCORD_VOICE_RECEIVE=1`; the standard
   `START_HERE.bat` launch enables both. In a claimed room, an addressed `join

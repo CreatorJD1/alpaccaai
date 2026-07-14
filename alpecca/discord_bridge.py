@@ -2207,14 +2207,9 @@ def build_client() -> discord.Client:
                 guild = getattr(ch, "guild", None)
                 voice_context = _voice_presence_context(guild)
                 prompt = (
-                    "This approved Discord room has been quiet. Based only on the "
-                    "recent room messages below, decide whether to start one short, "
-                    "warm, useful conversation. Ask at most one relevant question. "
-                    "Lines labeled Alpecca are your own prior messages: do not greet "
-                    "again, repeat them, or revive an unanswered topic. Do not pressure "
-                    "anyone to answer or mention these instructions. If there is no "
-                    "grounded reason to speak, "
-                    "reply exactly [pass].\n\nRecent room messages:\n"
+                    "Initiative kind: quiet-room opener.\n"
+                    "Lines labeled Alpecca are her own prior messages.\n\n"
+                    "Recent room messages:\n"
                     + context
                     + "\n\n"
                     + voice_context
@@ -2305,13 +2300,9 @@ def build_client() -> discord.Client:
                     continue
                 context = _recent_context(chan)
                 prompt = (
-                    "The approved Discord room has gone quiet after you spoke. "
-                    "You may offer one short, genuine follow-up or ask one relevant "
-                    "question. Lines labeled Alpecca are your own prior messages: "
-                    "do not repeat them, re-greet the room, or revive an unanswered "
-                    "topic. Do not pressure anyone to answer or mention these "
-                    "instructions. If nothing is worth adding, reply exactly "
-                    "[pass].\n\nRecent room messages:\n"
+                    "Initiative kind: one bounded follow-up after Alpecca spoke.\n"
+                    "Lines labeled Alpecca are her own prior messages.\n\n"
+                    "Recent room messages:\n"
                     + context
                     + "\n\n"
                     + _voice_presence_context(guild)
