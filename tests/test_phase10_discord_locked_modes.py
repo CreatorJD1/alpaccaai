@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -529,6 +530,136 @@ def test_claimed_quiet_room_can_start_one_grounded_conversation(monkeypatch):
     assert len(calls) == 1
     assert "current model textures" in calls[0][0]
     assert len(calls[0][1]) == 64
+
+
+def test_reconnect_restores_self_history_and_suppresses_repeated_denial(monkeypatch):
+    room = {"guild_id": "777", "channel_id": "3001"}
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_COOLDOWN", 10.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_GLOBAL_COOLDOWN", 0.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_QUIET_MIN", 5.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_MIN_LEN", 1)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_CHANCE", 1.0)
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge.random, "random", lambda: 0.0)
+    monkeypatch.setattr(discord_bridge, "_recent_voice_context", lambda *_args: [])
+    prompts: list[str] = []
+
+    def ask(prompt: str, _room_scope: str) -> str:
+        prompts.append(prompt)
+        return "Since I'm a text-based AI, I can't join voice chat."
+
+    monkeypatch.setattr(discord_bridge, "_ask_room_autonomy", ask)
+    client = _client(monkeypatch)
+
+    class HistoryChannel(_HistoryChannel):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.guild = SimpleNamespace(id=777, voice_client=None)
+
+        def history(self, *, limit: int, oldest_first: bool):
+            del limit, oldest_first
+
+            async def records():
+                yield SimpleNamespace(
+                    author=SimpleNamespace(
+                        id=42,
+                        bot=False,
+                        display_name="CreatorJD",
+                    ),
+                    clean_content="Can you join voice?",
+                )
+                yield SimpleNamespace(
+                    author=SimpleNamespace(
+                        id=9001,
+                        bot=True,
+                        display_name="Alpecca_ai",
+                    ),
+                    clean_content="Since I'm a text-based AI, I can't join voice chat.",
+                )
+                yield SimpleNamespace(
+                    author=SimpleNamespace(
+                        id=8181,
+                        bot=True,
+                        display_name="OtherBot",
+                    ),
+                    clean_content="Automated status noise.",
+                )
+
+            return records()
+
+    channel = HistoryChannel()
+    monkeypatch.setattr(client, "get_channel", lambda channel_id: channel if channel_id == 3001 else None)
+
+    async def scenario() -> None:
+        await getattr(client, "_alpecca_seed_room_history")(channel, room, observed_at=100.0)
+        await getattr(client, "_alpecca_proactive_sweep_once")(now=111.0)
+
+    asyncio.run(scenario())
+
+    assert len(prompts) == 1
+    assert "Alpecca: Since I'm a text-based AI" in prompts[0]
+    assert "OtherBot" not in prompts[0]
+    assert channel.sent == []
+
+
+def test_recursive_reply_is_recorded_and_same_followup_is_not_resent(monkeypatch):
+    room = {"guild_id": "777", "channel_id": "3001"}
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_DELAY", 5.0)
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_MAX", 2)
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "PARTICIPATE", False)
+    monkeypatch.setattr(discord_bridge, "CHANNEL_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr(
+        discord_bridge.discord_media,
+        "resolve_outbound_media",
+        lambda _text: None,
+    )
+    def ask_direct(*_args, **_kwargs) -> str:
+        # Windows monotonic clocks are millisecond-granular; preserve the real
+        # ordering between the human turn and Alpecca's completed reply.
+        time.sleep(0.01)
+        return "First grounded answer."
+
+    monkeypatch.setattr(discord_bridge, "_ask_alpecca", ask_direct)
+    recursive_prompts: list[str] = []
+
+    def ask_recursive(prompt: str, _room_scope: str) -> str:
+        recursive_prompts.append(prompt)
+        return "One relevant follow-up thought."
+
+    monkeypatch.setattr(discord_bridge, "_ask_room_autonomy", ask_recursive)
+    client = _client(monkeypatch)
+    guild = SimpleNamespace(
+        id=777,
+        voice_client=None,
+        me=SimpleNamespace(display_name="Alpecca_ai"),
+    )
+    channel = _HistoryChannel([])
+    channel.guild = guild
+    message = _Message(content="Tell me what you noticed.")
+    message.guild = guild
+    message.channel = channel
+    message.clean_content = message.content
+    message.mentions = [client.user]
+    message.reference = None
+
+    async def scenario() -> None:
+        await client.on_message(message)
+        baseline = time.monotonic()
+        sweep = getattr(client, "_alpecca_recursive_sweep_once")
+        await sweep(now=baseline + 10.0)
+        await sweep(now=baseline + 20.0)
+
+    asyncio.run(scenario())
+
+    assert message.replies == [("First grounded answer.", {"mention_author": False})]
+    assert channel.sent == ["One relevant follow-up thought."]
+    assert len(recursive_prompts) == 2
+    assert "Alpecca: One relevant follow-up thought." in recursive_prompts[1]
 
 
 def test_unclaimed_room_never_runs_a_proactive_decision(monkeypatch):

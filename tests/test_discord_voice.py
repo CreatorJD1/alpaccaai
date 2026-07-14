@@ -169,6 +169,28 @@ def test_live_voice_guard_preserves_noncontradictory_reply():
     ) == reply
 
 
+def test_disconnected_voice_guard_corrects_false_capability_denial():
+    corrected = discord_bridge._enforce_voice_live_state(
+        "Since I'm a text-based AI, I can't join voice chat.",
+        connected=False,
+        channel_name="General",
+        listener_active=False,
+        voice_enabled=True,
+    )
+
+    assert corrected == (
+        "I'm not connected to Discord voice right now, but voice is enabled. "
+        "I can join an approved claimed room when CreatorJD asks from a voice channel."
+    )
+    assert discord_bridge._enforce_voice_live_state(
+        "I can't join voice chat.",
+        connected=False,
+        channel_name="General",
+        listener_active=False,
+        voice_enabled=False,
+    ) == "I can't join voice chat."
+
+
 def test_collector_filters_user_and_emits_bounded_memory_wav():
     utterances: list[discord_voice.VoiceUtterance] = []
     starts: list[str] = []

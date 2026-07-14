@@ -1,5 +1,29 @@
 # Alpecca — Handoff (updated 2026-07-14)
 
+## Codex Discord Self-Continuity Fix (2026-07-14)
+
+- A reconnect now restores Alpecca's own recent Discord messages under the
+  explicit `Alpecca` label while continuing to ignore other bots. A restored
+  self-turn also resets the in-memory reply clock, so a bridge restart cannot
+  immediately treat forgotten output as a reason to speak again.
+- Direct, proactive, and recursive room prompts now distinguish Alpecca's own
+  prior lines from human messages and tell the model not to re-greet, repeat a
+  claim, or revive an unanswered topic without new human context.
+- Proactive and recursive room speech share one lock. Their output is grounded
+  against the authoritative live Discord voice state and deterministically
+  suppressed only when it duplicates or closely restates Alpecca's recent
+  autonomous output. A false `text-based AI cannot join voice` claim is now
+  corrected even while disconnected; the correction says voice is enabled but
+  does not falsely claim she is currently connected.
+- Recursive follow-ups are now written back into the rolling room context and
+  update the common reply clock. A pass or detected duplicate consumes that
+  bounded continuation allowance until a human speaks again, preventing
+  repeated model evaluations and resend loops.
+- Verification: focused Discord tests passed (`62 passed`); the broader
+  Discord/Phase 10 selection passed (`302 passed`); `tests/test_core.py` passed
+  (`358 passed`); and `npm.cmd run house:build` passed with only the retained
+  chunk-size advisory.
+
 ## Codex Discord Duplex Voice Baseline (2026-07-14)
 
 - `ALPECCA_DISCORD_VOICE=1` now enables Discord voice-state intent and the

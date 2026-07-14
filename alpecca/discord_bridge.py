@@ -32,6 +32,7 @@ Her backend (`server.py`) must be running so `/channel/discord` is reachable.
 from __future__ import annotations
 
 import asyncio
+from difflib import SequenceMatcher
 import hashlib
 import importlib.util
 import ipaddress
@@ -254,6 +255,14 @@ def _room_scope(guild_id: object, channel_id: object) -> str:
     return hashlib.sha256(material.encode("ascii")).hexdigest()
 
 
+_VOICE_CAPABILITY_DENIAL_RE = re.compile(
+    r"(?:can(?:not|'t)\s+(?:join|enter).*voice|"
+    r"do(?:n't| not)\s+have\s+the\s+ability\s+to\s+(?:enter|join).*voice|"
+    r"text[- ]based\s+ai)",
+    re.IGNORECASE,
+)
+
+
 _VOICE_DENIAL_RE = re.compile(
     r"(?:can(?:not|'t)\s+(?:join|enter|see you in|hear).*voice|"
     r"not\s+in\s+(?:a\s+)?voice\s+channel|"
@@ -290,9 +299,20 @@ def _enforce_voice_live_state(
     connected: bool,
     channel_name: str,
     listener_active: bool,
+    voice_enabled: bool = True,
 ) -> str:
-    if not connected or _VOICE_DENIAL_RE.search(reply or "") is None:
+    text = reply or ""
+    capability_denial = bool(
+        voice_enabled and _VOICE_CAPABILITY_DENIAL_RE.search(text)
+    )
+    connected_state_denial = bool(connected and _VOICE_DENIAL_RE.search(text))
+    if not capability_denial and not connected_state_denial:
         return reply
+    if not connected:
+        return (
+            "I'm not connected to Discord voice right now, but voice is enabled. "
+            "I can join an approved claimed room when CreatorJD asks from a voice channel."
+        )
     name = " ".join(str(channel_name or "this voice channel").split())[:80]
     if listener_active:
         return (
@@ -313,6 +333,46 @@ def _room_reply_is_pass(reply: str) -> bool:
         "(pass)",
         "[silent]",
     }
+
+
+_ROOM_MENTION_RE = re.compile(r"(?:<@!?\d+>|@[a-z0-9_.-]+)", re.IGNORECASE)
+_ROOM_REPLY_WORD_RE = re.compile(r"[^a-z0-9]+", re.IGNORECASE)
+
+
+def _normalise_room_reply(text: str) -> str:
+    without_mentions = _ROOM_MENTION_RE.sub(" ", str(text or "").casefold())
+    return " ".join(_ROOM_REPLY_WORD_RE.sub(" ", without_mentions).split())
+
+
+def _room_reply_repeats_self(
+    reply: str,
+    history: list[tuple[str, str]],
+    *,
+    raw_reply: str = "",
+) -> bool:
+    """Reject only autonomous repeats of Alpecca's recent room turns."""
+    candidate = _normalise_room_reply(reply)
+    if not candidate:
+        return False
+    raw_denial = _VOICE_CAPABILITY_DENIAL_RE.search(raw_reply or reply) is not None
+    for author, prior_text in reversed(history):
+        if str(author).casefold() != "alpecca":
+            continue
+        prior = _normalise_room_reply(prior_text)
+        if not prior:
+            continue
+        if raw_denial and _VOICE_DENIAL_RE.search(prior_text or "") is not None:
+            return True
+        if candidate == prior:
+            return True
+        shorter, longer = sorted((candidate, prior), key=len)
+        if len(shorter) >= 32 and shorter in longer and len(shorter) / len(longer) >= 0.72:
+            return True
+        if min(len(candidate), len(prior)) >= 32:
+            ratio = SequenceMatcher(None, candidate, prior, autojunk=False).ratio()
+            if ratio >= 0.86:
+                return True
+    return False
 
 
 _ROOM_REACTIONS = {
@@ -960,15 +1020,31 @@ def build_client() -> discord.Client:
         last_proactive_eval_at.setdefault(channel_id, observed)
         history = getattr(channel, "history", None)
         lines: list[tuple[str, str]] = []
+        saw_human = False
+        saw_alpecca = False
+        self_id = getattr(client.user, "id", None)
         if callable(history):
             try:
                 async for item in history(limit=SOCIAL_HISTORY_LIMIT, oldest_first=True):
                     author = getattr(item, "author", None)
-                    if author is None or getattr(author, "bot", False):
+                    author_id = getattr(author, "id", None)
+                    is_alpecca = bool(
+                        author is not None
+                        and self_id is not None
+                        and author_id is not None
+                        and str(author_id) == str(self_id)
+                    )
+                    if author is None or (getattr(author, "bot", False) and not is_alpecca):
                         continue
                     content = str(getattr(item, "clean_content", "") or "").strip()
                     if content:
-                        lines.append((str(getattr(author, "display_name", "Someone")), content[:700]))
+                        if is_alpecca:
+                            saw_alpecca = True
+                            label = "Alpecca"
+                        else:
+                            saw_human = True
+                            label = str(getattr(author, "display_name", "Someone"))
+                        lines.append((label, content[:700]))
             except Exception:
                 _diagnostic("room_history_unavailable")
         try:
@@ -978,11 +1054,18 @@ def build_client() -> discord.Client:
                 channel_id,
             )
             lines.extend(voice_lines)
+            saw_human = saw_human or bool(voice_lines)
         except Exception:
             _diagnostic("voice_memory_unavailable")
         if lines:
             history_buf[channel_id] = lines[-CONTEXT_MESSAGES:]
-            last_human_ts[channel_id] = observed
+            if saw_human:
+                last_human_ts[channel_id] = observed
+            if saw_alpecca:
+                # A reconnect must not make an old self-message look like a new
+                # invitation to repeat it immediately.
+                her_last_ts[channel_id] = observed
+                last_reply_at[channel_id] = observed
             _diagnostic("room_history_seeded", count=len(lines))
 
     def _room_model_text(chan_id: int, latest: str, *, invite: bool = False) -> str:
@@ -1000,6 +1083,11 @@ def build_client() -> discord.Client:
             "You are replying in an approved Discord room. Use the recent room "
             "context to answer naturally and do not claim to remember anything "
             "outside this window."
+        )
+        directive += (
+            " Lines labeled Alpecca are your own earlier messages. Do not greet, "
+            "reintroduce yourself, repeat a claim, or ask the same question again "
+            "unless a new human message makes that necessary."
         )
         return f"{directive}\n\nRecent room messages:\n{context}\n\nLatest message:\n{latest}"[:7_500]
 
@@ -1065,7 +1153,7 @@ def build_client() -> discord.Client:
     _sweepers_started = {"recursive": False, "proactive": False}
     _proactive_global_eval = {"at": 0.0}
     _proactive_cursor = {"index": 0}
-    _proactive_lock = asyncio.Lock()
+    _room_autonomy_lock = asyncio.Lock()
     voice_locks: dict[int, asyncio.Lock] = {}
     voice_transcribe_lock = asyncio.Lock()
     voice_receive_sessions: dict[int, dict[str, object]] = {}
@@ -1106,6 +1194,7 @@ def build_client() -> discord.Client:
             listener_active=(
                 int(getattr(guild, "id", 0) or 0) in voice_receive_sessions
             ),
+            voice_enabled=VOICE_ENABLED,
         )
 
     def _ensure_room_sweepers() -> None:
@@ -2063,9 +2152,9 @@ def build_client() -> discord.Client:
 
     async def _proactive_sweep_once(*, now: float | None = None) -> None:
         """Offer at most one grounded opener per eligible claimed room."""
-        if not PROACTIVE_ENABLED or _proactive_lock.locked():
+        if not PROACTIVE_ENABLED or _room_autonomy_lock.locked():
             return
-        async with _proactive_lock:
+        async with _room_autonomy_lock:
             tick_now = time.monotonic() if now is None else float(now)
             rooms = list(social_rooms.items())
             if not rooms:
@@ -2115,14 +2204,20 @@ def build_client() -> discord.Client:
                     _diagnostic("proactive_room_passed", status="chance")
                     return
                 human_snapshot = last_human_ts.get(chan, 0.0)
+                guild = getattr(ch, "guild", None)
+                voice_context = _voice_presence_context(guild)
                 prompt = (
                     "This approved Discord room has been quiet. Based only on the "
                     "recent room messages below, decide whether to start one short, "
                     "warm, useful conversation. Ask at most one relevant question. "
-                    "Do not repeat yourself, pressure anyone to answer, or mention "
-                    "these instructions. If there is no grounded reason to speak, "
+                    "Lines labeled Alpecca are your own prior messages: do not greet "
+                    "again, repeat them, or revive an unanswered topic. Do not pressure "
+                    "anyone to answer or mention these instructions. If there is no "
+                    "grounded reason to speak, "
                     "reply exactly [pass].\n\nRecent room messages:\n"
                     + context
+                    + "\n\n"
+                    + voice_context
                 )[:7_500]
                 try:
                     reply = await asyncio.to_thread(
@@ -2139,9 +2234,21 @@ def build_client() -> discord.Client:
                 ):
                     _diagnostic("proactive_room_yielded", status="human_activity")
                     return
-                reply = (reply or "").strip()
-                if _room_reply_is_pass(reply):
+                raw_reply = (reply or "").strip()
+                if _room_reply_is_pass(raw_reply):
                     _diagnostic("proactive_room_passed", status="model")
+                    return
+                reply = (
+                    _ground_voice_presence_reply(raw_reply, guild)
+                    if guild is not None
+                    else raw_reply
+                )
+                if _room_reply_repeats_self(
+                    reply,
+                    history_buf.get(chan, []),
+                    raw_reply=raw_reply,
+                ):
+                    _diagnostic("proactive_room_passed", status="duplicate")
                     return
                 try:
                     await ch.send(reply[:MAX_DISCORD_CHARS])
@@ -2158,7 +2265,6 @@ def build_client() -> discord.Client:
                 ignored_streak[chan] = min(3, ignored_streak.get(chan, 0) + 1)
                 history_buf.setdefault(chan, []).append(("Alpecca", reply))
                 del history_buf[chan][:-max(CONTEXT_MESSAGES, 1)]
-                guild = getattr(ch, "guild", None)
                 if (
                     VOICE_ENABLED
                     and guild is not None
@@ -2175,38 +2281,40 @@ def build_client() -> discord.Client:
             await asyncio.sleep(PROACTIVE_SWEEP)
             await _proactive_sweep_once()
 
-    async def recursive_sweeper() -> None:
-        """When the room stays quiet after SHE spoke, let her continue her own
-        thought a step deeper -- bounded by RECURSIVE_MAX, paced by RECURSIVE_DELAY,
-        and abandoned the instant a human speaks (they reset chain_depth)."""
-        while True:
-            await asyncio.sleep(RECURSIVE_SWEEP)
-            if not RECURSIVE_ENABLED:
-                continue
-            now = time.monotonic()
+    async def _recursive_sweep_once(*, now: float | None = None) -> None:
+        """Offer one bounded continuation while sharing the autonomy send lock."""
+        if not RECURSIVE_ENABLED or _room_autonomy_lock.locked():
+            return
+        async with _room_autonomy_lock:
+            tick_now = time.monotonic() if now is None else float(now)
             for chan, hts in list(her_last_ts.items()):
                 human = last_human_ts.get(chan, 0.0)
                 if human <= 0 or hts <= human:
-                    continue                              # only after a real exchange, she last
-                if now - hts < RECURSIVE_DELAY:
-                    continue                              # give humans time to answer
+                    continue
+                if tick_now - hts < RECURSIVE_DELAY:
+                    continue
                 if chain_depth.get(chan, 0) >= RECURSIVE_MAX:
-                    continue                              # don't monologue past the cap
+                    continue
                 ch = channel_obj.get(chan)
                 if ch is None:
                     continue
                 guild = getattr(ch, "guild", None)
                 guild_id = getattr(guild, "id", None)
-                if guild_id is None or _room_key(guild_id, chan) not in social_rooms:
+                room_key = _room_key(guild_id, chan) if guild_id is not None else ""
+                if not room_key or room_key not in social_rooms:
                     continue
                 context = _recent_context(chan)
                 prompt = (
                     "The approved Discord room has gone quiet after you spoke. "
                     "You may offer one short, genuine follow-up or ask one relevant "
-                    "question. Do not repeat yourself, pressure anyone to answer, or "
-                    "mention these instructions. If nothing is worth adding, reply "
-                    "exactly [pass].\n\nRecent room messages:\n"
+                    "question. Lines labeled Alpecca are your own prior messages: "
+                    "do not repeat them, re-greet the room, or revive an unanswered "
+                    "topic. Do not pressure anyone to answer or mention these "
+                    "instructions. If nothing is worth adding, reply exactly "
+                    "[pass].\n\nRecent room messages:\n"
                     + context
+                    + "\n\n"
+                    + _voice_presence_context(guild)
                 )[:7_500]
                 try:
                     reply = await asyncio.to_thread(
@@ -2217,19 +2325,51 @@ def build_client() -> discord.Client:
                 except Exception:
                     _diagnostic("recursive_request_failed")
                     continue
-                if last_human_ts.get(chan, 0.0) > hts:    # someone spoke while thinking -> yield
+                if (
+                    last_human_ts.get(chan, 0.0) > hts
+                    or room_key not in social_rooms
+                ):
+                    _diagnostic("recursive_room_yielded", status="human_activity")
                     continue
-                if not _room_reply_is_pass(reply):
+                raw_reply = (reply or "").strip()
+                if _room_reply_is_pass(raw_reply):
+                    chain_depth[chan] = RECURSIVE_MAX
+                    _diagnostic("recursive_room_passed", status="model")
+                    continue
+                reply = _ground_voice_presence_reply(raw_reply, guild)
+                if _room_reply_repeats_self(
+                    reply,
+                    history_buf.get(chan, []),
+                    raw_reply=raw_reply,
+                ):
+                    chain_depth[chan] = RECURSIVE_MAX
+                    _diagnostic("recursive_room_passed", status="duplicate")
+                    continue
+                try:
                     await ch.send(reply[:MAX_DISCORD_CHARS])
-                    her_last_ts[chan] = time.monotonic()
-                    chain_depth[chan] = chain_depth.get(chan, 0) + 1
-                    if (
-                        VOICE_ENABLED
-                        and guild is not None
-                        and getattr(guild, "voice_client", None)
-                        and guild.voice_client.is_connected()
-                    ):
-                        asyncio.create_task(_speak_in_voice(guild, reply))
+                except Exception:
+                    _diagnostic("recursive_send_failed")
+                    continue
+                sent_at = time.monotonic() if now is None else tick_now
+                her_last_ts[chan] = sent_at
+                last_reply_at[chan] = sent_at
+                chain_depth[chan] = chain_depth.get(chan, 0) + 1
+                history_buf.setdefault(chan, []).append(("Alpecca", reply))
+                del history_buf[chan][:-max(CONTEXT_MESSAGES, 1)]
+                if (
+                    VOICE_ENABLED
+                    and guild is not None
+                    and getattr(guild, "voice_client", None)
+                    and guild.voice_client.is_connected()
+                ):
+                    asyncio.create_task(_speak_in_voice(guild, reply))
+                _diagnostic("recursive_room_sent")
+
+    async def recursive_sweeper() -> None:
+        """Pace bounded self-continuations and yield to human room activity."""
+        while True:
+            await asyncio.sleep(RECURSIVE_SWEEP)
+            await _recursive_sweep_once()
 
     setattr(client, "_alpecca_speak_in_voice", _speak_in_voice)
     setattr(client, "_alpecca_start_voice_receive", _start_voice_receive)
@@ -2238,4 +2378,6 @@ def build_client() -> discord.Client:
     # Deliberate test seam for one bounded sweep; production uses the scheduled
     # loop above. Keeping the loop body separate prevents timing-heavy tests.
     setattr(client, "_alpecca_proactive_sweep_once", _proactive_sweep_once)
+    setattr(client, "_alpecca_recursive_sweep_once", _recursive_sweep_once)
+    setattr(client, "_alpecca_seed_room_history", _seed_room_history)
     return client
