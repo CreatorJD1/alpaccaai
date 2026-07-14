@@ -4,9 +4,11 @@
 
 - Discord guild activation now parses Discord's raw numeric mention protocol
   instead of relying on cached mention-object identity or presentation text.
-  CreatorJD (`realcreatorjd`) can claim or release one channel with the exact
-  `@Alpecca room on` / `room off` command. Registry writes roll back on failure;
-  a missing Discord send permission does not undo a successful durable claim.
+  CreatorJD (`realcreatorjd`) can claim or release one channel with an exact
+  `@Alpecca room on` / `room off` command line. Repeated identical command lines
+  and mobile-composed surrounding lines are tolerated; conflicting actions fail
+  closed. Registry writes roll back on failure, and a missing Discord send
+  permission does not undo a successful durable claim.
 - Claimed rooms now have a real quiet-room proactive loop. It uses bounded
   recent room context, quiet/cooldown/chance/model gates, one global in-flight
   decision, one rotated room per sweep, and exponential ignored-outreach
@@ -25,7 +27,7 @@
   and automatic Mindscape snapshots defer during active/recent chat. This keeps
   the socket usable for an immediate retry without disabling manual or shutdown
   continuity sync.
-- Verification on this tree: `npm.cmd run house:build`; 30 focused Discord
+- Verification on this tree: `npm.cmd run house:build`; 34 focused Discord
   presence tests; the focused voice, drive, source-workspace, source-tool,
   attachment, and WebSocket-retry
   suites; six Void consolidation tests; and `python -m pytest -q

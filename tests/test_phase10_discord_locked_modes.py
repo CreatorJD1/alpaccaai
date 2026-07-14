@@ -314,12 +314,52 @@ def test_real_discord_raw_mention_claims_room_without_clean_content_or_object_id
     assert message.replies and "present in this room" in message.replies[0][0]
 
 
-@pytest.mark.parametrize("raw", ("<@9001> room on", "<@!9001> room on."))
+@pytest.mark.parametrize(
+    "raw",
+    (
+        "<@9001> room on",
+        "<@!9001> room on.",
+        "<@9001> room on\n<@9001> room on",
+        "<@9001> room on\nHello\n<@9001>",
+    ),
+)
 def test_room_command_parser_accepts_discord_protocol_mentions(raw):
     message = SimpleNamespace(content=raw, clean_content="", mentions=[])
 
     assert discord_bridge._room_control_action(message, 9001) == "on"
     assert discord_bridge._message_mentions_user(message, 9001) is True
+
+
+def test_room_command_parser_rejects_conflicting_multiline_actions():
+    message = SimpleNamespace(
+        content="<@9001> room on\n<@9001> room off",
+        clean_content="@Alpecca room on\n@Alpecca room off",
+        mentions=[SimpleNamespace(id=9001)],
+    )
+
+    assert discord_bridge._room_control_action(message, 9001) is None
+
+
+def test_mobile_multiline_creator_message_claims_room(monkeypatch, tmp_path):
+    client = _client(monkeypatch)
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", set())
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", {"realcreatorjd"})
+    monkeypatch.setattr(discord_bridge, "DISCORD_ROOM_REGISTRY", tmp_path / "rooms.json")
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", False)
+
+    message = _Message(content="<@9001> room on\nHello\n<@9001>")
+    message.author = _Author(name="realcreatorjd")
+    message.guild = SimpleNamespace(id=777)
+    message.channel = _Channel()
+    message.clean_content = "@Alpecca_ai room on\nHello\n@Alpecca_ai"
+    message.mentions = [SimpleNamespace(id=9001)]
+
+    asyncio.run(client.on_message(message))
+
+    stored = json.loads((tmp_path / "rooms.json").read_text(encoding="utf-8"))
+    assert stored == {"777:3001": {"channel_id": "3001", "guild_id": "777"}}
+    assert message.replies and "present in this room" in message.replies[0][0]
 
 
 def test_room_command_without_message_content_fails_closed():

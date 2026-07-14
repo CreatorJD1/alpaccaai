@@ -211,31 +211,39 @@ def _message_mentions_user(message: object, user_id: object) -> bool:
 
 
 def _room_control_action(message: object, user_id: object) -> str | None:
-    """Parse one exact creator room command from a real Discord payload.
+    """Parse identical creator room-command lines from a Discord payload.
 
     Discord's ``clean_content`` is presentation text and can differ by client,
     cache state, nickname, and library version. The raw ``<@id>`` form is the
-    stable protocol representation, so it is authoritative here. A populated
-    mentions collection plus a cleaned tail remains a compatibility fallback.
+    stable protocol representation, so it is authoritative here. Mobile clients
+    can bundle multiple composed lines into one message; duplicate commands are
+    harmless, surrounding lines are ignored, and conflicting actions fail closed.
+    A populated mentions collection plus cleaned command lines remains a
+    compatibility fallback.
     """
 
     wanted = str(user_id)
     raw = str(getattr(message, "content", "") or "").strip()
-    raw_match = re.fullmatch(
-        rf"<@!?{re.escape(wanted)}>\s+room\s+(on|off)\s*[.!]?",
-        raw,
-        flags=re.IGNORECASE,
-    )
-    if raw_match:
-        return raw_match.group(1).casefold()
     if not _message_mentions_user(message, wanted):
         return None
+    actions = {
+        action.casefold()
+        for action in re.findall(
+            rf"^\s*<@!?{re.escape(wanted)}>\s+room\s+(on|off)\s*[.!]?\s*$",
+            raw,
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+    }
     clean = str(getattr(message, "clean_content", "") or "").strip()
-    for candidate in (raw, clean):
-        tail = re.search(r"(?:^|\s)room\s+(on|off)\s*[.!]?$", candidate, re.IGNORECASE)
-        if tail:
-            return tail.group(1).casefold()
-    return None
+    actions.update(
+        action.casefold()
+        for action in re.findall(
+            r"^\s*@\S+\s+room\s+(on|off)\s*[.!]?\s*$",
+            clean,
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+    )
+    return next(iter(actions)) if len(actions) == 1 else None
 
 
 def _load_social_rooms() -> dict[str, dict[str, str]]:

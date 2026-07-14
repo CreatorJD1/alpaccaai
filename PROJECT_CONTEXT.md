@@ -74,8 +74,10 @@ retained elsewhere for historical context.
   external anchor.
 - The live Discord bridge accepts creator-allowlisted DMs and explicitly
   creator-claimed guild rooms. A room is added or removed only by CreatorJD's
-  exact raw bot-mention `room on` / `room off` command; all other guild rooms
-  fail closed. Claimed-room participation, quiet-room proactive speech, and at
+  raw bot-mention `room on` / `room off` command line. Identical duplicate lines
+  and mobile-composed surrounding text are tolerated, while conflicting actions
+  fail closed. All other guild rooms fail closed. Claimed-room participation,
+  quiet-room proactive speech, and at
   most one paced recursive continuation remain cooldown-bound and enter the
   backend as guest authority. Proactive speech is recent-context-grounded,
   limited to one globally serialized room evaluation per sweep, backs off when
