@@ -2006,7 +2006,14 @@ function updateAlpeccaEmbodiment(dt: number) {
     camera.position.x - alpecca.group.position.x,
     camera.position.z - alpecca.group.position.z,
   );
-  alpeccaVrmEmbodiment.setSpriteState(alpecca.state, alpecca.moving, talking);
+  alpeccaVrmEmbodiment.setSpriteState(
+    alpecca.state,
+    alpecca.moving,
+    talking,
+    false,
+    alpecca.walkSpeed,
+    alpeccaLastMove,
+  );
   alpeccaVrmEmbodiment.update(dt, camera, engaged, distanceToPlayer);
   if (window.__HOUSE_DEBUG__?.alpecca) {
     window.__HOUSE_DEBUG__.alpecca.vrm = alpeccaVrmEmbodiment.debug();
@@ -2856,6 +2863,7 @@ const alpecca = {
   dwellTimer: 0.9,
   walkSegmentTimer: 3.2,
   walkPauseTimer: 0,
+  movementDirectivePending: false,
   exploreIndex: Math.max(0, alpeccaExplorePoints.findIndex((point) => point.roomId === "entry")),
   previousExploreIndex: 0,
   inspectTimer: 0,
@@ -3578,6 +3586,10 @@ function routeAlpeccaToLivingLoopTarget(loop?: AlpeccaAiMessage["living_loop"]) 
   const roomId = livingLoopTargetRoomId(loop);
   const index = alpeccaExplorePoints.findIndex((point) => point.roomId === roomId);
   if (index < 0) return;
+  // House movement is a projection of an actual CoreMind living-loop result.
+  // Do not fall back to a random patrol after arrival: the next movement must
+  // wait for another grounded core directive.
+  alpecca.movementDirectivePending = true;
   alpecca.selfReviewTargetRoom = "";
   alpecca.previousExploreIndex = alpecca.exploreIndex;
   alpecca.exploreIndex = index;
@@ -13284,47 +13296,12 @@ function runAlpeccaAutonomousFeature(point: AlpeccaExplorePoint) {
   alpeccaSocket.send(JSON.stringify({ text, source: "autonomous-house" }));
 }
 
-function chooseNextAlpeccaExploreIndex() {
-  const current = alpecca.exploreIndex;
-  const candidates = alpeccaExplorePoints
-    .map((point, index) => ({ point, index }))
-    .filter(({ index }) => index !== current);
-  const mood = alpeccaAiMood.toLowerCase();
-  const energy = Number.isFinite(alpeccaAiState.energy) ? alpeccaAiState.energy : 0.5;
-  const shouldRest = ["sleepy", "withdrawn", "lonely"].some((word) => mood.includes(word)) || energy < 0.16;
-  const restCandidate = candidates.find(({ point }) => isAlpeccaRestExplorePoint(point));
-  if (shouldRest && restCandidate) return restCandidate.index;
-
-  if (alpecca.selfReviewTargetRoom) {
-    const selfReviewCandidate = candidates.find(({ point }) => point.roomId === alpecca.selfReviewTargetRoom);
-    if (selfReviewCandidate) {
-      alpecca.selfReviewTargetRoom = "";
-      return selfReviewCandidate.index;
-    }
-  }
-
-  const playerRoom = currentOfficeRoom();
-  const playerRoomCandidate = candidates.find(({ point }) => point.roomId === playerRoom.id);
-  if (playerRoomCandidate && Math.random() < 0.28) return playerRoomCandidate.index;
-
-  const offline = candidates.filter(({ point }) => {
-    const room = officeRooms.find((item) => item.id === point.roomId);
-    return !isAlpeccaRestExplorePoint(point) && point.roomId !== "entry" && !activeRoomIds.has(room?.stationId || point.roomId);
-  });
-  if (offline.length > 0 && Math.random() < 0.42) return offline[Math.floor(Math.random() * offline.length)].index;
-
-  if (alpecca.previousExploreIndex !== current && Math.random() < 0.24) return alpecca.previousExploreIndex;
-  return candidates[Math.floor(Math.random() * candidates.length)].index;
-}
-
-function advanceAlpeccaExplorePoint() {
-  const current = alpecca.exploreIndex;
-  alpecca.previousExploreIndex = current;
-  alpecca.exploreIndex = chooseNextAlpeccaExploreIndex();
+function completeAlpeccaMovementDirective() {
+  alpecca.previousExploreIndex = alpecca.exploreIndex;
+  alpecca.movementDirectivePending = false;
   alpecca.routeTargetIndex = -1;
   alpecca.routeStep = 0;
   alpecca.route.length = 0;
-  alpecca.walkSegmentTimer = 2.6 + Math.random() * 1.8;
   alpecca.walkPauseTimer = 0;
   clearAlpeccaTerminalInteraction();
 }
@@ -13373,8 +13350,8 @@ function updateAlpecca(dt: number) {
   if (alpecca.inspectNoticeTimer > 0) alpecca.inspectNoticeTimer -= dt;
   if (alpecca.rerouteCooldown > 0) alpecca.rerouteCooldown -= dt;
   if (wasInspecting && alpecca.inspectTimer <= 0) {
-    advanceAlpeccaExplorePoint();
-    alpecca.dwellTimer = 1.2 + Math.random() * 1.4;
+    completeAlpeccaMovementDirective();
+    alpecca.dwellTimer = 0.8;
   }
 
   const resting = alpecca.state === "sit" || alpecca.state.startsWith("sleep");
@@ -13456,6 +13433,7 @@ function updateAlpecca(dt: number) {
     !settlingIn &&
     alpecca.dwellTimer <= 0 &&
     alpecca.walkPauseTimer <= 0 &&
+    alpecca.movementDirectivePending &&
     (!sleepy || restPoint) &&
     distanceToTarget > 0.12;
   alpecca.walkIntent = isWalking;
@@ -13525,15 +13503,15 @@ function updateAlpecca(dt: number) {
     alpecca.walkSegmentTimer -= dt;
     alpecca.moving = visiblyMoved;
     alpecca.stuckTimer = !visiblyMoved ? alpecca.stuckTimer + dt : Math.max(0, alpecca.stuckTimer - dt * 2);
-    if (visiblyMoved && alpecca.walkSegmentTimer <= 0 && distanceToTarget > 1.25) {
-      alpecca.walkPauseTimer = 0.65 + Math.random() * 0.75;
-      alpecca.walkSegmentTimer = 3.4 + Math.random() * 2.2;
-    }
+    // Keep route motion continuous. The old random mid-route pause made the
+    // body abruptly snap idle, perform a tiny unrelated movement, then restart
+    // the gait. She now pauses only for an actual destination, attention, or
+    // interaction state handled below.
     if (alpecca.stuckTimer > 1.15 && alpecca.rerouteCooldown <= 0) {
       alpecca.stuckTimer = 0;
       alpecca.rerouteCooldown = 2.4;
       alpecca.walkSegmentTimer = 1.8;
-      advanceAlpeccaExplorePoint();
+      completeAlpeccaMovementDirective();
     }
     setAlpeccaAnimation(directionalAlpeccaAnimation(visiblyMoved ? "walk" : "idle", movementDirection));
   } else if (terminalChoreographyActive && terminalTarget) {
@@ -13585,24 +13563,15 @@ function updateAlpecca(dt: number) {
     alpecca.walkIntent = false;
     alpecca.lastMovedDistance = 0;
     alpecca.stuckTimer = 0;
-    if (!settlingIn && navigation.final && distanceToTarget <= 0.14 && explorePoint.roomId === "entry" && alpecca.inspectTimer <= 0) {
-      advanceAlpeccaExplorePoint();
-      alpecca.dwellTimer = 0.8 + Math.random() * 0.9;
-      setAlpeccaSpriteFlip(false);
-      setAlpeccaAnimation("idleDown");
-      updateAlpeccaAnimation(dt);
-      updateAlpeccaFootShadows(dt);
-      updateAlpeccaSpatialPresence(dt, distanceToPlayer, playerEngaged);
-      applyAlpeccaBillboardYaw(dt);
-      publishAlpeccaRuntimeProbe();
-      return;
-    }
+    // At a completed target she observes or rests until the next CoreMind
+    // directive. There is intentionally no random patrol fallback here.
     if (restPoint && playerNearRestingDistance) {
       alpecca.inspectTimer = 0;
       alpecca.dwellTimer = 0.8;
       setAlpeccaIntent("listening", "player");
       setAlpeccaAnimation("idleDown");
-    } else if (!anxious && !settlingIn && navigation.final && distanceToTarget <= 0.14 && alpecca.inspectTimer <= 0) {
+    } else if (!anxious && !settlingIn && alpecca.movementDirectivePending
+      && navigation.final && distanceToTarget <= 0.14 && alpecca.inspectTimer <= 0) {
       alpecca.inspectTimer = restPoint ? 9.5 : 3.4;
       announceAlpeccaInspection(explorePoint);
     }

@@ -4,13 +4,18 @@ import test from "node:test";
 import {
   isConfirmedVrmInteractionContact,
   isRotationOnlyVrmTrack,
+  resolveVrmFootSwing,
   resolveVrmGroundTarget,
   resolveVrmMotionTelemetry,
+  resolveVrmWalkGait,
+  shouldBlendVrmProceduralTransition,
   shouldResetVrmBlinkTiming,
   shouldScheduleVrmPerformance,
   shouldSettleProceduralPerformance,
   solveTwoBoneReach,
+  strideDistanceForMotion,
   v4MoodMouthCorrectionWeights,
+  v4MoodComponentCorrectionWeights,
   vowelWeightsForSpeech,
 } from "./vrmEmbodiment.ts";
 
@@ -32,6 +37,59 @@ test("speech stop closes every vowel and cancels V4 mood mouth components", () =
   near(mood.surprised + correction.Fcl_MTH_Surprised, 0);
   near(mood.relaxed + correction.Fcl_MTH_Fun, 0);
   near(mood.angry + correction.Fcl_MTH_Angry, 0);
+});
+
+test("V4 mood eye corrections keep a small reactive eye component without pinning eyes closed", () => {
+  const mood = { happy: 0.82, sad: 0.17, surprised: 0.31, relaxed: 0.7, angry: 0 };
+  const correction = v4MoodComponentCorrectionWeights(mood, "eye");
+
+  assert.ok(correction.Fcl_EYE_Fun < 0);
+  assert.ok(mood.relaxed + correction.Fcl_EYE_Fun > 0);
+  assert.ok(mood.relaxed + correction.Fcl_EYE_Fun < mood.relaxed);
+  assert.ok(mood.surprised + correction.Fcl_EYE_Surprised > 0);
+});
+
+test("walk gait alternates swing-foot lift and uses stronger anatomical knee flex", () => {
+  const rightSwing = resolveVrmWalkGait(Math.PI / 2);
+  const leftSwing = resolveVrmWalkGait(-Math.PI / 2);
+
+  assert.ok(rightSwing.rightLift > 0.99);
+  assert.equal(rightSwing.leftLift, 0);
+  assert.ok(rightSwing.rightKneeFlex > 1.1);
+  assert.ok(rightSwing.rightUpperLegX < 0);
+  assert.ok(leftSwing.leftLift > 0.99);
+  assert.equal(leftSwing.rightLift, 0);
+  assert.ok(leftSwing.leftKneeFlex > 1.1);
+  assert.ok(leftSwing.leftUpperLegX < 0);
+});
+
+test("planted-foot gait gives one foot a monotonic lifted swing while the other stays planted", () => {
+  const rightLiftOff = resolveVrmFootSwing(0, "right");
+  const rightMidSwing = resolveVrmFootSwing(Math.PI / 2, "right");
+  const rightTouchdown = resolveVrmFootSwing(Math.PI, "right");
+  const leftMidSwing = resolveVrmFootSwing(Math.PI * 1.5, "left");
+
+  assert.deepEqual(rightLiftOff, { active: true, progress: 0, lift: 0 });
+  assert.equal(rightMidSwing.active, true);
+  near(rightMidSwing.progress, 0.5);
+  assert.ok(rightMidSwing.lift > 0.99);
+  assert.deepEqual(rightTouchdown, { active: false, progress: 0, lift: 0 });
+  assert.equal(leftMidSwing.active, true);
+  near(leftMidSwing.progress, 0.5);
+  assert.ok(leftMidSwing.lift > 0.99);
+});
+
+test("stride distance remains synchronized to actual world movement", () => {
+  near(strideDistanceForMotion(0.24, Math.PI * 2), 0.24);
+  assert.equal(strideDistanceForMotion(0, Math.PI), 0);
+  assert.equal(strideDistanceForMotion(0.8, 0.01), 0.5);
+});
+
+test("only locomotion-to-rest transitions receive the short procedural blend", () => {
+  assert.equal(shouldBlendVrmProceduralTransition("walk", "idle"), true);
+  assert.equal(shouldBlendVrmProceduralTransition("talking", "walk"), true);
+  assert.equal(shouldBlendVrmProceduralTransition("walk", "wave"), false);
+  assert.equal(shouldBlendVrmProceduralTransition("idle", "thinking"), false);
 });
 
 test("completed and fallback one-shots stay complete", () => {

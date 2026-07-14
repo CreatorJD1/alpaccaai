@@ -1,5 +1,32 @@
 # Alpecca — Handoff (updated 2026-07-14)
 
+## Codex V4 Avatar Motion And Face Correction (2026-07-14)
+
+- The V4 procedural route no longer injects a random mid-route pause. Alpecca
+  now remains in the walk cycle until she reaches a destination, yields to an
+  actual interaction, or is genuinely blocked and rerouted.
+- Unsignaled idle VRMA flourishes are disabled. The old random `Thinking` /
+  `LookAround` clips could create an unexplained quick gesture while she was
+  resting; idle now uses the procedural breathing, gaze, and blink layer until
+  a real state or interaction requests a full-body motion.
+- The procedural gait is driven by measured travel speed and now uses
+  world-space planted-foot IK: a stance foot stays fixed, while the swing foot
+  lifts, travels forward, and lands before the next weight transfer. This
+  replaces the prior leg-only pose cycle that could visibly slide over the
+  floor. Locomotion/rest changes still crossfade briefly rather than snapping.
+- House movement no longer falls back to a random patrol after arrival. A room
+  target is accepted from a grounded CoreMind living-loop directive, completed
+  once, then held until a later directive supplies a new target. This is an
+  observable state-driven embodiment projection, not a claim of free will.
+- V4 full-face mood morphs now have both mouth and eye component corrections.
+  Speech visemes keep ownership of the mouth, while a small mood-specific eye
+  contribution remains without leaving the eyelids held closed and defeating
+  blinking.
+- Verification: `npm.cmd run house:test:embodiment` passed (`13` tests) and
+  `npm.cmd run house:build` passed. The live backend and Discord bridge were
+  recycled so `/house-hq` serves the rebuilt asset bundle. The retained Vite
+  chunk-size advisory is not a build failure.
+
 ## Codex Discord Hidden Deliberation (2026-07-14)
 
 - Autonomous proactive and recursive Discord speech no longer uses one model
