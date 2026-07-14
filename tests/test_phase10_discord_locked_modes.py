@@ -1213,11 +1213,14 @@ def test_voice_synthesis_accepts_only_bounded_audio(monkeypatch):
 
     payloads = [b"w" * 2048, b"x" * 2049]
     timeouts: list[float] = []
+    request_bodies: list[dict] = []
     monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
     monkeypatch.setattr(discord_bridge, "MAX_VOICE_RESPONSE_BYTES", 2048)
+    monkeypatch.setattr(discord_bridge, "DISCORD_VOICE_ENGINE", "kokoro")
 
-    def open_request(*_args, **kwargs):
+    def open_request(request, **kwargs):
         timeouts.append(float(kwargs["timeout"]))
+        request_bodies.append(json.loads(request.data))
         return Response(payloads.pop(0))
 
     monkeypatch.setattr(
@@ -1229,6 +1232,10 @@ def test_voice_synthesis_accepts_only_bounded_audio(monkeypatch):
     assert discord_bridge._synth_voice_wav("speak this") == b"w" * 2048
     assert discord_bridge._synth_voice_wav("oversized") is None
     assert timeouts == [discord_bridge.VOICE_SYNTH_TIMEOUT] * 2
+    assert request_bodies == [
+        {"text": "speak this", "engine": "kokoro"},
+        {"text": "oversized", "engine": "kokoro"},
+    ]
 
 
 def test_voice_playback_uses_local_tts_and_cleans_temp_file(monkeypatch):

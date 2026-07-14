@@ -128,6 +128,11 @@ VOICE_SYNTH_TIMEOUT = max(
     15.0,
     min(180.0, float(os.environ.get("ALPECCA_DISCORD_VOICE_TIMEOUT", "105"))),
 )
+DISCORD_VOICE_ENGINE = os.environ.get(
+    "ALPECCA_DISCORD_TTS_ENGINE", "kokoro"
+).strip().lower()
+if DISCORD_VOICE_ENGINE not in {"auto", "kokoro", "f5", "f5-tts"}:
+    DISCORD_VOICE_ENGINE = "kokoro"
 MAX_DISCORD_CHARS = 2000
 MAX_BACKEND_RESPONSE_BYTES = 1024 * 1024
 MAX_BACKEND_ERROR_BYTES = 16 * 1024
@@ -798,7 +803,7 @@ def _synth_voice_wav(text: str) -> "bytes | None":
     """
     if not VOICE_ENABLED:
         return None
-    body = json.dumps({"text": text}).encode("utf-8")
+    body = json.dumps({"text": text, "engine": DISCORD_VOICE_ENGINE}).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
         BRIDGE_AUTHORIZATION_HEADER: _BRIDGE_AUTHORIZATION_SECRET,

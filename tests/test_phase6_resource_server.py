@@ -531,6 +531,48 @@ def test_tts_route_defers_optional_work_while_synthesis_is_active(
     assert server.active_tts_requests == 0
 
 
+def test_tts_route_honors_bounded_engine_override(monkeypatch, optional_work):
+    from alpecca import tts as tts_mod
+
+    calls: list[tuple[str, str]] = []
+
+    class JsonRequest:
+        async def json(self):
+            return {"text": "Speak this", "engine": "kokoro"}
+
+    def synth(_text, _state, *, backend_override=""):
+        calls.append((_text, backend_override))
+        return "audio/wav", b"wav"
+
+    monkeypatch.setattr(tts_mod, "synth", synth)
+    monkeypatch.setattr(tts_mod, "_last_engine", "")
+
+    response = asyncio.run(server.tts(JsonRequest()))
+
+    assert response.status_code == 200
+    assert response.headers["x-alpecca-tts-engine"] == "server"
+    assert calls == [("Speak this", "kokoro")]
+
+
+def test_tts_route_rejects_unknown_engine_before_synthesis(monkeypatch, optional_work):
+    from alpecca import tts as tts_mod
+
+    class JsonRequest:
+        async def json(self):
+            return {"text": "Speak this", "engine": "unknown"}
+
+    monkeypatch.setattr(
+        tts_mod,
+        "synth",
+        lambda *_args, **_kwargs: pytest.fail("invalid engine reached synthesis"),
+    )
+
+    response = asyncio.run(server.tts(JsonRequest()))
+
+    assert response.status_code == 422
+    assert response.headers["x-alpecca-tts-error"] == "unsupported voice engine"
+
+
 def test_routines_use_routine_category_and_leave_deferred_rows_unrecorded(
     monkeypatch, optional_work
 ):

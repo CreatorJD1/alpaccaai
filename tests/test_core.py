@@ -5,6 +5,8 @@ companion. Run with: python -m pytest -q  (or just run this file directly).
 """
 from __future__ import annotations
 
+import array
+import io
 import os
 import re
 import json
@@ -961,6 +963,54 @@ def test_tts_auto_mixes_f5_clone_and_kokoro_by_emotion(monkeypatch):
     result = tts.synth("Just thinking out loud.", EmotionalState(energy=0.1))
     assert result == ("audio/wav", b"RIFF-kokoro")
     assert calls == ["kokoro"]
+
+
+def test_tts_backend_override_pins_kokoro_for_channel_voice(monkeypatch):
+    from alpecca import open_tts, tts
+
+    calls = []
+    monkeypatch.setattr(tts, "TTS_BACKEND", "auto")
+    monkeypatch.setattr(open_tts, "ready", lambda: True)
+    monkeypatch.setattr(
+        open_tts,
+        "synth",
+        lambda _text, _state=None: calls.append("f5") or ("audio/wav", b"f5"),
+    )
+
+    def _synth_kokoro(_text, _state=None):
+        calls.append("kokoro")
+        return "audio/wav", b"kokoro"
+
+    monkeypatch.setattr(tts, "_synth_kokoro", _synth_kokoro)
+
+    result = tts.synth(
+        "This high-affect line must keep the channel voice.",
+        EmotionalState(energy=1.0, fear=0.95),
+        backend_override="kokoro",
+    )
+
+    assert result == ("audio/wav", b"kokoro")
+    assert calls == ["kokoro"]
+    assert tts._last_engine == "kokoro"
+
+
+def test_open_tts_rejects_saturated_worker_wav():
+    from alpecca import open_tts
+
+    def wav_bytes(samples: array.array) -> bytes:
+        out = io.BytesIO()
+        with __import__("wave").open(out, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(24_000)
+            wav.writeframes(samples.tobytes())
+        return out.getvalue()
+
+    clean = array.array("h", [1200, -1200] * 1200)
+    clipped = array.array("h", [32767, -32768] * 1200)
+
+    assert open_tts._wav_quality_issue(wav_bytes(clean)) == ""
+    assert "saturated" in open_tts._wav_quality_issue(wav_bytes(clipped))
 
 
 def test_spoken_performance_text_adds_grounded_pauses_without_stage_directions():

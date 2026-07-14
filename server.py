@@ -7673,6 +7673,12 @@ async def tts(req: Request):
     text = (body.get("text") or "").strip()
     if not text:
         return Response(status_code=204)
+    engine = str(body.get("engine") or "").strip().lower()
+    if engine not in {"", "auto", "kokoro", "f5", "f5-tts", "open"}:
+        return Response(
+            status_code=422,
+            headers={"X-Alpecca-TTS-Error": "unsupported voice engine"},
+        )
     preview = str(body.get("preview") or body.get("voice_preview") or "current").strip().lower()
     preview_states = {
         "lively": EmotionalState(love=0.95, compassion=0.55, fear=0.02, energy=1.0, curiosity=0.95),
@@ -7694,8 +7700,16 @@ async def tts(req: Request):
     _sync_optional_work_foreground()
     try:
         try:
+            if engine:
+                synth_call = lambda: tts_mod.synth(
+                    synth_text,
+                    synth_state,
+                    backend_override=engine,
+                )
+            else:
+                synth_call = lambda: tts_mod.synth(synth_text, synth_state)
             result = await asyncio.wait_for(
-                asyncio.to_thread(tts_mod.synth, synth_text, synth_state),
+                asyncio.to_thread(synth_call),
                 timeout=TTS_ROUTE_TIMEOUT,
             )
         except asyncio.TimeoutError:

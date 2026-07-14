@@ -7,14 +7,18 @@ Alpecca's primary voice path; when not, Kokoro remains the stable fallback.
 """
 from __future__ import annotations
 
+import array
+import io
 import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
+import wave
 from pathlib import Path
 
 from config import (
@@ -170,6 +174,28 @@ def _worker_url(path: str) -> str:
     return f"http://{F5_WORKER_HOST}:{F5_WORKER_PORT}{path}"
 
 
+def _wav_quality_issue(data: bytes) -> str:
+    """Return a fail-closed reason for audibly saturated F5 PCM."""
+    try:
+        with wave.open(io.BytesIO(data), "rb") as wav:
+            if wav.getnchannels() != 1 or wav.getsampwidth() != 2:
+                return "F5 worker returned an unsupported WAV format"
+            frames = wav.readframes(wav.getnframes())
+    except (EOFError, wave.Error):
+        return "F5 worker returned invalid WAV audio"
+    samples = array.array("h")
+    samples.frombytes(frames)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    if not samples:
+        return "F5 worker returned empty WAV audio"
+    saturated = sum(1 for sample in samples if abs(sample) >= 32760)
+    saturation = saturated / len(samples)
+    if saturation > 0.001:
+        return f"F5 worker audio saturated ({saturation:.2%} clipped samples)"
+    return ""
+
+
 def _worker_health(timeout: float = 0.45) -> dict:
     if not F5_WORKER_ENABLED:
         return {"enabled": False, "ready": False}
@@ -225,6 +251,10 @@ def _worker_synth(text: str, ref: dict):
         return None
     if len(data) < 1024:
         _last_error = "F5 worker returned empty audio"
+        return None
+    quality_issue = _wav_quality_issue(data)
+    if quality_issue:
+        _last_error = quality_issue
         return None
     _last_engine = "f5-tts-worker"
     _last_reference = {

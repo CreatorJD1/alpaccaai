@@ -497,19 +497,20 @@ def _prefers_clone_voice(state=None) -> bool:
                float(dyn.get("arousal", 0.5))) >= VOICE_MIX_INTENSITY
 
 
-def synth(text: str, state=None):
+def synth(text: str, state=None, *, backend_override: str = ""):
     """Return (mime_type, audio_bytes) for `text`, or None to let the browser
     voice handle it. `state` is her live EmotionalState so the voice carries
     emotion. ALPECCA_TTS_BACKEND: auto (default) blends the F5 clone and Kokoro
     by emotion; 'kokoro'/'edge'/'f5' force one; 'browser'/'off' disable server
-    TTS."""
+    TTS. Trusted channel bridges may pin one engine for a request so a bad
+    clone render cannot silently replace the channel's established voice."""
     text = (text or "").strip()
     global _last_engine, _last_error, _last_modulation
     _last_engine = ""
     _last_error = ""
     if not text:
         return None
-    backend = (TTS_BACKEND or "auto").lower()
+    backend = (backend_override or TTS_BACKEND or "auto").strip().lower()
     print(f"[tts] synth: backend={backend!r} "
           f"(env ALPECCA_TTS_BACKEND={os.environ.get('ALPECCA_TTS_BACKEND')!r})",
           file=sys.stderr)
