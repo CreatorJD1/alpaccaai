@@ -326,6 +326,7 @@ def _diagnostic(event: str, **metadata: object) -> None:
         "bytes",
         "content_available",
         "control",
+        "count",
         "creator_allowed",
         "dimensions",
         "dm",

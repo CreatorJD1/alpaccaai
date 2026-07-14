@@ -1043,6 +1043,18 @@ def test_debug_diagnostics_never_emit_dm_content_or_identity(monkeypatch, capsys
     assert '"event":"message_received"' in diagnostics
 
 
+def test_room_history_count_is_an_allowed_content_free_diagnostic(monkeypatch, capsys):
+    monkeypatch.setattr(discord_bridge, "DEBUG", True)
+
+    discord_bridge._diagnostic("room_history_seeded", count=12)
+
+    diagnostics = capsys.readouterr().err
+    assert json.loads(diagnostics.removeprefix("[discord] ")) == {
+        "count": 12,
+        "event": "room_history_seeded",
+    }
+
+
 def test_vision_unavailable_returns_fixed_diagnostic_not_model_text(monkeypatch):
     class Attachment:
         filename = "photo.png"
