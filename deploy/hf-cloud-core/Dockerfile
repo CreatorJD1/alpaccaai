@@ -9,6 +9,23 @@ RUN git clone --depth 1 --branch "${ALPECCA_GIT_REF}" \
     https://github.com/CreatorJD1/alpaccaai.git /opt/alpecca
 WORKDIR /opt/alpecca/apps/house-hq
 RUN npm ci && npm run build
+WORKDIR /opt/alpecca
+RUN mkdir -p /opt/runtime \
+    && tar \
+        --exclude='./.git' \
+        --exclude='./.claude' \
+        --exclude='./deploy' \
+        --exclude='./docs' \
+        --exclude='./scripts' \
+        --exclude='./tests' \
+        --exclude='./notebooks' \
+        --exclude='./workflows' \
+        --exclude='./apps/launcher' \
+        --exclude='./apps/android-launcher' \
+        --exclude='./data/*.db*' \
+        --exclude='./data/logs' \
+        -cf - . \
+    | tar -C /opt/runtime -xf -
 
 FROM python:3.12-slim
 
@@ -35,10 +52,9 @@ RUN apt-get update \
 
 COPY requirements.txt /tmp/cloud-core-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/cloud-core-requirements.txt
-COPY --from=source /opt/alpecca /opt/alpecca
+COPY --from=source /opt/runtime /opt/alpecca
 COPY --chown=1000:1000 app.py cloud_entrypoint.py start.sh /opt/hf-cloud-core/
-RUN rm -rf /opt/alpecca/.git /opt/alpecca/deploy /opt/alpecca/docs /opt/alpecca/scripts \
-    && sed -i 's/\r$//' /opt/hf-cloud-core/start.sh \
+RUN sed -i 's/\r$//' /opt/hf-cloud-core/start.sh \
     && chmod 0555 /opt/hf-cloud-core/start.sh
 
 WORKDIR /opt/alpecca

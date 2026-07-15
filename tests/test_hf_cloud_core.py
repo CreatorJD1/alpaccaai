@@ -152,6 +152,10 @@ def test_cloud_space_build_is_pinned_to_current_branch_and_no_old_qwen():
     readme = (PATH.parent / "README.md").read_text(encoding="utf-8")
     assert "codex/voice-session-audio-normalization" in dockerfile
     assert "npm run build" in dockerfile
+    assert "COPY --from=source /opt/runtime /opt/alpecca" in dockerfile
+    assert "COPY --from=source /opt/alpecca /opt/alpecca" not in dockerfile
+    for excluded in ("./.git", "./deploy", "./docs", "./scripts", "./tests"):
+        assert f"--exclude='{excluded}'" in dockerfile
     assert "Qwen/Qwen3.5-9B" in readme
     assert ("qwen3" + ":8b") not in dockerfile + readme
 

@@ -32,7 +32,9 @@ def test_cloud_image_removes_deployment_surface_before_runtime():
     dockerfile = (ROOT / "deploy" / "hf-cloud-core" / "Dockerfile").read_text(
         encoding="utf-8"
     )
-    assert "rm -rf /opt/alpecca/.git" in dockerfile
-    assert "/opt/alpecca/deploy" in dockerfile
-    assert "/opt/alpecca/docs" in dockerfile
-    assert "/opt/alpecca/scripts" in dockerfile
+    assert "COPY --from=source /opt/runtime /opt/alpecca" in dockerfile
+    assert "COPY --from=source /opt/alpecca /opt/alpecca" not in dockerfile
+    assert "--exclude='./.git'" in dockerfile
+    assert "--exclude='./deploy'" in dockerfile
+    assert "--exclude='./docs'" in dockerfile
+    assert "--exclude='./scripts'" in dockerfile
