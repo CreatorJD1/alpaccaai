@@ -169,6 +169,109 @@ def test_live_voice_guard_preserves_noncontradictory_reply():
     ) == reply
 
 
+def test_voice_runtime_state_reports_only_verified_live_capabilities():
+    class VoiceClient:
+        def is_connected(self) -> bool:
+            return True
+
+        def is_playing(self) -> bool:
+            return False
+
+        def listen(self, _sink, *, after) -> None:
+            del after
+
+        def play(self, _source, *, after) -> None:
+            del after
+
+    state = discord_voice.voice_runtime_state(
+        voice_client=VoiceClient(),
+        voice_enabled=True,
+        output_ready=True,
+        receive_enabled=True,
+        receive_status={"status": "ready", "faster_whisper": True},
+        listener_active=True,
+        transcriber_ready=True,
+    )
+
+    assert state == {
+        "connected": True,
+        "can_receive": True,
+        "receiving": True,
+        "can_transcribe": True,
+        "transcription_status": "ready",
+        "can_speak": True,
+        "can_speak_now": True,
+        "speaking": False,
+    }
+
+
+def test_voice_runtime_state_does_not_claim_an_unloaded_transcriber():
+    class VoiceClient:
+        def is_connected(self) -> bool:
+            return True
+
+        def is_playing(self) -> bool:
+            return True
+
+        def listen(self, _sink, *, after) -> None:
+            del after
+
+        def play(self, _source, *, after) -> None:
+            del after
+
+    state = discord_voice.voice_runtime_state(
+        voice_client=VoiceClient(),
+        voice_enabled=True,
+        output_ready=True,
+        receive_enabled=True,
+        receive_status={"status": "ready", "faster_whisper": True},
+        listener_active=False,
+        transcriber_ready=None,
+    )
+
+    assert state["connected"] is True
+    assert state["can_receive"] is True
+    assert state["receiving"] is False
+    assert state["can_transcribe"] is False
+    assert state["transcription_status"] == "unverified"
+    assert state["can_speak"] is True
+    assert state["can_speak_now"] is False
+    assert state["speaking"] is True
+
+
+def test_voice_runtime_state_fails_closed_for_broken_client_state():
+    class BrokenVoiceClient:
+        def is_connected(self) -> bool:
+            raise RuntimeError("transport is gone")
+
+        def listen(self, _sink, *, after) -> None:
+            del after
+
+        def play(self, _source, *, after) -> None:
+            del after
+
+    state = discord_voice.voice_runtime_state(
+        voice_client=BrokenVoiceClient(),
+        voice_enabled=True,
+        output_ready=True,
+        receive_enabled=True,
+        receive_status={"status": "ready"},
+        listener_active=True,
+        transcriber_ready=True,
+    )
+
+    assert state == {
+        "connected": False,
+        "can_receive": False,
+        "receiving": False,
+        "can_transcribe": False,
+        "transcription_status": "ready",
+        "can_speak": False,
+        "can_speak_now": False,
+        "speaking": False,
+    }
+
+
 def test_disconnected_voice_guard_corrects_false_capability_denial():
     corrected = discord_bridge._enforce_voice_live_state(
         "Since I'm a text-based AI, I can't join voice chat.",
