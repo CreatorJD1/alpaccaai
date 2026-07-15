@@ -68,6 +68,7 @@ from alpecca import (
     discord_voice_memory,
     hearing,
 )
+from alpecca.prompts import discord_presence_prompt
 from config import HOME, HOST, PORT, PUBLIC_URL
 
 
@@ -277,7 +278,45 @@ def _voice_live_context(
     connected: bool,
     channel_name: str,
     listener_active: bool,
+    runtime_state: dict[str, object] | None = None,
 ) -> str:
+    if runtime_state is not None:
+        connected = runtime_state.get("connected") is True
+        voice_output = runtime_state.get("can_speak") is True
+        voice_receive = (
+            runtime_state.get("receiving") is True
+            and runtime_state.get("can_transcribe") is True
+        )
+        facts = [
+            discord_presence_prompt(
+                connected=connected,
+                voice_output=voice_output,
+                voice_receive=voice_receive,
+            )
+        ]
+        if not connected:
+            return facts[0]
+        name = " ".join(str(channel_name or "the current voice channel").split())[:80]
+        facts.append(f"Current voice channel: {name}.")
+        if runtime_state.get("speaking") is True:
+            facts.append("She is currently speaking through Discord voice.")
+        if runtime_state.get("receiving") is True:
+            if not voice_receive:
+                facts.append(
+                    "Her inbound listener is active, but local transcription is not "
+                    "yet verified."
+                )
+        elif runtime_state.get("can_receive") is True:
+            facts.append(
+                "Voice receive is available but its inbound listener is not active."
+            )
+        else:
+            facts.append(
+                "Her inbound listener is not active, so she cannot claim to hear or "
+                "transcribe audio."
+            )
+        facts.append("Do not contradict these facts.")
+        return " ".join(facts)
     if not connected:
         return "Authoritative live Discord state: Alpecca is not connected to voice."
     name = " ".join(str(channel_name or "the current voice channel").split())[:80]
@@ -300,6 +339,7 @@ def _enforce_voice_live_state(
     channel_name: str,
     listener_active: bool,
     voice_enabled: bool = True,
+    runtime_state: dict[str, object] | None = None,
 ) -> str:
     text = reply or ""
     capability_denial = bool(
@@ -308,6 +348,34 @@ def _enforce_voice_live_state(
     connected_state_denial = bool(connected and _VOICE_DENIAL_RE.search(text))
     if not capability_denial and not connected_state_denial:
         return reply
+    if runtime_state is not None:
+        connected = runtime_state.get("connected") is True
+        if not connected:
+            return "I'm not connected to Discord voice right now."
+        name = " ".join(str(channel_name or "this voice channel").split())[:80]
+        facts = [f"I'm in **{name}** with you now."]
+        if runtime_state.get("speaking") is True:
+            facts.append("I'm currently speaking through Discord voice.")
+        elif runtime_state.get("can_speak") is True:
+            facts.append("I can speak here.")
+        else:
+            facts.append("My voice output is not currently ready.")
+        if runtime_state.get("receiving") is True:
+            if runtime_state.get("can_transcribe") is True:
+                facts.append(
+                    "My inbound listener is active, so I can hear short utterances "
+                    "after local transcription."
+                )
+            else:
+                facts.append(
+                    "My inbound listener is active, but local transcription is not "
+                    "yet verified."
+                )
+        elif runtime_state.get("can_receive") is True:
+            facts.append("Voice receive is available, but my listener is not active.")
+        else:
+            facts.append("My inbound listener is not active.")
+        return " ".join(facts)
     if not connected:
         return (
             "I'm not connected to Discord voice right now, but voice is enabled. "
@@ -1162,39 +1230,62 @@ def build_client() -> discord.Client:
         lines = history_buf.get(chan_id, [])[-CONTEXT_MESSAGES:]
         return "\n".join(f"{a}: {c}" for a, c in lines if c)
 
-    def _voice_presence_context(guild: object) -> str:
-        guild_id = int(getattr(guild, "id", 0) or 0)
+    def _voice_runtime_state(guild: object) -> dict[str, object]:
+        """Read one fail-closed, content-free voice snapshot for this guild."""
         voice_client = getattr(guild, "voice_client", None)
-        connected = bool(
-            voice_client
-            and callable(getattr(voice_client, "is_connected", None))
-            and voice_client.is_connected()
+        readiness = voice_readiness() if VOICE_ENABLED else {"status": "disabled"}
+        receive_status = readiness.get("receive")
+        if not isinstance(receive_status, dict):
+            receive_status = None
+        guild_id = int(getattr(guild, "id", 0) or 0)
+        session = voice_receive_sessions.get(guild_id)
+        transcriber_ready: bool | None
+        if (
+            getattr(hearing, "_ready", None) is True
+            and getattr(hearing, "_model", None) is not None
+        ):
+            transcriber_ready = True
+        elif getattr(hearing, "_ready", None) is False:
+            transcriber_ready = False
+        else:
+            transcriber_ready = None
+        return discord_voice.voice_runtime_state(
+            voice_client=voice_client,
+            voice_enabled=VOICE_ENABLED,
+            output_ready=readiness.get("status") == "ready",
+            receive_enabled=VOICE_RECEIVE_ENABLED,
+            receive_status=receive_status,
+            listener_active=bool(
+                session is not None and session.get("listener_active") is True
+            ),
+            transcriber_ready=transcriber_ready,
+            speak_allowed=not PHASE10_GUILD_MODES_LOCKED,
         )
+
+    def _voice_presence_context(guild: object) -> str:
+        voice_client = getattr(guild, "voice_client", None)
         channel = getattr(voice_client, "channel", None)
+        runtime_state = _voice_runtime_state(guild)
         return _voice_live_context(
-            connected=connected,
+            connected=runtime_state["connected"] is True,
             channel_name=str(
                 getattr(channel, "name", None) or "the current voice channel"
             ),
-            listener_active=guild_id in voice_receive_sessions,
+            listener_active=runtime_state["receiving"] is True,
+            runtime_state=runtime_state,
         )
 
     def _ground_voice_presence_reply(reply: str, guild: object) -> str:
         voice_client = getattr(guild, "voice_client", None)
-        connected = bool(
-            voice_client
-            and callable(getattr(voice_client, "is_connected", None))
-            and voice_client.is_connected()
-        )
         channel = getattr(voice_client, "channel", None)
+        runtime_state = _voice_runtime_state(guild)
         return _enforce_voice_live_state(
             reply,
-            connected=connected,
+            connected=runtime_state["connected"] is True,
             channel_name=str(getattr(channel, "name", None) or "this voice channel"),
-            listener_active=(
-                int(getattr(guild, "id", 0) or 0) in voice_receive_sessions
-            ),
+            listener_active=runtime_state["receiving"] is True,
             voice_enabled=VOICE_ENABLED,
+            runtime_state=runtime_state,
         )
 
     def _ensure_room_sweepers() -> None:
@@ -1590,6 +1681,7 @@ def build_client() -> discord.Client:
             )
             _diagnostic("voice_receive_start_failed")
             return False
+        session["listener_active"] = True
         _diagnostic("voice_receive_started", mode="creator_only")
         return True
 
@@ -1838,18 +1930,36 @@ def build_client() -> discord.Client:
                         message.author,
                     )
                     if receive_started:
-                        capability_text = (
-                            "I can hear human participants here, transcribe short utterances "
-                            "locally, answer in text and voice, discard raw audio, and keep "
-                            "bounded transcripts in encrypted memory."
-                        )
-                    elif VOICE_RECEIVE_ENABLED and creator_allowed:
-                        capability_text = (
-                            "Voice receive could not start, so I can only speak my text "
-                            "replies until the local receiver is ready."
-                        )
+                        runtime_state = _voice_runtime_state(message.guild)
+                        if runtime_state["can_transcribe"] is True:
+                            reply_surface = (
+                                "answer in text and voice"
+                                if runtime_state["can_speak"] is True
+                                else "answer in text"
+                            )
+                            capability_text = (
+                                "I can hear human participants here, transcribe short utterances "
+                                f"locally, {reply_surface}, discard raw audio, and keep "
+                                "bounded transcripts in encrypted memory."
+                            )
+                        else:
+                            capability_text = (
+                                "I can hear human participants here through an active bounded "
+                                "listener. I will only claim local transcription after its model "
+                                "has loaded."
+                            )
+                    elif _voice_runtime_state(message.guild)["can_speak"] is True:
+                        if VOICE_RECEIVE_ENABLED and creator_allowed:
+                            capability_text = (
+                                "Voice receive could not start, so I can only speak my text "
+                                "replies until the local receiver is ready."
+                            )
+                        else:
+                            capability_text = "I can speak my Discord text replies here."
                     else:
-                        capability_text = "I can speak my Discord text replies here."
+                        capability_text = (
+                            "I'm connected, but my Discord voice output is not currently ready."
+                        )
                     await message.reply(
                         f"Coming into **{vch.name}**. {capability_text}",
                         mention_author=False,
@@ -2395,6 +2505,8 @@ def build_client() -> discord.Client:
     setattr(client, "_alpecca_start_voice_receive", _start_voice_receive)
     setattr(client, "_alpecca_stop_voice_receive", _stop_voice_receive)
     setattr(client, "_alpecca_voice_receive_sessions", voice_receive_sessions)
+    setattr(client, "_alpecca_voice_presence_context", _voice_presence_context)
+    setattr(client, "_alpecca_ground_voice_presence_reply", _ground_voice_presence_reply)
     # Deliberate test seam for one bounded sweep; production uses the scheduled
     # loop above. Keeping the loop body separate prevents timing-heavy tests.
     setattr(client, "_alpecca_proactive_sweep_once", _proactive_sweep_once)

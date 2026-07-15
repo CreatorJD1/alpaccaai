@@ -1,0 +1,94 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+from alpecca import discord_bridge
+
+
+class _VoiceClient:
+    def __init__(self, *, playing: bool = False) -> None:
+        self.channel = SimpleNamespace(name="General")
+        self.playing = playing
+
+    def is_connected(self) -> bool:
+        return True
+
+    def is_playing(self) -> bool:
+        return self.playing
+
+    def listen(self, _sink: object, *, after: object) -> None:
+        del after
+
+    def play(self, _source: object, *, after: object) -> None:
+        del after
+
+
+def _ready_voice_posture(*, output_ready: bool = True) -> dict[str, object]:
+    return {
+        "enabled": True,
+        "status": "ready" if output_ready else "unavailable",
+        "receive": {"enabled": True, "status": "ready"},
+    }
+
+
+def _build_voice_client(monkeypatch, *, output_ready: bool = True):
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {})
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "VOICE_RECEIVE_ENABLED", True)
+    monkeypatch.setattr(
+        discord_bridge,
+        "voice_readiness",
+        lambda: _ready_voice_posture(output_ready=output_ready),
+    )
+    return discord_bridge.build_client()
+
+
+def test_presence_omits_transcription_until_the_local_model_is_loaded(monkeypatch):
+    monkeypatch.setattr(discord_bridge.hearing, "_ready", None)
+    monkeypatch.setattr(discord_bridge.hearing, "_model", None)
+    client = _build_voice_client(monkeypatch)
+    guild = SimpleNamespace(id=77, voice_client=_VoiceClient())
+
+    context = getattr(client, "_alpecca_voice_presence_context")(guild)
+    corrected = getattr(client, "_alpecca_ground_voice_presence_reply")(
+        "I'm text-only, so I can't join voice.",
+        guild,
+    )
+
+    assert "Confirmed current capability: she can speak replies" in context
+    assert "can receive bounded participant speech" not in context
+    assert "Voice receive is available but its inbound listener is not active." in context
+    assert "hear short utterances after local transcription" not in context
+    assert "I can speak here." in corrected
+    assert "Voice receive is available, but my listener is not active." in corrected
+
+
+def test_presence_and_correction_use_active_listener_and_loaded_transcriber(monkeypatch):
+    prompt_calls: list[dict[str, bool]] = []
+
+    def presence_prompt(**kwargs: bool) -> str:
+        prompt_calls.append(kwargs)
+        return "runtime prompt"
+
+    monkeypatch.setattr(discord_bridge, "discord_presence_prompt", presence_prompt)
+    monkeypatch.setattr(discord_bridge.hearing, "_ready", True)
+    monkeypatch.setattr(discord_bridge.hearing, "_model", object())
+    client = _build_voice_client(monkeypatch)
+    guild = SimpleNamespace(id=77, voice_client=_VoiceClient(playing=True))
+    getattr(client, "_alpecca_voice_receive_sessions")[77] = {
+        "listener_active": True,
+    }
+
+    context = getattr(client, "_alpecca_voice_presence_context")(guild)
+    corrected = getattr(client, "_alpecca_ground_voice_presence_reply")(
+        "I'm text-only, so I can't join voice.",
+        guild,
+    )
+
+    assert prompt_calls == [
+        {"connected": True, "voice_output": True, "voice_receive": True},
+    ]
+    assert "currently speaking through Discord voice" in context
+    assert "runtime prompt" in context
+    assert "currently speaking through Discord voice" in corrected
+    assert "can hear short utterances after local transcription" in corrected
