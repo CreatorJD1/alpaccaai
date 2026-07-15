@@ -1,8 +1,8 @@
 # Alpecca Launcher
 
-A tiny dark-themed desktop remote for Alpecca -- one window with a status dot
-(is she awake?) and six buttons: wake her, open her home, open the app site,
-share her to the phone, open her Discord invite, and put her to sleep.
+A terminal-free desktop boot surface for Alpecca. It shows the local stack's
+state, startup stages, and the normal entry points for House HQ, the companion
+app, phone access, Discord, and the local boot log.
 
 It is stdlib-only (tkinter + urllib + subprocess), so it needs no pip installs
 to run from source. It reads only the configured port. For protected pages it
@@ -21,6 +21,10 @@ buttons just report the problem in the status bar.)
 
 ## Run from source
 
+Double-click `START_HERE.bat` for the normal GUI-first launch. It passes the
+configured model and capability profile to this launcher, then exits instead
+of leaving a terminal window open.
+
 Double-click `src\run_launcher.bat`, or from a terminal:
 
 ```powershell
@@ -33,12 +37,13 @@ Requires the same Python 3 the repo already uses (3.12). No extra packages.
 
 | Button | Action |
 | --- | --- |
-| Wake her | Runs the repo's `START_HERE.bat` in a new console (does nothing but flash the status if she's already awake) |
+| Wake Alpecca | Starts the existing `scripts/run_full.py` stack in the background without opening a terminal window; the GUI shows local runtime, CoreMind, House HQ, and ready stages |
 | Put her to sleep | Finds the PID listening on her port via `netstat -ano` and `taskkill /F /T`s it, after a yes/no confirm |
-| Open her home | Opens the home through a one-use local bootstrap |
-| App site | Opens `/app` through a one-use local bootstrap |
+| Open House HQ | Opens `/house-hq` through a one-use local bootstrap |
+| Open Alpecca App | Opens `/app` through a one-use local bootstrap |
 | Phone access | Runs `python scripts\share.py` in a new console (tunnel + QR) |
 | Invite to Discord | Opens `/app/discord/invite` through a local bootstrap |
+| Boot log | Opens `data/logs/launcher_stack.log`, which receives full-stack startup output |
 
 The status dot polls public `/healthz` every 5 seconds: green means she is
 awake, grey means asleep. The poll can fail forever without hurting anything.

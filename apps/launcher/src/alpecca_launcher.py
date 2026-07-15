@@ -1,26 +1,16 @@
-"""Alpecca's little desktop remote -- one small dark window that wakes her,
-opens her home, and tucks her in.
+"""Desktop boot surface for Alpecca.
 
-This is deliberately the dumbest possible companion to START_HERE.bat: it never
-tries to BE her, it just knows where she lives (the repo root), whether she's
-awake (her public /healthz endpoint answers), and how to reach her front door
-(a one-use loopback bootstrap establishes the trusted browser session).
-Everything here is Python stdlib only -- tkinter, urllib,
-subprocess -- so the launcher runs on any plain Python 3 and freezes cleanly
-into a single .exe with PyInstaller (see ../build_exe.bat).
-
-Design rules this file lives by:
-  * NEVER crash her way out of an action. Every button lands in try/except and
-    reports into the little status bar instead of a traceback dialog.
-  * NEVER put an authorization value in a URL or browser-readable store. The
-    running server mints a one-use local bootstrap URL for each launch.
-  * The background poller may not raise, ever. A dead poll just means the dot
-    goes grey; it must not take the window down with it.
+This is the normal Windows entry point for the local companion stack.  It
+starts the existing ``scripts/run_full.py`` process without a terminal window,
+shows bounded startup progress, and opens House HQ only after the local server
+answers.  The launcher deliberately does not own Alpecca's state: the full
+stack retains the instance lock, backup, Discord, voice, and server lifecycle.
 """
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -28,38 +18,26 @@ import time
 import urllib.parse
 import urllib.request
 import webbrowser
+from collections.abc import Mapping
 from pathlib import Path
 
 import tkinter as tk
 from tkinter import messagebox
 
-# Windows process-creation flags. We define them defensively (falling back to
-# the raw numeric values) so this file still parses on non-Windows machines --
-# handy for CI-style syntax checks even though the launcher itself is a
-# Windows creature through and through.
-CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
-CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
-# --- Where does she live? ----------------------------------------------------
-# The launcher may run from apps/launcher/src inside the repo, or the whole
-# launcher folder may have been copied somewhere else INSIDE the repo, or it
-# may be a frozen .exe sitting in apps/launcher/dist. In every case the answer
-# is the same: walk upward until we find the folder that holds server.py --
-# that folder IS her home. No guessing, no hardcoded paths.
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
 
 
 def find_repo_root() -> Path | None:
-    """Walk up from wherever we're running until we hit server.py's folder."""
+    """Walk upward from the launcher until the project root is found."""
     if getattr(sys, "frozen", False):
-        # PyInstaller onefile unpacks __file__ into a temp dir that is nowhere
-        # near the repo -- the .exe's real location is what matters.
         start = Path(sys.executable).resolve().parent
     else:
         start = Path(__file__).resolve().parent
     for candidate in (start, *start.parents):
         if (candidate / "server.py").is_file():
             return candidate
-    # Last-ditch: maybe we were launched with the repo as the working dir.
     cwd = Path.cwd()
     for candidate in (cwd, *cwd.parents):
         if (candidate / "server.py").is_file():
@@ -69,26 +47,107 @@ def find_repo_root() -> Path | None:
 
 REPO_ROOT = find_repo_root()
 
-# --- Her port ---------------------------------------------------------------
-# The launcher needs only the configured local port. Authorization stays in the
-# running server and the browser's HttpOnly trusted-device cookie.
-PORT = 8765
-if REPO_ROOT is not None:
+
+def _configured_port() -> int:
+    """Read the project port when config is importable; otherwise use 8765."""
+    if REPO_ROOT is None:
+        return 8765
     try:
         sys.path.insert(0, str(REPO_ROOT))
-        from config import PORT as _PORT  # noqa: E402
+        from config import PORT as configured_port  # noqa: E402
 
-        PORT = int(_PORT)
+        return int(configured_port)
     except Exception:
-        # She might not even be installed properly yet; the launcher should
-        # still open and say so rather than die on the doorstep.
-        pass
+        return 8765
 
+
+PORT = _configured_port()
 BASE = f"http://127.0.0.1:{PORT}"
+BOOT_STAGES = ("Local runtime", "CoreMind", "House HQ", "Ready")
+
+# A dark neutral base with teal and lavender state accents.  The interface is
+# intentionally quiet because it is an operational control, not a landing page.
+BG = "#121318"
+PANEL = "#1b1e27"
+PANEL_HI = "#272c39"
+PANEL_DEEP = "#171a22"
+TEXT = "#f0f2f8"
+MUTED = "#a2a9b8"
+TEAL = "#70d6c2"
+LAVENDER = "#b6adff"
+AMBER = "#efbf6a"
+RED = "#e78888"
+GREY = "#606877"
+
+
+def launch_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return an inherited environment with local launcher defaults.
+
+    Existing values always win.  The launcher does not grant sensing,
+    computer-use, or application-control capabilities; ``run_full.py`` remains
+    the single place that applies the safe capability defaults.
+    """
+    env = dict(os.environ if base is None else base)
+    env.setdefault("ALPECCA_LLM_BACKEND", "ollama")
+    env.setdefault("ALPECCA_MODEL", "qwen3.5:9b")
+    env.setdefault("ALPECCA_FAST_MODEL", "qwen3.5:4b")
+    env.setdefault("ALPECCA_NUM_CTX", "8192")
+    env.setdefault("ALPECCA_TTS_BACKEND", "auto")
+    return env
+
+
+def _launcher_python() -> str:
+    """Prefer a no-console interpreter when the launcher is frozen."""
+    if not getattr(sys, "frozen", False):
+        return sys.executable or "python"
+    return shutil.which("pythonw.exe") or shutil.which("python.exe") or "python"
+
+
+def _boot_log_path(repo_root: Path) -> Path:
+    return repo_root / "data" / "logs" / "launcher_stack.log"
+
+
+def _start_stack(repo_root: Path, *, environment: Mapping[str, str] | None = None):
+    """Start the single supported stack without exposing a terminal window."""
+    log_path = _boot_log_path(repo_root)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write("\n\n=== Alpecca GUI boot %s ===\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+        log.flush()
+        return subprocess.Popen(
+            [_launcher_python(), "scripts\\run_full.py"],
+            cwd=str(repo_root),
+            env=launch_environment(environment),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
+        )
+
+
+def _ollama_available(timeout: float = 0.75) -> bool:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/version", timeout=timeout) as response:
+            return 200 <= response.status < 300
+    except Exception:
+        return False
+
+
+def _start_ollama() -> None:
+    """Request Ollama once; its normal daemon owns model lifetime afterwards."""
+    if _ollama_available():
+        return
+    local = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
+    command = [str(local), "serve"] if local.is_file() else ["ollama", "serve"]
+    subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
+    )
 
 
 def _protected_url(path: str) -> str:
-    """Ask the live local server for a one-use browser bootstrap URL."""
+    """Mint a one-use loopback bootstrap URL without exposing credentials."""
     target = path if path.startswith("/") else "/" + path
     request = urllib.request.Request(
         f"{BASE}/auth/bootstrap/request?next={urllib.parse.quote(target, safe='/')}",
@@ -102,280 +161,376 @@ def _protected_url(path: str) -> str:
         url = str(payload.get("url") or "")
         return url if url.startswith(BASE + "/auth/bootstrap?") else BASE + target
     except Exception:
-        # Direct navigation lands on the creator-password enrollment page when
-        # this browser has not been trusted yet.
         return BASE + target
 
 
-# --- The window ---------------------------------------------------------------
-# Hand-rolled dark theme: plain tk widgets with explicit colors, because ttk's
-# theming on Windows fights dark backgrounds and we vendor nothing external.
-
-BG = "#0b1020"        # the deep night-blue she lives in
-PANEL = "#141c36"     # slightly lifted card/button color
-PANEL_HI = "#1e2a4f"  # hover
-TEXT = "#e6ecff"
-MUTED = "#8ea0c8"
-GREEN = "#35d07f"     # awake
-GREY = "#5a647d"      # asleep
-FLASH = "#ffd166"     # brief "hey, look at the status" wink
-
-
 class Launcher:
+    """A small, fault-tolerant desktop boot console for the one local instance."""
+
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("Alpecca")
-        self.root.geometry("420x360")
-        self.root.minsize(420, 360)
+        self.root.geometry("520x490")
+        self.root.minsize(500, 470)
         self.root.configure(bg=BG)
 
-        # Shared state the poll thread writes and the UI thread reads. A plain
-        # attribute is fine here: one writer, one reader, atomic bool swap.
         self._awake = False
+        self._booting = False
+        self._boot_stage = 0
+        self._boot_message = "Ready to wake Alpecca locally."
         self._flash_until = 0.0
-
+        self._auto_open_pending = False
+        self._stack_process = None
         self._build_ui()
 
-        # Background heartbeat: ask her /system/status every 5 seconds. The
-        # thread is a daemon so closing the window never hangs on it.
-        threading.Thread(target=self._poll_forever, daemon=True).start()
-        # And a gentle UI refresh loop on the Tk side -- Tkinter widgets must
-        # only be touched from the main thread, so the poller just sets a flag
-        # and this loop paints it.
-        self.root.after(500, self._refresh_status)
+        threading.Thread(target=self._poll_forever, daemon=True, name="AlpeccaLauncherHealth").start()
+        self.root.after(350, self._refresh_status)
 
-    # -- layout ---------------------------------------------------------------
     def _build_ui(self) -> None:
         header = tk.Frame(self.root, bg=BG)
-        header.pack(fill="x", padx=18, pady=(16, 6))
+        header.pack(fill="x", padx=22, pady=(22, 4))
+
+        mark = tk.Canvas(header, width=42, height=42, bg=BG, highlightthickness=0)
+        mark.create_oval(2, 2, 40, 40, fill=LAVENDER, outline="")
+        mark.create_text(21, 21, text="A", fill=BG, font=("Segoe UI", 16, "bold"))
+        mark.pack(side="left")
+
+        title = tk.Frame(header, bg=BG)
+        title.pack(side="left", padx=(12, 0))
+        tk.Label(title, text="Alpecca", font=("Segoe UI", 20, "bold"), fg=TEXT, bg=BG).pack(anchor="w")
         tk.Label(
-            header, text="Alpecca", font=("Segoe UI", 18, "bold"),
-            fg=TEXT, bg=BG,
-        ).pack(side="left")
+            title,
+            text="Local companion boot console",
+            font=("Segoe UI", 10),
+            fg=MUTED,
+            bg=BG,
+        ).pack(anchor="w", pady=(1, 0))
 
-        status_row = tk.Frame(self.root, bg=BG)
-        status_row.pack(fill="x", padx=18, pady=(0, 10))
-        # The dot is a tiny canvas circle -- green when she answers, grey when
-        # the house is quiet.
-        self.dot = tk.Canvas(status_row, width=14, height=14, bg=BG,
-                             highlightthickness=0)
-        self.dot_id = self.dot.create_oval(2, 2, 12, 12, fill=GREY, outline="")
-        self.dot.pack(side="left")
+        status = tk.Frame(self.root, bg=PANEL_DEEP, highlightbackground="#2b3040", highlightthickness=1)
+        status.pack(fill="x", padx=22, pady=(12, 8))
+        self.dot = tk.Canvas(status, width=18, height=18, bg=PANEL_DEEP, highlightthickness=0)
+        self.dot_id = self.dot.create_oval(3, 3, 15, 15, fill=GREY, outline="")
+        self.dot.pack(side="left", padx=(12, 8), pady=11)
         self.status_label = tk.Label(
-            status_row, text="Asleep", font=("Segoe UI", 11),
-            fg=MUTED, bg=BG,
+            status,
+            text="Asleep",
+            font=("Segoe UI", 11, "bold"),
+            fg=MUTED,
+            bg=PANEL_DEEP,
         )
-        self.status_label.pack(side="left", padx=(8, 0))
+        self.status_label.pack(side="left", pady=11)
+        self.status_detail = tk.Label(
+            status,
+            text="The local stack is not responding.",
+            font=("Segoe UI", 9),
+            fg=MUTED,
+            bg=PANEL_DEEP,
+        )
+        self.status_detail.pack(side="right", padx=12, pady=11)
 
-        grid = tk.Frame(self.root, bg=BG)
-        grid.pack(fill="both", expand=True, padx=18)
-        grid.columnconfigure(0, weight=1, uniform="col")
-        grid.columnconfigure(1, weight=1, uniform="col")
+        boot = tk.Frame(self.root, bg=PANEL, highlightbackground="#303647", highlightthickness=1)
+        boot.pack(fill="x", padx=22, pady=(0, 12))
+        tk.Label(boot, text="Boot status", font=("Segoe UI", 10, "bold"), fg=TEXT, bg=PANEL).pack(
+            anchor="w", padx=14, pady=(12, 2)
+        )
+        self.boot_message = tk.Label(
+            boot,
+            text=self._boot_message,
+            font=("Segoe UI", 9),
+            fg=MUTED,
+            bg=PANEL,
+            anchor="w",
+        )
+        self.boot_message.pack(fill="x", padx=14, pady=(0, 11))
 
-        buttons = [
-            ("Wake her", self.wake_her),
-            ("Put her to sleep", self.put_to_sleep),
-            ("Open her home", self.open_home),
-            ("App site", self.open_app),
-            ("Phone access", self.phone_access),
-            ("Invite to Discord", self.discord_invite),
-        ]
-        for i, (label, cmd) in enumerate(buttons):
-            btn = tk.Button(
-                grid, text=label, command=cmd,
-                bg=PANEL, fg=TEXT, activebackground=PANEL_HI,
-                activeforeground=TEXT, relief="flat", bd=0,
-                font=("Segoe UI", 10), cursor="hand2",
-                highlightthickness=0, pady=9,
+        stages = tk.Frame(boot, bg=PANEL)
+        stages.pack(fill="x", padx=14, pady=(0, 13))
+        self.stage_labels: list[tk.Label] = []
+        for index, label in enumerate(BOOT_STAGES, start=1):
+            stages.columnconfigure(index - 1, weight=1)
+            stage = tk.Label(
+                stages,
+                text=label,
+                font=("Segoe UI", 8, "bold"),
+                fg=GREY,
+                bg=PANEL,
+                anchor="center",
             )
-            btn.grid(row=i // 2, column=i % 2, sticky="nsew", padx=5, pady=5)
-            # Tiny hover polish -- default_bg captured per-button.
-            btn.bind("<Enter>", lambda e, b=btn: b.configure(bg=PANEL_HI))
-            btn.bind("<Leave>", lambda e, b=btn: b.configure(bg=PANEL))
+            stage.grid(row=0, column=index - 1, sticky="ew")
+            self.stage_labels.append(stage)
 
-        # Status bar: every action reports here instead of raising dialogs.
+        actions = tk.Frame(self.root, bg=BG)
+        actions.pack(fill="both", expand=True, padx=22)
+        actions.columnconfigure(0, weight=1, uniform="actions")
+        actions.columnconfigure(1, weight=1, uniform="actions")
+        actions.rowconfigure(0, weight=1)
+        actions.rowconfigure(1, weight=1)
+        actions.rowconfigure(2, weight=1)
+
+        self._action_button(actions, "Wake Alpecca", self.wake_her, 0, 0, primary=True)
+        self._action_button(actions, "Open House HQ", self.open_home, 0, 1)
+        self._action_button(actions, "Open Alpecca App", self.open_app, 1, 0)
+        self._action_button(actions, "Phone link", self.phone_access, 1, 1)
+        self._action_button(actions, "Discord invite", self.discord_invite, 2, 0)
+        self._action_button(actions, "Boot log", self.open_boot_log, 2, 1)
+
+        footer = tk.Frame(self.root, bg=BG)
+        footer.pack(fill="x", padx=22, pady=(3, 15))
+        sleep = tk.Button(
+            footer,
+            text="Put Alpecca to sleep",
+            command=self.put_to_sleep,
+            bg=BG,
+            fg=RED,
+            activebackground=BG,
+            activeforeground=RED,
+            relief="flat",
+            bd=0,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            highlightthickness=0,
+        )
+        sleep.pack(side="right")
+        sleep.bind("<Enter>", lambda _event: sleep.configure(fg="#ffaaaa"))
+        sleep.bind("<Leave>", lambda _event: sleep.configure(fg=RED))
+
         self.bar = tk.Label(
-            self.root, text=self._initial_bar_text(),
-            font=("Segoe UI", 9), fg=MUTED, bg="#0d1428",
-            anchor="w", padx=10, pady=4,
+            self.root,
+            text=self._initial_bar_text(),
+            font=("Segoe UI", 8),
+            fg=MUTED,
+            bg="#0d0e12",
+            anchor="w",
+            padx=12,
+            pady=6,
         )
         self.bar.pack(side="bottom", fill="x")
 
+    def _action_button(self, parent: tk.Frame, label: str, command, row: int, column: int, *, primary: bool = False) -> None:
+        background = TEAL if primary else PANEL
+        foreground = BG if primary else TEXT
+        active = "#91ead8" if primary else PANEL_HI
+        button = tk.Button(
+            parent,
+            text=label,
+            command=command,
+            bg=background,
+            fg=foreground,
+            activebackground=active,
+            activeforeground=BG if primary else TEXT,
+            relief="flat",
+            bd=0,
+            font=("Segoe UI", 10, "bold" if primary else "normal"),
+            cursor="hand2",
+            highlightthickness=0,
+            pady=12,
+        )
+        button.grid(row=row, column=column, sticky="nsew", padx=5, pady=5)
+        button.bind("<Enter>", lambda _event, b=button: b.configure(bg=active))
+        button.bind("<Leave>", lambda _event, b=button: b.configure(bg=background))
+
     def _initial_bar_text(self) -> str:
         if REPO_ROOT is None:
-            return "Couldn't find her home (no server.py above this folder)."
-        return f"Home: {REPO_ROOT}"
+            return "Project root not found. Keep this launcher inside the Alpecca folder."
+        return f"Local project: {REPO_ROOT}"
 
-    def say(self, msg: str) -> None:
-        """Every button whispers its outcome into the status bar."""
+    def say(self, message: str) -> None:
         try:
-            self.bar.configure(text=msg)
+            self.bar.configure(text=message)
         except Exception:
             pass
 
-    # -- heartbeat ------------------------------------------------------------
+    def _set_boot_state(self, stage: int, message: str) -> None:
+        self._boot_stage = max(0, min(len(BOOT_STAGES), stage))
+        self._boot_message = message
+
     def _poll_forever(self) -> None:
-        """Ask her /healthz every 5s. This loop is allowed to fail every
-        single time forever; it just means the dot stays grey."""
-        url = f"{BASE}/healthz"
         while True:
             awake = False
             try:
-                with urllib.request.urlopen(url, timeout=3) as resp:
-                    awake = 200 <= resp.status < 300
+                with urllib.request.urlopen(f"{BASE}/healthz", timeout=2) as response:
+                    awake = 200 <= response.status < 300
             except Exception:
-                awake = False
+                pass
             self._awake = awake
-            time.sleep(5)
+            time.sleep(3)
 
     def _refresh_status(self) -> None:
-        """Main-thread painter for the dot + label (runs every half second)."""
         try:
+            if self._awake and self._booting:
+                self._booting = False
+                self._set_boot_state(4, "Alpecca is awake locally. House HQ is ready.")
+                self.say("Alpecca is awake. The terminal-free stack is running.")
+                if self._auto_open_pending:
+                    self._auto_open_pending = False
+                    webbrowser.open(_protected_url("/house-hq"))
+            elif self._booting and self._stack_process is not None and self._stack_process.poll() is not None:
+                self._booting = False
+                self._set_boot_state(0, "The stack stopped before it was ready. Open the boot log for details.")
+                self.say("Startup stopped before the local server answered.")
+
             flashing = time.time() < self._flash_until
-            if flashing:
-                color, text = FLASH, ("She is awake" if self._awake else "Asleep")
-            elif self._awake:
-                color, text = GREEN, "She is awake"
+            if self._awake:
+                color, text, detail = TEAL, "Awake", "Local server is responding."
+            elif self._booting:
+                color, text, detail = AMBER, "Waking", self._boot_message
             else:
-                color, text = GREY, "Asleep"
+                color, text, detail = GREY, "Asleep", "The local stack is not responding."
+            if flashing:
+                color = AMBER
+
             self.dot.itemconfigure(self.dot_id, fill=color)
-            self.status_label.configure(
-                text=text, fg=TEXT if self._awake else MUTED)
+            self.status_label.configure(text=text, fg=TEXT if self._awake else color)
+            self.status_detail.configure(text=detail)
+            self.boot_message.configure(text=self._boot_message)
+            for index, label in enumerate(self.stage_labels, start=1):
+                if index < self._boot_stage:
+                    label.configure(fg=TEAL)
+                elif index == self._boot_stage and self._boot_stage:
+                    label.configure(fg=AMBER if self._booting else LAVENDER)
+                else:
+                    label.configure(fg=GREY)
         except Exception:
             pass
-        self.root.after(500, self._refresh_status)
+        self.root.after(350, self._refresh_status)
 
     def _flash(self) -> None:
-        """A quick amber wink on the dot -- 'look up here, she's already on'."""
         self._flash_until = time.time() + 1.2
 
-    # -- buttons --------------------------------------------------------------
     def wake_her(self) -> None:
-        """Start her the same way Jason does by hand: START_HERE.bat, in its
-        own console, from the repo root. If she's already awake we do nothing
-        destructive -- just flash the status so the answer is visible."""
+        """Start one hidden full stack and expose its startup state in this UI."""
+        if self._awake:
+            self._flash()
+            self.say("Alpecca is already awake. No second instance was started.")
+            return
+        if self._booting:
+            self._flash()
+            self.say("Alpecca is already waking. The boot stages will update here.")
+            return
+        if REPO_ROOT is None:
+            self.say("Cannot wake Alpecca because the project root was not found.")
+            return
+        self._booting = True
+        self._auto_open_pending = True
+        self._set_boot_state(1, "Checking the local language runtime.")
+        self.say("Waking Alpecca without opening a terminal window.")
+        threading.Thread(target=self._launch_stack, daemon=True, name="AlpeccaLauncherBoot").start()
+
+    def _launch_stack(self) -> None:
         try:
-            if self._awake:
-                self._flash()
-                self.say("She's already awake.")
-                return
-            if REPO_ROOT is None:
-                self.say("Can't wake her: repo root not found.")
-                return
-            bat = REPO_ROOT / "START_HERE.bat"
-            if not bat.is_file():
-                self.say("Can't wake her: START_HERE.bat is missing.")
-                return
-            subprocess.Popen(
-                ["cmd.exe", "/c", str(bat)],
-                cwd=str(REPO_ROOT),
-                creationflags=CREATE_NEW_CONSOLE,
-            )
-            self.say("Waking her -- watch the new console window.")
+            if not _ollama_available():
+                self._set_boot_state(1, "Starting Ollama for the local model.")
+                _start_ollama()
+                deadline = time.monotonic() + 12.0
+                while time.monotonic() < deadline and not _ollama_available():
+                    time.sleep(0.25)
+            self._set_boot_state(2, "Starting CoreMind, continuity, voice, and Discord services.")
+            self._stack_process = _start_stack(REPO_ROOT)
+            self._set_boot_state(3, "Waiting for House HQ to answer locally.")
         except Exception as exc:
-            self.say(f"Wake failed: {exc}")
+            self._booting = False
+            self._set_boot_state(0, "Launch failed. Open the boot log for details.")
+            self.say(f"Could not start Alpecca: {type(exc).__name__}")
 
     def open_home(self) -> None:
-        """Her House HQ front page through a one-use local browser bootstrap."""
         try:
-            webbrowser.open(_protected_url("/"))
-            self.say("Opening her home in the browser.")
+            webbrowser.open(_protected_url("/house-hq"))
+            self.say("Opening House HQ in the browser.")
         except Exception as exc:
-            self.say(f"Couldn't open her home: {exc}")
+            self.say(f"Could not open House HQ: {type(exc).__name__}")
 
     def open_app(self) -> None:
-        """The Alpecca virtual app -- her secondary surface."""
         try:
             webbrowser.open(_protected_url("/app"))
-            self.say("Opening the app site.")
+            self.say("Opening the Alpecca app.")
         except Exception as exc:
-            self.say(f"Couldn't open the app: {exc}")
+            self.say(f"Could not open the Alpecca app: {type(exc).__name__}")
 
     def phone_access(self) -> None:
-        """Runs scripts/share.py in its own console -- that script handles the
-        tunnel + QR so the phone can reach her."""
+        """Keep the tunnel console visible because it displays its public link."""
         try:
             if REPO_ROOT is None:
-                self.say("Can't share: repo root not found.")
+                self.say("Cannot open a phone link because the project root was not found.")
                 return
-            # When frozen we ARE the exe, so 'python' from PATH is the right
-            # interpreter; from source, prefer the interpreter running us.
-            python = "python" if getattr(sys, "frozen", False) else (
-                sys.executable or "python")
             subprocess.Popen(
-                ["cmd.exe", "/k", python, "scripts\\share.py"],
+                ["cmd.exe", "/k", _launcher_python(), "scripts\\share.py"],
                 cwd=str(REPO_ROOT),
-                creationflags=CREATE_NEW_CONSOLE,
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010),
             )
-            self.say("Phone access console opened (scripts/share.py).")
+            self.say("Phone-link console opened. It displays the public address and QR code.")
         except Exception as exc:
-            self.say(f"Phone access failed: {exc}")
+            self.say(f"Could not open phone access: {type(exc).__name__}")
 
     def discord_invite(self) -> None:
-        """Open her Discord invite page -- the server renders the actual
-        invite link there."""
         try:
             webbrowser.open(_protected_url("/app/discord/invite"))
-            self.say("Opening her Discord invite page.")
+            self.say("Opening the Discord invite page.")
         except Exception as exc:
-            self.say(f"Couldn't open the invite page: {exc}")
+            self.say(f"Could not open the Discord invite: {type(exc).__name__}")
+
+    def open_boot_log(self) -> None:
+        try:
+            if REPO_ROOT is None:
+                self.say("Cannot open a boot log because the project root was not found.")
+                return
+            path = _boot_log_path(REPO_ROOT)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch(exist_ok=True)
+            if hasattr(os, "startfile"):
+                os.startfile(path)  # type: ignore[attr-defined]
+            else:
+                webbrowser.open(path.as_uri())
+            self.say("Opening the local boot log.")
+        except Exception as exc:
+            self.say(f"Could not open the boot log: {type(exc).__name__}")
 
     def put_to_sleep(self) -> None:
-        """Find whatever process is listening on her port and end it -- with a
-        confirmation first, because this is the one genuinely blunt action in
-        the whole window. taskkill /T takes the child processes too, so her
-        worker consoles don't linger orphaned."""
         try:
             pids = self._pids_on_port(PORT)
             if not pids:
                 self._flash()
-                self.say("She's not running (nothing is listening on "
-                         f"port {PORT}).")
+                self.say(f"Alpecca is not listening on port {PORT}.")
                 return
-            ok = messagebox.askyesno(
+            wording = "process" if len(pids) == 1 else "processes"
+            if not messagebox.askyesno(
                 "Alpecca",
-                "Put her to sleep? This ends her server process"
-                + ("es" if len(pids) > 1 else "")
-                + f" (PID {', '.join(pids)}).",
-            )
-            if not ok:
-                self.say("Left her running.")
+                f"Put Alpecca to sleep? This ends the server {wording} on port {PORT}.",
+            ):
+                self.say("Alpecca remains awake.")
                 return
-            failures = []
+            failures: list[str] = []
             for pid in pids:
-                r = subprocess.run(
+                result = subprocess.run(
                     ["taskkill", "/PID", pid, "/F", "/T"],
-                    capture_output=True, text=True,
+                    capture_output=True,
+                    text=True,
                     creationflags=CREATE_NO_WINDOW,
                 )
-                if r.returncode != 0:
+                if result.returncode:
                     failures.append(pid)
             if failures:
-                self.say(f"Couldn't stop PID {', '.join(failures)}.")
+                self.say(f"Could not stop PID {', '.join(failures)}.")
             else:
                 self._awake = False
-                self.say("She's asleep now. Good night.")
+                self._booting = False
+                self._set_boot_state(0, "Alpecca is resting locally.")
+                self.say("Alpecca is asleep now.")
         except Exception as exc:
-            self.say(f"Sleep failed: {exc}")
+            self.say(f"Could not stop Alpecca: {type(exc).__name__}")
 
     @staticmethod
     def _pids_on_port(port: int) -> list[str]:
-        """Parse `netstat -ano` for LISTENING sockets on our port. Windows
-        prints one line per address family, so the same PID can appear twice
-        (0.0.0.0 and [::]) -- we dedupe while keeping order."""
-        out = subprocess.run(
+        output = subprocess.run(
             ["netstat", "-ano"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
             creationflags=CREATE_NO_WINDOW,
         ).stdout
-        needle = f":{port}"
+        suffix = f":{port}"
         pids: list[str] = []
-        for line in out.splitlines():
+        for line in output.splitlines():
             parts = line.split()
-            # Expected shape: TCP  0.0.0.0:8765  0.0.0.0:0  LISTENING  1234
-            if len(parts) >= 5 and parts[0].upper() == "TCP" \
-                    and parts[1].endswith(needle) \
-                    and parts[3].upper() == "LISTENING":
+            if len(parts) >= 5 and parts[0].upper() == "TCP" and parts[1].endswith(suffix) and parts[3].upper() == "LISTENING":
                 pid = parts[4]
                 if pid.isdigit() and pid != "0" and pid not in pids:
                     pids.append(pid)

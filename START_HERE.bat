@@ -1,9 +1,8 @@
 @echo off
 REM ============================================================
-REM   ALPECCA - the only launcher you need. Double-click this.
-REM   A .bat runs in cmd, so `set VAR=value` is correct here.
+REM   ALPECCA - desktop boot entry point. Double-click this.
+REM   It opens the GUI launcher instead of keeping a terminal window open.
 REM ============================================================
-title Alpecca
 cd /d "%~dp0"
 
 REM --- safe capability defaults; set any of these to 1 before launch to opt in ---
@@ -63,56 +62,7 @@ REM so her cloned F5 voice ("tts5") is used again instead of Kokoro-only.
 REM Force 'kokoro' or 'f5' here to pin a single engine.
 set ALPECCA_TTS_BACKEND=auto
 
-echo ============================================
-echo               A L P E C C A
-echo ============================================
-echo.
-echo   Her brain: gemma4:cloud (fast, always warm) -- chats, thinks, sees.
-echo   Local qwen3.5:9b stands by as her offline fallback.
-echo.
-set /p choice="  Press Enter to wake her:  "
-echo.
-goto local
-
-:local
-REM The old Hugging Face InferenceClient brain ([1] in earlier builds) kept
-REM landing on models HF's providers don't serve, leaving her stuck on the
-REM canned fallback line. Ollama (local + signed-in cloud) is the one brain
-REM path now; ALPECCA_LLM_BACKEND=hf still works via env for experiments.
-set ALPECCA_LLM_BACKEND=ollama
-echo Making sure Ollama is running (fine if it already is)...
-start "Ollama" /min cmd /c "ollama serve"
-timeout /t 2 >nul
-echo Checking her brains (qwen3.5 4b + 9b)...
-ollama show qwen3.5:4b >nul 2>&1
-if errorlevel 1 (
-  echo Pulling qwen3.5:4b the first time...
-  ollama pull hf.co/lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M
-  ollama cp hf.co/lmstudio-community/Qwen3.5-4B-GGUF:Q4_K_M qwen3.5:4b
-)
-ollama show qwen3.5:9b >nul 2>&1
-if errorlevel 1 (
-  echo Pulling qwen3.5:9b the first time...
-  ollama pull hf.co/lmstudio-community/Qwen3.5-9B-GGUF:Q4_K_M
-  ollama cp hf.co/lmstudio-community/Qwen3.5-9B-GGUF:Q4_K_M qwen3.5:9b
-)
-goto wake
-
-:wake
-echo Waking her up...
-start "Alpecca - mind" cmd /k python scripts\run_full.py
-
-REM --- her CPU figure, if her art is in place (cheap, safe alongside everything) ---
-if exist "data\avatar\her.psd" start "Alpecca - figure" cmd /k python scripts\run_rigger.py
-
-echo Her authenticated local window will open after the server is ready...
-REM scripts\run_full.py requests a one-time local bootstrap URL from the loaded
-REM server module. This launcher never puts credentials in a browser URL.
-
-echo.
-echo  =====================================================
-echo   She's starting in her own window.
-echo   In the browser: click the speaker button to hear her.
-echo   You can CLOSE THIS window now.
-echo  =====================================================
-pause
+REM The GUI inherits every configuration line above, then starts the existing
+REM singleton-protected full stack in the background when Wake Alpecca is used.
+call "apps\launcher\src\run_launcher.bat"
+exit /b 0
