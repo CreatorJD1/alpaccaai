@@ -13,6 +13,7 @@ import threading
 import time
 import wave
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from typing import Callable, Literal
 
 from alpecca import cognition as cognition_mod
@@ -210,6 +211,74 @@ def receive_readiness(*, enabled: bool) -> dict[str, object]:
         "faster_whisper": whisper,
         "davey": davey,
         "dave_receive": dave_receive_status(),
+    }
+
+
+def _voice_client_flag(voice_client: object | None, method_name: str) -> bool:
+    """Read one Discord voice-client boolean without leaking transport errors."""
+    if voice_client is None:
+        return False
+    method = getattr(voice_client, method_name, None)
+    if not callable(method):
+        return False
+    try:
+        return bool(method())
+    except Exception:
+        return False
+
+
+def voice_runtime_state(
+    *,
+    voice_client: object | None,
+    voice_enabled: bool,
+    output_ready: bool,
+    receive_enabled: bool,
+    receive_status: Mapping[str, object] | None,
+    listener_active: bool,
+    transcriber_ready: bool | None,
+    speak_allowed: bool = True,
+) -> dict[str, object]:
+    """Return a content-free, fail-closed snapshot of one Discord voice runtime.
+
+    ``transcriber_ready`` must mean that the local transcriber has already loaded
+    successfully. A dependency being installed is deliberately reported as
+    ``unverified`` rather than treated as an ability to transcribe.
+    """
+    connected = _voice_client_flag(voice_client, "is_connected")
+    playback_busy = connected and _voice_client_flag(voice_client, "is_playing")
+    receive_dependencies_ready = bool(
+        receive_status is not None and receive_status.get("status") == "ready"
+    )
+    receive_capable = bool(
+        connected
+        and receive_enabled is True
+        and receive_dependencies_ready
+        and callable(getattr(voice_client, "listen", None))
+    )
+    transcription_status = (
+        "ready"
+        if transcriber_ready is True
+        else "unavailable"
+        if transcriber_ready is False
+        else "unverified"
+    )
+    can_transcribe = receive_capable and transcriber_ready is True
+    can_speak = bool(
+        connected
+        and voice_enabled is True
+        and output_ready is True
+        and speak_allowed is True
+        and callable(getattr(voice_client, "play", None))
+    )
+    return {
+        "connected": connected,
+        "can_receive": receive_capable,
+        "receiving": receive_capable and listener_active is True,
+        "can_transcribe": can_transcribe,
+        "transcription_status": transcription_status,
+        "can_speak": can_speak,
+        "can_speak_now": can_speak and not playback_busy,
+        "speaking": can_speak and playback_busy,
     }
 
 
@@ -555,5 +624,6 @@ __all__ = [
     "next_voice_event_id",
     "receive_readiness",
     "record_voice_event",
+    "voice_runtime_state",
     "voice_client_class",
 ]

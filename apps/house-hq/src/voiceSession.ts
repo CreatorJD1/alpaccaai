@@ -169,6 +169,46 @@ function safePause(audio: HTMLAudioElement): void {
   }
 }
 
+type PitchPreservingAudio = HTMLAudioElement & {
+  preservesPitch?: boolean;
+  webkitPreservesPitch?: boolean;
+  mozPreservesPitch?: boolean;
+};
+
+function restoreNativeSpeechPlayback(audio: HTMLAudioElement): void {
+  const speechAudio = audio as PitchPreservingAudio;
+  try {
+    if (audio.defaultPlaybackRate !== 1) audio.defaultPlaybackRate = 1;
+  } catch {
+    // Some browser media implementations expose a read-only default rate.
+  }
+  try {
+    if (audio.playbackRate !== 1) audio.playbackRate = 1;
+  } catch {
+    // Playback can still proceed at the browser's native rate when this is unavailable.
+  }
+  for (const property of ["preservesPitch", "webkitPreservesPitch", "mozPreservesPitch"] as const) {
+    if (!(property in speechAudio) || speechAudio[property] === true) continue;
+    try {
+      speechAudio[property] = true;
+    } catch {
+      // Preserve compatibility with engines that expose a read-only pitch switch.
+    }
+  }
+}
+
+function prepareSpeechPlayback(audio: HTMLAudioElement): void {
+  // A preparation callback may hand back a paused or previously-started element.
+  // Stop it before attaching lifecycle handlers so it cannot overlap this session.
+  safePause(audio);
+  try {
+    if (finiteTime(audio.currentTime) > 0) audio.currentTime = 0;
+  } catch {
+    // Resetting an unloaded media element is optional; native playback remains usable.
+  }
+  restoreNativeSpeechPlayback(audio);
+}
+
 function finiteTime(value: number): number {
   return Number.isFinite(value) && value >= 0 ? value : 0;
 }
@@ -366,6 +406,7 @@ export class HouseVoiceSessionCoordinator {
       if (!isPlayableAudio(audio)) throw new TypeError("preparePlayback() did not return an audio element.");
 
       active.audio = audio;
+      prepareSpeechPlayback(audio);
       active.detachAudioEvents = this.attachAudioEvents(active, audio);
       phase = "playback";
       await Promise.resolve(audio.play());
@@ -405,6 +446,10 @@ export class HouseVoiceSessionCoordinator {
     listen("timeupdate", (event) => {
       if (!this.isCurrent(active)) return;
       safeCallback(this.options.onPlaybackProgress, this.playbackMoment(active, "timeupdate", event));
+    });
+    listen("ratechange", () => {
+      if (!this.isCurrent(active)) return;
+      restoreNativeSpeechPlayback(audio);
     });
     for (const type of ["waiting", "stalled"] as const) {
       listen(type, (event) => {
