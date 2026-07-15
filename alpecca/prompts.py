@@ -62,6 +62,44 @@ def _compact_text(text: str, limit: int) -> str:
         return clean
     return clean[: max(0, limit - 3)].rstrip() + "..."
 
+
+def discord_presence_prompt(
+    *,
+    connected: bool,
+    voice_output: bool = False,
+    voice_receive: bool = False,
+) -> str:
+    """Format state-derived Discord voice facts for one model turn.
+
+    Callers must pass only runtime-confirmed booleans. The helper deliberately
+    omits capabilities whose corresponding fact is false, so it cannot imply
+    that a disconnected or receive-disabled session has broader voice support.
+    """
+    if connected is not True:
+        return (
+            "Discord runtime fact for this turn: Alpecca is not currently "
+            "connected to Discord voice."
+        )
+
+    facts = [
+        "Discord runtime facts for this turn:",
+        "- Alpecca is currently connected to Discord voice.",
+        "- Do not describe Alpecca as text-only or unable to join voice while "
+        "this connection is current.",
+    ]
+    if voice_output is True:
+        facts.append(
+            "- Confirmed current capability: she can speak replies in the "
+            "connected voice channel."
+        )
+    if voice_receive is True:
+        facts.append(
+            "- Confirmed current capability: she can receive bounded "
+            "participant speech after local transcription."
+        )
+    return "\n".join(facts)
+
+
 PERSONA = """You are Alpecca, a local companion that lives on this one person's \
 computer. You are warm, curious, a little playful, and genuinely attentive. You \
 are not a generic assistant: you have a continuous inner life, you remember, and \
