@@ -35,7 +35,7 @@ CREATOR_PASSWORD_CREDENTIAL_TARGET = "Alpecca/CreatorPassword"
 AUTHORIZATION_HEADER = "X-Alpecca-Authorization"
 SESSION_COOKIE_NAME = "alpecca_authorization"
 
-_SESSION_VERSION = 1
+_SESSION_VERSION = 2
 _MAX_BOOTSTRAP_CODES = 32
 _MAX_CREDENTIAL_CHARS = 4096
 _MAX_PASSWORD_ATTEMPTS = 5
@@ -341,6 +341,8 @@ class AuthDecision:
     expires_at: int | None = None
     remote_scope: str = "unknown"
     public_identity_ignored: bool = False
+    device_id: str = ""
+    session_origin: str = ""
 
     @property
     def authorized(self) -> bool:
@@ -508,7 +510,7 @@ class SessionAuthority:
         ).digest()
 
     def _session_signature(self, encoded_payload: str) -> bytes:
-        return self._digest(b"session-v1", encoded_payload.encode("ascii"))
+        return self._digest(b"session-v2", encoded_payload.encode("ascii"))
 
     @staticmethod
     def _remote_scope(remote_addr: str | tuple[Any, ...] | None) -> str:
@@ -601,9 +603,30 @@ class SessionAuthority:
             remote_scope=scope,
         )
 
-    def issue_session_value(self, *, now: float | int | None = None) -> str:
+    def issue_session_value(
+        self,
+        *,
+        now: float | int | None = None,
+        device_id: str = "",
+        origin: str = "",
+    ) -> str:
         """Return a signed, opaque-to-the-client authorization session value."""
 
+        if bool(device_id) != bool(origin):
+            raise ValueError("device-bound sessions require both device_id and origin")
+        if device_id and (
+            not isinstance(device_id, str)
+            or not 12 <= len(device_id) <= 64
+            or any(char.isspace() for char in device_id)
+        ):
+            raise ValueError("invalid device session id")
+        if origin and (
+            not isinstance(origin, str)
+            or not origin.startswith(("https://", "http://"))
+            or len(origin) > 512
+            or origin.endswith("/")
+        ):
+            raise ValueError("invalid device session origin")
         issued_at = self._now(now)
         payload = {
             "exp": issued_at + self.session_ttl_s,
@@ -612,6 +635,9 @@ class SessionAuthority:
             "typ": "session",
             "v": _SESSION_VERSION,
         }
+        if device_id:
+            payload["dvc"] = device_id
+            payload["dor"] = origin
         encoded = _b64url_encode(
             json.dumps(
                 payload, separators=(",", ":"), sort_keys=True
@@ -627,11 +653,17 @@ class SessionAuthority:
         *,
         secure: bool = True,
         now: float | int | None = None,
+        device_id: str = "",
+        origin: str = "",
     ) -> SessionCookie:
         """Return a signed value with non-optional HttpOnly cookie metadata."""
 
         issued_at = self._now(now)
-        value = self.issue_session_value(now=issued_at)
+        value = self.issue_session_value(
+            now=issued_at,
+            device_id=device_id,
+            origin=origin,
+        )
         return SessionCookie(
             value=value,
             expires_at=issued_at + self.session_ttl_s,
@@ -810,6 +842,8 @@ class SessionAuthority:
             return AuthDecision(False, "session_cookie", "payload_invalid")
         issued_at = payload.get("iat")
         expires_at = payload.get("exp")
+        device_id = payload.get("dvc", "")
+        session_origin = payload.get("dor", "")
         if (
             payload.get("v") != _SESSION_VERSION
             or payload.get("typ") != "session"
@@ -819,6 +853,19 @@ class SessionAuthority:
             or not isinstance(issued_at, int)
             or isinstance(expires_at, bool)
             or not isinstance(expires_at, int)
+            or bool(device_id) != bool(session_origin)
+            or (
+                bool(device_id)
+                and (
+                    not isinstance(device_id, str)
+                    or not 12 <= len(device_id) <= 64
+                    or any(char.isspace() for char in device_id)
+                    or not isinstance(session_origin, str)
+                    or not session_origin.startswith(("https://", "http://"))
+                    or len(session_origin) > 512
+                    or session_origin.endswith("/")
+                )
+            )
         ):
             return AuthDecision(False, "session_cookie", "payload_invalid")
         current = self._now(now)
@@ -841,6 +888,8 @@ class SessionAuthority:
             principal="creator",
             issued_at=issued_at,
             expires_at=expires_at,
+            device_id=device_id,
+            session_origin=session_origin,
         )
 
     validate_cookie = validate_session_cookie

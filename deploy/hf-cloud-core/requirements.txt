@@ -1,0 +1,5 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+ollama>=0.3.0
+cryptography>=43.0
+huggingface_hub>=0.33

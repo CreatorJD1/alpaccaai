@@ -2,13 +2,14 @@ import * as THREE from "three";
 import "./styles.css";
 import {
   createVrmEmbodiment,
+  resolveVrmBodyYawFromDisplacement,
   type VrmEmbodiment,
   type VrmEmbodimentDebug,
 } from "./vrmEmbodiment";
 import {
   VoiceQueueFullError,
   createHouseVoiceSessionCoordinator,
-  type VoicePlaybackMoment,
+  createVoiceAvatarPlaybackSignal,
   type VoiceSessionState,
 } from "./voiceSession";
 import {
@@ -21,6 +22,13 @@ import {
   type DesktopPanelItem,
   type DesktopPanelMode,
 } from "./desktopPanel";
+import { attachInternalsSnapshot, mountInternalsMap, renderInternalsMap, type InternalsSnapshot } from "./internalsMap";
+import { recoverAlpeccaEndpoint } from "./endpointRecovery";
+
+window.addEventListener("vite:preloadError", (event) => {
+  event.preventDefault();
+  void recoverAlpeccaEndpoint("stale-module-chunk", { force: true });
+});
 
 type AlpeccaRuntimeProbe = {
   ready: boolean;
@@ -933,6 +941,7 @@ type AlpeccaAwareDoor = {
 };
 type AlpeccaSystemId =
   | "overview"
+  | "internals"
   | "self"
   | "devices"
   | "senses"
@@ -1133,6 +1142,7 @@ hud.innerHTML = `
         <nav id="alpeccaSystemsNav" class="systems-nav" aria-label="Alpecca systems">
           <div class="systems-nav-group"><span>Core</span>
             <button type="button" data-system-id="overview">Overview</button>
+            <button type="button" data-system-id="internals">Internals</button>
             <button type="button" data-system-id="self">Self</button>
             <button type="button" data-system-id="soul">Soul</button>
           </div>
@@ -1716,11 +1726,47 @@ let alpeccaVoiceEmotionTimer = 0;
 let alpeccaVoiceEmotionState: Record<string, number> = {};
 type AlpeccaSpeechPriority = "reply" | "proactive" | "preview";
 
-function alpeccaPlaybackRemaining(moment: VoicePlaybackMoment) {
-  const fallback = Number(moment.audio.dataset.alpeccaFallbackDuration || 0);
-  const duration = moment.duration && moment.duration > 0 ? moment.duration : Math.max(0.35, fallback);
-  return Math.max(0.05, duration - moment.currentTime);
+function setAlpeccaAvatarPlayback(active: boolean) {
+  document.body.dataset.alpeccaTalking = String(active);
+  alpeccaChat.classList.toggle("talking", active);
+  if (!active) {
+    alpecca.mouthOpen = 0;
+    alpeccaProfileTalkFrame = "";
+    alpeccaProfileTalkFrameKey = "";
+    alpeccaProfileTalkFrameTier = -1;
+    alpeccaProfileLastTalkFrameAt = 0;
+    alpeccaProfileHeldExpression = undefined;
+    alpeccaProfileMouth.style.opacity = "0";
+    alpeccaProfileMouth.style.transform = "translateX(-50%) scale(1, 0.35)";
+    if (alpecca.mouth && alpecca.mouthMaterial) {
+      alpecca.mouth.visible = false;
+      alpecca.mouthMaterial.opacity = 0;
+      alpecca.mouth.scale.set(1, 0.28, 1);
+      alpecca.mouth.position.y = -0.125;
+    }
+    if (alpecca.state === "talkDown") setAlpeccaAnimation("idleDown", true);
+    document.body.dataset.alpeccaMouthOpen = "0";
+  }
+  alpeccaVrmEmbodiment?.setSpriteState(
+    alpecca.state,
+    alpecca.moving,
+    active,
+    false,
+    alpecca.walkSpeed,
+    alpeccaLastMove,
+  );
 }
+
+const alpeccaAvatarPlaybackSignal = createVoiceAvatarPlaybackSignal({
+  onChange: ({ talking, audio }) => {
+    if (talking) {
+      if (audio) alpeccaVoiceAudio = audio;
+      setAlpeccaAvatarPlayback(true);
+    }
+    setAlpeccaProfileMode(talking ? "talking" : "listening", alpeccaActiveProfileFeature);
+  },
+  onMouthReset: () => setAlpeccaAvatarPlayback(false),
+});
 
 function setVisibleAlpeccaVoiceSession(state: VoiceSessionState) {
   alpeccaVoiceSessionState = state;
@@ -1731,21 +1777,10 @@ function setVisibleAlpeccaVoiceSession(state: VoiceSessionState) {
 const alpeccaVoiceSession = createHouseVoiceSessionCoordinator({
   maxQueueSize: 4,
   onStateChange: ({ current }) => setVisibleAlpeccaVoiceSession(current),
-  onPlaybackStart: (moment) => {
-    alpeccaVoiceAudio = moment.audio;
-    setAlpeccaProfileMode("talking", alpeccaActiveProfileFeature);
-    const remaining = alpeccaPlaybackRemaining(moment);
-    alpecca.talkTimer = Math.max(alpecca.talkTimer, remaining + 0.14);
-    alpeccaLiveAttentionTimer = Math.max(alpeccaLiveAttentionTimer, Math.min(remaining, 4.2));
-  },
-  onPlaybackProgress: (moment) => {
-    alpecca.talkTimer = Math.max(alpecca.talkTimer, alpeccaPlaybackRemaining(moment) + 0.14);
-  },
-  onPlaybackStop: () => {
-    alpecca.talkTimer = 0;
-    setAlpeccaProfileMode("listening", alpeccaActiveProfileFeature);
-  },
+  onPlaybackStart: (moment) => alpeccaAvatarPlaybackSignal.start(moment),
+  onPlaybackStop: (moment) => alpeccaAvatarPlaybackSignal.stop(moment),
   onUnavailable: ({ reason }) => {
+    alpeccaAvatarPlaybackSignal.reset(reason);
     alpeccaVoiceEngine = "server voice unavailable";
     alpeccaVoiceName = "af_heart";
     alpeccaVoiceProfile = "original voice unavailable";
@@ -1896,7 +1931,7 @@ type AlpeccaEmbodimentRuntimeState = "sprite" | "loading" | "vrm" | "failed";
 let alpeccaEmbodimentState: AlpeccaEmbodimentRuntimeState = "sprite";
 let alpeccaVrmEmbodiment: VrmEmbodiment | null = null;
 let alpeccaVrmStatusDetail = "";
-let alpeccaVrmConfirmArmedAt = 0;
+let alpeccaVrmPrewarmStarted = false;
 
 function configuredAlpeccaEmbodiment(): AlpeccaEmbodimentPreference {
   const fromUrl = urlParamValue(["embodiment", "body"]).toLowerCase();
@@ -1949,7 +1984,10 @@ function ensureAlpeccaVrmEmbodiment(): VrmEmbodiment {
     targetHeight: alpeccaStandingVisibleHeight,
     groundClearance: alpeccaGroundClearance,
     manifestUrl: () => alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/vrm/manifest`),
-    modelUrl: (file: string) => alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/vrm/model/${encodeURIComponent(file)}`),
+    modelUrl: (file: string, version?: string) => alpeccaUrlWithParams(
+      `${alpeccaAiBaseUrl}/vrm/model/${encodeURIComponent(file)}`,
+      version ? { v: version } : {},
+    ),
     animationUrl: (file: string) => alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/assets/vrma/${encodeURIComponent(file)}`),
     onStatus: (status, detail, progress) => {
       alpeccaVrmStatusDetail =
@@ -1957,10 +1995,21 @@ function ensureAlpeccaVrmEmbodiment(): VrmEmbodiment {
           ? `Loading 3D body… ${typeof progress === "number" ? `${Math.round(progress * 100)}%` : "fetching"}`
           : detail || "";
       updateCoreStatusLabels();
+      if (status === "failed" && /fetch|import|network|timeout/i.test(detail || "")) {
+        void recoverAlpeccaEndpoint("3d-body-load-failed", { backendStorageKey: alpeccaBackendStorageKey, force: true });
+      }
     },
   });
   (window as unknown as Record<string, unknown>).__ALPECCA_VRM__ = alpeccaVrmEmbodiment;
   return alpeccaVrmEmbodiment;
+}
+
+function prewarmAlpeccaVrm() {
+  if (alpeccaVrmPrewarmStarted || !alpeccaAiBaseUrl || isAlpeccaVrm3D()) return;
+  alpeccaVrmPrewarmStarted = true;
+  void ensureAlpeccaVrmEmbodiment().preload().then((ok) => {
+    if (!ok) alpeccaVrmPrewarmStarted = false;
+  });
 }
 
 async function activateAlpeccaVrm() {
@@ -1970,6 +2019,7 @@ async function activateAlpeccaVrm() {
     updateCoreStatusLabels();
     return;
   }
+  const switchStartedAt = performance.now();
   alpeccaEmbodimentState = "loading";
   updateCoreStatusLabels();
   const ok = await ensureAlpeccaVrmEmbodiment().activate().catch(() => false);
@@ -1987,6 +2037,7 @@ async function activateAlpeccaVrm() {
     setAlpeccaSpriteVisualsVisible(true);
     if (!alpeccaVrmStatusDetail) alpeccaVrmStatusDetail = "3D body failed to load; staying 2D";
   }
+  document.body.dataset.alpeccaVrmSwitchMs = Math.round(performance.now() - switchStartedAt).toString();
   updateCoreStatusLabels();
 }
 
@@ -1994,6 +2045,7 @@ function deactivateAlpeccaVrm() {
   releaseAlpeccaVrmTerminalTarget();
   alpeccaVrmEmbodiment?.deactivate();
   if (window.__HOUSE_DEBUG__?.alpecca) delete window.__HOUSE_DEBUG__.alpecca.vrm;
+  delete document.body.dataset.alpeccaVrmFeet;
   alpeccaEmbodimentState = "sprite";
   localStorage.setItem(alpeccaEmbodimentStorageKey, "sprite");
   setAlpeccaSpriteVisualsVisible(true);
@@ -2005,9 +2057,10 @@ function updateAlpeccaEmbodiment(dt: number) {
   if (!isAlpeccaVrm3D() || !alpeccaVrmEmbodiment) return;
   const talking = isAlpeccaTalking();
   const engaged = talking || alpecca.attentionTimer > 0 || !alpeccaChat.classList.contains("hidden");
+  const presentationCamera = alpeccaPresentationCamera();
   const distanceToPlayer = Math.hypot(
-    camera.position.x - alpecca.group.position.x,
-    camera.position.z - alpecca.group.position.z,
+    presentationCamera.position.x - alpecca.group.position.x,
+    presentationCamera.position.z - alpecca.group.position.z,
   );
   alpeccaVrmEmbodiment.setSpriteState(
     alpecca.state,
@@ -2017,9 +2070,11 @@ function updateAlpeccaEmbodiment(dt: number) {
     alpecca.walkSpeed,
     alpeccaLastMove,
   );
-  alpeccaVrmEmbodiment.update(dt, camera, engaged, distanceToPlayer);
+  alpeccaVrmEmbodiment.update(dt, presentationCamera, engaged, distanceToPlayer);
+  const vrmDebug = alpeccaVrmEmbodiment.debug();
+  document.body.dataset.alpeccaVrmFeet = JSON.stringify(vrmDebug.feet);
   if (window.__HOUSE_DEBUG__?.alpecca) {
-    window.__HOUSE_DEBUG__.alpecca.vrm = alpeccaVrmEmbodiment.debug();
+    window.__HOUSE_DEBUG__.alpecca.vrm = vrmDebug;
   }
 }
 
@@ -2912,7 +2967,6 @@ const alpecca = {
   lastMovedDistance: 0,
   walkPlaybackRate: alpeccaWalkFrameRate,
   walkSpeed: 0,
-  talkTimer: 0,
   mouthOpen: 0,
   walkBob: 0,
   frameTime: 0,
@@ -4093,6 +4147,12 @@ function alpeccaBackendFetch(url: string, init: RequestInit = {}) {
     ...init,
     credentials: "include",
     headers,
+  }).catch(async (error) => {
+    await recoverAlpeccaEndpoint("backend-request-failed", {
+      backendStorageKey: alpeccaBackendStorageKey,
+      force: true,
+    });
+    throw error;
   });
 }
 
@@ -4448,6 +4508,7 @@ function rememberCompletedAlpeccaRequest(requestId: string) {
 
 const alpeccaSystemEndpoints: Record<AlpeccaSystemId, string> = {
   overview: "/home/state",
+  internals: "/system/status",
   self: "/introspect",
   devices: "/auth/status",
   senses: "/sight",
@@ -4466,6 +4527,7 @@ const alpeccaSystemEndpoints: Record<AlpeccaSystemId, string> = {
 
 const alpeccaSystemLabels: Record<AlpeccaSystemId, string> = {
   overview: "Overview",
+  internals: "Internals",
   self: "Self",
   devices: "Devices",
   senses: "Senses",
@@ -4484,6 +4546,7 @@ const alpeccaSystemLabels: Record<AlpeccaSystemId, string> = {
 
 function alpeccaSystemFromPath(path: string): AlpeccaSystemId {
   const normalized = String(path || "").toLowerCase().split("?")[0];
+  if (normalized.includes("architecture") || normalized.includes("internal")) return "internals";
   if (normalized.includes("observatory")) return "observatory";
   if (normalized.includes("mindscape")) return "mindscape";
   if (normalized.includes("memor")) return "memory";
@@ -4600,6 +4663,7 @@ function renderAlpeccaVoiceViewer(data: Record<string, unknown>): string {
 }
 
 function renderAlpeccaSystem(systemId: AlpeccaSystemId, data: Record<string, unknown>) {
+  if (systemId === "internals") return renderInternalsMap(data as InternalsSnapshot);
   if (systemId === "overview") {
     const home = (data.home || data) as Record<string, unknown>;
     const state = (data.state || {}) as Record<string, unknown>;
@@ -4820,6 +4884,9 @@ async function fetchAlpeccaSystemData(systemId: AlpeccaSystemId) {
     const runtime = (state.runtime || state.model_use || {}) as Record<string, unknown>;
     return { home, state, runtime };
   }
+  if (systemId === "internals") {
+    return await fetchJson("/brain/graph");
+  }
   if (systemId === "devices") {
     const auth = await fetchJson("/auth/status");
     let push: Record<string, unknown>;
@@ -5013,6 +5080,14 @@ async function loadAlpeccaSystem(systemId: AlpeccaSystemId = alpeccaActiveSystem
     if (requestId !== alpeccaSystemLoadSequence) return;
     alpeccaSystemsBody.innerHTML = renderAlpeccaSystem(systemId, data);
     if (systemId === "files") mountAlpeccaDrive();
+    if (systemId === "internals") {
+      attachInternalsSnapshot(alpeccaSystemsBody, data as unknown as InternalsSnapshot);
+      mountInternalsMap(
+        alpeccaSystemsBody,
+        (targetSystem) => void loadAlpeccaSystem(targetSystem as AlpeccaSystemId),
+        () => void loadAlpeccaSystem("internals"),
+      );
+    }
     const host = alpeccaAiBaseUrl ? new URL(alpeccaAiBaseUrl).host : "offline";
     alpeccaSystemsStatus.textContent = `${alpeccaSystemLabels[systemId]} - live from ${host}`;
     if (systemId === "voice") startAlpeccaVoiceLivePoll();
@@ -5236,6 +5311,7 @@ function connectAlpeccaAi() {
     let opened = false;
     alpeccaSocket.addEventListener("open", () => {
       opened = true;
+      alpeccaAvatarPlaybackSignal.reset("backend connected");
       alpeccaAiOfflineNoticeShown = false;
       setAlpeccaAiStatus("live", alpeccaAiMood === "offline" ? "awake" : alpeccaAiMood);
       showMessage("Live Alpecca AI connected.", 2.8);
@@ -5260,7 +5336,7 @@ function connectAlpeccaAi() {
       alpeccaVoiceLastText = "";
       alpeccaVoiceSession.interrupt({ clearQueue: true, reason: "backend disconnected" });
       alpeccaVoiceSession.reset("idle", "backend disconnected");
-      alpecca.talkTimer = 0;
+      alpeccaAvatarPlaybackSignal.reset("backend disconnected");
       setAlpeccaProfileMode("listening", alpeccaActiveProfileFeature);
       if (event.code === 1008 || (!opened && alpeccaAiServerReachable)) {
         setAlpeccaAiStatus("token", "session");
@@ -5381,7 +5457,7 @@ function handleAlpeccaAiMessage(raw: string) {
     focusAlpecca(3.2, "waveDown");
     const spokenReplyText = (message.spoken_reply || message.spoken_text || replyText).trim();
     if (alpeccaSpokenRepliesEnabled) {
-      startAlpeccaSpeech(spokenReplyText, alpeccaSpeechDuration(spokenReplyText));
+      startAlpeccaSpeech(spokenReplyText);
     } else {
       alpeccaVoiceSession.setConversationState("listening", "spoken replies are muted");
     }
@@ -5441,7 +5517,7 @@ function handleAlpeccaAiMessage(raw: string) {
     );
     showMessage(proactiveText, 7);
     if (alpeccaSpokenRepliesEnabled) {
-      startAlpeccaSpeech(proactiveText, alpeccaSpeechDuration(proactiveText), "", "proactive");
+      startAlpeccaSpeech(proactiveText, "", "proactive");
     }
     return;
   }
@@ -5523,7 +5599,7 @@ function toggleAlpeccaSpokenReplies() {
     alpeccaVoiceLastText = "";
     alpeccaVoiceSession.interrupt({ clearQueue: true, reason: "spoken replies muted" });
     alpeccaVoiceSession.reset("listening", "spoken replies muted");
-    alpecca.talkTimer = 0;
+    alpeccaAvatarPlaybackSignal.reset("spoken replies muted");
     setAlpeccaProfileMode("listening", alpeccaActiveProfileFeature);
   } else {
     alpeccaVoiceSession.reset("listening", "spoken replies enabled");
@@ -7414,7 +7490,7 @@ function runAlpeccaFeature(featureId: string) {
   const fallback = `${feature.room}: ${feature.label}. ${feature.page ? "Source app may answer when live." : "Using local game mode."}`;
   appendAlpeccaLog("Alpecca", fallback);
   showAlpeccaProfileLine(fallback, "talking", feature.id);
-  startAlpeccaSpeech(fallback, 2.4);
+  startAlpeccaSpeech(fallback);
   showMessage(`${feature.room} source bridge is offline. ${feature.page ? "Opening the source page may still work if Alpecca is running." : "Using local game mode."}`, 5);
 }
 
@@ -8584,7 +8660,9 @@ function createPrototypeVoid() {
   // Spawn on open floor facing the core monitor, clear of the creator console
   // (z=3.25) and chair (z=4.08) so the camera never starts inside them.
   camera.position.set(0.12, 1.55, 2.4);
-  player.yaw = Math.PI;
+  // Three.js cameras look down -Z at yaw 0. The avatar/core are north of this
+  // spawn, so PI pointed the first-person camera back toward the creator desk.
+  player.yaw = 0;
   player.pitch = -0.04;
 
   const voidFloorMaterial = new THREE.MeshStandardMaterial({
@@ -11665,12 +11743,6 @@ function focusAlpecca(seconds = 2.2, animation: AlpeccaAnimationName = "idleDown
   setAlpeccaAnimation(animation, true, allowRareMotion);
 }
 
-function alpeccaSpeechDuration(text: string, fallback = 2.6) {
-  const clean = text.trim();
-  if (!clean) return fallback;
-  return THREE.MathUtils.clamp(1.05 + clean.length * 0.043, 1.35, 8.2);
-}
-
 function updateAlpeccaVoiceReadout() {
   const original = (alpeccaVoiceName || "af_heart") === "af_heart" && (alpeccaVoiceProfile || "").includes("original");
   alpeccaVoiceIdentityEl.textContent = "Alpecca's voice";
@@ -11753,7 +11825,6 @@ function unlockAlpeccaVoicePlayback() {
 async function prepareAlpeccaVoiceAudio(
   text: string,
   preview: string,
-  fallbackDuration: number,
   signal: AbortSignal,
 ) {
   const clean = text.trim();
@@ -11794,7 +11865,6 @@ async function prepareAlpeccaVoiceAudio(
   captureAlpeccaVoiceHeaders(response);
   const objectUrl = URL.createObjectURL(blob);
   const audio = new Audio(objectUrl);
-  audio.dataset.alpeccaFallbackDuration = String(Math.max(0.35, fallbackDuration));
   audio.setAttribute("playsinline", "true");
   alpeccaVoiceObjectUrl = objectUrl;
   alpeccaVoiceAudio = audio;
@@ -11815,7 +11885,6 @@ function releaseAlpeccaVoiceAudio(audio: HTMLAudioElement) {
 function playAlpeccaVoice(
   text: string,
   preview = "",
-  duration = alpeccaSpeechDuration(text),
   priority: AlpeccaSpeechPriority = "reply",
 ) {
   const clean = text.trim();
@@ -11828,7 +11897,7 @@ function playAlpeccaVoice(
   try {
     const speech = alpeccaVoiceSession.enqueueSpeech({
       label: priority,
-      preparePlayback: ({ signal }) => prepareAlpeccaVoiceAudio(clean, preview, duration, signal),
+      preparePlayback: ({ signal }) => prepareAlpeccaVoiceAudio(clean, preview, signal),
       releasePlayback: releaseAlpeccaVoiceAudio,
     });
     void speech.completion.then((result) => {
@@ -11847,15 +11916,14 @@ function playAlpeccaVoice(
 
 function startAlpeccaSpeech(
   text: string,
-  duration = alpeccaSpeechDuration(text),
   preview = "",
   priority: AlpeccaSpeechPriority = "reply",
 ) {
-  playAlpeccaVoice(text, preview, duration, priority);
+  playAlpeccaVoice(text, preview, priority);
 }
 
 function isAlpeccaTalking() {
-  return alpecca.talkTimer > 0.02;
+  return alpeccaAvatarPlaybackSignal.talking;
 }
 
 function updateAlpeccaVoiceEmotion(dt: number) {
@@ -13344,7 +13412,6 @@ function updateAlpecca(dt: number) {
     releaseAlpeccaVrmTerminalTarget();
     document.body.dataset.alpeccaTerminalState = "attending";
   }
-  if (alpecca.talkTimer > 0) alpecca.talkTimer = Math.max(0, alpecca.talkTimer - dt);
   if (alpecca.startTimer > 0) alpecca.startTimer -= dt;
   if (alpecca.dwellTimer > 0) alpecca.dwellTimer -= dt;
   if (alpecca.walkPauseTimer > 0) alpecca.walkPauseTimer -= dt;
@@ -13406,13 +13473,6 @@ function updateAlpecca(dt: number) {
   const toTarget = alpeccaToTarget.copy(target).sub(alpecca.group.position);
   toTarget.y = 0;
   const distanceToTarget = toTarget.length();
-  if (playerEngaged) {
-    alpecca.group.rotation.y = Math.atan2(dx, dz);
-    alpecca.groundYaw = alpecca.group.rotation.y;
-  } else if (alpecca.inspectTimer > 0) faceAlpeccaToward(attentionTarget);
-  else if (distanceToTarget > 0.12) faceAlpeccaToward(target);
-  else faceAlpeccaToward(attentionTarget);
-  updateAlpeccaHeadLook(distanceToPlayer, playerEngaged, dt);
   // Motion reads her whole emotional state, not three keyword buckets, so
   // every mood -- content, unfulfilled, curious, tender -- gives a distinct
   // pace. Energy sets the base tempo; positive valence adds a little lift;
@@ -13440,6 +13500,15 @@ function updateAlpecca(dt: number) {
     (!sleepy || restPoint) &&
     distanceToTarget > 0.12;
   alpecca.walkIntent = isWalking;
+  if (playerEngaged) {
+    alpecca.group.rotation.y = Math.atan2(dx, dz);
+    alpecca.groundYaw = alpecca.group.rotation.y;
+  } else if (isWalking) {
+    // Actual collision-resolved displacement owns locomotion yaw below.
+  } else if (alpecca.inspectTimer > 0) faceAlpeccaToward(attentionTarget);
+  else if (distanceToTarget > 0.12) faceAlpeccaToward(target);
+  else faceAlpeccaToward(attentionTarget);
+  updateAlpeccaHeadLook(distanceToPlayer, playerEngaged, dt);
   const terminalChoreographyActive = Boolean(
     terminalTarget &&
     alpecca.terminalGesturePlayed &&
@@ -13494,13 +13563,30 @@ function updateAlpecca(dt: number) {
       clearAlpeccaTerminalInteraction();
     }
     toTarget.normalize();
-    alpecca.groundYaw = Math.atan2(toTarget.x, toTarget.z);
     senseAlpeccaAvoidance(toTarget, dt);
-    const movementDirection = alpeccaLastMove.copy(toTarget);
     const beforeX = alpecca.group.position.x;
     const beforeZ = alpecca.group.position.z;
     const moved = moveAlpeccaSafely(toTarget, dt * alpecca.livePatrolSpeed);
-    const movedDistance = Math.hypot(alpecca.group.position.x - beforeX, alpecca.group.position.z - beforeZ);
+    const movedX = alpecca.group.position.x - beforeX;
+    const movedZ = alpecca.group.position.z - beforeZ;
+    const movedDistance = Math.hypot(movedX, movedZ);
+    const movementDirection = alpeccaLastMove.set(movedX, 0, movedZ);
+    if (movementDirection.lengthSq() > 1e-8) {
+      movementDirection.normalize();
+      // Collision avoidance may sidestep around an obstacle. The VRM gait and
+      // body yaw follow the displacement that actually happened, never the
+      // blocked route direction that was originally requested.
+      const resolvedYaw = resolveVrmBodyYawFromDisplacement(
+        alpecca.group.rotation.y,
+        movedX,
+        movedZ,
+        dt,
+      );
+      alpecca.group.rotation.y = resolvedYaw;
+      alpecca.groundYaw = resolvedYaw;
+    } else {
+      movementDirection.copy(toTarget);
+    }
     alpecca.lastMovedDistance = movedDistance;
     const visiblyMoved = moved && movedDistance >= alpeccaWalkFrameEpsilon;
     alpecca.walkSegmentTimer -= dt;
@@ -13751,6 +13837,10 @@ async function createAlpecca() {
   alpecca.group.name = "Alpecca NPC";
   alpecca.group.position.copy(currentAlpeccaExplorePoint().position);
   scene.add(alpecca.group);
+  // Fetch and parse her 3D body in parallel with sprite startup. The sprite
+  // remains visible until activation, so boot stays responsive while the
+  // first embodiment switch gains the same cached path as later switches.
+  prewarmAlpeccaVrm();
   publishAlpeccaRuntimeProbe();
 
   window.__HOUSE_DEBUG__!.alpecca = {
@@ -14775,9 +14865,17 @@ addFurnitureOcclusion();
 initializeAlpeccaAccommodationQa();
 applyHudMode();
 setAlpeccaViewMode(alpeccaViewMode, false);
-void createAlpecca();
+void recoverAlpeccaEndpoint("startup", { backendStorageKey: alpeccaBackendStorageKey })
+  .then((redirected) => {
+    if (!redirected) void createAlpecca();
+  });
 showMessage(isPrototypeMode() ? "Click to enter Alpecca's void" : "Click to enter the AI Office HQ, a place in her void", 8);
 connectAlpeccaAi();
+
+const requestedSystem = urlParamValue(["system", "panel"]) as AlpeccaSystemId;
+if (Object.prototype.hasOwnProperty.call(alpeccaSystemLabels, requestedSystem)) {
+  window.setTimeout(() => openAlpeccaSystems(requestedSystem, false), 0);
+}
 
 renderer.setAnimationLoop(animate);
 
@@ -14865,7 +14963,7 @@ alpeccaChat.addEventListener("click", (event) => {
       .catch(() => undefined)
       .finally(() => {
         showAlpeccaProfileLine("Playing Alpecca's current voice.", "talking", "voice");
-        startAlpeccaSpeech(sample, 3.4);
+        startAlpeccaSpeech(sample);
       });
     return;
   }
@@ -14883,7 +14981,7 @@ alpeccaChat.addEventListener("click", (event) => {
     };
     setAlpeccaProfileMode("talking", "voice");
     showAlpeccaProfileLine(`Voice QA: ${preview}`, "talking");
-    startAlpeccaSpeech(sampleText[preview] || sampleText.current, 3.2, preview === "current" ? "" : preview);
+    startAlpeccaSpeech(sampleText[preview] || sampleText.current, preview === "current" ? "" : preview);
     return;
   }
   const featureButton = target.closest<HTMLButtonElement>("button[data-feature]");
@@ -15435,7 +15533,7 @@ async function handleAlpeccaSystemAction(action: string) {
     }
     if (action === "voice-preview") {
       alpeccaVoiceLastText = "";
-      startAlpeccaSpeech("This is my current voice, grounded in how I feel right now.", 3.8, "", "preview");
+      startAlpeccaSpeech("This is my current voice, grounded in how I feel right now.", "", "preview");
       return;
     }
     if (action === "device-page" || action === "classic-chat") {
@@ -15646,13 +15744,6 @@ embodimentToggle.addEventListener("click", (event) => {
   if (isAlpeccaVrm3D()) {
     deactivateAlpeccaVrm();
     appendAlpeccaLog("System", "Alpecca returned to her 2D sprite body.");
-    return;
-  }
-  const coarse = window.matchMedia("(pointer: coarse)").matches;
-  if (coarse && performance.now() - alpeccaVrmConfirmArmedAt > 6000) {
-    alpeccaVrmConfirmArmedAt = performance.now();
-    alpeccaVrmStatusDetail = "Experimental: ~17 MB download, heavy on phones — tap again to confirm";
-    updateCoreStatusLabels();
     return;
   }
   void activateAlpeccaVrm();

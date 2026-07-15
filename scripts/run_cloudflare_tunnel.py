@@ -1,8 +1,7 @@
-"""Run Alpecca's stable Cloudflare named tunnel."""
+"""Attach Alpecca's stable Cloudflare named tunnel to a running instance."""
 from __future__ import annotations
 
 import argparse
-import socket
 import subprocess
 import sys
 import time
@@ -11,28 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config  # noqa: E402
+from alpecca import instance as instance_mod  # noqa: E402
 from alpecca import preview  # noqa: E402
-
-
-def listening(port: int, host: str = "127.0.0.1") -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.settimeout(0.5)
-        return sock.connect_ex((host, port)) == 0
-
-
-def start_server_if_needed(port: int) -> subprocess.Popen | None:
-    if listening(port):
-        return None
-    proc = subprocess.Popen(
-        [sys.executable, "server.py"],
-        cwd=Path(__file__).resolve().parent.parent,
-    )
-    deadline = time.time() + 20
-    while time.time() < deadline:
-        if listening(port):
-            return proc
-        time.sleep(0.5)
-    raise SystemExit("Alpecca server did not start on port %s." % port)
 
 
 def hostname_from_config(path: Path) -> str:
@@ -51,8 +30,22 @@ def main() -> int:
     parser.add_argument("--config", type=Path, default=config.CLOUDFLARE_CONFIG)
     parser.add_argument("--name", default=config.CLOUDFLARE_TUNNEL_NAME)
     parser.add_argument("--port", type=int, default=config.PORT)
-    parser.add_argument("--no-server", action="store_true", help="Do not start server.py if port is closed.")
+    parser.add_argument(
+        "--no-server",
+        action="store_true",
+        help="Deprecated compatibility flag; this command is always attach-only.",
+    )
     args = parser.parse_args()
+
+    existing = instance_mod.existing_server_url(args.port)
+    if not existing:
+        print(
+            "No verified Alpecca CoreMind is running on the local port. "
+            "Start it with START_HERE.bat or python scripts\\run_full.py, "
+            "then run the named tunnel again.",
+            file=sys.stderr,
+        )
+        return 2
 
     exe = preview.find_cloudflared()
     if not exe:
@@ -63,7 +56,6 @@ def main() -> int:
             "Run: python scripts\\setup_cloudflare_tunnel.py --hostname <your-hostname>"
         )
 
-    server_proc = None if args.no_server else start_server_if_needed(args.port)
     public_url = preview.configured_public_url()
     if not public_url:
         hostname = hostname_from_config(args.config)
@@ -91,9 +83,6 @@ def main() -> int:
     except KeyboardInterrupt:
         proc.terminate()
         return 0
-    finally:
-        if server_proc is not None:
-            server_proc.terminate()
 
 
 if __name__ == "__main__":

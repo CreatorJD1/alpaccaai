@@ -44,6 +44,7 @@ MediaDiagnostic = Literal[
 ]
 ServerMediaStatus = Literal["unknown", "ready", "disabled"]
 LocalVisionStatus = Literal["unknown", "ready", "unavailable"]
+ApprovedPortraitStatus = Literal["unknown", "ready", "unavailable"]
 
 INBOUND_MAX_BYTES = DEFAULT_MAX_IMAGE_BYTES
 OUTBOUND_MAX_BYTES = min(8 * 1024 * 1024, ATTACHMENT_IMAGE_MAX_BYTES)
@@ -58,9 +59,20 @@ _COMMAND_RE = re.compile(
     r"^\s*!image(?:\s+(portrait|base|reference|gallery))?\s*$",
     re.IGNORECASE,
 )
-_SEND_RE = re.compile(r"\b(?:send|show|share|post|attach)\b", re.IGNORECASE)
+_DIRECT_OUTBOUND_REQUEST_RE = re.compile(
+    r"^\s*(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|"
+    r"please\s+|i\s+(?:want|need|would\s+like)\s+you\s+to\s+)?"
+    r"(?:send|show|share|post|attach)\b",
+    re.IGNORECASE,
+)
+_DIRECT_ADDRESS_RE = re.compile(
+    r"^\s*(?:(?:hey|hi|hello)\s*[,!:;-]?\s+)?"
+    r"@?alpecca(?:[ _]?ai)?(?:\s*[,.:;!?-]\s*|\s+)",
+    re.IGNORECASE,
+)
+_MENTION_RESIDUE_RE = re.compile(r"^\s*[,.:;!?-]+\s*")
 _IMAGE_RE = re.compile(
-    r"\b(?:image|picture|photo|portrait|character\s+sheet|design\s+sheet|"
+    r"\b(?:image|picture|photo|portrait|selfie|character\s+sheet|design\s+sheet|"
     r"reference\s+sheet|base\s+model|gallery)\b",
     re.IGNORECASE,
 )
@@ -93,8 +105,8 @@ _DIAGNOSTICS = MappingProxyType({
         "Discord audio payloads are disabled. I did not read, transcribe, or send audio."
     ),
     "multiple-attachments": (
-        "I can inspect exactly one image in a direct message. I did not read any "
-        "of those attachments."
+        "I can inspect exactly one image in an allowed Discord conversation. "
+        "I did not read any of those attachments."
     ),
     "read-failed": (
         "I could not read that image within the bounded local media window. "
@@ -107,6 +119,10 @@ _DIAGNOSTICS = MappingProxyType({
         "Discord media audit is unavailable. I did not read or send an attachment."
     ),
 })
+
+_STALE_MEDIA_TURN_CORRECTION = (
+    "I'm following your current message here."
+)
 
 
 class DiscordImageRejected(ValueError):
@@ -145,11 +161,18 @@ def media_diagnostic(reason: MediaDiagnostic) -> str:
     return _DIAGNOSTICS[reason]
 
 
+def stale_media_turn_correction() -> str:
+    """Return a fixed current-turn correction for replayed media boilerplate."""
+
+    return _STALE_MEDIA_TURN_CORRECTION
+
+
 def media_readiness(
     *,
     media_enabled: bool,
     server_status: ServerMediaStatus = "unknown",
     local_vision_status: LocalVisionStatus = "unknown",
+    portrait_status: ApprovedPortraitStatus = "unknown",
 ) -> dict[str, object]:
     """Return deterministic media posture without paths, URLs, IDs, or secrets."""
 
@@ -163,6 +186,10 @@ def media_readiness(
         "unknown", "ready", "unavailable",
     }:
         raise ValueError("local_vision_status is invalid")
+    if type(portrait_status) is not str or portrait_status not in {
+        "unknown", "ready", "unavailable",
+    }:
+        raise ValueError("portrait_status is invalid")
 
     if not media_enabled or server_status == "disabled":
         inbound_status = "disabled"
@@ -173,10 +200,22 @@ def media_readiness(
     else:
         inbound_status = "unverified"
 
+    receive_ready = inbound_status == "ready"
     outbound_status = "explicit-closed-catalog" if media_enabled else "disabled"
+    effective_portrait_status = portrait_status if media_enabled else "disabled"
+    send_ready = media_enabled and portrait_status == "ready"
     return {
         "version": 1,
-        "ready": inbound_status == "ready",
+        "enabled": media_enabled,
+        "ready": receive_ready,
+        "receive_ready": receive_ready,
+        "send_ready": send_ready,
+        "gates": {
+            "bridge_media": "enabled" if media_enabled else "disabled",
+            "backend_media": server_status,
+            "local_vision": local_vision_status,
+            "approved_portrait": effective_portrait_status,
+        },
         "receive": {
             "image": {
                 "status": inbound_status,
@@ -249,9 +288,9 @@ def prepare_inbound_image(
     try:
         inspected = inspect_image_bytes(
             image_bytes,
-            scope="discord:creator-dm-image",
-            authorized_scopes={"discord:creator-dm-image"},
-            source="discord:creator-dm-image",
+            scope="discord:allowed-image",
+            authorized_scopes={"discord:allowed-image"},
+            source="discord:allowed-image",
             declared_mime_type=declared,
             max_bytes=INBOUND_MAX_BYTES,
         )
@@ -268,14 +307,25 @@ def prepare_inbound_image(
     )
 
 
+def _normalize_outbound_request_text(text: str) -> str:
+    """Remove only a direct Alpecca address or leftover mention punctuation."""
+
+    clean = str(text or "").strip()
+    addressed = _DIRECT_ADDRESS_RE.sub("", clean, count=1)
+    if addressed != clean:
+        clean = addressed
+    return _MENTION_RESIDUE_RE.sub("", clean, count=1)
+
+
 def requested_media_kind(text: str) -> MediaKind | None:
     """Recognize only an explicit request to attach one of Alpecca's own images."""
 
-    clean = str(text or "").strip()
-    command = _COMMAND_RE.fullmatch(clean)
+    raw = str(text or "").strip()
+    command = _COMMAND_RE.fullmatch(raw)
     if command:
         return (command.group(1) or "portrait").lower()  # type: ignore[return-value]
-    if not (_SEND_RE.search(clean) and _IMAGE_RE.search(clean)):
+    clean = _normalize_outbound_request_text(raw)
+    if not (_DIRECT_OUTBOUND_REQUEST_RE.search(clean) and _IMAGE_RE.search(clean)):
         return None
     low = clean.casefold()
     if "base model" in low:
@@ -290,11 +340,12 @@ def requested_media_kind(text: str) -> MediaKind | None:
 def requested_disabled_media_kind(text: str) -> DisabledMediaKind | None:
     """Recognize explicit outbound file/audio requests that remain disabled."""
 
-    clean = str(text or "").strip()
-    command = _DISABLED_COMMAND_RE.fullmatch(clean)
+    raw = str(text or "").strip()
+    command = _DISABLED_COMMAND_RE.fullmatch(raw)
     if command:
         return command.group(1).lower()  # type: ignore[return-value]
-    if not _SEND_RE.search(clean):
+    clean = _normalize_outbound_request_text(raw)
+    if not _DIRECT_OUTBOUND_REQUEST_RE.search(clean):
         return None
     if _AUDIO_RE.search(clean):
         return "audio"
@@ -389,6 +440,12 @@ def resolve_self_portrait() -> OutboundDiscordImage | None:
     )
 
 
+def approved_portrait_status() -> ApprovedPortraitStatus:
+    """Validate the one default self-portrait without exposing its local path."""
+
+    return "ready" if resolve_self_portrait() is not None else "unavailable"
+
+
 def resolve_outbound_media(
     text: str,
     *,
@@ -452,6 +509,7 @@ def record_media_event(
 
 __all__ = [
     "AUDIO_EXTENSIONS",
+    "ApprovedPortraitStatus",
     "DisabledMediaKind",
     "DiscordImageRejected",
     "IMAGE_EXTENSIONS",
@@ -465,6 +523,7 @@ __all__ = [
     "PreparedInboundImage",
     "ServerMediaStatus",
     "attachment_media_kind",
+    "approved_portrait_status",
     "looks_like_image_attachment",
     "media_diagnostic",
     "media_readiness",
@@ -474,5 +533,6 @@ __all__ = [
     "requested_media_kind",
     "resolve_self_portrait",
     "resolve_outbound_media",
+    "stale_media_turn_correction",
     "validate_inbound_attachment_size",
 ]

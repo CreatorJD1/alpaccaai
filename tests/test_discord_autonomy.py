@@ -67,6 +67,18 @@ def test_autonomous_draft_rejects_generic_assistant_self_descriptions():
         "I can't join voice, but I can reply here."
     ) is False
     assert discord_autonomy.publishable_draft(
+        "I can only communicate through text, so I'm not present in voice."
+    ) is False
+    assert discord_autonomy.publishable_draft(
+        "I don't have a live voice presence; I'm only available through text."
+    ) is False
+    assert discord_autonomy.publishable_draft(
+        "I'm absent from the voice channel, but I can still type here."
+    ) is False
+    assert discord_autonomy.publishable_draft(
+        "I\u2019m text-only here, so I cannot be present in voice."
+    ) is False
+    assert discord_autonomy.publishable_draft(
         "Hello! I'm here and ready to help."
     ) is False
     assert discord_autonomy.publishable_draft(

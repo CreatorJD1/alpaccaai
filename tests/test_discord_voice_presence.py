@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from alpecca import discord_bridge
 
 
@@ -92,3 +94,35 @@ def test_presence_and_correction_use_active_listener_and_loaded_transcriber(monk
     assert "runtime prompt" in context
     assert "currently speaking through Discord voice" in corrected
     assert "can hear short utterances after local transcription" in corrected
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "I can only communicate through text, so I'm not actually present in voice.",
+        "I'm absent from the voice channel because I don't have a voice presence.",
+        "I only exist as text and cannot be in the call with you.",
+    ],
+)
+def test_live_voice_replaces_broader_text_only_and_absence_claims(
+    monkeypatch,
+    claim: str,
+):
+    monkeypatch.setattr(discord_bridge.hearing, "_ready", True)
+    monkeypatch.setattr(discord_bridge.hearing, "_model", object())
+    client = _build_voice_client(monkeypatch)
+    guild = SimpleNamespace(id=77, voice_client=_VoiceClient())
+    getattr(client, "_alpecca_voice_receive_sessions")[77] = {
+        "listener_active": True,
+    }
+
+    corrected = getattr(client, "_alpecca_ground_voice_presence_reply")(
+        claim,
+        guild,
+    )
+
+    assert corrected.startswith("I'm in **General** with you now.")
+    assert "can hear short utterances after local transcription" in corrected
+    assert "text-only" not in corrected.casefold()
+    assert "absent" not in corrected.casefold()
+    assert "cannot be in" not in corrected.casefold()

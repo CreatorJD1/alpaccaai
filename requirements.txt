@@ -23,7 +23,8 @@ pywebview>=5.0
 # Without this package the deep tier silently falls back to local reasoning.
 # anthropic>=0.40
 # (The "cloud" deep backend -- a Kaggle/Colab model server -- reuses huggingface_hub.)
-# Cloud brain backend (ALPECCA_LLM_BACKEND=hf) or deep "cloud" tier:
+# Cloud brain backend (ALPECCA_LLM_BACKEND=hf, Qwen/Qwen3.5-9B by default)
+# or deep "cloud" tier:
 # huggingface_hub>=0.24
 # Remote/internet access (python app.py with ALPECCA_REMOTE=1 / ALPECCA_TUNNEL=):
 # the tunnel uses a separate CLI you install once, not a pip package --

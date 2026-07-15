@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createHouseVoiceSessionCoordinator } from "./voiceSession.ts";
+import {
+  createHouseVoiceSessionCoordinator,
+  createVoiceAvatarPlaybackSignal,
+} from "./voiceSession.ts";
 
 class FakeAudio extends EventTarget {
   currentTime = 0;
@@ -101,4 +104,159 @@ test("an interruption pauses the active element before the next speech starts", 
 
   second.finish();
   assert.equal((await secondSpeech.completion).outcome, "completed");
+});
+
+const MOUTH_CHANNELS = ["aa", "ih", "ou", "ee", "oh", "sprite", "profile"];
+
+class LifecycleAudio extends FakeAudio {
+  duration = Number.NaN;
+  error = null;
+
+  play() {
+    this.playCalls += 1;
+    this.paused = false;
+    this.dispatchEvent(new Event("play"));
+    return Promise.resolve();
+  }
+
+  pause() {
+    this.pauseCalls += 1;
+    if (this.paused) return;
+    this.paused = true;
+    this.dispatchEvent(new Event("pause"));
+  }
+
+  beginPlaying() {
+    this.ended = false;
+    this.paused = false;
+    this.dispatchEvent(new Event("playing"));
+  }
+
+  suspend(type) {
+    this.dispatchEvent(new Event(type));
+  }
+
+  fail(message = "media decode failed") {
+    this.error = new Error(message);
+    this.dispatchEvent(new Event("error"));
+  }
+}
+
+function fillMouth(mouth, value = 0.7) {
+  for (const channel of MOUTH_CHANNELS) mouth[channel] = value;
+}
+
+function assertMouthClosed(mouth) {
+  assert.deepEqual(mouth, Object.fromEntries(MOUTH_CHANNELS.map((channel) => [channel, 0])));
+}
+
+function createPlaybackSignalHarness() {
+  const mouth = Object.fromEntries(MOUTH_CHANNELS.map((channel) => [channel, 0]));
+  const changes = [];
+  const resets = [];
+  const failures = [];
+  const signal = createVoiceAvatarPlaybackSignal({
+    onChange: (state) => changes.push(state),
+    onMouthReset: (state) => {
+      fillMouth(mouth, 0);
+      resets.push(state);
+    },
+  });
+  const session = createHouseVoiceSessionCoordinator({
+    onPlaybackStart: (moment) => signal.start(moment),
+    onPlaybackStop: (moment) => signal.stop(moment),
+    onUnavailable: (failure) => {
+      failures.push(failure);
+      signal.reset(failure.reason);
+    },
+  });
+  return { mouth, changes, resets, failures, signal, session };
+}
+
+test("avatar signal follows playing, buffering, resume, and end without a duration clock", async () => {
+  const audio = new LifecycleAudio();
+  const harness = createPlaybackSignalHarness();
+  const speech = harness.session.enqueueSpeech({ preparePlayback: () => audio });
+  await settlePlayback();
+
+  assert.equal(audio.paused, false, "play() has been requested");
+  assert.equal(harness.signal.talking, false, "the play event alone is not active playback");
+
+  audio.duration = 0.001;
+  audio.currentTime = 999;
+  audio.beginPlaying();
+  assert.equal(harness.signal.talking, true, "duration metadata cannot expire the signal");
+
+  fillMouth(harness.mouth);
+  audio.suspend("waiting");
+  assert.equal(harness.signal.talking, false);
+  assertMouthClosed(harness.mouth);
+
+  audio.beginPlaying();
+  fillMouth(harness.mouth);
+  audio.suspend("stalled");
+  assert.equal(harness.signal.talking, false);
+  assertMouthClosed(harness.mouth);
+
+  audio.beginPlaying();
+  fillMouth(harness.mouth);
+  audio.finish();
+  assert.equal((await speech.completion).outcome, "completed");
+  assert.equal(harness.signal.talking, false);
+  assertMouthClosed(harness.mouth);
+  assert.deepEqual(
+    harness.changes.map((state) => state.talking),
+    [true, false, true, false, true, false],
+  );
+});
+
+test("pause, media error, and reconnect reset every avatar mouth channel", async (t) => {
+  await t.test("pause", async () => {
+    const audio = new LifecycleAudio();
+    const harness = createPlaybackSignalHarness();
+    const speech = harness.session.enqueueSpeech({ preparePlayback: () => audio });
+    await settlePlayback();
+    audio.beginPlaying();
+    fillMouth(harness.mouth);
+
+    audio.pause();
+
+    assert.equal((await speech.completion).outcome, "interrupted");
+    assert.equal(harness.signal.talking, false);
+    assertMouthClosed(harness.mouth);
+    assert.equal(harness.resets.at(-1).sourceEvent, "pause");
+  });
+
+  await t.test("media error", async () => {
+    const audio = new LifecycleAudio();
+    const harness = createPlaybackSignalHarness();
+    const speech = harness.session.enqueueSpeech({ preparePlayback: () => audio });
+    await settlePlayback();
+    audio.beginPlaying();
+    fillMouth(harness.mouth);
+
+    audio.fail();
+
+    assert.equal((await speech.completion).outcome, "unavailable");
+    assert.equal(harness.failures.length, 1);
+    assert.equal(harness.signal.talking, false);
+    assertMouthClosed(harness.mouth);
+  });
+
+  await t.test("reconnect", async () => {
+    const audio = new LifecycleAudio();
+    const harness = createPlaybackSignalHarness();
+    const speech = harness.session.enqueueSpeech({ preparePlayback: () => audio });
+    await settlePlayback();
+    audio.beginPlaying();
+    fillMouth(harness.mouth);
+
+    harness.session.interrupt({ clearQueue: true, reason: "backend disconnected" });
+    harness.signal.reset("backend connected");
+
+    assert.equal((await speech.completion).outcome, "interrupted");
+    assert.equal(harness.signal.talking, false);
+    assertMouthClosed(harness.mouth);
+    assert.equal(harness.signal.getSnapshot().sourceEvent, "reset");
+  });
 });

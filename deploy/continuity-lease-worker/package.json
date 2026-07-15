@@ -1,0 +1,21 @@
+{
+  "name": "@alpecca/continuity-lease-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "types": "wrangler types",
+    "typecheck": "tsc --noEmit && tsc -p test/tsconfig.json --noEmit",
+    "test": "vitest run",
+    "check": "npm run types && npm run typecheck && npm test",
+    "build:dry-run": "wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.18.5",
+    "@cloudflare/workers-types": "5.20260715.1",
+    "@types/node": "^26.1.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10",
+    "wrangler": "4.111.0"
+  }
+}

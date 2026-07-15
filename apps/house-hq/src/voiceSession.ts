@@ -94,6 +94,21 @@ export interface VoiceSessionCoordinatorOptions {
   readonly onUnavailable?: (failure: VoiceSessionFailure) => void;
 }
 
+export type VoiceAvatarPlaybackSignalSource = VoicePlaybackMoment["sourceEvent"] | "reset";
+
+export interface VoiceAvatarPlaybackSignalState {
+  readonly talking: boolean;
+  readonly requestId: number | null;
+  readonly audio: HTMLAudioElement | null;
+  readonly reason: string;
+  readonly sourceEvent: VoiceAvatarPlaybackSignalSource;
+}
+
+export interface VoiceAvatarPlaybackSignalOptions {
+  readonly onChange?: (state: VoiceAvatarPlaybackSignalState) => void;
+  readonly onMouthReset?: (state: VoiceAvatarPlaybackSignalState) => void;
+}
+
 export interface VoiceInterruptionOptions {
   readonly clearQueue?: boolean;
   readonly reason?: string;
@@ -218,6 +233,95 @@ function finiteDuration(value: number): number | null {
 }
 
 /**
+ * Converts browser media lifecycle events into the avatar's talking signal.
+ * It intentionally has no duration or clock input: only a live `playing`
+ * event can open the mouth, and every playback stop closes it.
+ */
+export class VoiceAvatarPlaybackSignal {
+  private readonly options: VoiceAvatarPlaybackSignalOptions;
+  private currentTalking = false;
+  private currentRequestId: number | null = null;
+  private currentAudio: HTMLAudioElement | null = null;
+  private currentReason = "voice playback has not started";
+  private currentSourceEvent: VoiceAvatarPlaybackSignalSource = "reset";
+
+  constructor(options: VoiceAvatarPlaybackSignalOptions = {}) {
+    this.options = options;
+  }
+
+  get talking(): boolean {
+    return this.currentTalking;
+  }
+
+  getSnapshot(): VoiceAvatarPlaybackSignalState {
+    return Object.freeze({
+      talking: this.currentTalking,
+      requestId: this.currentRequestId,
+      audio: this.currentAudio,
+      reason: this.currentReason,
+      sourceEvent: this.currentSourceEvent,
+    });
+  }
+
+  start(moment: VoicePlaybackMoment): boolean {
+    if (moment.sourceEvent !== "playing" || moment.audio.paused || moment.audio.ended) {
+      this.reset("playing event did not represent active media");
+      return false;
+    }
+
+    const changed = !this.currentTalking
+      || this.currentRequestId !== moment.requestId
+      || this.currentAudio !== moment.audio;
+    this.currentTalking = true;
+    this.currentRequestId = moment.requestId;
+    this.currentAudio = moment.audio;
+    this.currentReason = "audio playing";
+    this.currentSourceEvent = moment.sourceEvent;
+    if (changed) safeCallback(this.options.onChange, this.getSnapshot());
+    return true;
+  }
+
+  stop(moment: VoicePlaybackStop): boolean {
+    if (this.currentRequestId !== null && this.currentRequestId !== moment.requestId) return false;
+    const keepRequest = moment.reason === "waiting" || moment.reason === "stalled";
+    return this.deactivate(
+      moment.reason,
+      moment.sourceEvent,
+      keepRequest ? moment.requestId : null,
+      keepRequest ? moment.audio : null,
+    );
+  }
+
+  reset(reason = "avatar voice playback reset"): boolean {
+    return this.deactivate(normalizedReason(reason, "avatar voice playback reset"), "reset", null, null);
+  }
+
+  private deactivate(
+    reason: string,
+    sourceEvent: VoiceAvatarPlaybackSignalSource,
+    requestId: number | null,
+    audio: HTMLAudioElement | null,
+  ): boolean {
+    const changed = this.currentTalking;
+    this.currentTalking = false;
+    this.currentRequestId = requestId;
+    this.currentAudio = audio;
+    this.currentReason = reason;
+    this.currentSourceEvent = sourceEvent;
+    const snapshot = this.getSnapshot();
+    safeCallback(this.options.onMouthReset, snapshot);
+    if (changed) safeCallback(this.options.onChange, snapshot);
+    return changed;
+  }
+}
+
+export function createVoiceAvatarPlaybackSignal(
+  options: VoiceAvatarPlaybackSignalOptions = {},
+): VoiceAvatarPlaybackSignal {
+  return new VoiceAvatarPlaybackSignal(options);
+}
+
+/**
  * Coordinates synthesized House speech without performing browser audio unlock.
  * Callers must satisfy that user-gesture prerequisite before enqueueing speech.
  */
@@ -247,6 +351,10 @@ export class HouseVoiceSessionCoordinator {
 
   get activeRequestId(): number | null {
     return this.active?.entry.id ?? null;
+  }
+
+  get playbackActive(): boolean {
+    return this.active?.mouthActive === true;
   }
 
   get queueSize(): number {

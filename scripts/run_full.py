@@ -32,6 +32,30 @@ sys.path.insert(0, str(ROOT))
 # lock must be held before config can touch persistent state or any helper can
 # start a sidecar service.
 from alpecca import instance as instance_mod      # noqa: E402
+from alpecca.continuity_lease import (             # noqa: E402
+    ContinuityLeaseError,
+    ContinuityLeaseGuard,
+    client_from_env,
+)
+
+_CONTINUITY_CHILDREN: list[subprocess.Popen] = []
+
+# Keep the supported launch paths on the same workload split.  Callers may
+# override any value explicitly; these defaults prevent the GUI, phone-share,
+# and direct full-stack launchers from silently losing the hosted/local roles
+# that START_HERE.bat configures.
+os.environ.setdefault("ALPECCA_LLM_BACKEND", "ollama")
+os.environ.setdefault("ALPECCA_MODEL", "qwen3.5:9b")
+os.environ.setdefault("ALPECCA_FAST_MODEL", "qwen3.5:9b")
+os.environ.setdefault("ALPECCA_NUM_CTX", "8192")
+os.environ.setdefault("ALPECCA_CHAT_CLOUD_MODEL", "gemma4:cloud")
+os.environ.setdefault("ALPECCA_CHAT_ZEROGPU", "0")
+os.environ.setdefault("ALPECCA_DEEP_BACKEND", "ollama-cloud")
+os.environ.setdefault("ALPECCA_OLLAMA_CLOUD_MODEL", "gemma4:cloud")
+os.environ.setdefault("ALPECCA_REFLECT_MODEL", "qwen3.5:9b")
+os.environ.setdefault("ALPECCA_VISION_BACKEND", "local")
+os.environ.setdefault("ALPECCA_VISION_CLOUD_MODEL", "")
+os.environ.setdefault("ALPECCA_VISION_MODEL", "qwen3.5:9b")
 
 # Risky capabilities stay off unless the caller explicitly opted in.
 os.environ.setdefault("ALPECCA_COMPUTER_USE", "0")
@@ -87,7 +111,8 @@ def _start_f5_worker() -> None:
     }
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-    subprocess.Popen([sys.executable, "scripts\\f5_tts_worker.py"], **kwargs)
+    process = subprocess.Popen([sys.executable, "scripts\\f5_tts_worker.py"], **kwargs)
+    _CONTINUITY_CHILDREN.append(process)
     print(f"Alpecca F5 voice worker is warming at http://{F5_WORKER_HOST}:{F5_WORKER_PORT} ...")
     for _ in range(45):
         if _f5_worker_health(timeout=0.8):
@@ -119,7 +144,8 @@ def _start_discord_bridge() -> None:
     }
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-    subprocess.Popen([sys.executable, "scripts\\run_discord_bridge.py"], **kwargs)
+    process = subprocess.Popen([sys.executable, "scripts\\run_discord_bridge.py"], **kwargs)
+    _CONTINUITY_CHILDREN.append(process)
     print("Alpecca Discord bridge starting -- she'll come online in her server.")
 
 
@@ -245,6 +271,66 @@ def _instance_lock_path() -> Path:
     return Path(os.environ.get("ALPECCA_HOME", ROOT / "data")) / "alpecca.instance"
 
 
+def _continuity_endpoint() -> str:
+    """Return only an explicitly registered public endpoint for this runtime."""
+    return (
+        os.environ.get("ALPECCA_CONTINUITY_PUBLIC_ENDPOINT", "").strip()
+        or os.environ.get("ALPECCA_PUBLIC_URL", "").strip()
+    )
+
+
+def _lease_loss(reason: str) -> None:
+    """Fence this runtime before another host can acquire the next epoch."""
+    print(
+        f"[continuity] Remote singleton lease was lost ({reason}); "
+        "stopping this runtime before failover.",
+        file=sys.stderr,
+        flush=True,
+    )
+    for process in tuple(_CONTINUITY_CHILDREN):
+        try:
+            if process.poll() is None:
+                process.terminate()
+        except Exception:
+            pass
+    os._exit(75)
+
+
+def _start_continuity_guard() -> ContinuityLeaseGuard | None:
+    """Acquire the optional cross-host lease before any runtime side effects."""
+    client = client_from_env(role="local-primary")
+    if client is None:
+        return None
+
+    guard = ContinuityLeaseGuard(
+        client,
+        renew_seconds=float(os.environ.get("ALPECCA_CONTINUITY_RENEW_SECONDS", "10")),
+        endpoint=_continuity_endpoint(),
+        on_loss=_lease_loss,
+    )
+    timeout = max(
+        0.0,
+        min(60.0, float(os.environ.get("ALPECCA_CONTINUITY_ACQUIRE_TIMEOUT", "40"))),
+    )
+    deadline = time.monotonic() + timeout
+    last_error = "lease denied"
+    while True:
+        try:
+            grant = guard.start()
+            os.environ["ALPECCA_CONTINUITY_LEASE_ID"] = grant.lease_id
+            os.environ["ALPECCA_CONTINUITY_FENCING_EPOCH"] = str(grant.fencing_epoch)
+            print(
+                "Alpecca continuity lease acquired "
+                f"(local-primary, epoch {grant.fencing_epoch})."
+            )
+            return guard
+        except ContinuityLeaseError as exc:
+            last_error = str(exc)
+            if time.monotonic() >= deadline:
+                raise ContinuityLeaseError(last_error) from exc
+            time.sleep(min(2.0, max(0.05, deadline - time.monotonic())))
+
+
 def _run() -> int:
     """Start the stack after the process-wide instance lock is held."""
     global F5_WORKER_ENABLED, F5_WORKER_HOST, F5_WORKER_PORT, HOST, PORT
@@ -290,9 +376,21 @@ def main() -> int:
         print(f"Alpecca is already awake; no second full stack was started ({exc}).", file=sys.stderr)
         return 1
 
+    continuity_guard = None
     try:
+        try:
+            continuity_guard = _start_continuity_guard()
+        except (ContinuityLeaseError, ValueError) as exc:
+            print(
+                "Alpecca could not acquire the configured cross-host singleton "
+                f"lease; startup was refused ({exc}).",
+                file=sys.stderr,
+            )
+            return 2
         return _run()
     finally:
+        if continuity_guard is not None:
+            continuity_guard.stop()
         lock.release()
 
 

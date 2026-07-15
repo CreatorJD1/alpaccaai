@@ -28,6 +28,10 @@ the face is a readout, not a costume.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import struct
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -113,13 +117,84 @@ def model_file(vrm_dir: Path = VRM_DIR) -> Optional[Path]:
     return models[0] if models else None
 
 
+@lru_cache(maxsize=8)
+def _model_sha256(path_value: str, size: int, mtime_ns: int) -> str:
+    del size, mtime_ns
+    digest = hashlib.sha256()
+    with Path(path_value).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _vrm1_capabilities(path: Path) -> dict:
+    """Read bounded public VRM 1.0 metadata from the GLB JSON chunk."""
+    empty = {
+        "vrm_spec_version": None,
+        "look_at": False,
+        "look_at_type": None,
+        "expressions": [],
+    }
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as stream:
+            header = stream.read(20)
+            if len(header) != 20:
+                return empty
+            magic, glb_version, declared_size, chunk_size, chunk_type = struct.unpack(
+                "<4sIIII", header
+            )
+            if (
+                magic != b"glTF"
+                or glb_version != 2
+                or declared_size > size
+                or chunk_type != 0x4E4F534A
+                or chunk_size <= 0
+                or chunk_size > min(max(0, size - 20), 16 * 1024 * 1024)
+            ):
+                return empty
+            document = json.loads(stream.read(chunk_size).decode("utf-8").rstrip("\x00 \t\r\n"))
+        vrm_extension = ((document.get("extensions") or {}).get("VRMC_vrm") or {})
+        look_at = vrm_extension.get("lookAt") or {}
+        preset = ((vrm_extension.get("expressions") or {}).get("preset") or {})
+        return {
+            "vrm_spec_version": vrm_extension.get("specVersion"),
+            "look_at": bool(look_at),
+            "look_at_type": look_at.get("type") if isinstance(look_at, dict) else None,
+            "expressions": sorted(str(name) for name in preset),
+        }
+    except (OSError, UnicodeDecodeError, ValueError, TypeError, json.JSONDecodeError):
+        return empty
+
+
 def manifest(vrm_dir: Path = VRM_DIR) -> dict:
     """For the UI: whether a VRM body exists, which file to load, and the clip
     vocabulary the driver may ask for (so the renderer knows what to implement)."""
     m = model_file(vrm_dir)
     clips = sorted(set(MOOD_CLIPS.values()) | {"talking"})
-    return {"vrm_mode": m is not None, "model_file": m.name if m else None,
-            "clips": clips}
+    if m is None:
+        return {
+            "vrm_mode": False,
+            "model_file": None,
+            "model_version": None,
+            "model_sha256": None,
+            "model_bytes": 0,
+            "model_mtime_ns": None,
+            "clips": clips,
+            **_vrm1_capabilities(Path("missing")),
+        }
+    stat = m.stat()
+    digest = _model_sha256(str(m.resolve()), stat.st_size, stat.st_mtime_ns)
+    return {
+        "vrm_mode": True,
+        "model_file": m.name,
+        "model_version": digest[:16],
+        "model_sha256": digest,
+        "model_bytes": stat.st_size,
+        "model_mtime_ns": stat.st_mtime_ns,
+        "clips": clips,
+        **_vrm1_capabilities(m),
+    }
 
 
 def asset_path(name: str, vrm_dir: Path = VRM_DIR) -> Optional[Path]:

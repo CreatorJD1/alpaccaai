@@ -99,10 +99,13 @@ def test_attachment_candidate_metadata_never_substitutes_for_byte_validation():
     ("text", "expected"),
     (
         ("send your portrait", "portrait"),
+        (", can you send me an image of yourself?", "portrait"),
+        ("Alpecca, can you send me a selfie?", "portrait"),
         ("show me your base model", "base"),
         ("share your character sheet", "reference"),
         ("!image gallery", "gallery"),
         ("can you see this image?", None),
+        ("Alpecca, we should send a photo later", None),
         ("open C:/private/secret.png", None),
     ),
 )
@@ -302,19 +305,50 @@ def test_media_audit_contains_metadata_but_not_image_bytes(monkeypatch):
 
 
 def test_media_readiness_is_truthful_bounded_and_secret_free():
-    disabled = discord_media.media_readiness(media_enabled=False)
-    unverified = discord_media.media_readiness(media_enabled=True)
+    disabled = discord_media.media_readiness(
+        media_enabled=False,
+        portrait_status="ready",
+    )
+    unverified = discord_media.media_readiness(
+        media_enabled=True,
+        portrait_status="ready",
+    )
+    backend_disabled = discord_media.media_readiness(
+        media_enabled=True,
+        server_status="disabled",
+        portrait_status="ready",
+    )
     ready = discord_media.media_readiness(
         media_enabled=True,
         server_status="ready",
         local_vision_status="ready",
+        portrait_status="ready",
     )
 
+    assert disabled["enabled"] is False
     assert disabled["ready"] is False
+    assert disabled["receive_ready"] is False
+    assert disabled["send_ready"] is False
+    assert disabled["gates"]["approved_portrait"] == "disabled"
     assert disabled["receive"]["image"]["status"] == "disabled"
     assert disabled["send"]["image"]["status"] == "disabled"
+    assert unverified["enabled"] is True
+    assert unverified["receive_ready"] is False
+    assert unverified["send_ready"] is True
+    assert unverified["gates"] == {
+        "bridge_media": "enabled",
+        "backend_media": "unknown",
+        "local_vision": "unknown",
+        "approved_portrait": "ready",
+    }
     assert unverified["receive"]["image"]["status"] == "unverified"
+    assert backend_disabled["enabled"] is True
+    assert backend_disabled["receive"]["image"]["status"] == "disabled"
+    assert backend_disabled["send_ready"] is True
+    assert backend_disabled["gates"]["backend_media"] == "disabled"
     assert ready["ready"] is True
+    assert ready["receive_ready"] is True
+    assert ready["send_ready"] is True
     assert ready["receive"]["image"] == {
         "status": "ready",
         "max_bytes": discord_media.INBOUND_MAX_BYTES,
@@ -362,9 +396,15 @@ def test_direct_launcher_media_default_loads_secret_before_selecting_default(
     assert launcher.main(["--media-readiness"]) == 0
 
     readiness = json.loads(capsys.readouterr().out)
+    enabled = expected_status != "disabled"
+    assert readiness["enabled"] is enabled
     assert readiness["send"]["image"]["status"] == expected_status
     assert readiness["receive"]["image"]["status"] == (
         "disabled" if expected_status == "disabled" else "unverified"
+    )
+    assert readiness["send_ready"] is enabled
+    assert readiness["gates"]["approved_portrait"] == (
+        "ready" if enabled else "disabled"
     )
 
 
@@ -391,6 +431,7 @@ def test_attachment_metadata_classification_never_claims_file_or_audio_support(
         ("!audio voice-note", "audio"),
         ("attach that PDF document", "file"),
         ("!file report", "file"),
+        ("Alpecca, we should send that project file later", None),
         ("tell me about audio", None),
     ),
 )
@@ -494,6 +535,8 @@ def test_room_media_diagnostic_cannot_leak_from_history_into_later_turns(monkeyp
 
     def ask(text: str, *_args, **_kwargs) -> str:
         model_prompts.append(text)
+        if len(model_prompts) == 1:
+            return discord_media.media_diagnostic("media-disabled")
         return f"ordinary reply {len(model_prompts)}"
 
     monkeypatch.setattr(discord_bridge, "_ask_alpecca", ask)
@@ -580,12 +623,129 @@ def test_room_media_diagnostic_cannot_leak_from_history_into_later_turns(monkeyp
 
     media_diagnostic = discord_media.media_diagnostic("media-disabled")
     assert media_replies == [media_diagnostic]
-    assert name_replies == ["ordinary reply 1"]
+    assert name_replies == [discord_media.stale_media_turn_correction()]
     assert hello_replies == ["ordinary reply 2"]
     assert len(model_prompts) == 2
-    # The old request stays visible to the model as room context, but it cannot
-    # re-trigger the transport-level media diagnostic.
-    assert "Can you send me an image of yourself?" in model_prompts[0]
+    # The bridge records its transport reply as a self turn, then removes that
+    # resolved request/diagnostic pair from future model-facing context.
+    assert "Can you send me an image of yourself?" not in model_prompts[0]
+    assert "media" not in discord_media.stale_media_turn_correction().casefold()
+
+
+def test_claimed_room_attachment_reaches_verified_backend_when_media_enabled(
+    monkeypatch,
+):
+    """One addressed room image follows the same bounded local path as a DM."""
+
+    room = {"guild_id": "777", "channel_id": "3001"}
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    monkeypatch.setattr(discord_bridge, "MEDIA_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "CHANNEL_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", {"42"})
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())
+
+    class Attachment:
+        filename = "room-image.png"
+        content_type = "image/png"
+        size = len(b"validated-room-image")
+
+        def __init__(self) -> None:
+            self.read_calls = 0
+
+        async def read(self) -> bytes:
+            self.read_calls += 1
+            return b"validated-room-image"
+
+    attachment = Attachment()
+    prepared = discord_media.PreparedInboundImage(
+        data_url="data:image/png;base64,cm9vbS1pbWFnZQ==",
+        mime_type="image/png",
+        size_bytes=attachment.size,
+        width=3,
+        height=2,
+        sha256="a" * 64,
+    )
+    monkeypatch.setattr(
+        discord_bridge.discord_media,
+        "prepare_inbound_image",
+        lambda *_args, **_kwargs: prepared,
+    )
+    audit_events: list[tuple[str, str]] = []
+
+    def record(direction: str, *, status: str, **_kwargs) -> int:
+        audit_events.append((direction, status))
+        return len(audit_events)
+
+    backend_images: list[str] = []
+
+    def ask(_text: str, *_args, **kwargs) -> str:
+        backend_images.append(str(kwargs["image"]))
+        return "I received the room image through the bounded local path."
+
+    monkeypatch.setattr(discord_bridge.discord_media, "record_media_event", record)
+    monkeypatch.setattr(discord_bridge, "_ask_alpecca", ask)
+    client = discord_bridge.build_client()
+    client._connection.user = SimpleNamespace(
+        id=9001,
+        name="Alpecca",
+        display_name="Alpecca",
+    )
+
+    class Typing:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class Channel:
+        id = 3001
+
+        def typing(self):
+            return Typing()
+
+    channel = Channel()
+    guild = SimpleNamespace(
+        id=777,
+        me=SimpleNamespace(display_name="Alpecca"),
+        voice_client=None,
+    )
+    creator = SimpleNamespace(
+        id=42,
+        name="realcreatorjd",
+        display_name="CreatorJD",
+        bot=False,
+    )
+    replies: list[tuple[str, dict[str, object]]] = []
+
+    async def reply(content: str, **kwargs: object) -> None:
+        replies.append((content, kwargs))
+
+    message = SimpleNamespace(
+        id=1001,
+        author=creator,
+        guild=guild,
+        channel=channel,
+        content="<@9001> What do you notice in this image?",
+        clean_content="@Alpecca What do you notice in this image?",
+        mentions=[SimpleNamespace(id=9001)],
+        attachments=[attachment],
+        reference=None,
+        reply=reply,
+    )
+
+    asyncio.run(client.on_message(message))
+
+    assert attachment.read_calls == 1
+    assert backend_images == [prepared.data_url]
+    assert audit_events == [("inbound", "accepted")]
+    assert replies == [(
+        "I received the room image through the bounded local path.",
+        {"mention_author": False},
+    )]
 
 
 def test_claimed_room_self_image_request_attaches_once_then_records_sent(monkeypatch):
@@ -665,8 +825,8 @@ def test_claimed_room_self_image_request_attaches_once_then_records_sent(monkeyp
         author=creator,
         guild=guild,
         channel=channel,
-        content="<@9001> Can you send me an image of yourself?",
-        clean_content="@Alpecca Can you send me an image of yourself?",
+        content="<@9001>, can you send me a selfie?",
+        clean_content="@Alpecca, can you send me a selfie?",
         mentions=[SimpleNamespace(id=9001)],
         attachments=[],
         reference=None,
@@ -675,7 +835,7 @@ def test_claimed_room_self_image_request_attaches_once_then_records_sent(monkeyp
 
     asyncio.run(client.on_message(message))
 
-    assert resolve_calls == ["Can you send me an image of yourself?"]
+    assert resolve_calls == [", can you send me a selfie?"]
     assert len(replies) == 1
     content, kwargs = replies[0]
     assert content == "Here it is."

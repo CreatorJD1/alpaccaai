@@ -34,6 +34,20 @@ from pathlib import Path
 from typing import NoReturn
 from urllib.parse import parse_qs, quote, urlparse
 
+# A configured cross-host authority makes direct execution unsafe because it
+# would construct CoreMind before acquiring a fencing epoch. Imports remain
+# available to tests and the guarded launcher, but `python server.py` must not
+# bypass scripts/run_full.py once continuity failover is enabled.
+if (
+    __name__ == "__main__"
+    and os.environ.get("ALPECCA_CONTINUITY_LEASE_URL", "").strip()
+    and not os.environ.get("ALPECCA_CONTINUITY_FENCING_EPOCH", "").strip()
+):
+    raise SystemExit(
+        "Cross-host continuity is configured. Start Alpecca through "
+        "scripts/run_full.py so a singleton lease is acquired first."
+    )
+
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
     FileResponse,
@@ -46,9 +60,13 @@ import uvicorn
 
 from config import (HOME, HOST, PORT, DEEP_BACKEND, OLLAMA_HOST,
                     COLAB_URL, COLAB_MODEL, COLAB_API_KEY,
-                    MINDSCAPE_ENABLED, MINDSCAPE_CLOUD_URL, MINDSCAPE_TOKEN,
-                    MINDSCAPE_SYNC_TIMEOUT, MINDSCAPE_AUTO_SYNC_INTERVAL,
-                    MINDSCAPE_EVENT_SYNC_MIN_INTERVAL, PUBLIC_URL, EMBED_BACKFILL,
+                     MINDSCAPE_ENABLED, MINDSCAPE_CLOUD_URL, MINDSCAPE_TOKEN,
+                     MINDSCAPE_SYNC_TIMEOUT, MINDSCAPE_AUTO_SYNC_INTERVAL,
+                     MINDSCAPE_EVENT_SYNC_MIN_INTERVAL, MINDSCAPE_VAULT_ENABLED,
+                     MINDSCAPE_VAULT_URL, MINDSCAPE_VAULT_TOKEN,
+                     MINDSCAPE_VAULT_SYNC_TIMEOUT, MINDSCAPE_VAULT_AUTO_SYNC_INTERVAL,
+                     MINDSCAPE_VAULT_ARCHIVE_INTERVAL, MINDSCAPE_VAULT_ARCHIVE_MAX_BYTES,
+                     PUBLIC_URL, EMBED_BACKFILL,
                     CORE_MEMORY_LEARN_ONLY, DISCORD_CLIENT_ID,
                     CLOUDFLARE_HOSTNAME, OLLAMA_TIMEOUT_SECONDS, STREAM_CHAT,
                     DB_PATH)
@@ -69,6 +87,7 @@ from alpecca import avatar as avatar_mod
 from alpecca import computer as computer_mod
 from alpecca import runtime_status as runtime_status_mod
 from alpecca import mindscape as mindscape_mod
+from alpecca import mindscape_vault as mindscape_vault_mod
 from alpecca import memory as memory_store
 from alpecca import mindpage as mindpage_mod
 from alpecca import journal as journal_mod
@@ -101,6 +120,12 @@ from alpecca import web_push_runtime as web_push_runtime_mod
 from alpecca import knowledge_blocks as knowledge_blocks_mod
 from alpecca import preferences as preferences_mod
 from alpecca import overload as overload_mod
+from alpecca import brain_graph as brain_graph_mod
+from alpecca import pagefile_approval as pagefile_approval_mod
+from alpecca import pagefile_telemetry as pagefile_telemetry_mod
+from alpecca import system_pressure as system_pressure_mod
+from alpecca import trusted_devices as trusted_devices_mod
+from alpecca import restore_approval as restore_approval_mod
 from alpecca.behavior_trial_controller import (
     BehaviorTrialController,
     TRIAL_ABORT_REASON,
@@ -596,8 +621,8 @@ def _mindscape_snapshot(check_models: bool = True) -> dict:
         journal=mind.journal_state(),
         runtime=runtime,
         home=mind.home_state(),
-        cloud_url=MINDSCAPE_CLOUD_URL,
-        enabled=MINDSCAPE_ENABLED,
+        cloud_url=MINDSCAPE_VAULT_URL or MINDSCAPE_CLOUD_URL,
+        enabled=bool(MINDSCAPE_VAULT_ENABLED or MINDSCAPE_ENABLED),
     )
 
 
@@ -1113,6 +1138,28 @@ _mindscape_sync_status = {
     "event_triggers": 0,
     "event_skips": 0,
 }
+
+# The legacy Worker is retained only as a compatibility fallback.  Once the
+# separately configured Vault is live, it becomes the sole automatic cloud
+# continuity target so private state is not mirrored in plaintext twice.
+_mindscape_vault_status = {
+    "enabled": bool(MINDSCAPE_VAULT_ENABLED),
+    "configured": bool(MINDSCAPE_VAULT_URL and MINDSCAPE_VAULT_TOKEN),
+    "cloud_url": MINDSCAPE_VAULT_URL,
+    "auto_interval": MINDSCAPE_VAULT_AUTO_SYNC_INTERVAL,
+    "archive_interval": MINDSCAPE_VAULT_ARCHIVE_INTERVAL,
+    "last_attempt": 0.0,
+    "last_success": 0.0,
+    "last_archive_attempt": 0.0,
+    "last_archive_success": 0.0,
+    "last_status": "not_started",
+    "last_archive_status": "not_started",
+    "last_error": "",
+    "attempts": 0,
+    "successes": 0,
+    "transport_token_source": "environment" if MINDSCAPE_VAULT_TOKEN else "not_loaded",
+}
+_mindscape_vault_token_cache: str | None = None
 _mindscape_event_sync_task: asyncio.Task | None = None
 
 # How often the background sense ticks (seconds). This is what gives Alpecca a
@@ -1885,12 +1932,186 @@ async def _warm_alpecca_voice(timeout: float | None = None) -> dict:
             "error": "" if ok else error}
 
 
+def _mindscape_vault_transport_token() -> str:
+    """Return the dedicated Vault Worker token without reporting its value."""
+    global _mindscape_vault_token_cache
+    if MINDSCAPE_VAULT_TOKEN:
+        _mindscape_vault_status["transport_token_source"] = "environment"
+        return MINDSCAPE_VAULT_TOKEN
+    if not (MINDSCAPE_VAULT_ENABLED and MINDSCAPE_VAULT_URL):
+        return ""
+    if _mindscape_vault_token_cache:
+        return _mindscape_vault_token_cache
+    try:
+        token, source = mindscape_vault_mod.load_or_create_transport_token()
+    except mindscape_vault_mod.VaultError as exc:
+        _mindscape_vault_status["transport_token_source"] = "unavailable"
+        _mindscape_vault_status["last_error"] = type(exc).__name__
+        return ""
+    _mindscape_vault_token_cache = token
+    _mindscape_vault_status["transport_token_source"] = source
+    return token
+
+
+def _mindscape_vault_configured() -> bool:
+    return bool(MINDSCAPE_VAULT_ENABLED and MINDSCAPE_VAULT_URL and _mindscape_vault_transport_token())
+
+
+def _legacy_mindscape_sync_configured() -> bool:
+    """Keep the old plaintext mirror dormant once Vault is configured."""
+    return bool(MINDSCAPE_ENABLED and MINDSCAPE_CLOUD_URL and not _mindscape_vault_configured())
+
+
+def _mindscape_vault_status_view() -> dict:
+    status = dict(_mindscape_vault_status)
+    status["enabled"] = bool(MINDSCAPE_VAULT_ENABLED)
+    status["configured"] = _mindscape_vault_configured()
+    status["ready_for_auto_sync"] = bool(
+        status["configured"] and float(MINDSCAPE_VAULT_AUTO_SYNC_INTERVAL or 0) > 0
+    )
+    try:
+        local = mindscape_vault_mod.local_status(DB_PATH)
+    except Exception as exc:
+        status["local_status"] = {"status": "unavailable", "error": type(exc).__name__}
+    else:
+        status["local_status"] = {
+            name: local[name]
+            for name in (
+                "next_sequence", "last_success_sequence", "last_success_ts",
+                "last_archive_ts", "pending_snapshots", "pending_archives",
+            )
+        }
+    return status
+
+
 def _mindscape_sync_status_view() -> dict:
     d = dict(_mindscape_sync_status)
     d["ready_for_auto_sync"] = bool(
-        d["enabled"] and d["cloud_configured"] and d["auto_interval"] > 0
+        _legacy_mindscape_sync_configured() and d["auto_interval"] > 0
     )
+    d["active_cloud_target"] = "vault" if _mindscape_vault_configured() else (
+        "legacy" if _legacy_mindscape_sync_configured() else "none"
+    )
+    d["vault"] = _mindscape_vault_status_view()
     return d
+
+
+async def _mindscape_vault_thread(label: str, fn, *args, timeout: float, **kwargs):
+    """Bound Vault work without overwriting the legacy sync status on timeout."""
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(fn, *args, **kwargs),
+            timeout=max(0.2, float(timeout)),
+        )
+    except asyncio.TimeoutError:
+        _mindscape_vault_status["last_status"] = "background_timeout"
+        _mindscape_vault_status["last_error"] = f"{label} exceeded {timeout:.1f}s"
+        return None
+    except Exception as exc:
+        _mindscape_vault_status["last_status"] = "background_error"
+        _mindscape_vault_status["last_error"] = f"{label}: {type(exc).__name__}"
+        return None
+
+
+def _mindscape_vault_mirror_snapshot(snap: dict) -> dict:
+    _mindscape_vault_status["attempts"] += 1
+    _mindscape_vault_status["last_attempt"] = _time.time()
+    try:
+        recovery_key, _key_source = mindscape_vault_mod.load_or_create_encryption_key()
+        transport_token = _mindscape_vault_transport_token()
+        if not transport_token:
+            raise mindscape_vault_mod.VaultError("vault transport token is unavailable")
+        result = mindscape_vault_mod.sync_snapshot(
+            snap,
+            MINDSCAPE_VAULT_URL,
+            transport_token,
+            recovery_key,
+            db_path=DB_PATH,
+            timeout=MINDSCAPE_VAULT_SYNC_TIMEOUT,
+        )
+    except mindscape_vault_mod.VaultError as exc:
+        result = {"ok": False, "status": "vault_key_error", "message": type(exc).__name__}
+    _mindscape_vault_status["last_status"] = str(result.get("status") or "unknown")
+    _mindscape_vault_status["last_error"] = "" if result.get("ok") else str(result.get("status") or "failed")
+    if result.get("ok"):
+        _mindscape_vault_status["successes"] += 1
+        _mindscape_vault_status["last_success"] = _time.time()
+    return result
+
+
+async def _mindscape_vault_sync_once(reason: str = "manual", check_models: bool = False) -> dict:
+    if not _mindscape_vault_configured():
+        _mindscape_vault_status["last_status"] = "not_configured"
+        _mindscape_vault_status["last_error"] = ""
+        return {"ok": False, "status": "not_configured"}
+    if reason not in {"manual", "shutdown"} and _player_chat_priority_active():
+        _mindscape_vault_status["last_status"] = "deferred_for_chat"
+        _mindscape_vault_status["last_error"] = ""
+        return {"ok": False, "status": "deferred_for_chat"}
+    try:
+        async with mind_lock:
+            snap = await asyncio.wait_for(
+                asyncio.to_thread(_mindscape_snapshot, check_models),
+                timeout=BACKGROUND_MINDSCAPE_TIMEOUT,
+            )
+    except asyncio.TimeoutError:
+        _mindscape_vault_status["last_status"] = "snapshot_timeout"
+        _mindscape_vault_status["last_error"] = "snapshot_timeout"
+        return {"ok": False, "status": "snapshot_timeout"}
+    except Exception as exc:
+        _mindscape_vault_status["last_status"] = "snapshot_error"
+        _mindscape_vault_status["last_error"] = type(exc).__name__
+        return {"ok": False, "status": "snapshot_error"}
+    result = await _mindscape_vault_thread(
+        "mindscape_vault_sync",
+        _mindscape_vault_mirror_snapshot,
+        snap,
+        timeout=max(BACKGROUND_MINDSCAPE_TIMEOUT, float(MINDSCAPE_VAULT_SYNC_TIMEOUT) + 2.0),
+    )
+    return result or {"ok": False, "status": "mirror_timeout"}
+
+
+def _mindscape_vault_archive() -> dict:
+    _mindscape_vault_status["last_archive_attempt"] = _time.time()
+    try:
+        recovery_key, _key_source = mindscape_vault_mod.load_or_create_encryption_key()
+        transport_token = _mindscape_vault_transport_token()
+        if not transport_token:
+            raise mindscape_vault_mod.VaultError("vault transport token is unavailable")
+        if mindscape_vault_mod.archive_due(MINDSCAPE_VAULT_ARCHIVE_INTERVAL, db_path=DB_PATH):
+            mindscape_vault_mod.queue_database_archive(
+                recovery_key,
+                source_db=DB_PATH,
+                state_db=DB_PATH,
+                max_bytes=MINDSCAPE_VAULT_ARCHIVE_MAX_BYTES,
+            )
+        result = mindscape_vault_mod.flush_archives(
+            MINDSCAPE_VAULT_URL,
+            transport_token,
+            state_db=DB_PATH,
+            timeout=max(20.0, float(MINDSCAPE_VAULT_SYNC_TIMEOUT)),
+            max_bytes=MINDSCAPE_VAULT_ARCHIVE_MAX_BYTES,
+        )
+    except mindscape_vault_mod.VaultError as exc:
+        result = {"ok": False, "status": "vault_archive_error", "message": type(exc).__name__}
+    _mindscape_vault_status["last_archive_status"] = str(result.get("status") or "unknown")
+    if result.get("ok"):
+        _mindscape_vault_status["last_archive_success"] = _time.time()
+    return result
+
+
+async def _mindscape_vault_archive_once(reason: str = "interval") -> dict:
+    if not _mindscape_vault_configured():
+        return {"ok": False, "status": "not_configured"}
+    if reason != "manual" and _player_chat_priority_active():
+        _mindscape_vault_status["last_archive_status"] = "deferred_for_chat"
+        return {"ok": False, "status": "deferred_for_chat"}
+    result = await _mindscape_vault_thread(
+        "mindscape_vault_archive",
+        _mindscape_vault_archive,
+        timeout=120.0,
+    )
+    return result or {"ok": False, "status": "archive_timeout"}
 
 
 def _mindscape_mirror_snapshot(snap: dict) -> dict:
@@ -1911,7 +2132,7 @@ def _mindscape_mirror_snapshot(snap: dict) -> dict:
 
 
 async def _mindscape_sync_once(reason: str = "manual", check_models: bool = False) -> dict:
-    if not (MINDSCAPE_ENABLED and MINDSCAPE_CLOUD_URL):
+    if not _legacy_mindscape_sync_configured():
         _mindscape_sync_status["last_status"] = "not_configured"
         _mindscape_sync_status["last_error"] = ""
         return {"ok": False, "status": "not_configured"}
@@ -1944,7 +2165,10 @@ async def _mindscape_sync_after_chat(reason: str) -> None:
     try:
         while _player_chat_priority_active():
             await asyncio.sleep(0.5)
-        await _mindscape_sync_once(reason=reason, check_models=False)
+        if _mindscape_vault_configured():
+            await _mindscape_vault_sync_once(reason=reason, check_models=False)
+        else:
+            await _mindscape_sync_once(reason=reason, check_models=False)
     finally:
         if _mindscape_event_sync_task is asyncio.current_task():
             _mindscape_event_sync_task = None
@@ -1952,13 +2176,15 @@ async def _mindscape_sync_after_chat(reason: str) -> None:
 
 def _mindscape_request_event_sync(reason: str, force: bool = False) -> bool:
     global _mindscape_event_sync_task
-    if not (MINDSCAPE_ENABLED and MINDSCAPE_CLOUD_URL):
+    vault_active = _mindscape_vault_configured()
+    if not (vault_active or _legacy_mindscape_sync_configured()):
         return False
     now = _time.time()
-    since = now - float(_mindscape_sync_status.get("last_attempt") or 0)
+    active_status = _mindscape_vault_status if vault_active else _mindscape_sync_status
+    since = now - float(active_status.get("last_attempt") or 0)
     if not force and since < MINDSCAPE_EVENT_SYNC_MIN_INTERVAL:
         _mindscape_sync_status["event_skips"] += 1
-        _mindscape_sync_status["last_status"] = "event_sync_throttled"
+        active_status["last_status"] = "event_sync_throttled"
         return False
     try:
         loop = asyncio.get_running_loop()
@@ -1984,18 +2210,35 @@ def _mindscape_restore_source(body: dict | None = None) -> dict:
         if preview.get("ok"):
             preview["already_imported"] = bool(mindscape_mod.restore_seen(preview["fingerprint"]))
         return {"ok": preview["ok"], "source": "posted", "snapshot": snap, "preview": preview}
-    fetched = mindscape_mod.fetch_snapshot(
-        MINDSCAPE_CLOUD_URL,
-        token=MINDSCAPE_TOKEN,
-        timeout=MINDSCAPE_SYNC_TIMEOUT,
-    )
+    if _mindscape_vault_configured():
+        try:
+            recovery_key, _key_source = mindscape_vault_mod.load_or_create_encryption_key()
+            transport_token = _mindscape_vault_transport_token()
+            if not transport_token:
+                raise mindscape_vault_mod.VaultError("vault transport token is unavailable")
+            fetched = mindscape_vault_mod.fetch_latest_snapshot(
+                MINDSCAPE_VAULT_URL,
+                transport_token,
+                recovery_key,
+                timeout=MINDSCAPE_VAULT_SYNC_TIMEOUT,
+            )
+        except mindscape_vault_mod.VaultError as exc:
+            fetched = {"ok": False, "status": "vault_key_error", "message": type(exc).__name__}
+        source_name = "vault_cloud"
+    else:
+        fetched = mindscape_mod.fetch_snapshot(
+            MINDSCAPE_CLOUD_URL,
+            token=MINDSCAPE_TOKEN,
+            timeout=MINDSCAPE_SYNC_TIMEOUT,
+        )
+        source_name = "cloud"
     if not fetched.get("ok"):
-        return {"ok": False, "source": "cloud", "error": fetched}
+        return {"ok": False, "source": source_name, "error": fetched}
     snap = fetched["snapshot"]
     preview = mindscape_mod.restore_preview(snap)
     if preview.get("ok"):
         preview["already_imported"] = bool(mindscape_mod.restore_seen(preview["fingerprint"]))
-    return {"ok": True, "source": "cloud", "snapshot": snap, "preview": preview}
+    return {"ok": True, "source": source_name, "snapshot": snap, "preview": preview}
 
 
 def _mindscape_import_snapshot(snapshot: dict) -> dict:
@@ -2553,26 +2796,41 @@ async def lifespan(app: FastAPI):
 
     async def mindscape_loop() -> None:
         while True:
-            interval = max(30.0, float(MINDSCAPE_AUTO_SYNC_INTERVAL or 0))
+            if _mindscape_vault_configured() and MINDSCAPE_VAULT_AUTO_SYNC_INTERVAL > 0:
+                interval = max(30.0, float(MINDSCAPE_VAULT_AUTO_SYNC_INTERVAL))
+            elif _legacy_mindscape_sync_configured() and MINDSCAPE_AUTO_SYNC_INTERVAL > 0:
+                interval = max(30.0, float(MINDSCAPE_AUTO_SYNC_INTERVAL))
+            else:
+                interval = 30.0
             await asyncio.sleep(interval)
             try:
-                if not (MINDSCAPE_ENABLED and MINDSCAPE_CLOUD_URL and MINDSCAPE_AUTO_SYNC_INTERVAL > 0):
+                if _mindscape_vault_configured() and MINDSCAPE_VAULT_AUTO_SYNC_INTERVAL > 0:
+                    mirror = await _mindscape_vault_sync_once(reason="interval", check_models=False)
+                    if mindscape_vault_mod.archive_due(MINDSCAPE_VAULT_ARCHIVE_INTERVAL, db_path=DB_PATH):
+                        await _mindscape_vault_archive_once(reason="interval")
+                elif _legacy_mindscape_sync_configured() and MINDSCAPE_AUTO_SYNC_INTERVAL > 0:
+                    mirror = await _mindscape_sync_once(reason="interval", check_models=False)
+                else:
                     continue
-                mirror = await _mindscape_sync_once(reason="interval", check_models=False)
                 if mirror.get("status") == "deferred_for_chat":
                     continue
                 await _broadcast({
                     "type": "activity",
                     "text": (
-                        "Mindscape continuity mirrored online."
+                        "Mindscape Vault continuity mirrored online."
                         if mirror.get("ok")
-                        else f"Mindscape sync failed: {mirror.get('status', 'failed')}"
+                        else f"Mindscape continuity sync failed: {mirror.get('status', 'failed')}"
                     ),
                 })
             except Exception as exc:
-                _mindscape_sync_status["last_attempt"] = _time.time()
-                _mindscape_sync_status["last_status"] = "auto_sync_error"
-                _mindscape_sync_status["last_error"] = f"{type(exc).__name__}: {exc}"
+                if _mindscape_vault_configured():
+                    _mindscape_vault_status["last_attempt"] = _time.time()
+                    _mindscape_vault_status["last_status"] = "auto_sync_error"
+                    _mindscape_vault_status["last_error"] = type(exc).__name__
+                else:
+                    _mindscape_sync_status["last_attempt"] = _time.time()
+                    _mindscape_sync_status["last_status"] = "auto_sync_error"
+                    _mindscape_sync_status["last_error"] = f"{type(exc).__name__}: {exc}"
 
     async def automation_loop() -> None:
         routines_mod.init_db()
@@ -2643,7 +2901,10 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
         try:
-            await _mindscape_sync_once(reason="shutdown", check_models=False)
+            if _mindscape_vault_configured():
+                await _mindscape_vault_sync_once(reason="shutdown", check_models=False)
+            else:
+                await _mindscape_sync_once(reason="shutdown", check_models=False)
         except Exception:
             pass
         try:
@@ -2950,6 +3211,10 @@ _AUTHORITY = auth_mod.SessionAuthority(
     creator_password=_CREATOR_PASSWORD,
     service_secrets={"discord-bridge": _DISCORD_BRIDGE_SECRET},
 )
+_TRUSTED_DEVICE_REGISTRY = trusted_devices_mod.TrustedDeviceRegistry(DB_PATH)
+_RESTORE_APPROVAL_LEDGER = restore_approval_mod.RestoreApprovalLedger(DB_PATH)
+_PAGEFILE_APPROVAL_LEDGER: pagefile_approval_mod.PagefileApprovalLedger | None = None
+_PAGEFILE_APPROVAL_LEDGER_LOCK = threading.Lock()
 _PUBLIC_AUTH_PATHS = frozenset({
     "/healthz",
     "/auth/status",
@@ -2957,6 +3222,8 @@ _PUBLIC_AUTH_PATHS = frozenset({
     "/auth/bootstrap/exchange",
     "/auth/bootstrap/request",
     "/auth/password",
+    "/auth/device/challenge",
+    "/auth/device/exchange",
 })
 _SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _DISCORD_SERVICE_PATHS = frozenset({
@@ -3180,6 +3447,29 @@ def _cookie_origin_allowed(request: Request, origin: str) -> bool:
     return referer in _runtime_public_origins() and bool(_allowed_cors_origin(referer))
 
 
+def _validate_bound_device_session(
+    decision: auth_mod.AuthDecision,
+    request_origin: str,
+) -> auth_mod.AuthDecision:
+    """Fail closed when a native-device cookie is stale or changes origin."""
+    if not decision.allowed or not decision.device_id:
+        return decision
+    if (
+        decision.session_origin != request_origin
+        or not _TRUSTED_DEVICE_REGISTRY.session_valid(
+            decision.device_id,
+            decision.issued_at,
+        )
+    ):
+        return auth_mod.AuthDecision(
+            False,
+            "device_session",
+            "revoked_or_origin_mismatch",
+            principal=decision.principal,
+        )
+    return decision
+
+
 @app.middleware("http")
 async def _auth_gate(request: Request, call_next):
     origin = request.headers.get("origin", "")
@@ -3215,6 +3505,10 @@ async def _auth_gate(request: Request, call_next):
             headers=request.headers,
             cookies=request.cookies,
             query=request.query_params,
+        )
+        decision = _validate_bound_device_session(
+            decision,
+            _normalized_origin(f"{request.url.scheme}://{request.url.netloc}"),
         )
     if not decision.allowed:
         _record_auth_decision(
@@ -3320,6 +3614,8 @@ def auth_status() -> dict:
             "cookie_http_only": True,
             "cookie_same_site": "strict",
             "remote_requires_https": True,
+            "native_key_enrollment": True,
+            "active_native_devices": _TRUSTED_DEVICE_REGISTRY.active_count(),
         },
         "public_identity_authorizes": False,
         "session_cookie": {
@@ -3327,6 +3623,146 @@ def auth_status() -> dict:
             "same_site": "strict",
         },
     }
+
+
+async def _device_json(request: Request) -> dict:
+    raw = await _read_bounded_body(request, max_bytes=8192)
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="invalid device request") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid device request")
+    return payload
+
+
+def _device_request_origin(request: Request) -> str:
+    client_host = request.client.host if request.client else ""
+    if request.url.scheme != "https" and not auth_mod.is_loopback_address(client_host):
+        raise HTTPException(status_code=403, detail="https required")
+    request_origin = _normalized_origin(f"{request.url.scheme}://{request.url.netloc}")
+    supplied_origin = _normalized_origin(request.headers.get("origin", ""))
+    if not request_origin or supplied_origin != request_origin:
+        raise HTTPException(status_code=403, detail="same-origin device request required")
+    return request_origin
+
+
+@app.post("/auth/device/enroll")
+async def enroll_trusted_device(request: Request) -> Response:
+    """Register one Android Keystore public key after creator authorization."""
+    decision = getattr(request.state, "authorization", None)
+    if not isinstance(decision, auth_mod.AuthDecision) or not decision.allowed or decision.principal != "creator":
+        raise HTTPException(status_code=403, detail="creator authorization required")
+    _device_request_origin(request)
+    payload = await _device_json(request)
+    try:
+        enrolled = await _bounded_thread(
+            "trusted-device-enroll",
+            lambda: _TRUSTED_DEVICE_REGISTRY.enroll(
+                str(payload.get("public_key", "")),
+                label=str(payload.get("label", "CreatorJD phone")),
+            ),
+        )
+    except trusted_devices_mod.DeviceAuthError as exc:
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+    if enrolled is None:
+        raise HTTPException(status_code=503, detail="device enrollment timed out")
+    audit = auth_mod.AuthDecision(True, "device_key", "enrolled", principal="creator")
+    _record_auth_decision(
+        "device_enroll", audit, path=request.url.path, method=request.method,
+        remote_addr=request.client.host if request.client else "",
+    )
+    return _JSON({"ok": True, **enrolled}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/auth/device/challenge")
+async def trusted_device_challenge(request: Request) -> Response:
+    """Issue a short-lived challenge bound to this exact HTTPS origin."""
+    origin = _device_request_origin(request)
+    payload = await _device_json(request)
+    try:
+        challenge = await _bounded_thread(
+            "trusted-device-challenge",
+            _TRUSTED_DEVICE_REGISTRY.issue_challenge,
+            str(payload.get("device_id", "")),
+            origin,
+        )
+    except trusted_devices_mod.DeviceAuthError as exc:
+        raise HTTPException(status_code=404, detail="device unavailable") from exc
+    if challenge is None:
+        raise HTTPException(status_code=503, detail="device challenge timed out")
+    return _JSON(challenge, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/auth/device/exchange")
+async def trusted_device_exchange(request: Request) -> Response:
+    """Verify one device signature and mint a new origin-scoped HttpOnly cookie."""
+    origin = _device_request_origin(request)
+    payload = await _device_json(request)
+    client_host = request.client.host if request.client else ""
+    try:
+        device_id = await _bounded_thread(
+            "trusted-device-exchange",
+            _TRUSTED_DEVICE_REGISTRY.exchange,
+            str(payload.get("challenge_id", "")),
+            str(payload.get("signature", "")),
+            origin,
+        )
+    except trusted_devices_mod.DeviceAuthError as exc:
+        denied = auth_mod.AuthDecision(False, "device_key", exc.code)
+        _record_auth_decision(
+            "device_exchange", denied, path=request.url.path, method=request.method,
+            remote_addr=client_host,
+        )
+        raise HTTPException(status_code=401, detail="device verification failed") from exc
+    if device_id is None:
+        raise HTTPException(status_code=503, detail="device verification timed out")
+    cookie = _AUTHORITY.issue_session_cookie(
+        secure=request.url.scheme == "https",
+        device_id=device_id,
+        origin=origin,
+    )
+    accepted = auth_mod.AuthDecision(True, "device_key", "accepted", principal="creator")
+    _record_auth_decision(
+        "device_exchange", accepted, path=request.url.path, method=request.method,
+        remote_addr=client_host,
+    )
+    response = _JSON(
+        {"ok": True, "device_id": device_id},
+        headers={"Cache-Control": "no-store"},
+    )
+    response.set_cookie(cookie.name, cookie.value, **cookie.set_cookie_kwargs())
+    return response
+
+
+@app.delete("/auth/device/{device_id}")
+async def revoke_trusted_device(device_id: str, request: Request) -> Response:
+    """Creator-only revocation for a lost or replaced phone."""
+    _device_request_origin(request)
+    decision = getattr(request.state, "authorization", None)
+    if not isinstance(decision, auth_mod.AuthDecision) or decision.principal != "creator":
+        raise HTTPException(status_code=403, detail="creator authorization required")
+    revoked = await _bounded_thread(
+        "trusted-device-revoke",
+        _TRUSTED_DEVICE_REGISTRY.revoke,
+        device_id,
+    )
+    if revoked is None:
+        raise HTTPException(status_code=503, detail="device revocation timed out")
+    response = _JSON(
+        {"ok": revoked},
+        status_code=200 if revoked else 404,
+        headers={"Cache-Control": "no-store"},
+    )
+    if revoked and decision.device_id == device_id:
+        response.delete_cookie(
+            auth_mod.SESSION_COOKIE_NAME,
+            path="/",
+            secure=request.url.scheme == "https",
+            httponly=True,
+            samesite="strict",
+        )
+    return response
 
 
 @app.get("/healthz")
@@ -3555,6 +3991,7 @@ def home_page() -> RedirectResponse:
 LAUNCHER_DIR = ROOT_DIR / "apps" / "launcher"
 LAUNCHER_SRC_DIR = LAUNCHER_DIR / "src"
 LAUNCHER_EXE = LAUNCHER_DIR / "dist" / "AlpeccaLauncher.exe"
+ANDROID_LAUNCHER_APK = ROOT_DIR / "output" / "alpecca-launcher" / "AlpeccaLauncher.apk"
 # The same git-ignored secret the Discord bridge reads (scripts/run_discord_bridge.py).
 DISCORD_SECRET_FILE = ROOT_DIR / "data" / "secrets" / "alpecca_discord.env"
 
@@ -3624,6 +4061,7 @@ def app_meta() -> dict:
     phone QRs, and whether Discord is configured enough to invite her."""
     return {
         "exe_built": LAUNCHER_EXE.is_file(),
+        "android_apk_built": ANDROID_LAUNCHER_APK.is_file(),
         "lan_ip": _app_lan_ip(),
         "port": PORT,
         "discord_ready": bool(_discord_bot_token() or DISCORD_CLIENT_ID),
@@ -3715,6 +4153,18 @@ def mindpage_stats() -> dict:
     )
 
 
+@app.get("/app/download/alpecca-android.apk")
+def app_download_android_launcher() -> FileResponse:
+    """Serve the reviewed personal Android launcher from the protected app page."""
+    if not ANDROID_LAUNCHER_APK.is_file():
+        raise HTTPException(status_code=404, detail="Android launcher APK not built yet")
+    return FileResponse(
+        ANDROID_LAUNCHER_APK,
+        media_type="application/vnd.android.package-archive",
+        filename="AlpeccaLauncher.apk",
+    )
+
+
 @app.get("/knowledge/brain-map")
 def knowledge_brain_map(req: Request) -> JSONResponse:
     """Creator-only, read-only map of explicitly taught knowledge."""
@@ -3775,11 +4225,32 @@ def mindscape_sync_status() -> dict:
 @app.get("/mindscape/setup")
 def mindscape_setup() -> dict:
     """Concrete setup checklist for hosted Mindscape continuity."""
-    return mindscape_mod.cloud_setup_plan(
+    legacy = mindscape_mod.cloud_setup_plan(
         ROOT_DIR / "deploy" / "mindscape-worker",
         cloud_url=MINDSCAPE_CLOUD_URL,
         token_configured=bool(MINDSCAPE_TOKEN),
     )
+    vault_dir = ROOT_DIR / "deploy" / "mindscape-vault-worker"
+    vault_template_ready = all((vault_dir / name).exists() for name in ("worker.js", "wrangler.toml", "README.md"))
+    return {
+        **legacy,
+        "vault": {
+            "enabled": bool(MINDSCAPE_VAULT_ENABLED),
+            "configured": _mindscape_vault_configured(),
+            "worker_dir": str(vault_dir),
+            "template_ready": vault_template_ready,
+            "steps": [
+                {"id": "create_r2", "done": bool(MINDSCAPE_VAULT_URL), "label": "Create the encrypted Mindscape Vault R2 bucket.",
+                 "command": "npx wrangler r2 bucket create alpecca-mindscape-vault"},
+                {"id": "set_vault_secret", "done": bool(_mindscape_vault_transport_token()),
+                 "label": "Set the separate Mindscape Vault transport token from Credential Manager.",
+                 "command": "npx wrangler secret put MINDSCAPE_VAULT_TOKEN"},
+                {"id": "deploy_vault", "done": bool(MINDSCAPE_VAULT_URL),
+                 "label": "Deploy the Vault Worker and configure its local base URL.",
+                 "command": "npx wrangler deploy"},
+            ],
+        },
+    }
 
 
 @app.post("/mindscape/setup/review")
@@ -3796,54 +4267,167 @@ async def mindscape_setup_review() -> dict:
 
 
 @app.post("/mindscape/sync")
-def mindscape_sync() -> dict:
+async def mindscape_sync() -> dict:
     """Mirror a continuity sync when a cloud endpoint is configured.
 
     Without ALPECCA_MINDSCAPE_URL this remains local-first and returns the
     snapshot. With a URL, it POSTs the snapshot to that endpoint so a hosted
     Mindscape can continue from the latest known state if this device goes down.
     """
-    snap = _mindscape_snapshot(check_models=True)
-    _mindscape_sync_status["last_trigger"] = _time.time()
-    _mindscape_sync_status["last_trigger_reason"] = "manual"
-    mirror = _mindscape_mirror_snapshot(snap)
+    if _mindscape_vault_configured():
+        mirror = await _mindscape_vault_sync_once(reason="manual", check_models=True)
+        snap = _mindscape_snapshot(check_models=False)
+        cloud_url = MINDSCAPE_VAULT_URL
+    else:
+        snap = _mindscape_snapshot(check_models=True)
+        _mindscape_sync_status["last_trigger"] = _time.time()
+        _mindscape_sync_status["last_trigger_reason"] = "manual"
+        mirror = _mindscape_mirror_snapshot(snap)
+        cloud_url = MINDSCAPE_CLOUD_URL
     return {
-        "ok": bool(MINDSCAPE_ENABLED) and (mirror["ok"] or not MINDSCAPE_CLOUD_URL),
-        "cloud_configured": bool(MINDSCAPE_CLOUD_URL),
-        "cloud_url": MINDSCAPE_CLOUD_URL,
+        "ok": bool(MINDSCAPE_VAULT_ENABLED if _mindscape_vault_configured() else MINDSCAPE_ENABLED) and (
+            mirror.get("ok") or not cloud_url
+        ),
+        "cloud_configured": bool(cloud_url),
+        "cloud_url": cloud_url,
         "mirror": mirror,
         "sync": _mindscape_sync_status_view(),
         "snapshot": snap,
     }
 
 
+@app.get("/mindscape/vault/status")
+def mindscape_vault_status() -> dict:
+    """Content-free state of the encrypted cloud recovery outbox."""
+    return _mindscape_vault_status_view()
+
+
+@app.post("/mindscape/vault/sync")
+async def mindscape_vault_sync() -> dict:
+    """Queue and mirror an encrypted continuity snapshot now."""
+    result = await _mindscape_vault_sync_once(reason="manual", check_models=True)
+    return {"ok": bool(result.get("ok")), "mirror": result, "status": _mindscape_vault_status_view()}
+
+
+@app.post("/mindscape/vault/archive")
+async def mindscape_vault_archive() -> dict:
+    """Create and upload one creator-requested encrypted SQLite recovery record."""
+    result = await _mindscape_vault_archive_once(reason="manual")
+    return {"ok": bool(result.get("ok")), "archive": result, "status": _mindscape_vault_status_view()}
+
+
 @app.post("/mindscape/restore/preview")
 async def mindscape_restore_preview(req: Request) -> dict:
     """Preview what would be merged from cloud or a posted Mindscape snapshot."""
+    _require_creator_request(req)
     try:
         body = await req.json()
     except Exception:
         body = {}
-    source = _mindscape_restore_source(body)
+    source = await _bounded_thread(
+        "mindscape-restore-preview",
+        _mindscape_restore_source,
+        body,
+        timeout=max(5.0, float(MINDSCAPE_VAULT_SYNC_TIMEOUT) + 2.0),
+    )
+    if source is None:
+        raise HTTPException(status_code=503, detail="restore preview timed out")
     if not source.get("ok"):
         return {"ok": False, "source": source.get("source", "cloud"), "error": source.get("error")}
-    return {"ok": True, "source": source["source"], "preview": source["preview"]}
+    approval_request = await _bounded_thread(
+        "mindscape-restore-preview-ledger",
+        _RESTORE_APPROVAL_LEDGER.issue_preview,
+        source["preview"]["fingerprint"],
+        source["source"],
+    )
+    if approval_request is None:
+        raise HTTPException(status_code=503, detail="restore preview ledger timed out")
+    return {
+        "ok": True,
+        "source": source["source"],
+        "preview": source["preview"],
+        "approval_request": approval_request,
+    }
+
+
+@app.post("/mindscape/restore/approve")
+async def mindscape_restore_approve(req: Request) -> dict:
+    """Explicitly authorize one previewed snapshot digest for one import."""
+    _require_creator_request(req)
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    try:
+        approval = await _bounded_thread(
+            "mindscape-restore-approve",
+            _RESTORE_APPROVAL_LEDGER.approve,
+            str(body.get("preview_id", "")),
+            str(body.get("fingerprint", "")),
+            approved=body.get("approved") is True,
+        )
+    except restore_approval_mod.RestoreApprovalError as exc:
+        raise HTTPException(status_code=403, detail=exc.code) from exc
+    if approval is None:
+        raise HTTPException(status_code=503, detail="restore approval timed out")
+    accepted = auth_mod.AuthDecision(
+        True,
+        "restore_approval",
+        "digest_approved",
+        principal="creator",
+    )
+    _record_auth_decision(
+        "mindscape_restore_approve",
+        accepted,
+        path=req.url.path,
+        method=req.method,
+        remote_addr=req.client.host if req.client else "",
+    )
+    return {"ok": True, "approval": approval}
 
 
 @app.post("/mindscape/restore/import")
 async def mindscape_restore_import(req: Request) -> dict:
     """Merge continuity records from Mindscape without overwriting local state."""
+    _require_creator_request(req)
     try:
         body = await req.json()
     except Exception:
         body = {}
-    source = _mindscape_restore_source(body)
+    approval_token = str(body.get("approval_token", ""))
+    if not approval_token:
+        raise HTTPException(status_code=403, detail="restore approval required")
+    source = await _bounded_thread(
+        "mindscape-restore-import-fetch",
+        _mindscape_restore_source,
+        body,
+        timeout=max(5.0, float(MINDSCAPE_VAULT_SYNC_TIMEOUT) + 2.0),
+    )
+    if source is None:
+        raise HTTPException(status_code=503, detail="restore import fetch timed out")
     if not source.get("ok"):
         return {"ok": False, "source": source.get("source", "cloud"), "error": source.get("error")}
+    try:
+        preview_id = await _bounded_thread(
+            "mindscape-restore-consume-approval",
+            _RESTORE_APPROVAL_LEDGER.consume,
+            approval_token,
+            source["preview"]["fingerprint"],
+            source["source"],
+        )
+    except restore_approval_mod.RestoreApprovalError as exc:
+        raise HTTPException(status_code=403, detail=exc.code) from exc
+    if preview_id is None:
+        raise HTTPException(status_code=503, detail="restore approval check timed out")
     async with mind_lock:
         result = await asyncio.to_thread(_mindscape_import_snapshot, source["snapshot"])
     _mindscape_request_event_sync("restore_import", force=True)
-    return {"ok": result["ok"], "source": source["source"], **result}
+    return {
+        "ok": result["ok"],
+        "source": source["source"],
+        "approval": {"preview_id": preview_id, "consumed": True},
+        **result,
+    }
 
 
 @app.get("/home/state")
@@ -6315,6 +6899,361 @@ def system_status() -> dict:
     return _runtime_status(check_models=True)
 
 
+_PAGEFILE_LIVE_EVIDENCE_SCHEMA = "alpecca.phase7.pagefile-live-evidence.v1"
+_PAGEFILE_REQUEST_RESPONSE_SCHEMA = (
+    "alpecca.phase7.pagefile-request-response.v1"
+)
+_PAGEFILE_APPROVAL_RESPONSE_SCHEMA = (
+    "alpecca.phase7.pagefile-approve-response.v1"
+)
+_PAGEFILE_APPROVAL_BODY_MAX_BYTES = 4 * 1024
+_PAGEFILE_APPROVAL_BODY_KEYS = frozenset(
+    {"request_token", "plan", "approved"}
+)
+_PAGEFILE_PROPOSAL_STATES = frozenset(
+    {"proposed", "blocked", "not_recommended", "unknown"}
+)
+
+
+def _unavailable_pagefile_telemetry() -> dict[str, object]:
+    """Return a fixed, identifier-free fallback for collector failures."""
+    return {
+        "schema": pagefile_telemetry_mod.SCHEMA,
+        "state": "unavailable",
+        "platform": "unknown",
+        "evidence": {
+            "powershell": {
+                "available": False,
+                "state": "unavailable",
+                "reason": "collector_unavailable",
+            },
+            "wmi": {
+                "available": False,
+                "state": "unavailable",
+                "management": "unavailable",
+                "configuration": "unavailable",
+                "usage": "unavailable",
+                "reason": "collector_unavailable",
+            },
+        },
+        "configured": {
+            "state": "unknown",
+            "mode": "unknown",
+            "initial_mib": None,
+            "maximum_mib": None,
+            "entry_count": None,
+        },
+        "usage": {
+            "state": "unknown",
+            "allocated_mib": None,
+            "used_mib": None,
+            "free_mib": None,
+            "peak_used_mib": None,
+            "entry_count": None,
+        },
+    }
+
+
+def _pagefile_planner_observation(
+    telemetry: Mapping[str, object],
+) -> dict[str, object]:
+    """Project measured configuration into the planner's narrow contract."""
+    configured = telemetry.get("configured")
+    if not isinstance(configured, Mapping):
+        return {"state": "invalid", "maximum_mib": None}
+
+    state = configured.get("state")
+    mode = configured.get("mode")
+    maximum = configured.get("maximum_mib")
+    if state == "unknown":
+        return {"state": "unknown", "maximum_mib": None}
+    if state != "known":
+        return {"state": "invalid", "maximum_mib": None}
+    if mode == "system_managed":
+        return {"state": "unknown", "maximum_mib": None}
+    if mode == "custom" and type(maximum) is int and maximum > 0:
+        return {"state": "known", "maximum_mib": maximum}
+    if mode == "none" and type(maximum) is int and maximum == 0:
+        return {"state": "known", "maximum_mib": 0}
+    return {"state": "invalid", "maximum_mib": None}
+
+
+def _pagefile_blocked_controls() -> dict[str, object]:
+    """Describe implemented approval controls without granting execution."""
+    return {
+        "approval": {
+            "durable": True,
+            "digest_bound": True,
+            "one_use": True,
+            "request_available": True,
+            "approve_available": True,
+            "consume_available": False,
+            "raw_tokens_persisted": False,
+        },
+        "execution": {
+            "available": False,
+            "authorized": False,
+            "mutation_available": False,
+            "elevation_available": False,
+        },
+        "gates": {
+            "documented_safe_8192_measurement": False,
+            "fresh_live_pagefile_commit_disk_readback": False,
+            "uac_elevation": False,
+            "separate_minimal_elevated_helper": False,
+            "single_bounded_write": False,
+            "post_write_readback": False,
+        },
+    }
+
+
+def _pagefile_approval_ledger() -> pagefile_approval_mod.PagefileApprovalLedger:
+    """Initialize the SQLite ledger only from a route's worker thread."""
+    global _PAGEFILE_APPROVAL_LEDGER
+    with _PAGEFILE_APPROVAL_LEDGER_LOCK:
+        if _PAGEFILE_APPROVAL_LEDGER is None:
+            _PAGEFILE_APPROVAL_LEDGER = (
+                pagefile_approval_mod.PagefileApprovalLedger(DB_PATH)
+            )
+        return _PAGEFILE_APPROVAL_LEDGER
+
+
+def _create_pagefile_approval_request(
+    plan: object,
+) -> dict[str, object]:
+    return _pagefile_approval_ledger().create_request(plan)
+
+
+def _approve_pagefile_approval_request(
+    request_token: object,
+    plan: object,
+) -> dict[str, object]:
+    return _pagefile_approval_ledger().approve_request(
+        request_token,
+        plan,
+        principal="CreatorJD",
+        approved=True,
+    )
+
+
+def _collect_pagefile_live_evidence() -> dict[str, object]:
+    """Collect bounded pagefile and planner evidence in a worker thread."""
+    try:
+        telemetry = pagefile_telemetry_mod.collect_pagefile_telemetry()
+    except Exception:
+        telemetry = _unavailable_pagefile_telemetry()
+    if (
+        type(telemetry) is not dict
+        or telemetry.get("schema") != pagefile_telemetry_mod.SCHEMA
+    ):
+        telemetry = _unavailable_pagefile_telemetry()
+
+    try:
+        host_snapshot = _host_resource_sampler.snapshot(force=True)
+    except Exception:
+        host_snapshot = {"state": "unknown"}
+    proposal = system_pressure_mod.propose_pagefile_plan(
+        host_snapshot,
+        _pagefile_planner_observation(telemetry),
+    )
+    return {
+        "schema": _PAGEFILE_LIVE_EVIDENCE_SCHEMA,
+        "state": "blocked",
+        "telemetry": telemetry,
+        "proposal": proposal,
+        **_pagefile_blocked_controls(),
+    }
+
+
+def _pagefile_json(
+    payload: Mapping[str, object], *, status_code: int = 200
+) -> JSONResponse:
+    return JSONResponse(
+        dict(payload),
+        status_code=status_code,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _raise_pagefile_approval_error(
+    exc: pagefile_approval_mod.PagefileApprovalError,
+) -> NoReturn:
+    conflict_codes = {
+        "active_request_exists",
+        "plan_already_consumed",
+        "plan_mismatch",
+        "request_expired",
+        "request_replayed",
+    }
+    client_codes = {
+        "explicit_approval_required",
+        "plan_cap_exceeded",
+        "plan_invalid",
+        "request_invalid",
+    }
+    status_code = 409 if exc.code in conflict_codes else 400
+    if exc.code not in conflict_codes | client_codes:
+        status_code = 503
+    raise HTTPException(
+        status_code=status_code,
+        detail={"code": exc.code},
+        headers={"Cache-Control": "no-store"},
+    ) from exc
+
+
+def _pagefile_plan_from_json(value: object) -> dict[str, object]:
+    if type(value) is not dict:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "pagefile_plan_invalid"},
+            headers={"Cache-Control": "no-store"},
+        )
+    plan = dict(value)
+    requirements = plan.get("future_requirements")
+    if type(requirements) is list:
+        plan["future_requirements"] = tuple(requirements)
+    return plan
+
+
+@app.get("/system/pagefile")
+async def pagefile_read(req: Request) -> JSONResponse:
+    """Return creator-only, read-only pagefile and proposal evidence."""
+    _require_creator_request(req)
+    evidence = await asyncio.to_thread(_collect_pagefile_live_evidence)
+    return _pagefile_json(evidence)
+
+
+@app.post("/system/pagefile/request")
+async def pagefile_request(req: Request) -> JSONResponse:
+    """Create one digest-bound request from a fresh server-owned proposal."""
+    _require_creator_request(req)
+    evidence = await asyncio.to_thread(_collect_pagefile_live_evidence)
+    proposal = evidence.get("proposal")
+    proposal_state = (
+        proposal.get("state") if isinstance(proposal, Mapping) else "unknown"
+    )
+    if (
+        not isinstance(proposal_state, str)
+        or proposal_state not in _PAGEFILE_PROPOSAL_STATES
+    ):
+        proposal_state = "unknown"
+    plan = proposal.get("plan") if isinstance(proposal, Mapping) else None
+    if proposal_state != "proposed" or type(plan) is not dict:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "pagefile_plan_not_proposed",
+                "proposal_state": proposal_state,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        request_record = await asyncio.to_thread(
+            _create_pagefile_approval_request,
+            plan,
+        )
+    except pagefile_approval_mod.PagefileApprovalError as exc:
+        _raise_pagefile_approval_error(exc)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "pagefile_ledger_unavailable"},
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    return _pagefile_json({
+        "schema": _PAGEFILE_REQUEST_RESPONSE_SCHEMA,
+        "state": "pending",
+        "phase_state": "blocked",
+        "plan": plan,
+        "request": request_record,
+        "execution": _pagefile_blocked_controls()["execution"],
+    })
+
+
+@app.post("/system/pagefile/approve")
+async def pagefile_approve(req: Request) -> JSONResponse:
+    """Approve one exact request without consuming or executing it."""
+    _require_creator_request(req)
+    body = await _read_bounded_json_object(
+        req,
+        max_bytes=_PAGEFILE_APPROVAL_BODY_MAX_BYTES,
+    )
+    if frozenset(body) != _PAGEFILE_APPROVAL_BODY_KEYS:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "pagefile_approval_body_invalid"},
+            headers={"Cache-Control": "no-store"},
+        )
+    if body.get("approved") is not True:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "explicit_approval_required"},
+            headers={"Cache-Control": "no-store"},
+        )
+    plan = _pagefile_plan_from_json(body.get("plan"))
+    try:
+        approval = await asyncio.to_thread(
+            _approve_pagefile_approval_request,
+            body.get("request_token"),
+            plan,
+        )
+    except pagefile_approval_mod.PagefileApprovalError as exc:
+        _raise_pagefile_approval_error(exc)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "pagefile_ledger_unavailable"},
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    return _pagefile_json({
+        "schema": _PAGEFILE_APPROVAL_RESPONSE_SCHEMA,
+        "state": "approved",
+        "phase_state": "blocked",
+        "approval": approval,
+        "execution": _pagefile_blocked_controls()["execution"],
+        "gates": _pagefile_blocked_controls()["gates"],
+    })
+
+
+@app.get("/brain/graph")
+def brain_graph() -> dict:
+    """Return the live, evidence-backed architecture plugin graph.
+
+    The graph is read-only. Plugin JSON may select only allowlisted probes and
+    cannot import code, execute commands, or mutate Alpecca's runtime.
+    """
+    from alpecca import soul as soul_mod
+    from alpecca import vrm as vrm_mod
+
+    runtime = _runtime_status(check_models=True)
+    mindpage = mindpage_mod.stats()
+    soul_vector = mind.soul_perspective_evidence()
+    discord_running = False
+    try:
+        with socket.create_connection(("127.0.0.1", 8779), timeout=0.04):
+            discord_running = True
+    except OSError:
+        pass
+    facts = {
+        "runtime": runtime,
+        "model": mind.llm.model_for("reason"),
+        "memory_count": memory_store.count(),
+        "soul_agent_count": len(soul_mod.SUBAGENT_SPECS),
+        "soul_perspective_vector": soul_vector,
+        "senses": _sense_status(),
+        "discord_configured": bool(_discord_bot_token() or DISCORD_CLIENT_ID),
+        "discord_running": discord_running,
+        "mindpage_enabled": bool(mindpage.get("enabled")),
+        "memory_pressure": mindpage.get("pressure_score"),
+        "mindscape_configured": bool(MINDSCAPE_VAULT_ENABLED and MINDSCAPE_VAULT_URL),
+        "vrm_available": bool(vrm_mod.manifest().get("vrm_mode")),
+        "creator_password_configured": _AUTHORITY.password_configured,
+        # FastAPI executes this synchronous route in its worker thread.
+        "pagefile_evidence": _collect_pagefile_live_evidence(),
+    }
+    return brain_graph_mod.build_snapshot(facts)
+
+
 @app.get("/system/resources")
 def system_resources() -> dict:
     """Return the read-only host snapshot from the shared sampler cache."""
@@ -7506,7 +8445,11 @@ def vrm_model(name: str) -> FileResponse:
     p = vrm.asset_path(name)
     if p is None:
         raise HTTPException(status_code=404, detail="no such asset")
-    return FileResponse(p, media_type="model/gltf-binary")
+    return FileResponse(
+        p,
+        media_type="model/gltf-binary",
+        headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"},
+    )
 
 
 @app.get("/vrm/pose")
@@ -7786,6 +8729,7 @@ def introspect() -> dict:
         "reason": report.reason,
         "memory_count": report.memory_count,
         "senses_active": report.senses_active,
+        "soul_perspective_vector": mind.soul_perspective_evidence(),
         # Her ethic is part of her self-model -- the same directives that ride
         # in every prompt, shown with their reasoning.
         "values": values.values_list(),
@@ -8445,10 +9389,11 @@ async def ws(socket: WebSocket) -> None:
         cookies=socket.cookies,
         query=socket.query_params,
     )
+    expected_scheme = "https" if socket.url.scheme == "wss" else "http"
+    expected = f"{expected_scheme}://{socket.url.netloc}".rstrip("/")
+    decision = _validate_bound_device_session(decision, expected)
     if decision.allowed and decision.mechanism == "session_cookie":
         origin = _normalized_origin(socket.headers.get("origin", ""))
-        expected_scheme = "https" if socket.url.scheme == "wss" else "http"
-        expected = f"{expected_scheme}://{socket.url.netloc}".rstrip("/")
         if origin != expected and origin not in _runtime_public_origins():
             decision = auth_mod.AuthDecision(
                 False,

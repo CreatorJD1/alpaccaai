@@ -1,0 +1,28 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "alpecca-continuity-lease",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "secrets": {
+    "required": ["LEASE_AUTH_TOKEN"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "IDENTITY",
+        "class_name": "ContinuityLeaseAuthority"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ContinuityLeaseAuthority"]
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

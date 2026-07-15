@@ -116,6 +116,49 @@ def _allow_dm(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())
 
 
+def _run_direct_voice_readiness(
+    tmp_path: Path,
+    *,
+    receive_value: str | None,
+) -> subprocess.CompletedProcess[str]:
+    secret = tmp_path / "empty-discord.env"
+    secret.write_text("", encoding="utf-8")
+    env = os.environ.copy()
+    for name in (
+        "ALPECCA_DISCORD_MEDIA",
+        "ALPECCA_DISCORD_VOICE",
+        "ALPECCA_DISCORD_VOICE_RECEIVE",
+        "ALPECCA_DISCORD_VOICE_MEMORY",
+    ):
+        env.pop(name, None)
+    env.update(
+        {
+            "ALPECCA_HOME": str(tmp_path),
+            "ALPECCA_DISCORD_MEDIA": "1",
+            "ALPECCA_DISCORD_VOICE": "1",
+            "ALPECCA_DISCORD_VOICE_MEMORY": "1",
+            "DISCORD_BOT_TOKEN": "test-token-placeholder",
+        }
+    )
+    if receive_value is not None:
+        env["ALPECCA_DISCORD_VOICE_RECEIVE"] = receive_value
+    command = (
+        "from pathlib import Path; "
+        "import scripts.run_discord_bridge as launcher; "
+        f"setattr(launcher, 'SECRET', Path({json.dumps(str(secret))})); "
+        "raise SystemExit(launcher.main(['--voice-readiness']))"
+    )
+    return subprocess.run(
+        [sys.executable, "-c", command],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+
 def test_social_presence_and_voice_output_can_be_enabled(tmp_path):
     env = os.environ.copy()
     env.pop("ALPECCA_DISCORD_DEBUG", None)
@@ -198,37 +241,35 @@ def test_discord_voice_output_defaults_off_without_explicit_flag(tmp_path):
     }
 
 
-def test_voice_readiness_command_is_secret_free(tmp_path):
-    env = os.environ.copy()
-    env.update(
-        {
-            "ALPECCA_HOME": str(tmp_path),
-            "ALPECCA_DISCORD_VOICE": "1",
-            "DISCORD_BOT_TOKEN": "voice-secret-must-not-appear",
-        }
-    )
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "scripts/run_discord_bridge.py",
-            "--voice-readiness",
-        ],
-        cwd=ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
+def test_direct_voice_send_only_never_enables_microphone_receive(tmp_path):
+    completed = _run_direct_voice_readiness(tmp_path, receive_value=None)
 
     assert completed.returncode == 0, completed.stderr
     readiness = json.loads(completed.stdout.strip())
     assert readiness["enabled"] is True
     assert readiness["mode"] == "output-only"
     assert readiness["status"] in {"ready", "unavailable"}
+    assert readiness["receive"]["enabled"] is False
+    assert readiness["receive"]["status"] == "disabled"
     serialized = completed.stdout.casefold()
     assert "voice-secret-must-not-appear" not in serialized
     assert "discord_bot_token" not in serialized
+
+
+def test_explicit_voice_receive_enables_bidirectional_live_voice(tmp_path):
+    completed = _run_direct_voice_readiness(tmp_path, receive_value="1")
+
+    assert completed.returncode == 0, completed.stderr
+    readiness = json.loads(completed.stdout.strip())
+    assert readiness["enabled"] is True
+    assert readiness["receive"]["enabled"] is True
+    both_directions_ready = (
+        readiness["status"] == "ready"
+        and readiness["receive"]["status"] == "ready"
+    )
+    assert readiness["mode"] == (
+        "duplex" if both_directions_ready else "output-only"
+    )
 
 
 def test_readiness_command_is_offline_and_secret_free(tmp_path):
@@ -237,7 +278,7 @@ def test_readiness_command_is_offline_and_secret_free(tmp_path):
         {
             "ALPECCA_HOME": str(tmp_path),
             "ALPECCA_DISCORD_MEDIA": "0",
-            "DISCORD_BOT_TOKEN": "secret-token-must-not-appear",
+            "DISCORD_BOT_TOKEN": "test-token-placeholder",
         }
     )
     completed = subprocess.run(
@@ -466,7 +507,8 @@ def test_claimed_room_history_cannot_retrigger_an_old_media_request(monkeypatch)
     asyncio.run(client.on_message(followup))
 
     assert len(model_prompts) == 1
-    assert "Can you send me an image of yourself?" in model_prompts[0]
+    assert "Can you send me an image of yourself?" not in model_prompts[0]
+    assert discord_media.media_diagnostic("media-disabled") not in model_prompts[0]
     assert followup.replies == [("Hi. What is on your mind?", {"mention_author": False})]
 
 
@@ -596,13 +638,13 @@ def test_claimed_quiet_room_can_start_one_grounded_conversation(monkeypatch):
 
     assert channel.sent == ["What part of the model should we improve next?"]
     assert len(calls) == 1
-    assert "Initiative kind: quiet-room opener." in calls[0][0]
+    assert "Initiative kind: quiet-room opener after a new human turn." in calls[0][0]
     assert "reply exactly" not in calls[0][0]
     assert "current model textures" in calls[0][0]
     assert len(calls[0][1]) == 64
 
 
-def test_reconnect_restores_self_history_and_suppresses_repeated_denial(monkeypatch):
+def test_reconnect_with_a_newer_self_turn_does_not_reopen_a_stale_thread(monkeypatch):
     room = {"guild_id": "777", "channel_id": "3001"}
     monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
     monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", True)
@@ -668,9 +710,7 @@ def test_reconnect_restores_self_history_and_suppresses_repeated_denial(monkeypa
 
     asyncio.run(scenario())
 
-    assert len(prompts) == 1
-    assert "Alpecca: Since I'm a text-based AI" in prompts[0]
-    assert "OtherBot" not in prompts[0]
+    assert prompts == []
     assert channel.sent == []
 
 
@@ -728,8 +768,7 @@ def test_recursive_reply_is_recorded_and_same_followup_is_not_resent(monkeypatch
 
     assert message.replies == [("First grounded answer.", {"mention_author": False})]
     assert channel.sent == ["One relevant follow-up thought."]
-    assert len(recursive_prompts) == 2
-    assert "Alpecca: One relevant follow-up thought." in recursive_prompts[1]
+    assert len(recursive_prompts) == 1
 
 
 def test_unclaimed_room_never_runs_a_proactive_decision(monkeypatch):

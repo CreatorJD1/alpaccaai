@@ -1,0 +1,10 @@
+name = "alpecca-mindscape-vault"
+main = "worker.js"
+compatibility_date = "2026-06-01"
+
+[[r2_buckets]]
+binding = "MINDSCAPE_VAULT_ARCHIVE"
+bucket_name = "alpecca-mindscape-vault"
+
+# Set this as a secret, never in source control:
+#   npx wrangler secret put MINDSCAPE_VAULT_TOKEN

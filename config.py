@@ -45,16 +45,10 @@ if OLLAMA_MODEL == "qwen3:4b-instruct-2507":
     OLLAMA_MODEL = "qwen3.5:9b"
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 
-# A second, tiny model for *cheap* work -- short, low-stakes generations like her
-# unprompted little remarks, idle chatter, and posing herself a one-line question.
-# Routing these to a small fast model keeps the big MoE reserved for real
-# reasoning (her replies, reflection, self-critique) and keeps a single consumer
-# GPU responsive. Defaults to Gemma 4 E4B (4B active -- fast on consumer hardware);
-# register it once with `ollama create gemma4-e4b -f Modelfile` (FROM your GGUF).
-# If that model isn't present, cheap calls fall back to OLLAMA_MODEL automatically
-# (see mind._LLM.generate), so this default never breaks a fresh setup. Set
-# ALPECCA_FAST_MODEL="" to force everything back onto the single primary model.
-OLLAMA_FAST_MODEL = os.environ.get("ALPECCA_FAST_MODEL", "gemma4-e4b")
+# Short, low-stakes local generations use the approved qwen3.5:9b family by
+# default. Hosted chat/deep work remains a separate gemma4:cloud workload in
+# the full-stack launcher; this setting is only the local fast/fallback tier.
+OLLAMA_FAST_MODEL = os.environ.get("ALPECCA_FAST_MODEL", "qwen3.5:9b")
 
 # Context window (in tokens) we ask Ollama to allocate. This is the single most
 # important knob on a small machine: modern models like qwen3 advertise a 256K
@@ -172,9 +166,10 @@ REFLECT_TIMEOUT_SECONDS = float(os.environ.get("ALPECCA_REFLECT_TIMEOUT", "600")
 LLM_BACKEND = os.environ.get("ALPECCA_LLM_BACKEND", "ollama").lower()
 HF_TOKEN = (os.environ.get("HF_TOKEN", "")
             or os.environ.get("HUGGINGFACEHUB_API_TOKEN", ""))
-# A solid, widely-served instruct model in her Qwen lineage (no <think> noise).
-# Change with ALPECCA_HF_MODEL; any chat model on HF Inference Providers works.
-HF_MODEL = os.environ.get("ALPECCA_HF_MODEL", "Qwen/Qwen2.5-7B-Instruct")
+# Network fallback for the local Qwen workload. Keep the model family aligned
+# with the approved local brain so a promoted cloud core does not silently
+# change her reasoning model when the laptop is unavailable.
+HF_MODEL = os.environ.get("ALPECCA_HF_MODEL", "Qwen/Qwen3.5-9B")
 HF_PROVIDER = os.environ.get("ALPECCA_HF_PROVIDER", "auto")
 # Memory-recall embeddings. Local Ollama (`nomic-embed-text`) by default; set
 # ALPECCA_EMBED_BACKEND=hf to embed via Hugging Face instead, which frees the
@@ -290,6 +285,46 @@ MINDSCAPE_TOKEN = os.environ.get("ALPECCA_MINDSCAPE_TOKEN", "")
 MINDSCAPE_SYNC_TIMEOUT = float(os.environ.get("ALPECCA_MINDSCAPE_SYNC_TIMEOUT", "8"))
 MINDSCAPE_AUTO_SYNC_INTERVAL = float(os.environ.get("ALPECCA_MINDSCAPE_AUTO_SYNC_INTERVAL", "300"))
 MINDSCAPE_EVENT_SYNC_MIN_INTERVAL = float(os.environ.get("ALPECCA_MINDSCAPE_EVENT_SYNC_MIN_INTERVAL", "45"))
+
+
+def _local_mindscape_vault_url() -> str:
+    """Read the non-secret Vault endpoint saved by its provisioner.
+
+    Environment configuration wins.  The fallback lives under ignored runtime
+    data because the endpoint describes this creator's deployed Worker, not a
+    portable source-code default.  The Worker token and recovery key are never
+    written to this file.
+    """
+    configured = os.environ.get("ALPECCA_MINDSCAPE_VAULT_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+    path = HOME / "secrets" / "mindscape_vault.env"
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("ALPECCA_MINDSCAPE_VAULT_URL="):
+                candidate = line.split("=", 1)[1].strip().rstrip("/")
+                if candidate.startswith("https://") and "?" not in candidate and "#" not in candidate:
+                    return candidate
+    except OSError:
+        pass
+    return ""
+
+
+# Mindscape Vault is the separate encrypted recovery store.  It supersedes the
+# legacy plaintext Worker mirror whenever its own URL and scoped transport token
+# are configured.  Its AES key is separate and is created in Credential Manager
+# on first use (or supplied only to a recovery host via its environment).
+MINDSCAPE_VAULT_ENABLED = os.environ.get("ALPECCA_MINDSCAPE_VAULT", "1") not in ("", "0", "false", "False")
+MINDSCAPE_VAULT_URL = _local_mindscape_vault_url()
+MINDSCAPE_VAULT_TOKEN = os.environ.get("ALPECCA_MINDSCAPE_VAULT_TOKEN", "")
+MINDSCAPE_VAULT_SYNC_TIMEOUT = float(os.environ.get("ALPECCA_MINDSCAPE_VAULT_SYNC_TIMEOUT", "12"))
+MINDSCAPE_VAULT_AUTO_SYNC_INTERVAL = float(os.environ.get("ALPECCA_MINDSCAPE_VAULT_AUTO_SYNC_INTERVAL", "300"))
+# Keep the promoted cloud core within roughly one hour of the local durable
+# database after an unexpected power loss. Compact encrypted snapshots still
+# sync more frequently; this cadence is only for the heavier WAL-safe SQLite
+# recovery archive retained in the Vault.
+MINDSCAPE_VAULT_ARCHIVE_INTERVAL = float(os.environ.get("ALPECCA_MINDSCAPE_VAULT_ARCHIVE_INTERVAL", "3600"))
+MINDSCAPE_VAULT_ARCHIVE_MAX_BYTES = int(os.environ.get("ALPECCA_MINDSCAPE_VAULT_ARCHIVE_MAX_BYTES", str(96 * 1024 * 1024)))
 
 # --- Avatar rig cutter: optional Hugging Face background-removal --------------
 # The in-app layer cutter (/rigcut) builds her per-part rig from her own art by
@@ -618,7 +653,7 @@ class Hearing:
 # Only the model's short text description is kept; frames are dropped
 # immediately and never written to disk.
 class Vision:
-    MODEL = os.environ.get("ALPECCA_VISION_MODEL", "qwen2.5vl:7b")
+    MODEL = os.environ.get("ALPECCA_VISION_MODEL", "qwen3.5:9b")
     SIGHT_ENABLED = os.environ.get("ALPECCA_SIGHT", "0") not in ("", "0", "false", "False")
     FACE_ENABLED = os.environ.get("ALPECCA_FACE", "0") not in ("", "0", "false", "False")
     SIGHT_INTERVAL = 60.0     # seconds between screen glimpses
@@ -696,6 +731,56 @@ class Automation:
     WATCH_DIRS = os.environ.get("ALPECCA_WATCH_DIRS", "")
     WATCH_POLL_SECONDS = float(os.environ.get("ALPECCA_WATCH_POLL_SECONDS", "60"))
     WATCH_MAX_FILES = int(os.environ.get("ALPECCA_WATCH_MAX_FILES", "500"))
+
+
+# --- Creator contact --------------------------------------------------------
+# Outbound contact is deliberately separate from the language model. The model
+# names the creator_contact channel; this layer resolves private destinations
+# only at delivery time. The phone number, Discord id, provider credentials,
+# and VAPID key live in data/secrets/alpecca_contact.env (gitignored) or the
+# process environment -- never in prompts, cognition logs, or source control.
+class CreatorContact:
+    ENABLED = os.environ.get("ALPECCA_CREATOR_CONTACT", "0") \
+        not in ("", "0", "false", "False")
+    SECRET_FILE = Path(os.environ.get(
+        "ALPECCA_CONTACT_SECRET_FILE",
+        str(HOME / "secrets" / "alpecca_contact.env"),
+    ))
+    SMS_BACKEND = os.environ.get("ALPECCA_SMS_BACKEND", "twilio").strip().lower()
+    MAX_MESSAGE_CHARS = int(os.environ.get("ALPECCA_CONTACT_MAX_CHARS", "700"))
+    CRITICAL_COOLDOWN_S = float(os.environ.get("ALPECCA_CONTACT_CRITICAL_COOLDOWN", "300"))
+    IMPORTANT_COOLDOWN_S = float(os.environ.get("ALPECCA_CONTACT_IMPORTANT_COOLDOWN", "1800"))
+    SOCIAL_COOLDOWN_S = float(os.environ.get("ALPECCA_CONTACT_SOCIAL_COOLDOWN", "21600"))
+    HTTP_TIMEOUT_S = float(os.environ.get("ALPECCA_CONTACT_HTTP_TIMEOUT", "10"))
+
+
+# --- Laptop pressure and pagefile guard ------------------------------------
+# Windows decides whether committed pages are resident in physical RAM or pagefile;
+# applications cannot safely force that placement. Alpecca instead writes old
+# conversational context to Mindpage, pauses background model work, and unloads
+# idle Ollama models under real pressure. A pagefile increase is the only OS
+# mutation represented here and always requires a one-use CreatorJD approval.
+class SystemPressure:
+    ENABLED = os.environ.get("ALPECCA_SYSTEM_PRESSURE", "1") \
+        not in ("", "0", "false", "False")
+    POLL_SECONDS = float(os.environ.get("ALPECCA_PRESSURE_POLL_SECONDS", "30"))
+    PAGE_HISTORY_TARGET = float(os.environ.get("ALPECCA_PRESSURE_PAGE_TARGET", "0.66"))
+    PAGEFILE_STEP_MB = int(os.environ.get("ALPECCA_PAGEFILE_STEP_MB", "4096"))
+    PAGEFILE_MAX_MB = int(os.environ.get("ALPECCA_PAGEFILE_MAX_MB", "55296"))
+    PAGEFILE_MIN_FREE_DISK_GB = float(os.environ.get("ALPECCA_PAGEFILE_MIN_FREE_GB", "40"))
+    PAGEFILE_TARGET_COMMIT_HEADROOM = float(os.environ.get(
+        "ALPECCA_PAGEFILE_TARGET_COMMIT_HEADROOM", "0.20"))
+    PAGEFILE_APPROVAL_TTL_S = float(os.environ.get("ALPECCA_PAGEFILE_APPROVAL_TTL", "1800"))
+
+
+# The existing selfmod loop is autonomous and reversible, but previously ran
+# only when a probabilistic Soul focus happened to select Improver. This cadence
+# guarantees periodic evaluation during genuine idle time while preserving the
+# same four allowlisted DB-only tunables and rollback behavior.
+class RecursiveImprovement:
+    ENABLED = os.environ.get("ALPECCA_RECURSIVE_IMPROVEMENT", "1") \
+        not in ("", "0", "false", "False")
+    MIN_INTERVAL_S = float(os.environ.get("ALPECCA_RECURSIVE_IMPROVEMENT_INTERVAL", "1800"))
 
 
 # --- Computer use: she sees the screen and drives mouse/keyboard -------------

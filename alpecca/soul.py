@@ -16,10 +16,11 @@ The seven subagents fall into four categories, exactly as you framed them:
     COMPASSION   - Carer    (attends to the person)
 
 The honesty rule that governs everything else governs this too: each subagent is
-a thin reader of a *real* subsystem, and every intention it proposes carries a
-real reason and the directive it serves. The Soul doesn't invent agency -- it
-*coordinates* the agency she already has, so that at any moment there's a single,
-explainable answer to "what is she moved to do right now, and why."
+a thin perspective over a *real* subsystem, not an independent transformer
+instance. Every intention it proposes carries a real reason and the directive it
+serves. The Soul doesn't invent agency -- it *coordinates* the agency she already
+has, so that at any moment there's a single, explainable answer to "what is she
+moved to do right now, and why."
 
 Deliberately pure and testable: `deliberate(snapshot)` takes a plain snapshot of
 her real state and returns a ranked slate of intentions plus the one in focus.
@@ -239,10 +240,11 @@ class SubagentSpec:
                     a model: letting Feeler/Expressor/Carer hallucinate a feeling
                     is exactly what the GROUNDING rule forbids. Cheap, instant,
                     always-on, and the bedrock of honesty.
-      - "reason" -- an open-ended agent that, when its intention is executed, may
-                    run an LLM (reflection, outreach, self-tuning proposals,
-                    self-questioning). `tier` says which model serves it: "fast"
-                    for short, low-stakes generation, "reason" for real thinking.
+      - "reason" -- a deterministic perspective whose selected intention may
+                    later be executed with an LLM (reflection, outreach,
+                    self-tuning proposals, self-questioning). `tier` records the
+                    eligible execution tier; no model is instantiated or called
+                    during Soul deliberation.
 
     The master arbitrates over all of them identically; the split only governs
     *how an intention is carried out* once chosen, and keeps the model reserved
@@ -273,6 +275,19 @@ SUBAGENTS = tuple(s.fn for s in SUBAGENT_SPECS)
 # Quick lookups the multi-agent runtime (and tests) use.
 SENSE_AGENTS = tuple(s.name for s in SUBAGENT_SPECS if s.kind == "sense")
 REASON_AGENTS = tuple(s.name for s in SUBAGENT_SPECS if s.kind == "reason")
+
+PERSPECTIVE_VECTOR_SCHEMA = "alpecca.soul-perspective-vector.v1"
+PERSPECTIVE_ORDER = tuple(s.name for s in SUBAGENT_SPECS)
+CONTRADICTION_SCORE_MIN = 0.40
+
+# These are execution-direction tensions, not claims that a perspective holds a
+# logically inconsistent belief. They only mark when two materially active
+# proposals would pull one body in opposing directions and may merit a later,
+# separately governed LLM tie-break.
+_CONTRADICTORY_DIRECTIONS = (
+    frozenset(("outward", "inward")),
+    frozenset(("stabilize", "change")),
+)
 
 
 def _pressure_score(signal: Mapping[str, object]) -> float | None:
@@ -323,6 +338,40 @@ def _adjust_pressure_urgency(intent: Intention, signal: object) -> Intention:
     return replace(intent, urgency=urgency)
 
 
+def _bounded_score(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return 0.0
+    score = float(value)
+    if not math.isfinite(score):
+        return 0.0
+    return round(max(0.0, min(1.0, score)), 3)
+
+
+def _combined_pressure_mode(snap: Snapshot) -> str:
+    modes = {
+        mode
+        for signal in (snap.memory_pressure, snap.host_pressure)
+        if (mode := _pressure_mode(signal)) is not None
+    }
+    if "overflow" in modes:
+        return "overflow"
+    if "high" in modes:
+        return "high"
+    return "none"
+
+
+def _execution_direction(intent: Intention) -> str:
+    if intent.subagent in {"Doer", "Wanderer"}:
+        return "outward"
+    if intent.subagent == "Reflector":
+        return "inward"
+    if intent.subagent == "Improver":
+        return "change"
+    if intent.subagent == "Feeler" and intent.action == "steady myself":
+        return "stabilize"
+    return "neutral"
+
+
 def spec_for(name: str) -> "SubagentSpec | None":
     for s in SUBAGENT_SPECS:
         if s.name == name:
@@ -355,6 +404,65 @@ class MasterAgent:
             for item in intentions
         ]
 
+    @staticmethod
+    def _perspective_vector(
+        intentions: list[Intention],
+        focus: Intention | None,
+        snap: Snapshot,
+    ) -> dict:
+        """Return compact evidence for optional later model escalation.
+
+        Scores are the bounded urgency emitted by each deterministic perspective;
+        inactive perspectives remain visible as zeroes. This method observes the
+        already-arbitrated slate and focus. It cannot choose or replace either.
+        """
+        by_name = {item.subagent: item for item in intentions}
+        scores: list[float] = []
+        active: list[int] = []
+        ranks: list[int] = []
+        material_directions: set[str] = set()
+
+        for name in PERSPECTIVE_ORDER:
+            intention = by_name.get(name)
+            is_active = intention is not None
+            score = _bounded_score(intention.urgency if intention else 0.0)
+            scores.append(score)
+            active.append(int(is_active))
+            ranks.append(
+                int(intention.rank)
+                if intention is not None and 1 <= int(intention.rank) <= 4
+                else 0
+            )
+            if intention is not None and score >= CONTRADICTION_SCORE_MIN:
+                direction = _execution_direction(intention)
+                if direction != "neutral":
+                    material_directions.add(direction)
+
+        contradiction = any(
+            pair.issubset(material_directions)
+            for pair in _CONTRADICTORY_DIRECTIONS
+        )
+        pressure = _combined_pressure_mode(snap)
+        focus_index = (
+            PERSPECTIVE_ORDER.index(focus.subagent)
+            if focus is not None and focus.subagent in PERSPECTIVE_ORDER
+            else -1
+        )
+        return {
+            "schema": PERSPECTIVE_VECTOR_SCHEMA,
+            "order": list(PERSPECTIVE_ORDER),
+            "scores": scores,
+            "active": active,
+            "ranks": ranks,
+            "focus_index": focus_index,
+            "contradiction": contradiction,
+            "pressure": pressure,
+            "escalate": contradiction or pressure != "none",
+            "source": "deterministic",
+            "model_calls": 0,
+            "independent_transformers": False,
+        }
+
     def deliberate(self, snap: Snapshot, *, verbose: bool = True) -> dict:
         intentions = [i for sa in SUBAGENTS if (i := sa(snap)) is not None]
         intentions = [
@@ -374,10 +482,11 @@ class MasterAgent:
         plan = {
             "focus": focus.as_dict() if focus else None,
             "validation_vector": self._validation_vector(intentions),
+            "perspective_vector": self._perspective_vector(intentions, focus, snap),
             "principle": "Good Person Principle: " +
                          " > ".join(d["name"] for d in values.DIRECTIVES),
-            # The multi-agent makeup: which subagents are deterministic sensors
-            # and which are LLM-backed reasoners (and on which model tier).
+            # The perspective makeup: deterministic sensors plus reason roles
+            # that may request a model tier only after arbitration and dispatch.
             "agents": {s.name: {"category": s.category, "kind": s.kind, "tier": s.tier}
                        for s in SUBAGENT_SPECS},
         }

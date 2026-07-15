@@ -47,6 +47,7 @@ export type VrmEmbodimentDebug = Readonly<{
   mouthCorrectionBindings: number;
   eyeCorrections: Record<string, number>;
   eyeCorrectionBindings: number;
+  gaze: Readonly<VrmGazeFollowState & { target: "camera" | "interaction" | "none" }>;
   activeClip: string;
   activePose: string;
   activeMotion: string;
@@ -66,7 +67,7 @@ export interface VrmEmbodimentDeps {
   targetHeight: number;
   groundClearance: number;
   manifestUrl: () => string;
-  modelUrl: (file: string) => string;
+  modelUrl: (file: string, version?: string) => string;
   animationUrl?: (fileName: string) => string;   // absent -> procedural clips only
   onStatus: (status: EmbodimentStatus, detail?: string, progress?: number) => void;
 }
@@ -81,6 +82,7 @@ export type VrmInteractionContactStatus = Readonly<{
 export interface VrmEmbodiment {
   readonly status: EmbodimentStatus;
   readonly interactionContactStatus: VrmInteractionContactStatus;
+  preload(): Promise<boolean>;
   activate(): Promise<boolean>;
   deactivate(): void;
   dispose(): void;
@@ -130,6 +132,30 @@ export function vowelWeightsForSpeech(
     ee: shape === "ee" ? resolved : 0,
     oh: shape === "oh" ? resolved : 0,
   };
+}
+
+const VRM_EMOTION_CAPS: Readonly<Record<string, number>> = Object.freeze({
+  happy: 0.85,
+  sad: 0.7,
+  surprised: 0.55,
+  angry: 0,
+  relaxed: 0.7,
+});
+
+export function normalizeVrmEmotionWeights(
+  weights: Readonly<Record<string, number>>,
+): Record<string, number> {
+  const bounded = Object.fromEntries(
+    Object.entries(VRM_EMOTION_CAPS).map(([name, cap]) => [
+      name,
+      Math.min(cap, c01(Number.isFinite(weights[name]) ? weights[name] : 0)),
+    ]),
+  );
+  const sum = Object.values(bounded).reduce((total, value) => total + value, 0);
+  if (sum > 1) {
+    for (const name of Object.keys(bounded)) bounded[name] /= sum;
+  }
+  return bounded;
 }
 
 export function v4MoodMouthCorrectionWeights(
@@ -304,6 +330,190 @@ export function shouldBlendVrmProceduralTransition(previous: string, next: strin
   return (locomotion && nextRest) || (nextLocomotion && rest);
 }
 
+export function shouldResetVrmGaitPhase(previous: string, next: string): boolean {
+  const locomotion = previous === "walk" || previous === "run";
+  const nextLocomotion = next === "walk" || next === "run";
+  return !locomotion && nextLocomotion;
+}
+
+export function resolveVrmBodyYawFromDisplacement(
+  currentYaw: number,
+  displacementX: number,
+  displacementZ: number,
+  dt: number,
+  damping = 12,
+): number {
+  if (![currentYaw, displacementX, displacementZ, dt, damping].every(Number.isFinite)) return currentYaw;
+  if (displacementX * displacementX + displacementZ * displacementZ <= 1e-8) return currentYaw;
+  const targetYaw = Math.atan2(displacementX, displacementZ);
+  const delta = THREE.MathUtils.euclideanModulo(targetYaw - currentYaw + Math.PI, Math.PI * 2) - Math.PI;
+  const elapsed = Math.max(0, Math.min(0.1, dt));
+  const blend = elapsed <= 0 ? 1 : 1 - Math.exp(-Math.max(0, damping) * elapsed);
+  return currentYaw + delta * blend;
+}
+
+export type VrmGazeTargetAngles = Readonly<{
+  yaw: number;
+  pitch: number;
+}>;
+
+export type VrmGazeFollowState = Readonly<{
+  eyeYaw: number;
+  eyePitch: number;
+  headYaw: number;
+  headPitch: number;
+  neckYaw: number;
+  neckPitch: number;
+}>;
+
+export const VRM_NEUTRAL_GAZE: VrmGazeFollowState = Object.freeze({
+  eyeYaw: 0,
+  eyePitch: 0,
+  headYaw: 0,
+  headPitch: 0,
+  neckYaw: 0,
+  neckPitch: 0,
+});
+
+const gazeRadians = (degrees: number): number => degrees * Math.PI / 180;
+const GAZE_TARGET_YAW_LIMIT = gazeRadians(45);
+const GAZE_TARGET_PITCH_UP_LIMIT = gazeRadians(28);
+const GAZE_TARGET_PITCH_DOWN_LIMIT = gazeRadians(32);
+const GAZE_EYE_YAW_LIMIT = gazeRadians(22);
+const GAZE_EYE_PITCH_UP_LIMIT = gazeRadians(12);
+const GAZE_EYE_PITCH_DOWN_LIMIT = gazeRadians(14);
+const GAZE_HEAD_YAW_LIMIT = gazeRadians(14);
+const GAZE_HEAD_PITCH_UP_LIMIT = gazeRadians(8);
+const GAZE_HEAD_PITCH_DOWN_LIMIT = gazeRadians(10);
+const GAZE_NECK_YAW_LIMIT = gazeRadians(7);
+const GAZE_NECK_PITCH_UP_LIMIT = gazeRadians(4);
+const GAZE_NECK_PITCH_DOWN_LIMIT = gazeRadians(5);
+const GAZE_NEUTRAL_EPSILON = gazeRadians(0.05);
+
+function clampGazePitch(value: number, upLimit: number, downLimit: number): number {
+  return THREE.MathUtils.clamp(value, -upLimit, downLimit);
+}
+
+function dampGazeAngle(current: number, target: number, response: number, dt: number): number {
+  return target + (current - target) * Math.exp(-response * dt);
+}
+
+function sanitizeGazeState(state: VrmGazeFollowState): VrmGazeFollowState {
+  const finite = (value: number): number => Number.isFinite(value) ? value : 0;
+  return {
+    eyeYaw: THREE.MathUtils.clamp(finite(state.eyeYaw), -GAZE_EYE_YAW_LIMIT, GAZE_EYE_YAW_LIMIT),
+    eyePitch: clampGazePitch(finite(state.eyePitch), GAZE_EYE_PITCH_UP_LIMIT, GAZE_EYE_PITCH_DOWN_LIMIT),
+    headYaw: THREE.MathUtils.clamp(finite(state.headYaw), -GAZE_HEAD_YAW_LIMIT, GAZE_HEAD_YAW_LIMIT),
+    headPitch: clampGazePitch(finite(state.headPitch), GAZE_HEAD_PITCH_UP_LIMIT, GAZE_HEAD_PITCH_DOWN_LIMIT),
+    neckYaw: THREE.MathUtils.clamp(finite(state.neckYaw), -GAZE_NECK_YAW_LIMIT, GAZE_NECK_YAW_LIMIT),
+    neckPitch: clampGazePitch(finite(state.neckPitch), GAZE_NECK_PITCH_UP_LIMIT, GAZE_NECK_PITCH_DOWN_LIMIT),
+  };
+}
+
+export function resolveVrmGazeTargetAngles(
+  localDirection: Readonly<Pick<THREE.Vector3, "x" | "y" | "z">>,
+): VrmGazeTargetAngles | null {
+  const { x, y, z } = localDirection;
+  if (![x, y, z].every(Number.isFinite) || x * x + y * y + z * z <= 1e-10) return null;
+  return {
+    yaw: Math.atan2(x, z),
+    // VRMLookAt and the normalized VRM rig both use positive pitch for down.
+    pitch: Math.atan2(-y, Math.hypot(x, z)),
+  };
+}
+
+export function isNeutralVrmGaze(state: VrmGazeFollowState): boolean {
+  return state.eyeYaw === 0
+    && state.eyePitch === 0
+    && state.headYaw === 0
+    && state.headPitch === 0
+    && state.neckYaw === 0
+    && state.neckPitch === 0;
+}
+
+export function resolveVrmGazeFollow(
+  previous: VrmGazeFollowState,
+  target: VrmGazeTargetAngles | null,
+  dt: number,
+): VrmGazeFollowState {
+  const current = sanitizeGazeState(previous);
+  const elapsed = Number.isFinite(dt) ? THREE.MathUtils.clamp(dt, 0, 0.1) : 0;
+  const targetValid = target !== null && Number.isFinite(target.yaw) && Number.isFinite(target.pitch);
+
+  let targetYaw = 0;
+  let targetPitch = 0;
+  if (targetValid && target) {
+    const wrappedYaw = Math.atan2(Math.sin(target.yaw), Math.cos(target.yaw));
+    targetYaw = THREE.MathUtils.clamp(wrappedYaw, -GAZE_TARGET_YAW_LIMIT, GAZE_TARGET_YAW_LIMIT);
+    targetPitch = clampGazePitch(
+      target.pitch,
+      GAZE_TARGET_PITCH_UP_LIMIT,
+      GAZE_TARGET_PITCH_DOWN_LIMIT,
+    );
+  }
+
+  const neckYawTarget = targetValid
+    ? THREE.MathUtils.clamp(targetYaw * 0.30, -GAZE_NECK_YAW_LIMIT, GAZE_NECK_YAW_LIMIT)
+    : 0;
+  const neckPitchTarget = targetValid
+    ? clampGazePitch(targetPitch * 0.30, GAZE_NECK_PITCH_UP_LIMIT, GAZE_NECK_PITCH_DOWN_LIMIT)
+    : 0;
+  const headYawTarget = targetValid
+    ? THREE.MathUtils.clamp(targetYaw * 0.45, -GAZE_HEAD_YAW_LIMIT, GAZE_HEAD_YAW_LIMIT)
+    : 0;
+  const headPitchTarget = targetValid
+    ? clampGazePitch(targetPitch * 0.45, GAZE_HEAD_PITCH_UP_LIMIT, GAZE_HEAD_PITCH_DOWN_LIMIT)
+    : 0;
+
+  const neckResponse = targetValid ? 6 : 5;
+  const headResponse = targetValid ? 7.5 : 6;
+  const neckYaw = dampGazeAngle(current.neckYaw, neckYawTarget, neckResponse, elapsed);
+  const neckPitch = dampGazeAngle(current.neckPitch, neckPitchTarget, neckResponse, elapsed);
+  const headYaw = dampGazeAngle(current.headYaw, headYawTarget, headResponse, elapsed);
+  const headPitch = dampGazeAngle(current.headPitch, headPitchTarget, headResponse, elapsed);
+
+  // Eyes solve the residual after this frame's head and neck motion. Their
+  // faster response makes them arrive first without increasing any clamp.
+  const eyeYawTarget = targetValid
+    ? THREE.MathUtils.clamp(targetYaw - headYaw - neckYaw, -GAZE_EYE_YAW_LIMIT, GAZE_EYE_YAW_LIMIT)
+    : 0;
+  const eyePitchTarget = targetValid
+    ? clampGazePitch(
+      targetPitch - headPitch - neckPitch,
+      GAZE_EYE_PITCH_UP_LIMIT,
+      GAZE_EYE_PITCH_DOWN_LIMIT,
+    )
+    : 0;
+  const eyeResponse = targetValid ? 18 : 14;
+  const next: VrmGazeFollowState = {
+    eyeYaw: dampGazeAngle(current.eyeYaw, eyeYawTarget, eyeResponse, elapsed),
+    eyePitch: dampGazeAngle(current.eyePitch, eyePitchTarget, eyeResponse, elapsed),
+    headYaw,
+    headPitch,
+    neckYaw,
+    neckPitch,
+  };
+
+  if (!targetValid && Object.values(next).every((value) => Math.abs(value) <= GAZE_NEUTRAL_EPSILON)) {
+    return VRM_NEUTRAL_GAZE;
+  }
+  return next;
+}
+
+export function applyVrmLookAtTransition<T>(
+  lookAt: { target?: T | null; reset(): void },
+  nextTarget: T | null,
+): void {
+  const wasActive = lookAt.target != null;
+  if (nextTarget !== null) {
+    lookAt.target = nextTarget;
+    return;
+  }
+  if (!wasActive) return;
+  lookAt.target = null;
+  lookAt.reset();
+}
+
 export function isRotationOnlyVrmTrack(trackName: string): boolean {
   return trackName.endsWith(".quaternion");
 }
@@ -330,9 +540,18 @@ export function resolveVrmGroundTarget(
   groundY: number,
   lowestSoleY: number,
   currentOffset: number,
+  allowAirtime = true,
 ): number {
   if (![groundBase, groundY, lowestSoleY, currentOffset].every(Number.isFinite)) return currentOffset;
-  return Math.max(groundBase, groundY - (lowestSoleY - currentOffset));
+  const plantedTarget = groundY - (lowestSoleY - currentOffset);
+  return allowAirtime ? Math.max(groundBase, plantedTarget) : plantedTarget;
+}
+
+export function shouldStabilizeVrmSpringTransition(
+  hasCurrentAction: boolean,
+  fadingActionCount: number,
+): boolean {
+  return !hasCurrentAction && Number.isFinite(fadingActionCount) && fadingActionCount > 0;
 }
 
 export function isConfirmedVrmInteractionContact(
@@ -427,21 +646,6 @@ const MOOD_CLIPS: Record<string, string> = {
   lonely: "sit",
 };
 
-// alpecca/vrm.py _TALK_EMOTIONS: her mood folded onto the talking clip's
-// emotion-overlay vocabulary. Never "angry" -- she has no anger dimension.
-const TALK_EMOTIONS: Record<string, string> = {
-  joyful: "happy",
-  affectionate: "happy",
-  playful: "happy",
-  lonely: "sad",
-  withdrawn: "sad",
-  anxious: "surprised",
-  worried: "surprised",
-  tender: "relaxed",
-  content: "relaxed",
-  sleepy: "relaxed",
-};
-
 // Internal clip id -> real VRoid motion clip served at /assets/vrma/. This is
 // VCS's approved ALPECCA_MOOD_VRMA table (VRMViewer.jsx) with two changes:
 // wave plays "Hello" here (a player greeting), not "Goodbye", and point plays
@@ -473,8 +677,50 @@ const nextFlourishDelay = (): number =>
 
 // How a .vrma action is scheduled: rest poses loop forever, idle flourishes
 // play once, mood performances get at most two passes then settle.
-type PlayMode = "loop" | "once" | "twice";
+export type PlayMode = "loop" | "once" | "twice";
 type VrmMotionPlayback = Readonly<{ name: string; mode: PlayMode }>;
+
+export const VRM_QUATERNION_SEAM_LIMIT_RADIANS = THREE.MathUtils.degToRad(8);
+
+type VrmQuaternionTrackLike = Readonly<{
+  name: string;
+  values: ArrayLike<number>;
+}>;
+
+export function vrmQuaternionEndpointSeamRadians(values: ArrayLike<number>): number {
+  if (values.length < 8 || values.length % 4 !== 0) return Number.POSITIVE_INFINITY;
+  const end = values.length - 4;
+  const ax = Number(values[0]);
+  const ay = Number(values[1]);
+  const az = Number(values[2]);
+  const aw = Number(values[3]);
+  const bx = Number(values[end]);
+  const by = Number(values[end + 1]);
+  const bz = Number(values[end + 2]);
+  const bw = Number(values[end + 3]);
+  if (![ax, ay, az, aw, bx, by, bz, bw].every(Number.isFinite)) return Number.POSITIVE_INFINITY;
+  const aLength = Math.hypot(ax, ay, az, aw);
+  const bLength = Math.hypot(bx, by, bz, bw);
+  if (aLength <= 1e-8 || bLength <= 1e-8) return Number.POSITIVE_INFINITY;
+  const dot = Math.abs((ax * bx + ay * by + az * bz + aw * bw) / (aLength * bLength));
+  return 2 * Math.acos(THREE.MathUtils.clamp(dot, 0, 1));
+}
+
+export function resolveVrmPlayModeForQuaternionSeam(
+  requested: PlayMode,
+  tracks: readonly VrmQuaternionTrackLike[],
+  seamLimitRadians = VRM_QUATERNION_SEAM_LIMIT_RADIANS,
+): PlayMode {
+  if (requested === "once") return requested;
+  const limit = Number.isFinite(seamLimitRadians) && seamLimitRadians >= 0
+    ? seamLimitRadians
+    : VRM_QUATERNION_SEAM_LIMIT_RADIANS;
+  for (const track of tracks) {
+    if (!isRotationOnlyVrmTrack(track.name)) continue;
+    if (vrmQuaternionEndpointSeamRadians(track.values) > limit) return "once";
+  }
+  return requested;
+}
 
 export function resolveVrmMotionTelemetry(
   active: VrmMotionPlayback | null,
@@ -739,6 +985,19 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   let interactionTargetReachable = false;
   const interactionLookTarget = new THREE.Object3D();
   interactionLookTarget.name = "Alpecca terminal gaze target";
+  const gazeTargetWorld = new THREE.Vector3();
+  const gazeOriginWorld = new THREE.Vector3();
+  const gazeDirectionLocal = new THREE.Vector3();
+  const gazeHeadWorldQuaternion = new THREE.Quaternion();
+  const gazeAdditiveQuaternion = new THREE.Quaternion();
+  const gazeEuler = new THREE.Euler(0, 0, 0, "YXZ");
+  const gazeHeadBaseQuaternion = new THREE.Quaternion();
+  const gazeNeckBaseQuaternion = new THREE.Quaternion();
+  let gazeFollowState: VrmGazeFollowState = VRM_NEUTRAL_GAZE;
+  let gazeHeadPoseApplied = false;
+  let gazeNeckPoseApplied = false;
+  let gazeNeutralReset = true;
+  let gazeTargetKind: "camera" | "interaction" | "none" = "none";
   const reachShoulderWorld = new THREE.Vector3();
   const reachElbowWorld = new THREE.Vector3();
   const reachTargetDirection = new THREE.Vector3();
@@ -868,6 +1127,102 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
 
   const bone = (n: VRMHumanBoneName): THREE.Object3D | null =>
     vrm ? vrm.humanoid.getNormalizedBoneNode(n) : null;
+
+  function restoreVrmGazePose(): void {
+    if (gazeHeadPoseApplied) {
+      const head = bone("head");
+      if (head) {
+        head.quaternion.copy(gazeHeadBaseQuaternion);
+        head.updateMatrix();
+      }
+    }
+    if (gazeNeckPoseApplied) {
+      const neck = bone("neck");
+      if (neck) {
+        neck.quaternion.copy(gazeNeckBaseQuaternion);
+        neck.updateMatrix();
+      }
+    }
+    gazeHeadPoseApplied = false;
+    gazeNeckPoseApplied = false;
+  }
+
+  function resetVrmGaze(): void {
+    restoreVrmGazePose();
+    gazeFollowState = VRM_NEUTRAL_GAZE;
+    const lookAt = vrm?.lookAt;
+    if (lookAt) {
+      lookAt.autoUpdate = false;
+      const hadTarget = lookAt.target != null;
+      applyVrmLookAtTransition(lookAt, null);
+      if (!hadTarget && !gazeNeutralReset) lookAt.reset();
+    }
+    gazeNeutralReset = true;
+  }
+
+  function applyVrmGazeBonePose(
+    targetBone: THREE.Object3D | null,
+    yaw: number,
+    pitch: number,
+    baseQuaternion: THREE.Quaternion,
+  ): boolean {
+    if (!targetBone || (yaw === 0 && pitch === 0)) return false;
+    baseQuaternion.copy(targetBone.quaternion);
+    gazeEuler.set(axisFlip * pitch, yaw, 0, "YXZ");
+    gazeAdditiveQuaternion.setFromEuler(gazeEuler);
+    targetBone.quaternion.multiply(gazeAdditiveQuaternion).normalize();
+    targetBone.updateMatrix();
+    return true;
+  }
+
+  function applyVrmGazeFollow(
+    dt: number,
+    targetObject: THREE.Object3D | null,
+    targetWorld: THREE.Vector3 | null,
+  ): void {
+    const head = bone("head");
+    let targetAngles: VrmGazeTargetAngles | null = null;
+    if (head && targetObject && targetWorld && vrm) {
+      vrm.scene.updateWorldMatrix(true, true);
+      head.getWorldPosition(gazeOriginWorld);
+      head.getWorldQuaternion(gazeHeadWorldQuaternion).invert();
+      gazeDirectionLocal.copy(targetWorld).sub(gazeOriginWorld).applyQuaternion(gazeHeadWorldQuaternion);
+      targetAngles = resolveVrmGazeTargetAngles(gazeDirectionLocal);
+    }
+
+    gazeFollowState = resolveVrmGazeFollow(gazeFollowState, targetAngles, dt);
+    gazeNeckPoseApplied = applyVrmGazeBonePose(
+      bone("neck"),
+      gazeFollowState.neckYaw,
+      gazeFollowState.neckPitch,
+      gazeNeckBaseQuaternion,
+    );
+    gazeHeadPoseApplied = applyVrmGazeBonePose(
+      head,
+      gazeFollowState.headYaw,
+      gazeFollowState.headPitch,
+      gazeHeadBaseQuaternion,
+    );
+
+    const tracking = targetAngles !== null && targetObject !== null;
+    if (tracking) gazeNeutralReset = false;
+    const lookAt = vrm?.lookAt;
+    if (lookAt) {
+      lookAt.autoUpdate = false;
+      if (tracking) {
+        applyVrmLookAtTransition(lookAt, targetObject);
+      } else if (isNeutralVrmGaze(gazeFollowState)) {
+        const hadTarget = lookAt.target != null;
+        applyVrmLookAtTransition(lookAt, null);
+        if (!hadTarget && !gazeNeutralReset) lookAt.reset();
+        gazeNeutralReset = true;
+      }
+      lookAt.yaw = THREE.MathUtils.radToDeg(gazeFollowState.eyeYaw);
+      lookAt.pitch = THREE.MathUtils.radToDeg(gazeFollowState.eyePitch);
+    } else if (!tracking && isNeutralVrmGaze(gazeFollowState)) {
+      gazeNeutralReset = true;
+    }
+  }
 
   function beginProceduralTransition(): void {
     poseTransitionFrom.clear();
@@ -1096,10 +1451,6 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     interactionElapsed = 0;
     interactionTargetReachable = false;
     invalidateInteractionContactStatus();
-    if (vrm?.lookAt?.target === interactionLookTarget) {
-      vrm.lookAt.target = null;
-      vrm.lookAt.reset();
-    }
   }
 
   function invalidateInteractionContactStatus(): void {
@@ -1648,9 +1999,8 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     if (luA) { luA.rotation.z = 1.2; luA.rotation.x = armX; }
     if (ruA) { ruA.rotation.z = -1.2; ruA.rotation.x = armX; }
   }
-  // Talking body: light idle sway + a head bob for emphasis. The mouth-shape
-  // cycling and the emotion overlay are time-driven expressions, applied in
-  // applyClipExpressions so they also layer over a mixer-driven body.
+  // Talking body: light idle sway + a head bob for emphasis. Mouth shapes are
+  // applied in applyClipExpressions while mood remains owned by applyExpressions.
   function talking(t: number): void {
     idle(t * 0.5);
     const head = bone("head"); if (head) head.rotation.x += Math.sin(t * 4) * 0.02;
@@ -1685,7 +2035,6 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       }
       const response = lipTarget > lipNow ? 24 : 32;
       lipNow += (lipTarget - lipNow) * (1 - Math.exp(-Math.max(0, dt) * response));
-      setExpr(TALK_EMOTIONS[moodLabel] ?? "relaxed", 0.32, true);
     }
     // Write every vowel on every frame. The first frame after speech therefore
     // closes all five explicitly, independent of the prior active shape.
@@ -1713,20 +2062,13 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     if (!em) return;
     // Caps wide enough that the mood range is visible (joyful vs content must
     // differ) while stacked layers still cannot pin an uncanny extreme.
-    const caps: Record<string, number> = {
-      happy: 0.85,
-      sad: 0.7,
-      surprised: 0.55,
-      angry: 0,
-      relaxed: 0.7,
-    };
-    for (const [name, cap] of Object.entries(caps)) {
-      const value = em.getValue(name);
-      if (value != null) em.setValue(name, Math.min(cap, c01(value)));
+    const values = Object.fromEntries(
+      Object.keys(VRM_EMOTION_CAPS).map((name) => [name, em.getValue(name) ?? 0]),
+    );
+    const normalized = normalizeVrmEmotionWeights(values);
+    for (const [name, value] of Object.entries(normalized)) {
+      if (em.getValue(name) != null) em.setValue(name, value);
     }
-    const names = ["happy", "sad", "surprised", "angry"];
-    const sum = names.reduce((s, n) => s + (em.getValue(n) ?? 0), 0);
-    if (sum > 1) for (const n of names) em.setValue(n, (em.getValue(n) ?? 0) / sum);
   }
 
   function autoBlink(dt: number): void {
@@ -1826,6 +2168,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       mixer = new THREE.AnimationMixer(vrm.scene);
       mixer.addEventListener("finished", onActionFinished as never);
     }
+    const effectiveMode = resolveVrmPlayModeForQuaternionSeam(mode, clip.tracks);
     const next = mixer.clipAction(clip);
     const revived = fading.indexOf(next);
     if (revived >= 0) fading.splice(revived, 1);   // wanted again mid-fade-out
@@ -1833,17 +2176,17 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     next.enabled = true;
     next.setEffectiveTimeScale(1);
     next.setEffectiveWeight(1);
-    if (mode === "loop") next.setLoop(THREE.LoopRepeat, Infinity);
-    else next.setLoop(THREE.LoopRepeat, mode === "twice" ? 2 : 1);
+    if (effectiveMode === "loop") next.setLoop(THREE.LoopRepeat, Infinity);
+    else next.setLoop(THREE.LoopRepeat, effectiveMode === "twice" ? 2 : 1);
     next.clampWhenFinished = true;   // hold the last frame; the fade-out blends it away
     next.play();
-    actionPlayback.set(next, { name, mode });
+    actionPlayback.set(next, { name, mode: effectiveMode });
     const prev = currentAction;
     if (prev && prev !== next) { prev.crossFadeTo(next, VRMA_FADE, false); fading.push(prev); }
     else next.fadeIn(VRMA_FADE);
     currentAction = next;
     currentVrmaName = name;
-    currentPlayMode = mode;
+    currentPlayMode = effectiveMode;
   }
 
   function stopVrma(): void {
@@ -1942,8 +2285,15 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     if (lowest == null) return;
     // `lowest` was measured WITH the current offset applied; undo it to get
     // the animation's own pose. Lift above base only to fix penetration.
-    const target = resolveVrmGroundTarget(groundBase, groundY, lowest, groundOffset);
-    const rate = target > groundOffset ? 20 : 6;
+    const allowAirtime = clipName === "jump";
+    const target = resolveVrmGroundTarget(
+      groundBase,
+      groundY,
+      lowest,
+      groundOffset,
+      allowAirtime,
+    );
+    const rate = target > groundOffset || !allowAirtime ? 20 : 6;
     groundOffset += (target - groundOffset) * Math.min(1, (dt || 0.016) * rate);
     forVrm.scene.position.y = groundOffset / worldScaleY();
   }
@@ -2002,6 +2352,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
 
       vrm = loaded;
       wrapper = w;
+      resetVrmGaze();
       w.updateWorldMatrix(true, true);
       configureFootContactGeometry();
       v4MoodCorrectionBindings = discoverV4MoodCorrections(loaded);
@@ -2014,10 +2365,11 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       // clips drive the root. The posed-vertex pass above still owns the
       // HEIGHT the scale factor is computed from.
       snapGround();
-      if (status !== "loading") return true;   // deactivated mid-load: cache, stay hidden
-      w.visible = true;
-      status = "active";
-      deps.onStatus("active");
+      // Loading and showing are separate operations. Keeping the parsed body
+      // hidden lets House HQ warm the expensive VRM path while the sprite is
+      // already usable, then reveal it immediately when the user switches.
+      status = "idle";
+      deps.onStatus("idle");
       return true;
     } catch (err) {
       status = "failed";
@@ -2045,13 +2397,17 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       throw new Error("authorization session needed - reopen through START_HERE or the launcher");
     }
     if (!res.ok) throw new Error(`manifest fetch failed (HTTP ${res.status})`);
-    const man = (await res.json()) as { vrm_mode?: boolean; model_file?: string | null };
+    const man = (await res.json()) as {
+      vrm_mode?: boolean;
+      model_file?: string | null;
+      model_version?: string | null;
+    };
     if (!man.vrm_mode || !man.model_file) throw new Error("no VRM body installed (manifest has no model_file)");
     const file = man.model_file;
 
     const loader = new gltfMod.GLTFLoader();
     loader.register((parser) => new vrmLib.VRMLoaderPlugin(parser));
-    const gltf = await loader.loadAsync(deps.modelUrl(file), (ev) => {
+    const gltf = await loader.loadAsync(deps.modelUrl(file, man.model_version ?? undefined), (ev) => {
       const p = ev.lengthComputable && ev.total > 0 ? Math.min(1, ev.loaded / ev.total) : undefined;
       deps.onStatus("loading", file, p);
     });
@@ -2105,6 +2461,33 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     };
   }
 
+  function showLoadedBody(): boolean {
+    if (!vrm || !wrapper) return false;
+    resetVrmGaze();
+    resetFaceValues();
+    clearV4MoodCorrections();
+    resetBlinkTiming();
+    resetLipTiming();
+    clipTime = 0;
+    finishedForClip = null;
+    forcedReplayClip = null;
+    wrapper.visible = true;
+    status = "active";
+    deps.onStatus("active");
+    return true;
+  }
+
+  function ensureLoaded(): Promise<boolean> {
+    if (vrm && wrapper) return Promise.resolve(true);
+    if (!loadPromise) {
+      loadPromise = load().then((ok) => {
+        if (!ok) loadPromise = null;   // failed loads may be retried
+        return ok;
+      });
+    }
+    return loadPromise;
+  }
+
   function debugFoot(side: "left" | "right"): VrmFootDebug {
     const name = FOOT_BONE[side];
     const raw = vrm?.humanoid.getRawBoneNode(name) ?? null;
@@ -2142,27 +2525,14 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       };
     },
 
+    async preload(): Promise<boolean> {
+      return ensureLoaded();
+    },
+
     async activate(): Promise<boolean> {
-      if (vrm && wrapper) {   // cached fast path: just re-show
-        resetFaceValues();
-        clearV4MoodCorrections();
-        resetBlinkTiming();
-        resetLipTiming();
-        clipTime = 0;
-        finishedForClip = null;
-        forcedReplayClip = null;
-        wrapper.visible = true;
-        status = "active";
-        deps.onStatus("active");
-        return true;
-      }
-      if (!loadPromise) {
-        loadPromise = load().then((ok) => {
-          if (!ok) loadPromise = null;   // failed loads may be retried
-          return ok;
-        });
-      }
-      return loadPromise;
+      if (showLoadedBody()) return true;
+      const ok = await ensureLoaded();
+      return ok && showLoadedBody();
     },
 
     deactivate(): void {
@@ -2170,6 +2540,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       clearV4MoodCorrections();
       resetBlinkTiming();
       resetLipTiming();
+      resetVrmGaze();
       clearInteraction();
       if (wrapper) wrapper.visible = false;
       status = "idle";
@@ -2179,6 +2550,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     dispose(): void {
       resetFaceValues();
       clearV4MoodCorrections();
+      resetVrmGaze();
       clearInteraction();
       if (mixer) {
         mixer.stopAllAction();
@@ -2262,10 +2634,16 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     update(dt, camera, engaged, distanceToPlayer = Infinity): void {
       if (status !== "active" || !vrm || !wrapper || !wrapper.visible) return;
       dt = Math.max(0, Math.min(0.1, Number.isFinite(dt) ? dt : 0));
+      restoreVrmGazePose();
       const interactionActive = advanceInteraction(dt);
       const next = resolveClip();
       if (next !== clipName) {
         const previous = clipName;
+        if (shouldResetVrmGaitPhase(previous, next)) {
+          gaitPhase = 0;
+          gaitAngularSpeed = next === "run" ? 5.1 : 2.45;
+          resetFootPlants();
+        }
         if (shouldBlendVrmProceduralTransition(previous, next)) beginProceduralTransition();
         else clearProceduralTransition();
         clipName = next;
@@ -2377,20 +2755,31 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       // never overwrite the swing foot and turn the first step into a slide.
       if (mixer) { mixer.update(dt); reapFaded(); }
       if (!vrmaDriven && (poseClip === "walk" || poseClip === "run")) applyPlantedFootGait();
-      // Terminal contact owns only the right arm and gaze. Absolute bounded
-      // targets are rebuilt after the mixer every frame, preventing additive
-      // rotation drift while still allowing a fading clip to settle beneath it.
+      // Terminal contact owns only the right arm. Gaze is layered afterward,
+      // from this frame's final animated head pose, so neither solve drifts.
       if (interactionActive) applyInteractionReach();
-      if (vrm.lookAt) {
-        if (interactionActive && interactionTarget) {
-          interactionLookTarget.position.copy(interactionTarget);
-          vrm.lookAt.target = interactionLookTarget;
-        } else {
-          vrm.lookAt.target = engaged || distanceToPlayer < NOTICE_DISTANCE ? camera : null;
-        }
+      let nextGazeTarget: THREE.Object3D | null = null;
+      if (interactionActive && interactionTarget) {
+        gazeTargetWorld.copy(interactionTarget);
+        interactionLookTarget.position.copy(interactionTarget);
+        nextGazeTarget = interactionLookTarget;
+        gazeTargetKind = "interaction";
+      } else if (engaged || distanceToPlayer < NOTICE_DISTANCE) {
+        camera.getWorldPosition(gazeTargetWorld);
+        nextGazeTarget = camera;
+        gazeTargetKind = "camera";
+      } else {
+        gazeTargetKind = "none";
       }
+      applyVrmGazeFollow(dt, nextGazeTarget, nextGazeTarget ? gazeTargetWorld : null);
       clearV4MoodCorrections();
       vrm.update(dt);
+      if (shouldStabilizeVrmSpringTransition(Boolean(currentAction), fading.length)) {
+        // A VRMA-to-procedural crossfade can move the head/hood parents by a
+        // large amount in one frame. Clearing inherited spring velocity during
+        // that short fade prevents the hair and hoodie from whipping upward.
+        vrm.springBoneManager?.reset();
+      }
       applyV4MoodCorrections();
       groundFeet(dt);   // after vrm.update: clamp the posed soles to the floor
       updateInteractionContactStatus();
@@ -2439,6 +2828,12 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
         mouthCorrectionBindings: v4MoodCorrectionBindings.filter((binding) => binding.component === "mouth").length,
         eyeCorrections,
         eyeCorrectionBindings: v4MoodCorrectionBindings.filter((binding) => binding.component === "eye").length,
+        gaze: {
+          target: gazeTargetKind,
+          ...Object.fromEntries(
+            Object.entries(gazeFollowState).map(([name, value]) => [name, roundTelemetry(value)]),
+          ) as VrmGazeFollowState,
+        },
         activeClip: clipName,
         activePose: activePoseName,
         ...motionTelemetry,

@@ -1,0 +1,482 @@
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+from alpecca import discord_bridge
+from alpecca import discord_media
+
+
+_BOT_ID = 9001
+_ROOM = {"guild_id": "777", "channel_id": "3001"}
+
+
+class _Typing:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+
+class _Channel:
+    def __init__(self, history: list[object] | None = None) -> None:
+        self.id = 3001
+        self.guild = SimpleNamespace(
+            id=777,
+            me=SimpleNamespace(display_name="Alpecca"),
+            voice_client=None,
+        )
+        self.sent: list[str] = []
+        self._history = list(history or [])
+
+    def typing(self) -> _Typing:
+        return _Typing()
+
+    def history(self, *, limit: int, oldest_first: bool):
+        del limit, oldest_first
+
+        async def records():
+            for entry in self._history:
+                yield entry
+
+        return records()
+
+    async def send(self, content: str) -> None:
+        self.sent.append(content)
+
+
+class _Message:
+    def __init__(
+        self,
+        *,
+        event_id: int,
+        channel: _Channel,
+        content: str,
+        clean_content: str,
+    ) -> None:
+        self.id = event_id
+        self.author = SimpleNamespace(
+            id=42,
+            name="realcreatorjd",
+            display_name="CreatorJD",
+            bot=False,
+        )
+        self.guild = channel.guild
+        self.channel = channel
+        self.content = content
+        self.clean_content = clean_content
+        self.mentions = [SimpleNamespace(id=_BOT_ID)]
+        self.attachments: list[object] = []
+        self.reference = None
+        self.replies: list[tuple[str, dict[str, object]]] = []
+
+    async def reply(self, content: str, **kwargs: object) -> None:
+        self.replies.append((content, kwargs))
+
+
+def _history_entry(
+    *,
+    author_id: int,
+    display_name: str,
+    content: str,
+    bot: bool,
+) -> object:
+    return SimpleNamespace(
+        author=SimpleNamespace(
+            id=author_id,
+            display_name=display_name,
+            bot=bot,
+        ),
+        clean_content=content,
+    )
+
+
+def _claimed_client(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    voice_enabled: bool = False,
+):
+    room = dict(_ROOM)
+    monkeypatch.setattr(discord_bridge, "DEBUG", False)
+    monkeypatch.setattr(
+        discord_bridge,
+        "_load_social_rooms",
+        lambda: {"777:3001": room},
+    )
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", {"42"})
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", voice_enabled)
+    monkeypatch.setattr(discord_bridge, "PARTICIPATE", False)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "CHANNEL_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr(discord_bridge, "_recent_voice_context", lambda *_args: [])
+
+    client = discord_bridge.build_client()
+    client._connection.user = SimpleNamespace(
+        id=_BOT_ID,
+        name="Alpecca",
+        display_name="Alpecca",
+    )
+    return client, room
+
+
+def test_proactive_turn_cannot_start_a_self_monologue_without_new_human_message(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client, room = _claimed_client(monkeypatch)
+    channel = _Channel(
+        [
+            _history_entry(
+                author_id=42,
+                display_name="CreatorJD",
+                content="The animation timing still feels a little uneven.",
+                bot=False,
+            )
+        ]
+    )
+    calls: list[str] = []
+
+    def ask(prompt: str, _room_scope: str) -> str:
+        calls.append(prompt)
+        return "I noticed the same timing edge in the latest motion pass."
+
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_COOLDOWN", 1.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_GLOBAL_COOLDOWN", 0.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_QUIET_MIN", 1.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_MIN_LEN", 1)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_CHANCE", 1.0)
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_DELAY", 1.0)
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_MAX", 1)
+    monkeypatch.setattr(discord_bridge.random, "random", lambda: 0.0)
+    monkeypatch.setattr(discord_bridge, "_ask_room_autonomy", ask)
+
+    async def scenario() -> None:
+        await client._alpecca_seed_room_history(channel, room, observed_at=1.0)
+        await client._alpecca_proactive_sweep_once(now=100.0)
+        await client._alpecca_recursive_sweep_once(now=200.0)
+
+    asyncio.run(scenario())
+
+    assert channel.sent == [
+        "I noticed the same timing edge in the latest motion pass."
+    ]
+    assert len(calls) == 1
+    assert "Initiative kind: quiet-room opener after a new human turn." in calls[0]
+
+
+def test_proactive_voice_contradiction_is_corrected_once_without_self_repeat(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client, room = _claimed_client(monkeypatch, voice_enabled=True)
+    channel = _Channel(
+        [
+            _history_entry(
+                author_id=42,
+                display_name="CreatorJD",
+                content="The live voice timing sounds better now.",
+                bot=False,
+            )
+        ]
+    )
+
+    class VoiceClient:
+        channel = SimpleNamespace(name="General")
+
+        @staticmethod
+        def is_connected() -> bool:
+            return True
+
+        @staticmethod
+        def is_playing() -> bool:
+            return False
+
+        @staticmethod
+        def listen(_sink: object, *, after: object) -> None:
+            del after
+
+        @staticmethod
+        def play(_source: object, *, after: object) -> None:
+            del after
+
+    channel.guild.voice_client = VoiceClient()
+    calls: list[str] = []
+
+    def ask(prompt: str, _room_scope: str) -> str:
+        calls.append(prompt)
+        return "I only exist as text, so I'm absent from the voice channel."
+
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_COOLDOWN", 1.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_GLOBAL_COOLDOWN", 0.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_QUIET_MIN", 1.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_MIN_LEN", 1)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_CHANCE", 1.0)
+    monkeypatch.setattr(discord_bridge.random, "random", lambda: 0.0)
+    monkeypatch.setattr(discord_bridge, "_ask_room_autonomy", ask)
+    monkeypatch.setattr(
+        discord_bridge,
+        "voice_readiness",
+        lambda: {
+            "enabled": True,
+            "status": "ready",
+            "receive": {"enabled": True, "status": "ready"},
+        },
+    )
+    monkeypatch.setattr(discord_bridge.hearing, "_ready", True)
+    monkeypatch.setattr(discord_bridge.hearing, "_model", object())
+    getattr(client, "_alpecca_voice_receive_sessions")[777] = {
+        "listener_active": True,
+    }
+    monkeypatch.setattr(discord_bridge, "_synth_voice_wav", lambda _text: None)
+
+    async def scenario() -> None:
+        await client._alpecca_seed_room_history(channel, room, observed_at=1.0)
+        await client._alpecca_proactive_sweep_once(now=100.0)
+        await asyncio.sleep(0)
+        await client._alpecca_proactive_sweep_once(now=200.0)
+
+    asyncio.run(scenario())
+
+    assert len(calls) == 1
+    assert len(channel.sent) == 1
+    assert channel.sent[0].startswith("I'm in **General** with you now.")
+    assert "absent" not in channel.sent[0].casefold()
+    assert "only exist as text" not in channel.sent[0].casefold()
+
+
+def test_bot_alias_counts_as_alpecca_for_recent_reply_dedupe():
+    repeated = "I already shared the relevant motion detail above."
+
+    assert discord_bridge._room_reply_repeats_self(
+        repeated,
+        [("Alpecca_ai", repeated)],
+    ) is True
+
+
+def test_plain_room_message_does_not_reemit_stale_media_disabled_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client, _room = _claimed_client(monkeypatch)
+    channel = _Channel()
+    model_inputs: list[str] = []
+    monkeypatch.setattr(discord_bridge, "MEDIA_ENABLED", False)
+    monkeypatch.setattr(
+        discord_bridge,
+        "_ask_alpecca",
+        lambda text, *_args, **_kwargs: model_inputs.append(text)
+        or "I can help with the next room topic.",
+    )
+
+    image_request = _Message(
+        event_id=1001,
+        channel=channel,
+        content="<@9001> Can you send me an image of yourself?",
+        clean_content="@Alpecca Can you send me an image of yourself?",
+    )
+    plain_message = _Message(
+        event_id=1002,
+        channel=channel,
+        content="<@9001> What should we check next?",
+        clean_content="@Alpecca What should we check next?",
+    )
+
+    async def scenario() -> None:
+        await client.on_message(image_request)
+        await client.on_message(plain_message)
+
+    asyncio.run(scenario())
+
+    media_disabled = discord_media.media_diagnostic("media-disabled")
+    assert image_request.replies == [(media_disabled, {"mention_author": False})]
+    assert plain_message.replies == [
+        ("I can help with the next room topic.", {"mention_author": False})
+    ]
+    assert media_disabled not in [reply for reply, _kwargs in plain_message.replies]
+    assert len(model_inputs) == 1
+
+
+def test_stale_media_candidate_becomes_a_sent_current_text_turn_correction(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client, _room = _claimed_client(monkeypatch)
+    channel = _Channel()
+    monkeypatch.setattr(discord_bridge, "MEDIA_ENABLED", False)
+    monkeypatch.setattr(
+        discord_bridge,
+        "_ask_alpecca",
+        lambda *_args, **_kwargs: discord_media.media_diagnostic("media-disabled"),
+    )
+    message = _Message(
+        event_id=1004,
+        channel=channel,
+        content="<@9001> What should we check next?",
+        clean_content="@Alpecca What should we check next?",
+    )
+
+    asyncio.run(client.on_message(message))
+
+    assert message.replies == [(
+        discord_media.stale_media_turn_correction(),
+        {"mention_author": False},
+    )]
+    assert "media" not in message.replies[0][0].casefold()
+
+
+def test_media_transport_reply_consumes_cue_before_proactive_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client, room = _claimed_client(monkeypatch)
+    channel = _Channel()
+    autonomy_calls: list[str] = []
+    monkeypatch.setattr(discord_bridge, "MEDIA_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_COOLDOWN", 1.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_GLOBAL_COOLDOWN", 0.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_QUIET_MIN", 1.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_MIN_LEN", 1)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_CHANCE", 1.0)
+    monkeypatch.setattr(discord_bridge.random, "random", lambda: 0.0)
+    monkeypatch.setattr(
+        discord_bridge,
+        "_ask_room_autonomy",
+        lambda prompt, _scope: autonomy_calls.append(prompt) or "Do not send this.",
+    )
+    message = _Message(
+        event_id=1006,
+        channel=channel,
+        content="<@9001> Can you send me an image of yourself?",
+        clean_content="@Alpecca Can you send me an image of yourself?",
+    )
+
+    async def scenario() -> None:
+        await client._alpecca_seed_room_history(channel, room, observed_at=1.0)
+        await client.on_message(message)
+        await client._alpecca_proactive_sweep_once(
+            now=discord_bridge.time.monotonic() + 100.0
+        )
+
+    asyncio.run(scenario())
+
+    assert message.replies == [(
+        discord_media.media_diagnostic("media-disabled"),
+        {"mention_author": False},
+    )]
+    assert autonomy_calls == []
+    assert channel.sent == []
+
+
+def test_live_voice_truth_correction_preserves_normal_room_reply_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client, _room = _claimed_client(monkeypatch, voice_enabled=True)
+    monkeypatch.setattr(discord_bridge, "VOICE_RECEIVE_ENABLED", True)
+    channel = _Channel()
+
+    class VoiceClient:
+        channel = SimpleNamespace(name="General")
+
+        @staticmethod
+        def is_connected() -> bool:
+            return True
+
+        @staticmethod
+        def is_playing() -> bool:
+            return False
+
+        @staticmethod
+        def listen(_sink: object, *, after: object) -> None:
+            del after
+
+        @staticmethod
+        def play(_source: object, *, after: object) -> None:
+            del after
+
+    channel.guild.voice_client = VoiceClient()
+    monkeypatch.setattr(
+        discord_bridge,
+        "voice_readiness",
+        lambda: {
+            "enabled": True,
+            "status": "ready",
+            "receive": {"enabled": True, "status": "ready"},
+        },
+    )
+    monkeypatch.setattr(discord_bridge.hearing, "_ready", True)
+    monkeypatch.setattr(discord_bridge.hearing, "_model", object())
+    getattr(client, "_alpecca_voice_receive_sessions")[777] = {
+        "listener_active": True,
+    }
+    monkeypatch.setattr(discord_bridge, "_synth_voice_wav", lambda _text: None)
+    monkeypatch.setattr(
+        discord_bridge,
+        "_ask_alpecca",
+        lambda *_args, **_kwargs: (
+            "I can only communicate through text, so I'm absent from voice."
+        ),
+    )
+    message = _Message(
+        event_id=1005,
+        channel=channel,
+        content="<@9001> Are you here with me?",
+        clean_content="@Alpecca Are you here with me?",
+    )
+
+    asyncio.run(client.on_message(message))
+
+    assert len(message.replies) == 1
+    reply = message.replies[0][0]
+    assert reply.startswith("I'm in **General** with you now.")
+    assert "can hear short utterances after local transcription" in reply
+    assert "text" not in reply.casefold()
+    assert "absent" not in reply.casefold()
+
+
+def test_addressed_reply_does_not_repeat_alpecca_recent_content(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client, room = _claimed_client(monkeypatch)
+    repeated = "The current motion pass still needs a slower settle."
+    channel = _Channel(
+        [
+            _history_entry(
+                author_id=42,
+                display_name="CreatorJD",
+                content="What should we change in this pass?",
+                bot=False,
+            ),
+            _history_entry(
+                author_id=_BOT_ID,
+                display_name="Alpecca_ai",
+                content=repeated,
+                bot=True,
+            ),
+        ]
+    )
+    model_inputs: list[str] = []
+    monkeypatch.setattr(
+        discord_bridge,
+        "_ask_alpecca",
+        lambda text, *_args, **_kwargs: model_inputs.append(text) or repeated,
+    )
+    message = _Message(
+        event_id=1003,
+        channel=channel,
+        content="<@9001> You already said that.",
+        clean_content="@Alpecca You already said that.",
+    )
+
+    async def scenario() -> None:
+        await client._alpecca_seed_room_history(channel, room, observed_at=1.0)
+        await client.on_message(message)
+
+    asyncio.run(scenario())
+
+    assert len(model_inputs) == 1
+    assert message.replies == []
+    assert channel.sent == []

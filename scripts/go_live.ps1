@@ -1,117 +1,128 @@
 <#
-  go_live.ps1  --  Bring Alpecca up for phone access, the reliable way.
+  go_live.ps1 -- Start one complete Alpecca stack and publish phone access.
 
-  THE PROBLEM THIS FIXES:
-    The server reads its allowed sign-in origins ONCE at startup
-    (ALPECCA_CORS_ORIGINS). Cloudflare quick tunnels hand out a new random
-    *.trycloudflare.com URL every time, so when the tunnel is started AFTER the
-    server, that URL is never allow-listed and the phone password sign-in fails
-    with {"detail":"same-origin password sign-in required"}.
+  This launcher deliberately delegates tunnel selection to scripts/share.py.
+  That is the one tested tunnel manager: it reuses a healthy named/quick
+  Cloudflare route, retries quick tunnels, then falls back to LocalTunnel.
+  The resulting origin is written to data/preview.json before it is used, so
+  password and native-device sign-in remain same-origin even when the public
+  hostname rotates.
 
-  THE FIX:
-    Start the tunnel FIRST, capture its URL, register it as the allowed origin,
-    THEN start Alpecca via the normal START_HERE.bat (her brain config is
-    inherited unchanged). Run this INSTEAD of START_HERE.bat + share.py.
-
-  USAGE:
-    Right-click this file -> "Run with PowerShell"
-    (or from a terminal:  powershell -ExecutionPolicy Bypass -File scripts\go_live.ps1)
+  Usage:
+    powershell -ExecutionPolicy Bypass -File scripts\go_live.ps1
 #>
 
 $ErrorActionPreference = 'Stop'
-$repo  = Split-Path -Parent $PSScriptRoot
+$repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
-$cfExe = 'C:\Program Files (x86)\cloudflared\cloudflared.exe'
-$port  = 8765
+$port = 8765
 
 Write-Host ''
-Write-Host '  A L P E C C A  -  going live for your phone' -ForegroundColor Cyan
+Write-Host '  A L P E C C A  -  full stack and phone access' -ForegroundColor Cyan
 Write-Host ''
 
-# --- guard: never double-start on top of a running server -------------------
+# A second CoreMind/database writer is never allowed. Reuse the existing app
+# manually instead of attaching another launcher with ambiguous ownership.
 $busy = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
 if ($busy) {
-    Write-Host "Something is already listening on port $port -- Alpecca may already be running." -ForegroundColor Yellow
-    Write-Host "Close her existing window first, then run this again." -ForegroundColor Yellow
-    Read-Host 'Press Enter to exit'
-    exit 1
-}
-if (-not (Test-Path $cfExe)) {
-    Write-Host "cloudflared not found at $cfExe" -ForegroundColor Red
-    Read-Host 'Press Enter to exit'
+    Write-Host "Alpecca already appears to be running on port $port." -ForegroundColor Yellow
+    Write-Host 'Use the existing local app or its current phone link; no second instance was started.' -ForegroundColor Yellow
     exit 1
 }
 
-# --- 1. open the Cloudflare quick tunnel and read back its URL ---------------
-$log    = Join-Path $env:TEMP 'alpecca_go_live_tunnel.log'
-$errLog = "$log.err"
-Remove-Item $log, $errLog -ErrorAction SilentlyContinue
-Write-Host 'Opening a Cloudflare tunnel...' -ForegroundColor Cyan
-$cf = Start-Process -FilePath $cfExe `
-    -ArgumentList @('tunnel', '--url', "http://127.0.0.1:$port", '--no-autoupdate') `
-    -RedirectStandardOutput $log -RedirectStandardError $errLog `
-    -WindowStyle Minimized -PassThru
-
-$rx  = 'https://[a-z0-9-]+\.trycloudflare\.com'
-$url = $null
-foreach ($i in 1..40) {
-    Start-Sleep -Milliseconds 750
-    $hit = Select-String -Path @($log, $errLog) -Pattern $rx -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($hit) { $url = $hit.Matches[0].Value; break }
-    if ($cf.HasExited) { break }
-}
-if (-not $url) {
-    Write-Host "Couldn't read a tunnel URL from cloudflared. Check your internet and retry." -ForegroundColor Red
-    if (-not $cf.HasExited) { Stop-Process -Id $cf.Id -Force -ErrorAction SilentlyContinue }
-    Read-Host 'Press Enter to exit'
+$pythonCommand = Get-Command 'python.exe' -ErrorAction SilentlyContinue
+if (-not $pythonCommand) {
+    Write-Host 'python.exe was not found on PATH.' -ForegroundColor Red
     exit 1
 }
-Write-Host "Tunnel is up:  $url" -ForegroundColor Green
+$pythonExe = $pythonCommand.Source
 
-# --- 2. THE FIX: register this tunnel's origin BEFORE the server boots -------
-$env:ALPECCA_CORS_ORIGINS = $url
-try { $url | Set-Content (Join-Path $repo 'data\preview_public_url.txt') -Encoding utf8 } catch {}
-
-# --- 3. hand off to the normal launcher (brain config unchanged). It inherits
-#        ALPECCA_CORS_ORIGINS, so the origin is live from the server's first
-#        request -- the phone password sign-in now works. ---------------------
-Write-Host 'Starting Alpecca with her normal settings...' -ForegroundColor Cyan
 $logDir = Join-Path $repo 'data\logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-$pythonw = Get-Command 'pythonw.exe' -ErrorAction SilentlyContinue
-$pythonExe = if ($pythonw) { $pythonw.Source } else { (Get-Command 'python.exe').Source }
+$stackOut = Join-Path $logDir 'go_live_stack.out.log'
+$stackErr = Join-Path $logDir 'go_live_stack.err.log'
+$shareOut = Join-Path $logDir 'go_live_share.out.log'
+$shareErr = Join-Path $logDir 'go_live_share.err.log'
+Remove-Item $stackOut, $stackErr, $shareOut, $shareErr -ErrorAction SilentlyContinue
+
+# Keep the backend loopback-only. The HTTPS relay is the remote ingress path.
+$env:ALPECCA_SERVER_HOST = '127.0.0.1'
+$env:PYTHONUNBUFFERED = '1'
+
+Write-Host 'Starting Alpecca brain, voice, Discord, and app services...' -ForegroundColor Cyan
 $stack = Start-Process -FilePath $pythonExe `
     -ArgumentList @('scripts\run_full.py') `
     -WorkingDirectory $repo `
-    -RedirectStandardOutput (Join-Path $logDir 'go_live_stack.out.log') `
-    -RedirectStandardError (Join-Path $logDir 'go_live_stack.err.log') `
+    -RedirectStandardOutput $stackOut `
+    -RedirectStandardError $stackErr `
     -WindowStyle Hidden -PassThru
 
-foreach ($i in 1..120) {
+$ready = $false
+foreach ($i in 1..180) {
     Start-Sleep -Milliseconds 500
+    if ($stack.HasExited) { break }
     try {
         $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/healthz" -TimeoutSec 1
-        if ($health.service -eq 'alpecca' -and $health.version -eq 1) { break }
+        if ($health.service -eq 'alpecca' -and $health.version -eq 1) {
+            $ready = $true
+            break
+        }
     } catch {}
 }
-try {
-    & python scripts\publish_mobile_endpoint.py --url $url --kind quick
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host 'Mobile app discovery record updated.' -ForegroundColor Green
-    }
-} catch {
-    Write-Host 'Mobile app discovery could not be updated; the printed link still works.' -ForegroundColor Yellow
+if (-not $ready) {
+    Write-Host 'The local Alpecca stack did not become healthy.' -ForegroundColor Red
+    Write-Host "Check $stackErr" -ForegroundColor Yellow
+    if (-not $stack.HasExited) { Stop-Process -Id $stack.Id -Force -ErrorAction SilentlyContinue }
+    exit 1
+}
+Write-Host 'Local full stack is healthy.' -ForegroundColor Green
+
+# share.py owns provider choice, preview-state registration, R2 discovery
+# publication, and the lifetime of whichever tunnel it opens.
+Write-Host 'Publishing a secure phone route (Cloudflare, then HTTPS fallback)...' -ForegroundColor Cyan
+$share = Start-Process -FilePath $pythonExe `
+    -ArgumentList @('scripts\share.py', '--tunnel') `
+    -WorkingDirectory $repo `
+    -RedirectStandardOutput $shareOut `
+    -RedirectStandardError $shareErr `
+    -WindowStyle Hidden -PassThru
+
+$url = $null
+$provider = 'unknown'
+$statePath = Join-Path $repo 'data\preview.json'
+foreach ($i in 1..480) {
+    Start-Sleep -Milliseconds 500
+    if ($share.HasExited) { break }
+    $published = Select-String -Path $shareOut -Pattern 'PUBLIC LINK' -Quiet -ErrorAction SilentlyContinue
+    if (-not $published) { continue }
+    try {
+        $state = Get-Content $statePath -Raw | ConvertFrom-Json
+        $candidate = [string]$state.url
+        if ($candidate -match '^https://[a-z0-9.-]+$') {
+            $url = $candidate.TrimEnd('/')
+            $provider = [string]$state.provider
+            break
+        }
+    } catch {}
 }
 
-# --- 4. the phone link ------------------------------------------------------
+if (-not $url) {
+    Write-Host 'Alpecca is running locally, but no HTTPS phone relay became ready.' -ForegroundColor Red
+    Write-Host "Check $shareErr and $shareOut" -ForegroundColor Yellow
+    if (-not $share.HasExited) { Stop-Process -Id $share.Id -Force -ErrorAction SilentlyContinue }
+    exit 1
+}
+
 Write-Host ''
 Write-Host '=================================================================' -ForegroundColor Green
-Write-Host '  OPEN THIS ON YOUR PHONE:' -ForegroundColor Green
+Write-Host '  ALPECCA VOID ON YOUR PHONE:' -ForegroundColor Green
 Write-Host "     $url/house-hq"
 Write-Host ''
-Write-Host '  Enter your creator password once -- this browser is then trusted' -ForegroundColor Green
-Write-Host '  and you will not see the gate again on it.' -ForegroundColor Green
-Write-Host '  Keep this link private; it reaches her over the internet.' -ForegroundColor Green
+Write-Host "  Relay provider: $provider" -ForegroundColor Green
+Write-Host '  In the Android app, enter the creator password once to enroll' -ForegroundColor Green
+Write-Host '  this phone. Later hostname rotations use its device key.' -ForegroundColor Green
+Write-Host '  Local app: http://127.0.0.1:8765/house-hq' -ForegroundColor Green
 Write-Host '=================================================================' -ForegroundColor Green
 Write-Host ''
-Write-Host '(Leave this window and her server window open while you use her.)' -ForegroundColor DarkGray
+Write-Host "Stack PID $($stack.Id); relay manager PID $($share.Id)." -ForegroundColor DarkGray
+Write-Host 'Leave the laptop awake while this local instance is serving the live brain.' -ForegroundColor DarkGray

@@ -145,7 +145,8 @@ for mod, pip in [("fastapi", "fastapi"), ("uvicorn", "uvicorn"),
 # --- Ollama (her brain) ---------------------------------------------------
 print("\nOllama (her brain -- without it she only gives canned replies)")
 model = os.environ.get("ALPECCA_MODEL", "qwen3.5:9b")
-fast = os.environ.get("ALPECCA_FAST_MODEL", "gemma4-e4b")
+fast = os.environ.get("ALPECCA_FAST_MODEL", "qwen3.5:9b")
+vision = os.environ.get("ALPECCA_VISION_MODEL", "qwen3.5:9b")
 if have("ollama"):
     try:
         import ollama
@@ -161,9 +162,9 @@ if have("ollama"):
             bad(f"her model '{model}' is NOT pulled", f"ollama pull {model}")
         if not any(n == fast or base(n) == base(fast) for n in names):
             warn(f"fast model '{fast}' not present (fine -- falls back to {model})")
-        if not any("vl" in (n or "") for n in names):
-            warn("no vision model (qwen2.5vl) -- needed for screen-sight / images",
-                 "ollama pull qwen2.5vl:7b")
+        if not any(n == vision or base(n) == base(vision) for n in names):
+            warn(f"vision model '{vision}' is not present -- needed for screen-sight / images",
+                 f"ollama pull {vision}")
         else:
             ok("a vision model is present (sight / chat images can work)")
     except Exception as e:

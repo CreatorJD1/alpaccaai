@@ -1673,7 +1673,7 @@ def test_behavior_improvement_review_records_evidence_backed_card():
         assert evaluations[0]["metric"] == "behavior_self_review"
 
 
-def test_chat_grounding_review_reuses_one_open_improvement_card():
+def test_chat_grounding_review_reuses_one_open_improvement_card(monkeypatch):
     from alpecca.mind import CoreMind
     import sqlite3
     import time
@@ -1687,6 +1687,19 @@ def test_chat_grounding_review_reuses_one_open_improvement_card():
         model_use={"fallback": True},
         memory_evidence=[],
     ))
+    # A live development server may write a newer turn while this test runs.
+    # Pin the review input so this remains a deduplication test rather than a
+    # race against the shared development database.
+    monkeypatch.setattr(cognition, "recent_chat_turns", lambda limit=8: [{
+        "id": turn_id,
+        "room": "Library",
+        "mood": "content",
+        "intent": "replying",
+        "user_text": f"hello grounding dedupe {marker}",
+        "reply": "The Library is offline and I remember that room event.",
+        "model_use": {"fallback": True},
+        "memory_evidence": [],
+    }])
     action = "Improve reply grounding from recent chat review"
     mind = CoreMind()
     try:
@@ -3236,6 +3249,7 @@ def test_mindscape_event_sync_throttle_skips_immediate_retry():
     import server
     old_url = server.MINDSCAPE_CLOUD_URL
     old_enabled = server.MINDSCAPE_ENABLED
+    old_vault_enabled = server.MINDSCAPE_VAULT_ENABLED
     old_min = server.MINDSCAPE_EVENT_SYNC_MIN_INTERVAL
     old_attempt = server._mindscape_sync_status["last_attempt"]
     old_skips = server._mindscape_sync_status["event_skips"]
@@ -3243,6 +3257,9 @@ def test_mindscape_event_sync_throttle_skips_immediate_retry():
     try:
         server.MINDSCAPE_CLOUD_URL = "https://mindscape.example/sync"
         server.MINDSCAPE_ENABLED = True
+        # This coverage exercises the retained legacy mirror ledger. A live
+        # encrypted Vault intentionally becomes the active target otherwise.
+        server.MINDSCAPE_VAULT_ENABLED = False
         server.MINDSCAPE_EVENT_SYNC_MIN_INTERVAL = 999
         server._mindscape_sync_status["last_attempt"] = time.time()
         assert server._mindscape_request_event_sync("test") is False
@@ -3251,6 +3268,7 @@ def test_mindscape_event_sync_throttle_skips_immediate_retry():
     finally:
         server.MINDSCAPE_CLOUD_URL = old_url
         server.MINDSCAPE_ENABLED = old_enabled
+        server.MINDSCAPE_VAULT_ENABLED = old_vault_enabled
         server.MINDSCAPE_EVENT_SYNC_MIN_INTERVAL = old_min
         server._mindscape_sync_status["last_attempt"] = old_attempt
         server._mindscape_sync_status["event_skips"] = old_skips
@@ -3293,9 +3311,21 @@ def test_mindscape_restore_routes_accept_posted_snapshot():
     assert r.status_code == 200
     assert r.json()["preview"]["memory_count"] == 1
     assert r.json()["preview"]["chat_turn_count"] == 1
+    approval_request = r.json()["approval_request"]
+    r = client.post(
+        "/mindscape/restore/approve",
+        json={
+            "preview_id": approval_request["preview_id"],
+            "fingerprint": approval_request["fingerprint"],
+            "approved": True,
+        },
+        headers=headers,
+    )
+    assert r.status_code == 200
+    approval_token = r.json()["approval"]["approval_token"]
     r = client.post(
         "/mindscape/restore/import",
-        json={"snapshot": snap},
+        json={"snapshot": snap, "approval_token": approval_token},
         headers=headers,
     )
     assert r.status_code == 200
@@ -3306,9 +3336,23 @@ def test_mindscape_restore_routes_accept_posted_snapshot():
     turn = next(t for t in turns if unique_chat in t["user_text"])
     assert turn["reply"] == "I carried this through Mindscape."
     assert turn["model_use"]["backend"] == "mindscape-test"
+    preview_again = client.post(
+        "/mindscape/restore/preview",
+        json={"snapshot": snap},
+        headers=headers,
+    ).json()["approval_request"]
+    approval_again = client.post(
+        "/mindscape/restore/approve",
+        json={
+            "preview_id": preview_again["preview_id"],
+            "fingerprint": preview_again["fingerprint"],
+            "approved": True,
+        },
+        headers=headers,
+    ).json()["approval"]["approval_token"]
     r = client.post(
         "/mindscape/restore/import",
-        json={"snapshot": snap},
+        json={"snapshot": snap, "approval_token": approval_again},
         headers=headers,
     )
     assert r.status_code == 200
@@ -3992,10 +4036,46 @@ def test_vrm_manifest_and_model_serving():
         (vdir / "alpecca.vrm").write_bytes(b"glTF")
         m = vrm.manifest(vdir)
         assert m["vrm_mode"] is True and m["model_file"] == "alpecca.vrm"
+        assert m["model_bytes"] == 4
+        assert len(m["model_sha256"]) == 64
+        assert m["model_version"] == m["model_sha256"][:16]
+        assert m["look_at"] is False and m["expressions"] == []
         assert "talking" in m["clips"] and "sleep" in m["clips"]
         assert vrm.asset_path("alpecca.vrm", vdir) is not None
         assert vrm.asset_path("../../alpecca.db", vdir) is None   # traversal blocked
         assert vrm.asset_path("/etc/passwd", vdir) is None
+
+def test_vrm_manifest_reports_vrm1_gaze_and_expression_capabilities():
+    import json
+    import struct
+    from alpecca import vrm
+
+    document = {
+        "extensions": {
+            "VRMC_vrm": {
+                "specVersion": "1.0",
+                "lookAt": {"type": "bone", "offsetFromHeadBone": [0, 0.06, 0]},
+                "expressions": {"preset": {"happy": {}, "aa": {}, "blink": {}}},
+            }
+        }
+    }
+    json_chunk = json.dumps(document, separators=(",", ":")).encode("utf-8")
+    json_chunk += b" " * ((4 - len(json_chunk) % 4) % 4)
+    total_size = 12 + 8 + len(json_chunk)
+    payload = (
+        struct.pack("<4sII", b"glTF", 2, total_size)
+        + struct.pack("<II", len(json_chunk), 0x4E4F534A)
+        + json_chunk
+    )
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "alpecca.vrm"
+        path.write_bytes(payload)
+        manifest = vrm.manifest(path.parent)
+
+    assert manifest["vrm_spec_version"] == "1.0"
+    assert manifest["look_at"] is True
+    assert manifest["look_at_type"] == "bone"
+    assert manifest["expressions"] == ["aa", "blink", "happy"]
 
 def test_vrm_pick_project_wants_her_freshest_body():
     from alpecca import vrm
@@ -5080,6 +5160,42 @@ def test_colab_t4_client_parses_openai_compatible_reply(monkeypatch):
     assert seen["timeout"] == 3
 
 
+def test_hf_cloud_brain_defaults_to_approved_qwen35_fallback():
+    env = os.environ.copy()
+    env.pop("ALPECCA_HF_MODEL", None)
+    code = """
+from config import HF_MODEL
+assert HF_MODEL == "Qwen/Qwen3.5-9B"
+"""
+    subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).resolve().parent.parent,
+                   env=env, check=True)
+
+
+def test_hf_qwen35_fallback_disables_thinking_for_companion_turns(monkeypatch):
+    from types import SimpleNamespace
+    from alpecca import mind as mind_mod
+
+    seen = {}
+
+    class FakeClient:
+        def chat_completion(self, **kwargs):
+            seen.update(kwargs)
+            message = SimpleNamespace(content="cloud qwen online")
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    llm = object.__new__(mind_mod._LLM)
+    llm._hf = FakeClient()
+    llm._last_call = {}
+    monkeypatch.setattr(mind_mod, "HF_MODEL", "Qwen/Qwen3.5-9B")
+
+    reply = llm._generate_hf("You are Alpecca.", "Are you there?")
+
+    assert reply == "cloud qwen online"
+    assert seen["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+
+
 def test_zerogpu_deep_tier_is_explicit_opt_in_only():
     # ZeroGPU is supported, but it is a named booster she reaches for only when
     # the owner configured both the backend and a Space. It must not become the
@@ -5299,6 +5415,73 @@ def test_hybrid_ollama_cloud_call_is_reported_as_cloud(monkeypatch):
     assert cloud.calls[0]["model"] == "gemma4:cloud"
     assert llm.last_call()["backend"] == "ollama-cloud"
     assert llm.last_call()["model"] == "gemma4:cloud"
+
+
+def test_fast_workload_stays_on_local_qwen_when_model_names_match(monkeypatch):
+    """Routing is workload-based: a fast Soul/choice call never becomes chat."""
+    from alpecca import mind as mind_mod
+    from alpecca.mind import _LLM
+
+    class FakeClient:
+        def __init__(self, reply):
+            self.reply = reply
+            self.calls = []
+
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"message": {"content": self.reply}}
+
+    local = FakeClient("local fast answer")
+    cloud = FakeClient("cloud must not be used")
+    monkeypatch.setattr(mind_mod, "OLLAMA_MODEL", "qwen3.5:9b")
+    monkeypatch.setattr(mind_mod, "OLLAMA_FAST_MODEL", "qwen3.5:9b")
+    monkeypatch.setattr(mind_mod, "CHAT_CLOUD_MODEL", "gemma4:cloud")
+    monkeypatch.setattr(mind_mod, "CHAT_ZEROGPU", False)
+    llm = _LLM()
+    llm._backend = "ollama"
+    llm._client = local
+    monkeypatch.setattr(_LLM, "_cloud_chat_client", lambda self: cloud)
+
+    assert llm.generate("system", "pick one", tier="fast") == "local fast answer"
+    assert len(local.calls) == 1
+    assert local.calls[0]["model"] == "qwen3.5:9b"
+    assert cloud.calls == []
+    assert llm.last_call()["backend"] == "ollama"
+    assert llm.last_call()["requested_tier"] == "fast"
+
+
+def test_stream_request_does_not_replace_hosted_reason_chat_with_local(monkeypatch):
+    """Streaming is presentation-only; it must not silently change providers."""
+    from alpecca import mind as mind_mod
+    from alpecca.mind import _LLM
+
+    class FakeClient:
+        def __init__(self, reply):
+            self.reply = reply
+            self.calls = []
+
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"message": {"content": self.reply}}
+
+    local = FakeClient("local must not be used")
+    cloud = FakeClient("hosted complete answer")
+    emitted = []
+    monkeypatch.setattr(mind_mod, "CHAT_CLOUD_MODEL", "gemma4:cloud")
+    monkeypatch.setattr(mind_mod, "CHAT_ZEROGPU", False)
+    llm = _LLM()
+    llm._backend = "ollama"
+    llm._client = local
+    monkeypatch.setattr(_LLM, "_cloud_chat_client", lambda self: cloud)
+
+    answer = llm.generate(
+        "system", "hello", tier="reason", on_token=emitted.append,
+    )
+    assert answer == "hosted complete answer"
+    assert emitted == []
+    assert local.calls == []
+    assert cloud.calls[0]["model"] == "gemma4:cloud"
+    assert llm.last_call()["backend"] == "ollama-cloud"
 
 
 def test_chat_prompt_does_not_inject_room_context_for_unrelated_message(monkeypatch):
@@ -6004,13 +6187,16 @@ def test_run_full_enables_only_the_closed_discord_image_catalog():
     assert "ambient laptop microphone sensor above, which remains off" in text
 
 
-def test_app_reuses_existing_instance_before_starting_server_thread():
+def test_app_is_attach_only_and_requests_bootstrap_from_existing_instance():
     root = Path(__file__).resolve().parent.parent
     text = (root / "app.py").read_text(encoding="utf-8")
     main = text[text.index("def main()"):]
     assert "existing_server_url" in main
-    assert main.index("existing_server_url") < main.index("threading.Thread")
-    assert "reusing that mind" in main
+    assert "_issue_local_bootstrap_url" in main
+    assert main.index("existing_server_url") < main.index("_issue_local_bootstrap_url")
+    assert "import server" not in text
+    assert "uvicorn" not in text
+    assert "START_HERE.bat" in main
 
 
 def test_app_cloudflare_tunnel_uses_preview_manager_reuse():
@@ -6022,13 +6208,15 @@ def test_app_cloudflare_tunnel_uses_preview_manager_reuse():
     assert "subprocess.Popen" not in cloudflare_block
 
 
-def test_share_reuses_existing_instance_before_importing_server():
+def test_share_is_attach_only_before_opening_phone_relay():
     root = Path(__file__).resolve().parent.parent
     text = (root / "scripts" / "share.py").read_text(encoding="utf-8")
     main = text[text.index("def main()"):]
     assert "existing_server_url" in main
-    assert main.index("existing_server_url") < main.index("import server")
-    assert "reusing the same mind instance" in main
+    assert main.index("existing_server_url") < main.index("start_tunnel")
+    assert "import server" not in text
+    assert "uvicorn" not in text
+    assert "START_HERE.bat" in main
     tunnel_fn = text[text.index("def start_tunnel"):text.index("def main()")]
     assert "preview_mod.ensure(port, reuse=True)" in tunnel_fn
 
@@ -6435,7 +6623,8 @@ def test_think_tag_filter_handles_tags_split_across_chunks():
     assert f.feed("math: 1<2 and x<thi") + f.flush() == "math: 1<2 and x<thi"
 
 
-def test_generate_streams_tokens_and_returns_full_reply():
+def test_generate_streams_tokens_and_returns_full_reply(monkeypatch):
+    from alpecca import mind as mind_mod
     from alpecca.mind import _LLM
 
     class FakeStreamingOllama:
@@ -6444,6 +6633,7 @@ def test_generate_streams_tokens_and_returns_full_reply():
             chunks = ["<think>plan it</think>", "Hey ", "there, ", "Jason."]
             return iter({"message": {"content": c}} for c in chunks)
 
+    monkeypatch.setattr(mind_mod, "CHAT_CLOUD_MODEL", "")
     llm = _LLM(); llm._backend = "ollama"; llm._client = FakeStreamingOllama()
     got = []
     out = llm.generate("sys", "hi", on_token=got.append)
@@ -6470,7 +6660,8 @@ def test_generate_with_tools_never_streams():
     assert got == []
 
 
-def test_stream_dying_after_partial_emission_becomes_honest_fallback():
+def test_stream_dying_after_partial_emission_becomes_honest_fallback(monkeypatch):
+    from alpecca import mind as mind_mod
     from alpecca.mind import _LLM
 
     class DiesMidStream:
@@ -6482,6 +6673,7 @@ def test_stream_dying_after_partial_emission_becomes_honest_fallback():
                 return gen()
             return {"message": {"content": "plain would have worked"}}
 
+    monkeypatch.setattr(mind_mod, "CHAT_CLOUD_MODEL", "")
     llm = _LLM(); llm._backend = "ollama"; llm._client = DiesMidStream()
     got = []
     out = llm.generate("overall: content", "hello", on_token=got.append)
@@ -6492,7 +6684,8 @@ def test_stream_dying_after_partial_emission_becomes_honest_fallback():
     assert out                                        # she still says something
 
 
-def test_stream_failing_before_any_token_falls_back_to_plain_call():
+def test_stream_failing_before_any_token_falls_back_to_plain_call(monkeypatch):
+    from alpecca import mind as mind_mod
     from alpecca.mind import _LLM
 
     class NoStreamSupport:
@@ -6501,6 +6694,7 @@ def test_stream_failing_before_any_token_falls_back_to_plain_call():
                 raise TypeError("unexpected keyword argument 'stream'")
             return {"message": {"content": "plain path reply"}}
 
+    monkeypatch.setattr(mind_mod, "CHAT_CLOUD_MODEL", "")
     llm = _LLM(); llm._backend = "ollama"; llm._client = NoStreamSupport()
     got = []
     out = llm.generate("sys", "hi", on_token=got.append)

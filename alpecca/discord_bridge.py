@@ -32,7 +32,6 @@ Her backend (`server.py`) must be running so `/channel/discord` is reachable.
 from __future__ import annotations
 
 import asyncio
-from difflib import SequenceMatcher
 import hashlib
 import importlib.util
 import ipaddress
@@ -64,6 +63,8 @@ from alpecca import (
     audio_ingress,
     bridge_actor_transport,
     discord_media,
+    discord_observability,
+    discord_room_state,
     discord_voice,
     discord_voice_memory,
     hearing,
@@ -179,6 +180,13 @@ PROACTIVE_GLOBAL_COOLDOWN = max(
     30.0,
     float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_GLOBAL_COOLDOWN", "60")),
 )
+# A claimed room may get one deliberate check-in after a genuinely long pause,
+# but never a rapid sequence of self-directed messages.  This is distinct from
+# a follow-up earned by a new human turn.
+EMPTY_ROOM_NUDGE_QUIET = max(
+    60.0 * 60.0,
+    float(os.environ.get("ALPECCA_DISCORD_EMPTY_ROOM_NUDGE_QUIET", "14400")),
+)
 # Recursive self-continuation: when the room goes quiet after SHE spoke, she may
 # continue her own train of thought a little deeper -- bounded, paced, and it
 # yields the instant any human speaks, so it never becomes a monologue/spam.
@@ -256,21 +264,40 @@ def _room_scope(guild_id: object, channel_id: object) -> str:
     return hashlib.sha256(material.encode("ascii")).hexdigest()
 
 
+_VOICE_CAPABILITY_DENIAL_PATTERN = (
+    r"(?:\bi(?:'m| am)\s+(?:just\s+|only\s+)?(?:a\s+)?"
+    r"text[- ](?:only|based)(?:\s+ai)?\b|"
+    r"\bi\s+(?:can\s+only|only)\s+(?:communicate|respond|reply|interact)"
+    r"\s+(?:through|via|in)\s+text\b|"
+    r"\bi\s+(?:only|just)\s+(?:exist|appear|show\s+up)\s+(?:as|in)\s+text\b|"
+    r"\bi\s+(?:can(?:not|'t)|am\s+unable\s+to)\s+"
+    r"(?:join|enter|be\s+in|speak\s+in|talk\s+in)[^.!?\n]{0,80}"
+    r"\b(?:voice|call)\b|"
+    r"\bi\s+do(?:n't| not)\s+have\s+(?:the\s+ability\s+to\s+"
+    r"(?:enter|join)[^.!?\n]{0,50}\bvoice\b|(?:a\s+)?(?:live\s+)?"
+    r"(?:voice|audio)\s+(?:presence|capability|ability))\b)"
+)
 _VOICE_CAPABILITY_DENIAL_RE = re.compile(
-    r"(?:can(?:not|'t)\s+(?:join|enter).*voice|"
-    r"do(?:n't| not)\s+have\s+the\s+ability\s+to\s+(?:enter|join).*voice|"
-    r"text[- ]based\s+ai)",
+    _VOICE_CAPABILITY_DENIAL_PATTERN,
     re.IGNORECASE,
 )
 
 
 _VOICE_DENIAL_RE = re.compile(
-    r"(?:can(?:not|'t)\s+(?:join|enter|see you in|hear).*voice|"
-    r"not\s+in\s+(?:a\s+)?voice\s+channel|"
-    r"do(?:n't| not)\s+have\s+the\s+ability\s+to\s+(?:enter|join).*voice|"
-    r"text[- ]based\s+ai)",
+    _VOICE_CAPABILITY_DENIAL_PATTERN
+    + r"|(?:\bi(?:'m| am)\s+(?:(?:not|never)\s+(?:actually\s+)?"
+    r"(?:present\s+in|in|connected\s+to|inside)|absent\s+from)\s+"
+    r"(?:the\s+)?(?:voice(?:\s+(?:channel|chat))?|call)\b|"
+    r"\bi\s+can(?:not|'t)\s+(?:see\s+you\s+in|hear|listen\s+in)"
+    r"[^.!?\n]{0,50}\b(?:voice|call)\b)",
     re.IGNORECASE,
 )
+
+
+def _voice_guard_text(text: object) -> str:
+    """Normalize presentation-only apostrophe variants before policy matching."""
+
+    return str(text or "").replace("\u2018", "'").replace("\u2019", "'")
 
 
 def _voice_live_context(
@@ -341,7 +368,7 @@ def _enforce_voice_live_state(
     voice_enabled: bool = True,
     runtime_state: dict[str, object] | None = None,
 ) -> str:
-    text = reply or ""
+    text = _voice_guard_text(reply)
     capability_denial = bool(
         voice_enabled and _VOICE_CAPABILITY_DENIAL_RE.search(text)
     )
@@ -403,13 +430,126 @@ def _room_reply_is_pass(reply: str) -> bool:
     }
 
 
-_ROOM_MENTION_RE = re.compile(r"(?:<@!?\d+>|@[a-z0-9_.-]+)", re.IGNORECASE)
-_ROOM_REPLY_WORD_RE = re.compile(r"[^a-z0-9]+", re.IGNORECASE)
+_ROOM_SELF_AUTHORS = frozenset({
+    "alpecca",
+    "alpecca ai",
+    "alpecca_ai",
+    "alpeccaai",
+})
+_GENERIC_ASSISTANT_SELF_DESCRIPTION_RE = re.compile(
+    r"(?:\btext[- ](?:only|based)(?:\s+ai)?\b|"
+    r"\b(?:i(?:'m| am)|as)\s+(?:a\s+)?"
+    r"(?:text[- ]based|language model|virtual assistant)\b|"
+    r"\bi\s+(?:can\s+only|only)\s+(?:communicate|respond|reply|interact)"
+    r"\s+(?:through|via|in)\s+text\b|"
+    r"\bi\s+(?:only|just)\s+exist\s+(?:as|in)\s+text\b)",
+    re.IGNORECASE,
+)
+_ROOM_CURRENT_TURN_CORRECTION = (
+    "I'm present in this claimed room and following your current message."
+)
+_ROOM_EXPLICIT_REPEAT_REQUEST_RE = re.compile(
+    r"\b(?:repeat|say|answer|send|show)\b.{0,48}\b(?:again|once more)\b"
+    r"|\bwhat did you (?:say|mean)\b",
+    re.IGNORECASE,
+)
 
 
 def _normalise_room_reply(text: str) -> str:
-    without_mentions = _ROOM_MENTION_RE.sub(" ", str(text or "").casefold())
-    return " ".join(_ROOM_REPLY_WORD_RE.sub(" ", without_mentions).split())
+    return discord_room_state.normalize_room_text(text)
+
+
+def _room_author_is_alpecca(author: object) -> bool:
+    """Recognize the bridge's own history labels across Discord display variants."""
+
+    return discord_room_state.is_self_author(author, _ROOM_SELF_AUTHORS)
+
+
+def _room_has_unconsumed_human_turn(
+    last_human_at: float,
+    last_initiative_human_at: float,
+) -> bool:
+    """Allow one autonomous initiative for each observed human room turn."""
+
+    return last_human_at > 0.0 and last_human_at > last_initiative_human_at
+
+
+def _room_reply_is_bridge_media_diagnostic(reply: str) -> bool:
+    """Whether text is one of the bridge-owned media transport diagnostics."""
+
+    candidate = _normalise_room_reply(reply)
+    if not candidate:
+        return False
+    return candidate in {
+        _normalise_room_reply(discord_media.media_diagnostic(reason))
+        for reason in (
+            "media-disabled",
+            "vision-unavailable",
+            "file-disabled",
+            "audio-disabled",
+            "multiple-attachments",
+            "read-failed",
+            "catalog-unavailable",
+            "audit-unavailable",
+        )
+    }
+
+
+def _correct_room_reply_for_current_event(
+    reply: str,
+    *,
+    media_event: bool,
+) -> tuple[str, str | None]:
+    """Replace stale model boilerplate with one deterministic current fact.
+
+    Transport diagnostics are bridge-owned and only valid when this exact
+    Discord event involved media.  A model may have seen older room context,
+    but it must not replay that status on an unrelated text turn. Generic model
+    identity fallbacks are likewise not allowed to define room presence.
+    """
+
+    if media_event:
+        return reply, None
+    if _room_reply_is_bridge_media_diagnostic(reply):
+        return discord_media.stale_media_turn_correction(), "stale_media"
+    if _GENERIC_ASSISTANT_SELF_DESCRIPTION_RE.search(
+        _voice_guard_text(reply)
+    ) is not None:
+        return _ROOM_CURRENT_TURN_CORRECTION, "generic_identity"
+    return reply, None
+
+
+def _room_history_turns(
+    history: list[tuple[str, str]],
+) -> tuple[discord_room_state.RoomTurn, ...]:
+    """Convert only the bounded bridge window into fail-closed policy turns."""
+
+    turns: list[discord_room_state.RoomTurn] = []
+    for author, content in history[-max(CONTEXT_MESSAGES, 1):]:
+        label = str(author)
+        self_turn = _room_author_is_alpecca(label)
+        known_human = label.casefold().startswith(("[human] ", "[voice] "))
+        turns.append(
+            discord_room_state.RoomTurn(
+                author=label,
+                content=str(content),
+                is_bot=not self_turn and not known_human,
+            )
+        )
+    return tuple(turns)
+
+
+def _room_human_evidence_supports_autonomy(
+    history: list[tuple[str, str]],
+) -> bool:
+    """Require a recent human cue with no more than one later self turn."""
+
+    return discord_room_state.human_turn_supports_autonomy(
+        _room_history_turns(history),
+        self_aliases=_ROOM_SELF_AUTHORS,
+        recent_limit=max(CONTEXT_MESSAGES, 1),
+        max_self_turns_after_human=1,
+    )
 
 
 def _room_reply_repeats_self(
@@ -419,28 +559,30 @@ def _room_reply_repeats_self(
     raw_reply: str = "",
 ) -> bool:
     """Reject only autonomous repeats of Alpecca's recent room turns."""
-    candidate = _normalise_room_reply(reply)
-    if not candidate:
-        return False
-    raw_denial = _VOICE_CAPABILITY_DENIAL_RE.search(raw_reply or reply) is not None
-    for author, prior_text in reversed(history):
-        if str(author).casefold() != "alpecca":
-            continue
-        prior = _normalise_room_reply(prior_text)
-        if not prior:
-            continue
-        if raw_denial and _VOICE_DENIAL_RE.search(prior_text or "") is not None:
+    raw_denial = (
+        _VOICE_CAPABILITY_DENIAL_RE.search(
+            _voice_guard_text(raw_reply or reply)
+        )
+        is not None
+    )
+    for author, prior_text in history:
+        if (
+            raw_denial
+            and _room_author_is_alpecca(author)
+            and _VOICE_DENIAL_RE.search(_voice_guard_text(prior_text)) is not None
+        ):
             return True
-        if candidate == prior:
-            return True
-        shorter, longer = sorted((candidate, prior), key=len)
-        if len(shorter) >= 32 and shorter in longer and len(shorter) / len(longer) >= 0.72:
-            return True
-        if min(len(candidate), len(prior)) >= 32:
-            ratio = SequenceMatcher(None, candidate, prior, autojunk=False).ratio()
-            if ratio >= 0.86:
-                return True
-    return False
+    return discord_room_state.has_close_self_repeat(
+        reply,
+        [
+            discord_room_state.RoomTurn(author=str(author), content=str(prior_text))
+            for author, prior_text in history
+        ],
+        self_aliases=_ROOM_SELF_AUTHORS,
+        minimum_comparison_length=32,
+        similarity_threshold=0.86,
+        recent_limit=max(CONTEXT_MESSAGES, 1),
+    )
 
 
 _ROOM_REACTIONS = {
@@ -573,6 +715,11 @@ def media_readiness() -> dict[str, object]:
         media_enabled=MEDIA_ENABLED,
         server_status=server_status,
         local_vision_status=vision_status,
+        portrait_status=(
+            discord_media.approved_portrait_status()
+            if MEDIA_ENABLED
+            else "unknown"
+        ),
     )
 
 
@@ -1028,6 +1175,56 @@ def voice_readiness() -> dict[str, object]:
     }
 
 
+def _local_discord_tts_readiness() -> dict[str, str]:
+    """Return content-free local TTS/F5 posture without synthesizing speech."""
+
+    f5_worker_status = "unavailable"
+    f5_local_ready = False
+    try:
+        from alpecca import open_tts
+
+        open_status = open_tts.status()
+        f5_local_ready = open_status.get("ready") is True
+        worker = open_status.get("worker")
+        if isinstance(worker, dict):
+            if worker.get("enabled") is False:
+                f5_worker_status = "disabled"
+            elif worker.get("ready") is True:
+                f5_worker_status = "ready"
+            else:
+                f5_worker_status = "unavailable"
+    except Exception:
+        pass
+
+    if not VOICE_ENABLED:
+        tts_status = "disabled"
+    elif DISCORD_VOICE_ENGINE in {"f5", "f5-tts"}:
+        tts_status = "ready" if f5_local_ready else "unavailable"
+    elif DISCORD_VOICE_ENGINE == "kokoro":
+        kokoro_installed = (
+            importlib.util.find_spec("kokoro") is not None
+            and importlib.util.find_spec("soundfile") is not None
+        )
+        tts_status = "unverified" if kokoro_installed else "unavailable"
+    else:
+        kokoro_installed = (
+            importlib.util.find_spec("kokoro") is not None
+            and importlib.util.find_spec("soundfile") is not None
+        )
+        tts_status = (
+            "ready"
+            if f5_local_ready
+            else "unverified"
+            if kokoro_installed
+            else "unavailable"
+        )
+    return {
+        "engine": DISCORD_VOICE_ENGINE,
+        "status": tts_status,
+        "f5_worker_status": f5_worker_status,
+    }
+
+
 def _remove_voice_file(path: str) -> None:
     try:
         Path(path).unlink(missing_ok=True)
@@ -1085,11 +1282,23 @@ def build_client() -> discord.Client:
         channel_id = int(room["channel_id"])
         observed = time.monotonic() if observed_at is None else observed_at
         channel_obj[channel_id] = channel
-        last_proactive_eval_at.setdefault(channel_id, observed)
+        # A failed reconnect must not leave an old room transcript eligible for
+        # autonomous speech. Clear all derived room clocks before replacing it.
+        history_buf[channel_id] = []
+        last_human_ts.pop(channel_id, None)
+        her_last_ts.pop(channel_id, None)
+        last_reply_at.pop(channel_id, None)
+        last_proactive_at.pop(channel_id, None)
+        last_initiative_human_ts.pop(channel_id, None)
+        last_empty_room_nudge_at.pop(channel_id, None)
+        chain_depth.pop(channel_id, None)
+        last_proactive_eval_at[channel_id] = observed
         history = getattr(channel, "history", None)
         lines: list[tuple[str, str]] = []
         saw_human = False
         saw_alpecca = False
+        saw_conversational_alpecca = False
+        latest_meaningful_kind = ""
         self_id = getattr(client.user, "id", None)
         if callable(history):
             try:
@@ -1108,13 +1317,34 @@ def build_client() -> discord.Client:
                     if content:
                         if is_alpecca:
                             saw_alpecca = True
+                            latest_meaningful_kind = "self"
+                            # A fixed bridge diagnostic is transport state, not
+                            # conversational memory. Keeping it in a restored
+                            # prompt makes a later text turn prone to echo it.
+                            if _room_reply_is_bridge_media_diagnostic(content):
+                                if (
+                                    lines
+                                    and str(lines[-1][0]).casefold().startswith(
+                                        "[human] "
+                                    )
+                                ):
+                                    lines.pop()
+                                continue
+                            saw_conversational_alpecca = True
                             label = "Alpecca"
                         else:
                             saw_human = True
-                            label = str(getattr(author, "display_name", "Someone"))
+                            latest_meaningful_kind = "human"
+                            label = "[human] " + str(
+                                getattr(author, "display_name", "Someone")
+                            )
                         lines.append((label, content[:700]))
             except Exception:
                 _diagnostic("room_history_unavailable")
+                return
+        else:
+            _diagnostic("room_history_unavailable")
+            return
         try:
             voice_lines = await asyncio.to_thread(
                 _recent_voice_context,
@@ -1123,21 +1353,53 @@ def build_client() -> discord.Client:
             )
             lines.extend(voice_lines)
             saw_human = saw_human or bool(voice_lines)
+            if voice_lines:
+                latest_meaningful_kind = "human"
         except Exception:
             _diagnostic("voice_memory_unavailable")
-        if lines:
-            history_buf[channel_id] = lines[-CONTEXT_MESSAGES:]
-            if saw_human:
-                last_human_ts[channel_id] = observed
-            if saw_alpecca:
-                # A reconnect must not make an old self-message look like a new
-                # invitation to repeat it immediately.
-                her_last_ts[channel_id] = observed
+        history_buf[channel_id] = lines[-CONTEXT_MESSAGES:]
+        if saw_human:
+            last_human_ts[channel_id] = observed
+        if saw_alpecca:
+            # A reconnect must not make an old self-message look like a new
+            # invitation to repeat it immediately. If a human was the newest
+            # meaningful message, one later initiative remains available.
+            her_last_ts[channel_id] = observed
+            if saw_conversational_alpecca:
                 last_reply_at[channel_id] = observed
-            _diagnostic("room_history_seeded", count=len(lines))
+            last_empty_room_nudge_at[channel_id] = observed
+            if latest_meaningful_kind == "self":
+                last_initiative_human_ts[channel_id] = observed
+        _diagnostic("room_history_seeded", count=len(lines))
+
+    async def _resync_claimed_room_history() -> None:
+        """Replace claimed-room context after gateway ready or resume."""
+
+        for room in list(social_rooms.values()):
+            try:
+                channel = client.get_channel(int(room["channel_id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if channel is not None:
+                await _seed_room_history(channel, room)
 
     def _room_model_text(chan_id: int, latest: str, *, invite: bool = False) -> str:
         context = _recent_context(chan_id)
+        history = history_buf.get(chan_id, [])[-CONTEXT_MESSAGES:]
+        turns = _room_history_turns(history)
+        self_turns = sum(
+            1
+            for turn in turns
+            if discord_room_state.is_self_author(turn.author, _ROOM_SELF_AUTHORS)
+        )
+        human_turns = sum(
+            1
+            for turn in turns
+            if discord_room_state.is_human_turn(
+                turn,
+                self_aliases=_ROOM_SELF_AUTHORS,
+            )
+        )
         directive = (
             "You are present in this Discord room. Decide whether you genuinely "
             "have something useful, warm, or curious to add. Use social judgment: "
@@ -1157,7 +1419,16 @@ def build_client() -> discord.Client:
             "reintroduce yourself, repeat a claim, or ask the same question again "
             "unless a new human message makes that necessary."
         )
-        return f"{directive}\n\nRecent room messages:\n{context}\n\nLatest message:\n{latest}"[:7_500]
+        facts = (
+            "Live room facts: the latest event is a human message. "
+            f"This bounded window contains {human_turns} human turn(s) and "
+            f"{self_turns} Alpecca turn(s). Reply to the latest human message, "
+            "not to your own earlier output."
+        )
+        return (
+            f"{directive}\n\n{facts}\n\nRecent room messages:\n{context}"
+            f"\n\nLatest message:\n{latest}"
+        )[:7_500]
 
     @client.event
     async def on_ready() -> None:
@@ -1181,10 +1452,7 @@ def build_client() -> discord.Client:
                     if wanted == member.name.casefold():
                         DM_ALLOW_IDS.add(str(member.id))
                         _diagnostic("dm_allow_resolved")
-        for room in list(social_rooms.values()):
-            channel = client.get_channel(int(room["channel_id"]))
-            if channel is not None:
-                await _seed_room_history(channel, room)
+        await _resync_claimed_room_history()
         print(
             "[discord] "
             + json.dumps(
@@ -1205,12 +1473,22 @@ def build_client() -> discord.Client:
         if social_rooms:
             _ensure_room_sweepers()
 
+    @client.event
+    async def on_resumed() -> None:
+        """Refresh bounded room state after Discord resumes a gateway session."""
+
+        await _resync_claimed_room_history()
+
     # Per-channel state so she can (1) talk without re-mentions and (2) chime in
     # unprompted at a natural, self-limiting pace.
     engaged: dict[int, dict[int, float]] = {}     # channel -> {user -> last exchange ts}
     last_reply_at: dict[int, float] = {}          # channel -> ts of her last message
     last_proactive_at: dict[int, float] = {}      # channel -> ts of her last delivered opener
     last_proactive_eval_at: dict[int, float] = {} # channel -> ts she last considered an opener
+    # One autonomous message may be considered for a given observed human turn.
+    # This is separate from normal replies, which answer the human immediately.
+    last_initiative_human_ts: dict[int, float] = {}
+    last_empty_room_nudge_at: dict[int, float] = {}
     ignored_streak: dict[int, int] = {}           # channel -> unanswered chime-ins in a row
     her_last_ts: dict[int, float] = {}            # channel -> ts of her last message (recursion)
     last_human_ts: dict[int, float] = {}          # channel -> ts of last human message
@@ -1226,9 +1504,58 @@ def build_client() -> discord.Client:
     voice_transcribe_lock = asyncio.Lock()
     voice_receive_sessions: dict[int, dict[str, object]] = {}
 
+    def _model_room_history(chan_id: int) -> list[tuple[str, str]]:
+        """Remove resolved bridge media exchanges from model-facing context."""
+
+        model_lines: list[tuple[str, str]] = []
+        for author, content in history_buf.get(chan_id, [])[-CONTEXT_MESSAGES:]:
+            if _room_reply_is_bridge_media_diagnostic(str(content)):
+                if (
+                    model_lines
+                    and str(model_lines[-1][0]).casefold().startswith("[human] ")
+                ):
+                    model_lines.pop()
+                continue
+            model_lines.append((str(author), str(content)))
+        return model_lines
+
     def _recent_context(chan_id: int) -> str:
-        lines = history_buf.get(chan_id, [])[-CONTEXT_MESSAGES:]
-        return "\n".join(f"{a}: {c}" for a, c in lines if c)
+        return "\n".join(
+            f"{author}: {content}"
+            for author, content in _model_room_history(chan_id)
+            if content
+        )
+
+    def _record_room_transport_reply(message: object, content: str) -> None:
+        """Record a sent bridge diagnostic as self evidence, never as a new cue."""
+
+        room = _social_room(message)
+        channel = getattr(message, "channel", None)
+        channel_id = getattr(channel, "id", None)
+        if room is None or channel_id is None:
+            return
+        chan = int(channel_id)
+        sent_at = time.monotonic()
+        her_last_ts[chan] = sent_at
+        last_empty_room_nudge_at[chan] = sent_at
+        chain_depth[chan] = RECURSIVE_MAX
+        channel_obj[chan] = channel
+        human_at = last_human_ts.get(chan, 0.0)
+        if human_at > 0.0:
+            last_initiative_human_ts[chan] = human_at
+        author = getattr(message, "author", None)
+        author_id = getattr(author, "id", None)
+        if author_id is not None:
+            engaged.setdefault(chan, {})[int(author_id)] = sent_at
+        history_buf.setdefault(chan, []).append(("Alpecca", content))
+        del history_buf[chan][:-max(CONTEXT_MESSAGES, 1)]
+
+    async def _reply_with_media_diagnostic(
+        message: object,
+        content: str,
+    ) -> None:
+        await message.reply(content, mention_author=False)
+        _record_room_transport_reply(message, content)
 
     def _voice_runtime_state(guild: object) -> dict[str, object]:
         """Read one fail-closed, content-free voice snapshot for this guild."""
@@ -1775,6 +2102,8 @@ def build_client() -> discord.Client:
                     last_reply_at.pop(int(channel_id), None)
                     last_proactive_at.pop(int(channel_id), None)
                     last_proactive_eval_at.pop(int(channel_id), None)
+                    last_initiative_human_ts.pop(int(channel_id), None)
+                    last_empty_room_nudge_at.pop(int(channel_id), None)
                     ignored_streak.pop(int(channel_id), None)
                     chain_depth.pop(int(channel_id), None)
                     await _stop_voice_receive(message.guild)
@@ -1825,7 +2154,9 @@ def build_client() -> discord.Client:
         else:
             chan = message.channel.id
             buf = history_buf.setdefault(chan, [])       # rolling channel context
-            buf.append((message.author.display_name, message.content.strip()))
+            # Preserve author role independently from display names: a human
+            # whose nickname happens to resemble Alpecca is never her own turn.
+            buf.append(("[human] " + str(message.author.display_name), message.content.strip()))
             del buf[:-max(CONTEXT_MESSAGES, 1)]
 
             convo = engaged.setdefault(chan, {})
@@ -1996,7 +2327,7 @@ def build_client() -> discord.Client:
                 in_conversation=in_conversation,
             )
 
-        # One creator-DM image may enter only after explicit media opt-in,
+        # One image in an allowed DM or claimed room may enter only after opt-in,
         # authoritative metadata checks, a bounded CDN read, local byte sniffing,
         # and content-free audit. File/audio payloads stay closed.
         image_dataurl = ""
@@ -2008,9 +2339,9 @@ def build_client() -> discord.Client:
                 status="rejected",
                 kind="multiple-attachments",
             )
-            await message.reply(
+            await _reply_with_media_diagnostic(
+                message,
                 discord_media.media_diagnostic("multiple-attachments"),
-                mention_author=False,
             )
             return
         if attachments:
@@ -2027,9 +2358,9 @@ def build_client() -> discord.Client:
                     status="rejected",
                     kind=reason,
                 )
-                await message.reply(
+                await _reply_with_media_diagnostic(
+                    message,
                     discord_media.media_diagnostic(reason),
-                    mention_author=False,
                 )
                 return
             if not MEDIA_ENABLED:
@@ -2039,9 +2370,9 @@ def build_client() -> discord.Client:
                     status="rejected",
                     kind="media-disabled",
                 )
-                await message.reply(
+                await _reply_with_media_diagnostic(
+                    message,
                     discord_media.media_diagnostic("media-disabled"),
-                    mention_author=False,
                 )
                 return
             att = candidate
@@ -2102,7 +2433,7 @@ def build_client() -> discord.Client:
                         f"({exc.reason}). Send one PNG, JPEG, or GIF under "
                         f"{limit_mib:.0f} MiB."
                     )
-                await message.reply(diagnostic, mention_author=False)
+                await _reply_with_media_diagnostic(message, diagnostic)
                 return
             except Exception:
                 _diagnostic("image_read_failed")
@@ -2112,9 +2443,9 @@ def build_client() -> discord.Client:
                     status="rejected",
                     kind="read-failed",
                 )
-                await message.reply(
+                await _reply_with_media_diagnostic(
+                    message,
                     discord_media.media_diagnostic("read-failed"),
-                    mention_author=False,
                 )
                 return
 
@@ -2125,17 +2456,17 @@ def build_client() -> discord.Client:
 
         disabled_request = discord_media.requested_disabled_media_kind(media_request_text)
         if disabled_request is not None:
-            await message.reply(
+            await _reply_with_media_diagnostic(
+                message,
                 discord_media.media_diagnostic(f"{disabled_request}-disabled"),
-                mention_author=False,
             )
             return
 
         requested_image = discord_media.requested_media_kind(media_request_text)
         if requested_image is not None and not MEDIA_ENABLED:
-            await message.reply(
+            await _reply_with_media_diagnostic(
+                message,
                 discord_media.media_diagnostic("media-disabled"),
-                mention_author=False,
             )
             return
         outbound_media = (
@@ -2144,9 +2475,9 @@ def build_client() -> discord.Client:
             else None
         )
         if requested_image is not None and outbound_media is None:
-            await message.reply(
+            await _reply_with_media_diagnostic(
+                message,
                 discord_media.media_diagnostic("catalog-unavailable"),
-                mention_author=False,
             )
             return
         if outbound_media is not None:
@@ -2160,9 +2491,9 @@ def build_client() -> discord.Client:
                 kind=outbound_media.kind,
             )
             if audit_id is None:
-                await message.reply(
+                await _reply_with_media_diagnostic(
+                    message,
                     discord_media.media_diagnostic("audit-unavailable"),
-                    mention_author=False,
                 )
                 return
 
@@ -2177,6 +2508,11 @@ def build_client() -> discord.Client:
                         "will be attached to this reply, so describe it honestly and "
                         "do not claim that Discord image sending is unavailable"
                     )
+                elif not is_dm and not attachments and not image_dataurl:
+                    context += (
+                        "; the current Discord event contains no attachment or media "
+                        "request, so do not invent a media status from older room context"
+                    )
                 reply = await asyncio.to_thread(
                     _ask_alpecca,
                     text,
@@ -2190,9 +2526,9 @@ def build_client() -> discord.Client:
                 )
         except DiscordMediaUnavailable as exc:
             _diagnostic("media_backend_unavailable", status=exc.reason)
-            await message.reply(
+            await _reply_with_media_diagnostic(
+                message,
                 discord_media.media_diagnostic(exc.reason),
-                mention_author=False,
             )
             return
         except Exception:
@@ -2200,8 +2536,34 @@ def build_client() -> discord.Client:
             return
 
         reply = (reply or "").strip()
+        truth_correction: str | None = None
         if not is_dm and message.guild is not None:
-            reply = _ground_voice_presence_reply(reply, message.guild)
+            grounded_reply = _ground_voice_presence_reply(reply, message.guild)
+            if grounded_reply != reply:
+                truth_correction = "voice_state"
+            reply = grounded_reply
+        event_correction = None
+        if not is_dm:
+            reply, event_correction = _correct_room_reply_for_current_event(
+                reply,
+                media_event=bool(attachments or image_dataurl or outbound_media),
+            )
+        if event_correction is not None:
+            truth_correction = event_correction
+        if truth_correction is not None:
+            _diagnostic("room_reply_corrected", status=truth_correction)
+        if (
+            not is_dm
+            and mode == "reply"
+            and truth_correction is None
+            and not _ROOM_EXPLICIT_REPEAT_REQUEST_RE.search(media_request_text)
+            and _room_reply_repeats_self(reply, history_buf.get(message.channel.id, []))
+        ):
+            # A human can explicitly ask for a restatement. Otherwise an exact
+            # repeat is evidence that the candidate did not use the current
+            # room context, so leave space for the next grounded turn.
+            _diagnostic("room_reply_suppressed", status="self_repeat")
+            return
         if mode == "participate":
             reaction = _room_reply_reaction(reply)
             if reaction is not None:
@@ -2216,6 +2578,9 @@ def build_client() -> discord.Client:
                 return
             if _room_reply_is_pass(reply):
                 _diagnostic("room_participation_passed")
+                return
+            if _room_reply_repeats_self(reply, history_buf.get(chan, [])):
+                _diagnostic("room_participation_passed", status="duplicate")
                 return
         if not reply and outbound_media is None:
             _diagnostic("empty_backend_reply", mode=mode)
@@ -2316,8 +2681,12 @@ def build_client() -> discord.Client:
                 context = _recent_context(chan).strip()
                 if len(context) < max(1, PROACTIVE_MIN_LEN):
                     continue
+                human_evidence = _room_human_evidence_supports_autonomy(
+                    history_buf.get(chan, [])
+                )
+                human_snapshot = last_human_ts.get(chan, 0.0)
                 latest_activity = max(
-                    last_human_ts.get(chan, 0.0),
+                    human_snapshot,
                     her_last_ts.get(chan, 0.0),
                     last_reply_at.get(chan, 0.0),
                 )
@@ -2326,6 +2695,24 @@ def build_client() -> discord.Client:
                     or tick_now - latest_activity < PROACTIVE_QUIET_MIN
                     or tick_now - last_reply_at.get(chan, 0.0) < CHANNEL_MIN_INTERVAL
                 ):
+                    continue
+                if _room_has_unconsumed_human_turn(
+                    human_snapshot,
+                    last_initiative_human_ts.get(chan, 0.0),
+                ) and human_evidence:
+                    initiative_kind = "human-turn"
+                elif (
+                    human_evidence
+                    and human_snapshot > 0.0
+                    and tick_now - latest_activity >= EMPTY_ROOM_NUDGE_QUIET
+                    and tick_now - last_empty_room_nudge_at.get(chan, 0.0)
+                    >= EMPTY_ROOM_NUDGE_QUIET
+                ):
+                    initiative_kind = "empty-room"
+                else:
+                    # Alpecca's own prior output is never evidence of a new
+                    # conversation. A long-empty room may get one slow,
+                    # deliberate check-in, but not another dialogue turn.
                     continue
                 cooldown = _proactive_backoff_seconds(ignored_streak.get(chan, 0))
                 if tick_now - last_proactive_eval_at.get(chan, tick_now) < cooldown:
@@ -2342,13 +2729,31 @@ def build_client() -> discord.Client:
                 if random.random() >= PROACTIVE_CHANCE:
                     _diagnostic("proactive_room_passed", status="chance")
                     return
-                human_snapshot = last_human_ts.get(chan, 0.0)
+                # Reserve this eligibility before model work. A backend failure,
+                # pass, or duplicate must not cause autonomous retry loops.
+                if initiative_kind == "human-turn":
+                    last_initiative_human_ts[chan] = human_snapshot
+                else:
+                    last_empty_room_nudge_at[chan] = tick_now
                 guild = getattr(ch, "guild", None)
                 voice_context = _voice_presence_context(guild)
+                if initiative_kind == "empty-room":
+                    prompt_prefix = (
+                        "Initiative kind: deliberate empty-room check-in.\n"
+                        "No human message is newer than Alpecca's last output. "
+                        "This is not a live dialogue. You may offer one very short, "
+                        "context-grounded check-in only if it adds something real; "
+                        "otherwise pass. Do not imply anyone replied, revive an old "
+                        "capability issue, or repeat a previous question.\n"
+                    )
+                else:
+                    prompt_prefix = (
+                        "Initiative kind: quiet-room opener after a new human turn.\n"
+                        "Lines labeled Alpecca are her own prior messages.\n"
+                    )
                 prompt = (
-                    "Initiative kind: quiet-room opener.\n"
-                    "Lines labeled Alpecca are her own prior messages.\n\n"
-                    "Recent room messages:\n"
+                    prompt_prefix
+                    + "\nRecent room messages:\n"
                     + context
                     + "\n\n"
                     + voice_context
@@ -2423,6 +2828,15 @@ def build_client() -> discord.Client:
             tick_now = time.monotonic() if now is None else float(now)
             for chan, hts in list(her_last_ts.items()):
                 human = last_human_ts.get(chan, 0.0)
+                if not _room_human_evidence_supports_autonomy(
+                    history_buf.get(chan, [])
+                ):
+                    continue
+                if not _room_has_unconsumed_human_turn(
+                    human,
+                    last_initiative_human_ts.get(chan, 0.0),
+                ):
+                    continue
                 if human <= 0 or hts <= human:
                     continue
                 if tick_now - hts < RECURSIVE_DELAY:
@@ -2446,6 +2860,10 @@ def build_client() -> discord.Client:
                     + "\n\n"
                     + _voice_presence_context(guild)
                 )[:7_500]
+                # Share the same one-initiative-per-human-turn reservation as
+                # proactive speech. Recursive reasoning cannot begin a second
+                # self-directed line after a proactive one.
+                last_initiative_human_ts[chan] = human
                 try:
                     reply = await asyncio.to_thread(
                         _ask_room_autonomy,
@@ -2456,7 +2874,7 @@ def build_client() -> discord.Client:
                     _diagnostic("recursive_request_failed")
                     continue
                 if (
-                    last_human_ts.get(chan, 0.0) > hts
+                    last_human_ts.get(chan, 0.0) != human
                     or room_key not in social_rooms
                 ):
                     _diagnostic("recursive_room_yielded", status="human_activity")

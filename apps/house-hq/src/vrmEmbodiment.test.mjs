@@ -2,30 +2,42 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyVrmLookAtTransition,
+  isNeutralVrmGaze,
   isConfirmedVrmInteractionContact,
   isRotationOnlyVrmTrack,
+  normalizeVrmEmotionWeights,
+  resolveVrmBodyYawFromDisplacement,
   resolveVrmFootRoll,
   resolveVrmFootSwing,
   resolveVrmFootLiftHeight,
   resolveVrmFootContactY,
   resolveVrmLowestFootContactY,
   resolveVrmGroundTarget,
+  resolveVrmGazeFollow,
+  resolveVrmGazeTargetAngles,
   resolveVrmMotionTelemetry,
+  resolveVrmPlayModeForQuaternionSeam,
   resolveVrmWalkGait,
   shouldBlendVrmProceduralTransition,
   shouldResetVrmBlinkTiming,
+  shouldResetVrmGaitPhase,
   shouldScheduleVrmPerformance,
   shouldSettleProceduralPerformance,
+  shouldStabilizeVrmSpringTransition,
   solveTwoBoneReach,
   strideDistanceForMotion,
   v4MoodMouthCorrectionWeights,
   v4MoodComponentCorrectionWeights,
+  VRM_NEUTRAL_GAZE,
+  vrmQuaternionEndpointSeamRadians,
   vowelWeightsForSpeech,
 } from "./vrmEmbodiment.ts";
 
 const near = (actual, expected, epsilon = 1e-9) => {
   assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} != ${expected}`);
 };
+const radians = (degrees) => degrees * Math.PI / 180;
 
 test("speech stop closes every vowel and cancels V4 mood mouth components", () => {
   const speaking = vowelWeightsForSpeech(true, "oh", 0.55);
@@ -51,6 +63,21 @@ test("V4 mood eye corrections keep a small reactive eye component without pinnin
   assert.ok(mood.relaxed + correction.Fcl_EYE_Fun > 0);
   assert.ok(mood.relaxed + correction.Fcl_EYE_Fun < mood.relaxed);
   assert.ok(mood.surprised + correction.Fcl_EYE_Surprised > 0);
+});
+
+test("full-face mood presets share one budget including relaxed", () => {
+  const normalized = normalizeVrmEmotionWeights({
+    happy: 0.9,
+    sad: 0.8,
+    surprised: 0.7,
+    relaxed: 0.9,
+    angry: 0.6,
+  });
+
+  near(Object.values(normalized).reduce((sum, value) => sum + value, 0), 1);
+  assert.equal(normalized.angry, 0);
+  assert.ok(normalized.happy < 0.85);
+  assert.ok(normalized.relaxed < 0.7, "relaxed cannot sit outside the shared face budget");
 });
 
 test("walk gait alternates swing-foot lift and uses stronger anatomical knee flex", () => {
@@ -137,6 +164,155 @@ test("only locomotion-to-rest transitions receive the short procedural blend", (
   assert.equal(shouldBlendVrmProceduralTransition("idle", "thinking"), false);
 });
 
+test("a stopped gait restarts from lift-off instead of resuming a stale mid-step phase", () => {
+  let phase = 4.7;
+  if (shouldResetVrmGaitPhase("idle", "walk")) phase = 0;
+  assert.equal(phase, 0);
+
+  phase += 0.42 * 2.45;
+  const interruptedPhase = phase;
+  if (shouldResetVrmGaitPhase("walk", "idle")) phase = 0;
+  assert.equal(phase, interruptedPhase, "stopping does not fabricate another step");
+
+  if (shouldResetVrmGaitPhase("idle", "walk")) phase = 0;
+  assert.equal(phase, 0, "the next route starts at a deterministic lift-off boundary");
+  assert.equal(shouldResetVrmGaitPhase("walk", "run"), false, "walk-to-run preserves a live stride");
+  assert.equal(shouldResetVrmGaitPhase("wave", "walk"), true, "any fresh locomotion performance resets");
+});
+
+test("body yaw damps toward collision-resolved displacement and holds while blocked", () => {
+  let yaw = 0;
+  yaw = resolveVrmBodyYawFromDisplacement(yaw, 0.2, 0, 1 / 60);
+  assert.ok(yaw > 0 && yaw < Math.PI / 2, "the first resolved step turns without snapping");
+  for (let frame = 0; frame < 90; frame += 1) {
+    yaw = resolveVrmBodyYawFromDisplacement(yaw, 0.2, 0, 1 / 60);
+  }
+  near(yaw, Math.PI / 2, 1e-7);
+  assert.equal(resolveVrmBodyYawFromDisplacement(yaw, 0, 0, 1 / 60), yaw);
+});
+
+test("VRMA repeat modes are retained only across conservative quaternion endpoint seams", () => {
+  const quaternionY = (degrees) => {
+    const half = degrees * Math.PI / 360;
+    return [0, Math.sin(half), 0, Math.cos(half)];
+  };
+  const identity = [0, 0, 0, 1];
+  const safeTrack = {
+    name: "Normalized_J_Bip_C_Hips.quaternion",
+    values: new Float32Array([...identity, ...quaternionY(7)]),
+  };
+  const seamTrack = {
+    name: "Normalized_J_Bip_C_Hips.quaternion",
+    values: new Float32Array([...identity, ...quaternionY(12)]),
+  };
+
+  assert.ok(vrmQuaternionEndpointSeamRadians(safeTrack.values) < 8 * Math.PI / 180);
+  assert.ok(vrmQuaternionEndpointSeamRadians(seamTrack.values) > 8 * Math.PI / 180);
+  assert.equal(resolveVrmPlayModeForQuaternionSeam("loop", [safeTrack]), "loop");
+  assert.equal(resolveVrmPlayModeForQuaternionSeam("twice", [safeTrack]), "twice");
+  assert.equal(resolveVrmPlayModeForQuaternionSeam("loop", [safeTrack, seamTrack]), "once");
+  assert.equal(resolveVrmPlayModeForQuaternionSeam("twice", [seamTrack]), "once");
+  assert.equal(resolveVrmPlayModeForQuaternionSeam("once", [seamTrack]), "once");
+  near(vrmQuaternionEndpointSeamRadians(new Float32Array([...identity, 0, 0, 0, -1])), 0);
+});
+
+test("gaze target angles follow the VRM 1.0 forward, right, and up axes", () => {
+  const front = resolveVrmGazeTargetAngles({ x: 0, y: 0, z: 1 });
+  const right = resolveVrmGazeTargetAngles({ x: 1, y: 0, z: 1 });
+  const up = resolveVrmGazeTargetAngles({ x: 0, y: 1, z: 1 });
+
+  near(front.yaw, 0);
+  near(front.pitch, 0);
+  near(right.yaw, Math.PI / 4);
+  near(right.pitch, 0);
+  near(up.yaw, 0);
+  near(up.pitch, -Math.PI / 4);
+  assert.equal(resolveVrmGazeTargetAngles({ x: 0, y: 0, z: 0 }), null);
+  assert.equal(resolveVrmGazeTargetAngles({ x: Number.NaN, y: 0, z: 1 }), null);
+});
+
+test("eyes lead damped head and neck follow without snapping on target reversal", () => {
+  const right = { yaw: radians(35), pitch: radians(-20) };
+  const first = resolveVrmGazeFollow(VRM_NEUTRAL_GAZE, right, 1 / 60);
+
+  assert.ok(first.eyeYaw > first.headYaw + first.neckYaw, "eyes should acquire the target first");
+  assert.ok(first.eyePitch < first.headPitch + first.neckPitch, "eyes should lead upward too");
+  assert.ok(first.eyeYaw < radians(22));
+  assert.ok(first.headYaw < radians(14));
+  assert.ok(first.neckYaw < radians(7));
+
+  const reversed = resolveVrmGazeFollow(first, { yaw: -right.yaw, pitch: -right.pitch }, 1 / 60);
+  assert.ok(reversed.eyeYaw < first.eyeYaw, "the eye begins reversing immediately");
+  assert.ok(reversed.eyeYaw > -radians(22), "the eye cannot snap to the opposite clamp");
+  assert.ok(reversed.headYaw > -radians(14), "the head cannot snap to the opposite clamp");
+  assert.ok(reversed.neckYaw > -radians(7), "the neck cannot snap to the opposite clamp");
+});
+
+test("gaze follow settles at conservative asymmetric eye, head, and neck clamps", () => {
+  let downRight = VRM_NEUTRAL_GAZE;
+  for (let frame = 0; frame < 300; frame += 1) {
+    downRight = resolveVrmGazeFollow(downRight, { yaw: Math.PI, pitch: Math.PI / 2 }, 1 / 60);
+  }
+  near(downRight.eyeYaw, radians(22), 1e-8);
+  near(downRight.headYaw, radians(14), 1e-8);
+  near(downRight.neckYaw, radians(7), 1e-8);
+  near(downRight.eyePitch, radians(14), 1e-8);
+  near(downRight.headPitch, radians(10), 1e-8);
+  near(downRight.neckPitch, radians(5), 1e-8);
+
+  let upLeft = downRight;
+  for (let frame = 0; frame < 300; frame += 1) {
+    upLeft = resolveVrmGazeFollow(upLeft, { yaw: -Math.PI, pitch: -Math.PI / 2 }, 1 / 60);
+  }
+  near(upLeft.eyeYaw, -radians(22), 1e-8);
+  near(upLeft.headYaw, -radians(14), 1e-8);
+  near(upLeft.neckYaw, -radians(7), 1e-8);
+  near(upLeft.eyePitch, -radians(12), 1e-8);
+  near(upLeft.headPitch, -radians(8), 1e-8);
+  near(upLeft.neckPitch, -radians(4), 1e-8);
+});
+
+test("target loss returns smoothly and finishes at an exact neutral gaze", () => {
+  let active = VRM_NEUTRAL_GAZE;
+  for (let frame = 0; frame < 120; frame += 1) {
+    active = resolveVrmGazeFollow(active, { yaw: radians(30), pitch: radians(12) }, 1 / 60);
+  }
+
+  const firstReturn = resolveVrmGazeFollow(active, null, 1 / 60);
+  assert.ok(firstReturn.eyeYaw > 0 && firstReturn.eyeYaw < active.eyeYaw);
+  assert.ok(firstReturn.headYaw > 0 && firstReturn.headYaw < active.headYaw);
+  assert.ok(firstReturn.neckYaw > 0 && firstReturn.neckYaw < active.neckYaw);
+
+  let sixtyFps = active;
+  let thirtyFps = active;
+  for (let frame = 0; frame < 30; frame += 1) sixtyFps = resolveVrmGazeFollow(sixtyFps, null, 1 / 60);
+  for (let frame = 0; frame < 15; frame += 1) thirtyFps = resolveVrmGazeFollow(thirtyFps, null, 1 / 30);
+  for (const component of Object.keys(VRM_NEUTRAL_GAZE)) {
+    near(sixtyFps[component], thirtyFps[component], 1e-12);
+  }
+
+  let neutral = firstReturn;
+  for (let frame = 0; frame < 240; frame += 1) neutral = resolveVrmGazeFollow(neutral, null, 1 / 60);
+  assert.equal(isNeutralVrmGaze(neutral), true);
+  assert.deepEqual(neutral, VRM_NEUTRAL_GAZE);
+});
+
+test("lookAt resets exactly once when an active target becomes null", () => {
+  const camera = { id: "camera" };
+  const terminal = { id: "terminal" };
+  let resets = 0;
+  const lookAt = { target: null, reset: () => { resets += 1; } };
+
+  applyVrmLookAtTransition(lookAt, null);
+  applyVrmLookAtTransition(lookAt, camera);
+  applyVrmLookAtTransition(lookAt, terminal);
+  assert.equal(resets, 0, "inactive and active-to-active frames do not reset gaze");
+  applyVrmLookAtTransition(lookAt, null);
+  assert.equal(resets, 1);
+  applyVrmLookAtTransition(lookAt, null);
+  assert.equal(resets, 1, "continued inactivity cannot repeat the reset");
+});
+
 test("completed and fallback one-shots stay complete", () => {
   assert.equal(shouldScheduleVrmPerformance("wave", null), true);
   assert.equal(shouldScheduleVrmPerformance("wave", "wave"), false);
@@ -168,6 +344,13 @@ test("blink timing resets only when entering or leaving an eye-hold clip", () =>
 test("grounding raises penetrated soles and preserves the resting base in airtime", () => {
   near(resolveVrmGroundTarget(0.12, 0, -0.04, 0.12), 0.16);
   near(resolveVrmGroundTarget(0.12, 0, 0.3, 0.12), 0.12);
+  near(resolveVrmGroundTarget(0.12, 0, 0.3, 0.12, false), -0.18);
+});
+
+test("spring inertia is stabilized only while VRMA fades into procedural motion", () => {
+  assert.equal(shouldStabilizeVrmSpringTransition(false, 1), true);
+  assert.equal(shouldStabilizeVrmSpringTransition(false, 0), false);
+  assert.equal(shouldStabilizeVrmSpringTransition(true, 1), false);
 });
 
 test("terminal contact requires contact phase, reachability, and measured distance", () => {

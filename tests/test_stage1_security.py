@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import ast
 import importlib
+import importlib.util
 import inspect
 import json
 import re
+import sys
 from pathlib import Path
 from types import ModuleType
 import pytest
@@ -266,6 +268,106 @@ def test_auth_module_and_config_do_not_persist_plaintext_authorization_secret(
     assert list(tmp_path.iterdir()) == []
     assert "ACCESS_TOKEN_FILE" not in config_source
     assert "access_token.txt" not in config_source.lower()
+
+
+class _FakePywin32Error(Exception):
+    def __init__(self, winerror: int, message: str) -> None:
+        super().__init__(winerror, message)
+        self.winerror = winerror
+
+
+class _FakeWin32Cred(ModuleType):
+    """Emulate pywin32 312: str blobs stored as UTF-16-LE, bytes rejected."""
+
+    CRED_TYPE_GENERIC = 1
+    CRED_PERSIST_LOCAL_MACHINE = 2
+
+    def __init__(self) -> None:
+        super().__init__("win32cred")
+        self.store: dict[str, bytes] = {}
+
+    def CredRead(self, target: str, cred_type: int, flags: int = 0) -> dict:
+        if target not in self.store:
+            raise _FakePywin32Error(1168, "Element not found.")
+        return {"CredentialBlob": self.store[target]}
+
+    def CredWrite(self, credential: dict, flags: int = 0) -> None:
+        blob = credential["CredentialBlob"]
+        if not isinstance(blob, str):
+            raise TypeError(
+                f"Objects of type '{type(blob).__name__}' can not be "
+                "converted to Unicode."
+            )
+        self.store[credential["TargetName"]] = blob.encode("utf-16-le")
+
+
+def test_windows_credential_cold_start_round_trip_on_pywin32_312(
+    auth_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+):
+    """Regression: cold start must survive pywin32 312 blob semantics.
+
+    pywin32 312 rejects a bytes CredentialBlob with a TypeError and stores a
+    str blob as UTF-16-LE, which CredRead then returns as raw bytes. The
+    loader must both create the credential successfully and read back the
+    exact secret it generated -- no crash, no NUL-interleaved garbling.
+    """
+    fake = _FakeWin32Cred()
+    monkeypatch.setitem(sys.modules, "win32cred", fake)
+    sentinel = "stage1-round-trip-regression-value"
+    monkeypatch.setattr(auth_module, "_new_secret", lambda: sentinel)
+
+    created = auth_module._load_or_create_windows_credential()
+    assert created == sentinel
+    assert "\x00" not in created
+    assert fake.store[auth_module.CREDENTIAL_TARGET] == sentinel.encode("utf-16-le")
+
+    # A later cold process must reuse the stored credential, not mint anew.
+    monkeypatch.setattr(
+        auth_module,
+        "_new_secret",
+        lambda: pytest.fail("existing credential must be reused"),
+    )
+    assert auth_module._load_or_create_windows_credential() == sentinel
+
+
+def test_credential_blob_decoding_reverses_pywin32_and_legacy_encodings(
+    auth_module: ModuleType,
+):
+    decode = auth_module._decode_credential_blob
+    assert decode("str-blob-secret".encode("utf-16-le")) == "str-blob-secret"
+    assert decode(b"legacy-utf8-secret") == "legacy-utf8-secret"
+    assert decode(memoryview("view-secret".encode("utf-16-le"))) == "view-secret"
+    with pytest.raises(RuntimeError):
+        decode(b"")
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("win32cred") is None,
+    reason="live Credential Manager round-trip requires Windows and pywin32",
+)
+def test_windows_credential_round_trip_against_real_credential_manager(
+    auth_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+):
+    """Create-then-read a throwaway credential in the real store."""
+    win32cred = importlib.import_module("win32cred")
+    target = "Alpecca/Stage1RoundTripTest"
+    monkeypatch.setattr(auth_module, "CREDENTIAL_TARGET", target)
+
+    def _delete_quietly() -> None:
+        try:
+            win32cred.CredDelete(target, win32cred.CRED_TYPE_GENERIC, 0)
+        except Exception:
+            pass
+
+    _delete_quietly()
+    try:
+        created = auth_module._load_or_create_windows_credential()
+        loaded = auth_module._load_or_create_windows_credential()
+        assert created == loaded
+        assert isinstance(created, str) and created.strip()
+        assert "\x00" not in created
+    finally:
+        _delete_quietly()
 
 
 def test_capability_registry_defaults_every_risky_surface_off(

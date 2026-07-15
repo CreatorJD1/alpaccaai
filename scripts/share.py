@@ -1,9 +1,8 @@
-"""Serve Alpecca so your phone can reach her -- on WiFi or through Cloudflare.
+"""Attach a phone relay to the one already-running Alpecca instance.
 
-This launcher binds the local server to all interfaces and prints clean
-trusted-device links for desktop, LAN, and optional Cloudflare access. If a local Alpecca server
-is already running, the tunnel points to that same instance instead of creating a
-second mind.
+This tool never starts the backend. The supported launcher owns the atomic
+instance lock and CoreMind construction; this process only verifies the exact
+local health identity and optionally opens a credential-free HTTPS relay.
 """
 from __future__ import annotations
 
@@ -72,7 +71,7 @@ def _start_https_fallback(port: int) -> tuple[str | None, subprocess.Popen | Non
     return None, None
 
 
-def start_tunnel(port: int) -> None:
+def start_tunnel(port: int) -> bool:
     """Open a validated HTTPS tunnel to the one running Alpecca instance."""
     from alpecca import preview as preview_mod
 
@@ -102,7 +101,22 @@ def start_tunnel(port: int) -> None:
             preview_mod.write_state(url, port, provider="localtunnel")
         else:
             print("\n[tunnel] No HTTPS phone relay could be opened.\n")
-            return
+            return False
+
+    # The full-stack launcher acquires the cross-host singleton lease before a
+    # tunnel hostname exists. Publish the discovered hostname only after the
+    # authority confirms that this machine still owns the exact active fence.
+    # A stale relay process therefore cannot replace the endpoint of a newer
+    # local or cloud runtime.
+    try:
+        from alpecca.continuity_lease import client_from_env
+
+        continuity = client_from_env(role="local-primary")
+        if continuity is not None:
+            continuity.publish_active_endpoint(url)
+            print("  Continuity endpoint updated under the active local fence.")
+    except Exception as exc:
+        print(f"  Continuity endpoint update failed: {type(exc).__name__}")
 
     try:
         subprocess.run(
@@ -125,65 +139,48 @@ def start_tunnel(port: int) -> None:
     print("  ", "reused existing tunnel" if proc is None else "opened one tunnel to the existing server")
     print("  First remote open enrolls that browser; later opens reuse its HttpOnly trust cookie.")
     print("=" * 64 + "\n")
+    return True
 
 
-def start_tunnel_when_ready(port: int) -> None:
-    """Wait for the local server, then publish the Cloudflare link."""
+def main() -> int:
+    from config import PORT
     from alpecca import instance as instance_mod
 
-    for _ in range(60):
-        if instance_mod.existing_server_url(port, timeout=1.0):
-            start_tunnel(port)
-            return
-        time.sleep(1.0)
-    print("[tunnel] Local server did not become ready in time; no public link opened.")
-
-
-def main() -> None:
-    os.environ["ALPECCA_SERVER_HOST"] = "0.0.0.0"
-
-    from config import HOST, PORT
-    from alpecca import instance as instance_mod
+    existing = instance_mod.existing_server_url(PORT)
+    if not existing:
+        print(
+            "No verified Alpecca CoreMind is running on the local port. "
+            "Start it with START_HERE.bat or python scripts\\run_full.py, "
+            "then run this relay again.",
+            file=sys.stderr,
+        )
+        return 2
 
     ip = lan_ip()
     local = f"http://127.0.0.1:{PORT}/"
     phone = f"http://{ip}:{PORT}/"
 
-    print("\nAlpecca is opening to your network (trusted-device gated).")
-    print(f"  On this computer          : {local}")
-    print(f"  LAN address (no sign-in)  : {phone}")
+    print("\nAlpecca phone access is attaching to the existing instance.")
+    print(f"  Verified local instance   : {existing}")
+    print(f"  Local browser             : {local}")
+    print(f"  LAN address (if enabled)  : {phone}")
     print("  Remote trusted-device enrollment requires HTTPS; LAN HTTP is not offered.")
     print("  Credentials are never placed in URLs.")
 
     if "--tunnel" in sys.argv[1:]:
-        print("  Cloudflare tunnel will open after the local server is ready.")
+        print("  Opening a relay to this verified instance.")
+        if not start_tunnel(PORT):
+            return 1
     else:
         print("  For the secure phone link: python scripts/share.py --tunnel")
     print()
 
-    existing = instance_mod.existing_server_url(PORT)
-    if existing:
-        print(f"Alpecca is already awake at {existing}; reusing the same mind instance.")
-        if "--tunnel" in sys.argv[1:]:
-            start_tunnel(PORT)
-        try:
-            while True:
-                time.sleep(3600)
-        except KeyboardInterrupt:
-            return
-
-    import uvicorn
-    import server  # noqa: F401
-
-    if "--tunnel" in sys.argv[1:]:
-        threading.Thread(
-            target=start_tunnel_when_ready,
-            args=(PORT,),
-            daemon=True,
-        ).start()
-
-    uvicorn.run(server.app, host=HOST, port=PORT, log_level="warning")
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

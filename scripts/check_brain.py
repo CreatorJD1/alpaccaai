@@ -14,7 +14,7 @@ import sys
 
 # Default to the small 4B brain (what fits a 4 GB card) unless you've set one.
 # config reads ALPECCA_MODEL, so set it BEFORE importing config.
-os.environ.setdefault("ALPECCA_MODEL", "qwen3:4b")
+os.environ.setdefault("ALPECCA_MODEL", "qwen3.5:9b")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import OLLAMA_MODEL, OLLAMA_HOST, OLLAMA_NUM_CTX
@@ -58,7 +58,7 @@ except Exception as exc:
     print("-" * 56)
     msg = str(exc).lower()
     if "not found" in msg or "no such" in msg or "pull" in msg:
-        print(" Looks like the model isn't pulled.  Fix:  ollama pull qwen3:4b")
+        print(" Looks like the model isn't pulled.  Fix:  ollama pull qwen3.5:9b")
     elif "out of memory" in msg or "oom" in msg or "allocate" in msg:
         print(" Still an out-of-memory.  Lower the context further, e.g.:")
         print("   set ALPECCA_NUM_CTX=4096   (then re-run this check)")

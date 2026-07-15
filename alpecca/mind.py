@@ -586,7 +586,8 @@ class _LLM:
         return OLLAMA_MODEL
 
     def _chat(self, messages: list[dict], tools: list[dict] | None = None,
-              model: str | None = None, *, local_only: bool = False):
+              model: str | None = None, *, local_only: bool = False,
+              tier: str = "reason"):
         """One Ollama chat call with thinking disabled.
 
         Qwen3 hybrids think out loud by default, which is great for math and
@@ -627,8 +628,8 @@ class _LLM:
         # Tool calls stay on the local Ollama protocol. Hosted chat routing is
         # plain-text only because tool schemas/round-trips are backend-specific
         # and must remain observable and bounded on the local path.
-        if (CHAT_CLOUD_MODEL and not local_only and not tools
-                and kwargs["model"] == OLLAMA_MODEL):
+        if (CHAT_CLOUD_MODEL and tier == "reason" and not local_only
+                and not tools):
             try:
                 ck = dict(kwargs)
                 ck["model"] = CHAT_CLOUD_MODEL
@@ -894,11 +895,13 @@ class _LLM:
                     resp = self._chat(
                         messages, tools=tools, model=tool_model,
                         local_only=local_only,
+                        tier="reason",
                     )
                 except Exception:
                     # Older client/model without tool support -- plain chat.
                     resp = self._chat(
-                        messages, model=tool_model, local_only=local_only
+                        messages, model=tool_model, local_only=local_only,
+                        tier="reason",
                     )
                 msg = resp["message"]
                 # Let her CHAIN tool calls across a bounded number of rounds, so a
@@ -937,10 +940,12 @@ class _LLM:
                             tools=round_tools,
                             model=tool_model,
                             local_only=local_only,
+                            tier="reason",
                         )
                     except Exception:
                         resp = self._chat(
-                            messages, model=tool_model, local_only=local_only
+                            messages, model=tool_model, local_only=local_only,
+                            tier="reason",
                         )
                     msg = resp["message"]
                 self._mark_model_use(
@@ -987,7 +992,14 @@ class _LLM:
             # backend, no hybrid cloud). The streamed text is a DRAFT the UI
             # shows immediately; the text returned here still flows through
             # every after-generation vet unchanged.
-            if (on_token is not None and not tools
+            cloud_reason_chat = bool(
+                CHAT_CLOUD_MODEL
+                and tier == "reason"
+                and not local_only
+                and not tools
+                and not (CHAT_ZEROGPU and ZEROGPU_SPACE)
+            )
+            if (on_token is not None and not tools and not cloud_reason_chat
                     and self._backend != "hf"
                     and self._client is not None):
                 try:
@@ -1010,9 +1022,10 @@ class _LLM:
                     model=model,
                     local_only=bool(
                         local_only
-                        or on_token is not None
+                        or (on_token is not None and not cloud_reason_chat)
                         or (CHAT_ZEROGPU and ZEROGPU_SPACE)
                     ),
+                    tier=tier,
                 )
                 used_tier = tier
                 # Hybrid chat may have answered from the cloud even though the
@@ -1024,7 +1037,8 @@ class _LLM:
                 # templated stub. This is what makes the gemma4 default safe.
                 if model != OLLAMA_MODEL:
                     resp = self._chat(
-                        messages, model=OLLAMA_MODEL, local_only=local_only
+                        messages, model=OLLAMA_MODEL, local_only=local_only,
+                        tier=tier,
                     )
                     used_tier = "reason"
                     used_model = self.last_chat_model or OLLAMA_MODEL
@@ -1080,6 +1094,20 @@ class _LLM:
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": user_msg})
+        hf_call: dict = {
+            "messages": messages,
+            "model": HF_MODEL,
+            "max_tokens": 512,
+            "temperature": 0.8,
+        }
+        if "qwen3.5" in HF_MODEL.lower():
+            # Qwen3.5 thinks by default and can consume the whole response cap
+            # before emitting content. Companion turns need the model's
+            # documented non-thinking API mode; deep reflection keeps its own
+            # separately budgeted route.
+            hf_call["extra_body"] = {
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
         try:
             if tools and on_tool:
                 # Offer the tools; if the model calls any, run them and let it
@@ -1087,12 +1115,9 @@ class _LLM:
                 # tools for every model, so fall back to a plain call on error.
                 try:
                     resp = self._hf.chat_completion(
-                        messages=messages, model=HF_MODEL, tools=tools,
-                        tool_choice="auto", max_tokens=512, temperature=0.8)
+                        **hf_call, tools=tools, tool_choice="auto")
                 except Exception:
-                    resp = self._hf.chat_completion(
-                        messages=messages, model=HF_MODEL, max_tokens=512,
-                        temperature=0.8)
+                    resp = self._hf.chat_completion(**hf_call)
                 msg = resp.choices[0].message
                 import json as _json
                 # Same bounded multi-round chaining as the local path (see there).
@@ -1121,14 +1146,13 @@ class _LLM:
                                          "tool_call_id": getattr(c, "id", "") or "call",
                                          "content": str(result)})
                     last = (i == rounds - 1)
-                    kw = dict(messages=messages, model=HF_MODEL, max_tokens=512, temperature=0.8)
+                    kw = dict(hf_call, messages=messages)
                     if not last:
                         kw.update(tools=tools, tool_choice="auto")
                     try:
                         resp = self._hf.chat_completion(**kw)
                     except Exception:
-                        resp = self._hf.chat_completion(messages=messages, model=HF_MODEL,
-                                                        max_tokens=512, temperature=0.8)
+                        resp = self._hf.chat_completion(**dict(hf_call, messages=messages))
                     msg = resp.choices[0].message
                 self._mark_model_use(
                     requested="reason",
@@ -1137,8 +1161,7 @@ class _LLM:
                     model=HF_MODEL,
                 )
                 return strip_think(msg.content)
-            resp = self._hf.chat_completion(messages=messages, model=HF_MODEL,
-                                            max_tokens=512, temperature=0.8)
+            resp = self._hf.chat_completion(**hf_call)
             self._mark_model_use(
                 requested="reason",
                 used="reason",
@@ -4976,6 +4999,100 @@ class CoreMind:
         qid = journal_mod.ask(q, mood=mood)
         return {"phase": "asked", "question": q, "id": qid}
 
+    @staticmethod
+    def _content_safe_soul_vector(value: object) -> dict | None:
+        """Project Soul evidence into one fixed, prose-free runtime shape."""
+        if not isinstance(value, Mapping):
+            return None
+        order = value.get("order")
+        scores = value.get("scores")
+        active = value.get("active")
+        ranks = value.get("ranks")
+        expected = tuple(soul_mod.PERSPECTIVE_ORDER)
+        if (
+            value.get("schema") != soul_mod.PERSPECTIVE_VECTOR_SCHEMA
+            or not isinstance(order, (list, tuple))
+            or tuple(order) != expected
+        ):
+            return None
+        if not all(
+            isinstance(items, (list, tuple)) and len(items) == len(expected)
+            for items in (scores, active, ranks)
+        ):
+            return None
+        model_calls = value.get("model_calls")
+        if (
+            value.get("source") != "deterministic"
+            or isinstance(model_calls, bool)
+            or not isinstance(model_calls, int)
+            or model_calls != 0
+            or value.get("independent_transformers") is not False
+        ):
+            return None
+
+        safe_scores: list[float] = []
+        for item in scores:
+            if isinstance(item, bool) or not isinstance(item, Number):
+                return None
+            try:
+                number = float(item)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not math.isfinite(number) or not 0.0 <= number <= 1.0:
+                return None
+            safe_scores.append(round(number, 3))
+
+        if any(
+            not isinstance(item, int)
+            or isinstance(item, bool)
+            or item not in {0, 1}
+            for item in active
+        ):
+            return None
+        safe_active = [int(item) for item in active]
+        if any(
+            not isinstance(item, int)
+            or isinstance(item, bool)
+            or not 0 <= item <= 4
+            for item in ranks
+        ):
+            return None
+        safe_ranks = [int(item) for item in ranks]
+        raw_focus = value.get("focus_index")
+        if (
+            not isinstance(raw_focus, int)
+            or isinstance(raw_focus, bool)
+            or not -1 <= raw_focus < len(expected)
+        ):
+            return None
+        focus_index = int(raw_focus)
+        contradiction = value.get("contradiction")
+        pressure = value.get("pressure")
+        escalate = value.get("escalate")
+        if (
+            not isinstance(contradiction, bool)
+            or pressure not in {"none", "high", "overflow"}
+            or not isinstance(escalate, bool)
+            or escalate != (contradiction or pressure != "none")
+        ):
+            return None
+        return {
+            "schema": soul_mod.PERSPECTIVE_VECTOR_SCHEMA,
+            "order": list(expected),
+            "scores": safe_scores,
+            "active": safe_active,
+            "ranks": safe_ranks,
+            "focus_index": focus_index,
+            "contradiction": contradiction,
+            "pressure": pressure,
+            "escalate": escalate,
+            "source": "deterministic",
+            "model_calls": 0,
+            "independent_transformers": False,
+            "advisory_only": True,
+            "focus_stage": "deterministic_arbitration",
+        }
+
     def soul_state(self, *, details: bool = True) -> dict:
         """What her Soul is arbitrating right now: the ranked slate of intentions
         from her seven subagents and the one in focus, decided by the Good Person
@@ -4990,6 +5107,10 @@ class CoreMind:
             if "verbose" not in str(exc):
                 raise
             plan = soul_mod.soul.deliberate(snapshot)
+        raw_vector = plan.pop("perspective_vector", None)
+        safe_vector = self._content_safe_soul_vector(raw_vector)
+        if safe_vector is not None:
+            plan["perspective_vector"] = safe_vector
         plan["snapshot"] = snapshot.as_dict()
         focus = plan.get("focus") or {}
         slate = plan.get("slate") or []
@@ -5026,6 +5147,26 @@ class CoreMind:
                         metadata={"winning_rank": winning_rank, "picked": picked, "options": tied},
                     ))
         return plan
+
+    def soul_perspective_evidence(self) -> dict:
+        """Return only bounded advisory Soul evidence, with no prose or model call."""
+        snapshot = self._soul_snapshot()
+        try:
+            plan = soul_mod.soul.deliberate(snapshot, verbose=False)
+        except TypeError as exc:
+            if "verbose" not in str(exc):
+                raise
+            plan = soul_mod.soul.deliberate(snapshot)
+        vector = self._content_safe_soul_vector(plan.get("perspective_vector"))
+        if not isinstance(vector, Mapping):
+            return {}
+        return {
+            **vector,
+            "order": list(vector.get("order") or ()),
+            "scores": list(vector.get("scores") or ()),
+            "active": list(vector.get("active") or ()),
+            "ranks": list(vector.get("ranks") or ()),
+        }
 
     def idle_self_direct(self, *, initiative_scope: str = "") -> dict | None:
         """One self-directed act on a quiet tick, **chosen by her Soul** -- this is
