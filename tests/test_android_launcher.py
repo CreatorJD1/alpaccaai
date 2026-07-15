@@ -1,9 +1,34 @@
 """Static contracts for the installable Android launcher."""
+import hashlib
+import json
+import re
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "apps" / "android-launcher"
+
+
+def test_android_release_manifest_matches_the_current_signed_build():
+    release = json.loads(
+        (ROOT / "deploy" / "mobile" / "alpecca-launcher-update.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    gradle = (APP / "app" / "build.gradle").read_text(encoding="utf-8")
+
+    assert f'versionCode {release["versionCode"]}' in gradle
+    assert f'versionName "{release["versionName"]}"' in gradle
+    assert release["packageName"] == "ai.alpecca.launcher"
+    assert release["apkUrl"].endswith(
+        f'/mobile/AlpeccaLauncher-v{release["versionName"]}.apk'
+    )
+    assert release["apkUrl"].startswith("https://pub-")
+    assert re.fullmatch(r"[0-9a-f]{64}", release["sha256"])
+
+    built_apk = ROOT / "output" / "alpecca-launcher" / "AlpeccaLauncher.apk"
+    if built_apk.is_file():
+        assert hashlib.sha256(built_apk.read_bytes()).hexdigest() == release["sha256"]
 
 
 def test_android_launcher_has_installable_application_contract():
