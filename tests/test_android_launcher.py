@@ -130,8 +130,8 @@ def test_android_device_trust_validates_transcript_and_fences_clear_races():
     source = (APP / "app" / "src" / "main" / "java" / "ai" / "alpecca" / "launcher" / "MainActivity.java").read_text(encoding="utf-8")
     gradle = (APP / "app" / "build.gradle").read_text(encoding="utf-8")
 
-    assert 'versionCode 8' in gradle
-    assert 'versionName "2.2.2"' in gradle
+    assert 'versionCode 9' in gradle
+    assert 'versionName "2.2.3"' in gradle
     assert 'APP_USER_AGENT = "AlpeccaAndroid/" + BuildConfig.VERSION_NAME' in source
     assert "validateDeviceChallenge(" in source
     assert '"alpecca-device-auth-v2".equals(lines[0])' in source
@@ -172,6 +172,13 @@ def test_android_launcher_update_flow_is_https_verified_and_user_confirmed():
     assert "verifyDownloadedPackage(" in source
     assert "getPackageArchiveInfo(" in source
     assert "installedSigners.equals(updateSigners)" in source
+    assert 'text("ALPECCA APP UPDATES"' in source
+    assert 'primaryButton("Install Alpecca update")' in source
+    assert 'secondaryButton("Refresh House source")' in source
+    assert 'showUpdateProgress("Update verified. Ready to install."' in source
+    assert "listener.onProgress(100);" in source
+    assert 'appendQueryParameter(\n                "source_refresh"' in source
+    assert "webView.clearCache(true)" in source
 
     assert "android.permission.REQUEST_INSTALL_PACKAGES" in manifest
     assert 'android.permission.INSTALL_PACKAGES"' not in manifest

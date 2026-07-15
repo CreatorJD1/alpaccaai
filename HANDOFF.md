@@ -1,5 +1,32 @@
 # Alpecca — Handoff (updated 2026-07-15)
 
+## Codex Reconnect And Alpecca App Update Center (2026-07-15)
+
+- The July 15 reconnect regression was a stale R2 mobile-discovery object that
+  still advertised `floppy-fans-tan.loca.lt` after the live stack had moved to
+  Cloudflare. The public record was republished to the active fenced endpoint.
+  `publish_mobile_endpoint.py` now retries a newly issued tunnel's exact
+  `/healthz` identity before publishing, closing the startup race that left the
+  old record in place.
+- Android 2.2.3 (code 9) turns the native launcher into the **Alpecca App Update
+  Center**. Its scrollable panel keeps check, byte download, package/signature
+  verification, and install status visible; a verified install action remains
+  available until Android's installer is opened. **Refresh House source** clears
+  stale WebView cache, adds a cache-busting source revision, and rediscovers the
+  fenced endpoint without deleting trusted-device cookies.
+- The immutable APK is
+  `https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.2.3.apk`
+  with SHA-256
+  `52d7a4f5452e438657cb3fdeedfa8c3225e0fd4fdced31411bd2f70cbeb64165`.
+  The public manifest advertises code 9 and matches the downloaded bytes.
+- The private `CREATORJD/alpecca-cloud-desktop` noVNC Space is provider-paused
+  as `Flagged as abusive`; do not clone or restart it to evade moderation.
+  Cloudflare's live Containers API also rejects this account because Workers
+  Paid is not enabled. No supported VM-provider CLI or authenticated account is
+  present on this machine, so the persistent cloud desktop is still blocked.
+  The existing desktop-only image and Ubuntu policy scaffold remain inert and
+  must not be described as running.
+
 ## Codex Fenced Cloud Survival And Android 2.2.2 (2026-07-15)
 
 This section supersedes older claims below that transactional cloud failover is

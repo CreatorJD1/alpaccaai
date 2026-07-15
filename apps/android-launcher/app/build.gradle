@@ -10,8 +10,8 @@ android {
         applicationId "ai.alpecca.launcher"
         minSdk 26
         targetSdk 35
-        versionCode 8
-        versionName "2.2.2"
+        versionCode 9
+        versionName "2.2.3"
         buildConfigField "String", "ALPECCA_DISCOVERY_URL", '"https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/alpecca-endpoint.json"'
         buildConfigField "String", "ALPECCA_CONTINUITY_DISCOVERY_URL", '"https://alpecca-continuity-lease.jasondixon1994.workers.dev/v1/endpoint"'
         buildConfigField "String", "ALPECCA_CLOUD_STANDBY_URL", '"https://creatorjd-alpecca-survival-core.hf.space"'

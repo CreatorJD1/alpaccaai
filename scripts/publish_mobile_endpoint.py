@@ -6,7 +6,9 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -18,6 +20,25 @@ DEFAULT_BUCKET = "alpeccaai"
 DEFAULT_KEY = "mobile/alpecca-endpoint.json"
 
 
+def wait_for_endpoint(
+    url: str,
+    *,
+    attempts: int = 5,
+    delay_seconds: float = 2.0,
+    probe: Callable[[str], bool] = probe_alpecca_endpoint,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> bool:
+    """Wait briefly for a newly issued tunnel hostname to reach the backend."""
+    bounded_attempts = max(1, min(10, int(attempts)))
+    bounded_delay = max(0.0, min(5.0, float(delay_seconds)))
+    for attempt in range(bounded_attempts):
+        if probe(url):
+            return True
+        if attempt + 1 < bounded_attempts and bounded_delay:
+            sleeper(bounded_delay)
+    return False
+
+
 def _wrangler() -> list[str] | None:
     direct = shutil.which("wrangler")
     if direct:
@@ -27,7 +48,7 @@ def _wrangler() -> list[str] | None:
 
 
 def publish(url: str, *, kind: str, bucket: str, key: str, skip_probe: bool = False) -> Path:
-    if not skip_probe and not probe_alpecca_endpoint(url):
+    if not skip_probe and not wait_for_endpoint(url):
         raise RuntimeError("endpoint did not return Alpecca's exact /healthz identity")
     document = build_endpoint_document([(url, kind, 0 if kind == "named" else 10)])
     if not document["endpoints"]:

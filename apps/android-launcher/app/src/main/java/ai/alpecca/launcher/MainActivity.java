@@ -43,6 +43,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -119,6 +120,9 @@ public final class MainActivity extends Activity {
     private ProgressBar progress;
     private EditText serverField;
     private Button updateButton;
+    private Button installUpdateButton;
+    private TextView updateStatus;
+    private ProgressBar updateProgress;
     private ValueCallback<Uri[]> fileCallback;
     private PermissionRequest pendingWebPermission;
     private String[] pendingWebResources = new String[0];
@@ -136,6 +140,7 @@ public final class MainActivity extends Activity {
     private boolean updateDownloadRunning;
     private boolean startupUpdateCheckRequested;
     private boolean awaitingInstallPermission;
+    private boolean forceSourceRefresh;
     private long trustGeneration;
     private String activeServerUrl = "";
     private UpdateInfo pendingAvailableUpdate;
@@ -290,7 +295,7 @@ public final class MainActivity extends Activity {
         sheet.setBackground(rounded(PANEL, dp(8), PANEL_HIGH));
         sheet.setOnClickListener(view -> { });
 
-        TextView title = text("Connection", 24, TEXT, true);
+        TextView title = text("Connection and updates", 24, TEXT, true);
         sheet.addView(title);
         TextView help = text(
             "The app normally discovers Alpecca automatically. Use a manual HTTPS address only when needed.",
@@ -327,14 +332,55 @@ public final class MainActivity extends Activity {
         permissionParams.topMargin = dp(8);
         sheet.addView(permissions, permissionParams);
 
-        updateButton = secondaryButton("Check for launcher update");
+        TextView updateTitle = text("ALPECCA APP UPDATES", 11, GOLD, true);
+        updateTitle.setPadding(0, dp(18), 0, dp(5));
+        sheet.addView(updateTitle);
+
+        updateStatus = text(
+            "Alpecca app " + BuildConfig.VERSION_NAME + " is ready to check for updates.",
+            13,
+            MUTED,
+            false
+        );
+        updateStatus.setPadding(0, 0, 0, dp(8));
+        sheet.addView(updateStatus);
+
+        updateProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        updateProgress.setIndeterminate(false);
+        updateProgress.setMax(100);
+        updateProgress.setProgress(0);
+        updateProgress.getIndeterminateDrawable().setTint(CYAN);
+        updateProgress.getProgressDrawable().setTint(CYAN);
+        sheet.addView(
+            updateProgress,
+            new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(6))
+        );
+
+        updateButton = secondaryButton("Check for Alpecca update");
         updateButton.setOnClickListener(view -> {
-            hideSettings();
             checkForUpdates(true);
         });
         LinearLayout.LayoutParams updateParams = fullButtonParams();
         updateParams.topMargin = dp(8);
         sheet.addView(updateButton, updateParams);
+
+        installUpdateButton = primaryButton("Install Alpecca update");
+        installUpdateButton.setVisibility(View.GONE);
+        installUpdateButton.setOnClickListener(view -> {
+            VerifiedUpdate pending = pendingInstallUpdate;
+            if (pending != null) {
+                openInstallerOrSettings(pending);
+            }
+        });
+        LinearLayout.LayoutParams installParams = fullButtonParams();
+        installParams.topMargin = dp(8);
+        sheet.addView(installUpdateButton, installParams);
+
+        Button refreshSource = secondaryButton("Refresh House source");
+        refreshSource.setOnClickListener(view -> refreshHouseSource());
+        LinearLayout.LayoutParams refreshParams = fullButtonParams();
+        refreshParams.topMargin = dp(8);
+        sheet.addView(refreshSource, refreshParams);
 
         Button clear = secondaryButton("Clear trusted session");
         clear.setOnClickListener(view -> confirmClearSession());
@@ -348,15 +394,26 @@ public final class MainActivity extends Activity {
         closeParams.topMargin = dp(8);
         sheet.addView(close, closeParams);
 
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        scroll.addView(
+            sheet,
+            new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        );
+
         FrameLayout.LayoutParams sheetParams = new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
+            ViewGroup.LayoutParams.MATCH_PARENT
         );
-        sheetParams.gravity = Gravity.BOTTOM;
+        sheetParams.gravity = Gravity.CENTER;
         sheetParams.leftMargin = dp(12);
         sheetParams.rightMargin = dp(12);
+        sheetParams.topMargin = dp(48);
         sheetParams.bottomMargin = dp(8);
-        overlay.addView(sheet, sheetParams);
+        overlay.addView(scroll, sheetParams);
         return overlay;
     }
 
@@ -723,6 +780,18 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void showUpdateProgress(String message, boolean indeterminate, int value) {
+        if (updateStatus != null) {
+            updateStatus.setText(message);
+        }
+        if (updateProgress != null) {
+            updateProgress.setIndeterminate(indeterminate);
+            if (!indeterminate) {
+                updateProgress.setProgress(Math.max(0, Math.min(100, value)));
+            }
+        }
+    }
+
     private void checkForUpdates(boolean manual) {
         if (updateCheckRunning || updateDownloadRunning) {
             if (manual) {
@@ -741,6 +810,7 @@ public final class MainActivity extends Activity {
         preferences.edit().putLong(PREF_LAST_UPDATE_CHECK_MS, now).apply();
         updateCheckRunning = true;
         updateUpdateButtonState();
+        showUpdateProgress("Checking Alpecca's signed app release...", true, 0);
         if (manual) {
             Toast.makeText(this, "Checking for an Alpecca update...", Toast.LENGTH_SHORT).show();
         }
@@ -762,12 +832,18 @@ public final class MainActivity extends Activity {
                     return;
                 }
                 if (failureMessage != null) {
+                    showUpdateProgress("Update source could not be reached. Try again.", false, 0);
                     if (manual) {
                         Toast.makeText(this, failureMessage, Toast.LENGTH_LONG).show();
                     }
                     return;
                 }
                 if (result.versionCode <= BuildConfig.VERSION_CODE) {
+                    showUpdateProgress(
+                        "Alpecca app " + BuildConfig.VERSION_NAME + " is current.",
+                        false,
+                        100
+                    );
                     if (manual) {
                         Toast.makeText(
                             this,
@@ -777,10 +853,15 @@ public final class MainActivity extends Activity {
                     }
                     return;
                 }
+                pendingAvailableUpdate = result;
+                showUpdateProgress(
+                    "Alpecca app " + result.versionName + " is available to download.",
+                    false,
+                    0
+                );
                 if (activityResumed) {
+                    pendingAvailableUpdate = null;
                     showUpdateAvailable(result);
-                } else {
-                    pendingAvailableUpdate = result;
                 }
             });
         });
@@ -861,9 +942,9 @@ public final class MainActivity extends Activity {
 
     private void showUpdateAvailable(UpdateInfo update) {
         new AlertDialog.Builder(this)
-            .setTitle("Alpecca " + update.versionName + " is available")
+            .setTitle("Alpecca app " + update.versionName + " is available")
             .setMessage(
-                "Download the launcher update over HTTPS? The APK will be verified before Android is allowed to open it."
+                "Download the Alpecca app update over HTTPS? The package will be verified before Android is allowed to open it."
             )
             .setPositiveButton("Download update", (dialog, which) -> downloadAndVerifyUpdate(update))
             .setNegativeButton("Not now", null)
@@ -876,12 +957,31 @@ public final class MainActivity extends Activity {
         }
         updateDownloadRunning = true;
         updateUpdateButtonState();
+        showUpdateProgress("Downloading Alpecca app " + update.versionName + "... 0%", false, 0);
         Toast.makeText(this, "Downloading and verifying the update...", Toast.LENGTH_LONG).show();
         network.execute(() -> {
             File downloaded = null;
             String failure = null;
             try {
-                downloaded = downloadUpdateApk(update);
+                downloaded = downloadUpdateApk(update, percent -> runOnUiThread(() -> {
+                    if (percent < 0) {
+                        showUpdateProgress(
+                            "Downloading Alpecca app " + update.versionName + "...",
+                            true,
+                            0
+                        );
+                    } else if (percent < 94) {
+                        showUpdateProgress(
+                            "Downloading Alpecca app " + update.versionName + "... " + percent + "%",
+                            false,
+                            percent
+                        );
+                    } else if (percent < 100) {
+                        showUpdateProgress("Verifying package and signature...", false, percent);
+                    } else {
+                        showUpdateProgress("Update verified. Ready to install.", false, 100);
+                    }
+                }));
             } catch (Exception error) {
                 failure = "The update could not be downloaded or verified.";
             }
@@ -894,20 +994,23 @@ public final class MainActivity extends Activity {
                     return;
                 }
                 if (failureMessage != null) {
+                    showUpdateProgress("Download or verification failed.", false, 0);
                     Toast.makeText(this, failureMessage, Toast.LENGTH_LONG).show();
                     return;
                 }
                 VerifiedUpdate verified = new VerifiedUpdate(update, verifiedApk);
+                pendingInstallUpdate = verified;
+                pendingAvailableUpdate = null;
+                showUpdateProgress("Update verified. Ready to install.", false, 100);
+                updateUpdateButtonState();
                 if (activityResumed) {
                     confirmInstallUpdate(verified);
-                } else {
-                    pendingInstallUpdate = verified;
                 }
             });
         });
     }
 
-    private File downloadUpdateApk(UpdateInfo update) throws Exception {
+    private File downloadUpdateApk(UpdateInfo update, UpdateProgressListener listener) throws Exception {
         File updateDir = new File(getCacheDir(), UPDATE_CACHE_DIR);
         if ((!updateDir.exists() && !updateDir.mkdirs()) || !updateDir.isDirectory()) {
             throw new IllegalStateException("update cache unavailable");
@@ -940,9 +1043,11 @@ public final class MainActivity extends Activity {
             if (declaredLength > MAX_UPDATE_APK_BYTES) {
                 throw new SecurityException("update APK too large");
             }
+            listener.onProgress(declaredLength > 0L ? 0 : -1);
 
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             long total = 0L;
+            int lastPercent = -2;
             try (InputStream input = connection.getInputStream();
                  FileOutputStream output = new FileOutputStream(partial)) {
                 byte[] buffer = new byte[32 * 1024];
@@ -954,6 +1059,13 @@ public final class MainActivity extends Activity {
                     }
                     digest.update(buffer, 0, read);
                     output.write(buffer, 0, read);
+                    int percent = declaredLength > 0L
+                        ? (int) Math.min(92L, (total * 92L) / declaredLength)
+                        : -1;
+                    if (percent != lastPercent) {
+                        lastPercent = percent;
+                        listener.onProgress(percent);
+                    }
                 }
                 output.flush();
             }
@@ -963,10 +1075,12 @@ public final class MainActivity extends Activity {
             if (!MessageDigest.isEqual(hexToBytes(update.sha256), digest.digest())) {
                 throw new SecurityException("update APK digest mismatch");
             }
+            listener.onProgress(96);
             if (!partial.renameTo(complete)) {
                 throw new IllegalStateException("update APK could not be finalized");
             }
             verifyDownloadedPackage(complete, update);
+            listener.onProgress(100);
             verified = true;
             return complete;
         } finally {
@@ -1051,7 +1165,7 @@ public final class MainActivity extends Activity {
 
     private void confirmInstallUpdate(VerifiedUpdate update) {
         new AlertDialog.Builder(this)
-            .setTitle("Install Alpecca " + update.info.versionName + "?")
+            .setTitle("Install Alpecca app " + update.info.versionName + "?")
             .setMessage(
                 "The APK passed SHA-256, package, version, and signing checks. Android will show its own installer confirmation next."
             )
@@ -1062,8 +1176,9 @@ public final class MainActivity extends Activity {
 
     private void openInstallerOrSettings(VerifiedUpdate update) {
         if (!getPackageManager().canRequestPackageInstalls()) {
+            showUpdateProgress("Android install permission is required.", false, 100);
             new AlertDialog.Builder(this)
-                .setTitle("Allow launcher updates?")
+                .setTitle("Allow Alpecca app updates?")
                 .setMessage(
                     "Android must allow Alpecca to request package installs. This does not allow silent installation."
                 )
@@ -1093,6 +1208,7 @@ public final class MainActivity extends Activity {
             return;
         }
         try {
+            showUpdateProgress("Opening Android's installer...", false, 100);
             Uri apkUri = FileProvider.getUriForFile(
                 this,
                 getPackageName() + ".updates",
@@ -1103,7 +1219,9 @@ public final class MainActivity extends Activity {
             installer.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             startActivity(installer);
             pendingInstallUpdate = null;
+            updateUpdateButtonState();
         } catch (ActivityNotFoundException | IllegalArgumentException | SecurityException error) {
+            showUpdateProgress("Android's package installer is unavailable.", false, 100);
             Toast.makeText(this, "Android's package installer is unavailable.", Toast.LENGTH_LONG).show();
         }
     }
@@ -1116,7 +1234,8 @@ public final class MainActivity extends Activity {
             if (pending != null && getPackageManager().canRequestPackageInstalls()) {
                 confirmInstallUpdate(pending);
             } else if (pending != null) {
-                Toast.makeText(this, "Launcher update permission was not enabled.", Toast.LENGTH_LONG).show();
+                showUpdateProgress("Alpecca app update permission was not enabled.", false, 100);
+                Toast.makeText(this, "Alpecca app update permission was not enabled.", Toast.LENGTH_LONG).show();
             }
             return;
         }
@@ -1135,9 +1254,18 @@ public final class MainActivity extends Activity {
         updateButton.setEnabled(!busy);
         updateButton.setText(
             updateDownloadRunning
-                ? "Downloading launcher update..."
-                : updateCheckRunning ? "Checking for launcher update..." : "Check for launcher update"
+                ? "Downloading Alpecca update..."
+                : updateCheckRunning ? "Checking Alpecca updates..." : "Check for Alpecca update"
         );
+        if (installUpdateButton != null) {
+            installUpdateButton.setVisibility(
+                pendingInstallUpdate == null ? View.GONE : View.VISIBLE
+            );
+        }
+    }
+
+    private interface UpdateProgressListener {
+        void onProgress(int percent);
     }
 
     private static final class UpdateInfo {
@@ -1177,12 +1305,19 @@ public final class MainActivity extends Activity {
         serverField.setText(normalized);
         activeServerUrl = normalized;
         recoveryPending = false;
-        Uri house = Uri.parse(normalized).buildUpon()
+        Uri.Builder houseBuilder = Uri.parse(normalized).buildUpon()
             .clearQuery()
             .appendQueryParameter("embodiment", "vrm")
             .appendQueryParameter("view", "orthographic")
-            .appendQueryParameter("client", "android")
-            .build();
+            .appendQueryParameter("client", "android");
+        if (forceSourceRefresh) {
+            houseBuilder.appendQueryParameter(
+                "source_refresh",
+                BuildConfig.VERSION_CODE + "-" + System.currentTimeMillis()
+            );
+            forceSourceRefresh = false;
+        }
+        Uri house = houseBuilder.build();
         showPortal("OPENING", "Opening House HQ", "The secure server is ready. Loading Alpecca's embodied space.", true);
         webView.stopLoading();
         if (previous != null && !serverOrigin(previous).equals(serverOrigin(normalized))) {
@@ -1697,11 +1832,31 @@ public final class MainActivity extends Activity {
 
     private void showSettings() {
         serverField.setText(preferences.getString(PREF_SERVER_URL, ""));
+        updateUpdateButtonState();
         settingsOverlay.setVisibility(View.VISIBLE);
     }
 
     private void hideSettings() {
         settingsOverlay.setVisibility(View.GONE);
+    }
+
+    private void refreshHouseSource() {
+        hideSettings();
+        forceSourceRefresh = true;
+        clearHistoryAfterLoad = true;
+        pageFailed = false;
+        recoveryPending = false;
+        connectionAttempt++;
+        discoveryRunning = false;
+        webView.stopLoading();
+        webView.clearCache(true);
+        showPortal(
+            "UPDATING",
+            "Refreshing House source",
+            "Clearing stale web assets and finding Alpecca's current fenced endpoint.",
+            true
+        );
+        startDiscovery(true);
     }
 
     private void openAndroidSettings() {

@@ -27,19 +27,21 @@ This checkpoint supersedes older route, access, model, and phase-status text.
   emits a bounded seven-score perspective vector and contradiction/pressure
   escalation evidence with zero model calls; this does not bypass `deliberate`.
 - Native phone trust uses a non-exportable Android Keystore P-256 key. Version
-  2.2.2 (code 8) validates the complete challenge transcript locally, binds
+  2.2.3 (code 9) validates the complete challenge transcript locally, binds
   resulting cookies to the exact device and HTTPS origin, fences stale
   enrollment work, and makes device revocation immediately invalidate its
   sessions. The public reviewed APK is
-  `mobile/AlpeccaLauncher-v2.2.2.apk` in the credential-free `alpeccaai` R2
+  `mobile/AlpeccaLauncher-v2.2.3.apk` in the credential-free `alpeccaai` R2
   distribution bucket (SHA-256
-  `a5666d86074a94ab59f33d439087b0058b5007215bec4c4f2d7514ca645927d5`).
-  The launcher checks a signed-package/digest manifest automatically every 12
-  hours. Android still requires CreatorJD to confirm installation; this is not
-  a silent device-owner updater.
+  `52d7a4f5452e438657cb3fdeedfa8c3225e0fd4fdced31411bd2f70cbeb64165`).
+  Its Alpecca App Update Center checks a signed-package/digest manifest
+  automatically every 12 hours, shows persistent download/verification/install
+  progress, and can force-refresh House source assets without clearing the
+  trusted-device cookie. Android still requires CreatorJD to confirm
+  installation; this is not a silent device-owner updater.
 - House and the Android launcher recover rotating HTTPS endpoints through the
   fenced continuity authority first, then the credential-free R2 discovery
-  record. Launcher 2.2.2 also probes
+  record. Launcher 2.2.3 also probes
   `https://creatorjd-alpecca-survival-core.hf.space` last to wake a sleeping
   standby; it accepts that origin only after `/healthz` reports the full
   `alpecca` identity. The current local relay is a temporary Cloudflare quick

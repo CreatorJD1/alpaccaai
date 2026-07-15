@@ -23,13 +23,16 @@ runtime.
 - Rejects cleartext HTTP and cancels invalid TLS certificates.
 - Opens off-server HTTPS links in the phone's regular browser.
 - Checks a stable HTTPS release manifest at startup, at most once every 12
-  hours, and exposes a manual **Check for launcher update** action in the native
-  connection controls.
+  hours, and exposes a native Update Center with persistent check, download,
+  verification, and install progress.
 - Downloads an accepted APK only after confirmation, keeps it in app-private
   cache, enforces a 250 MiB limit, and verifies its SHA-256, package name,
   version, and signing certificate before offering installation.
 - Opens Android's package installer only after a second explicit confirmation.
   The launcher cannot silently install an update.
+- Provides **Refresh House source** to clear stale WebView assets, add a
+  cache-busting source revision, and rediscover the active fenced endpoint
+  without deleting the trusted-device cookie.
 - Rechecks the active Alpecca health identity while the app is in the foreground.
 - Rediscovers and reloads House HQ after a tunnel failure, a main-frame WebView
   network error, or Android network recovery. Retries back off while Alpecca is
@@ -50,7 +53,7 @@ privileges.
 
 ## Launcher updates
 
-Version 2.2.2 (code 8) reads the update manifest from:
+Version 2.2.3 (code 9) reads the update manifest from:
 
 ```text
 https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/alpecca-launcher-update.json
@@ -60,9 +63,9 @@ The response must be HTTPS JSON with these required fields:
 
 ```json
 {
-  "versionCode": 8,
-  "versionName": "2.2.2",
-  "apkUrl": "https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.2.2.apk",
+  "versionCode": 9,
+  "versionName": "2.2.3",
+  "apkUrl": "https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.2.3.apk",
   "sha256": "<64 lowercase hexadecimal characters>",
   "packageName": "ai.alpecca.launcher"
 }
@@ -107,11 +110,13 @@ distribution lane at
 `https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.1.2.apk`.
 The APK contains no creator password, runtime token, memory, or tunnel hostname.
 
-Version 2.2.2 keeps the bounded, user-confirmed update flow and the
+Version 2.2.3 keeps the bounded, user-confirmed update flow and the
 credential-free continuity-authority lookup. It also probes the stable cloud
 standby URL to wake a sleeping Space when no active endpoint answers. The app
 still requires the exact `alpecca` health identity, so the health-only standby
-cannot be mistaken for an active companion before fencing succeeds.
+cannot be mistaken for an active companion before fencing succeeds. Its Update
+Center keeps the download bar visible through package verification and exposes
+the verified install action until Android's installer is opened.
 
 With USB debugging enabled and the phone connected, build and install with:
 
