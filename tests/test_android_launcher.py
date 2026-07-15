@@ -77,7 +77,8 @@ def test_android_launcher_discovers_live_endpoint_and_has_no_baked_quick_tunnel(
     assert "ALPECCA_CONTINUITY_DISCOVERY_URL" in gradle
     assert "ALPECCA_CLOUD_STANDBY_URL" in gradle
     assert "alpecca-continuity-lease.jasondixon1994.workers.dev/v1/endpoint" in gradle
-    assert "creatorjd-alpecca-cloud-core.hf.space" in gradle
+    assert "creatorjd-alpecca-survival-core.hf.space" in gradle
+    assert "creatorjd-alpecca-cloud-core.hf.space" not in gradle
     assert "trycloudflare.com" not in gradle
     assert '"/healthz"' in source
     assert '"alpecca-mobile-discovery"' in source
