@@ -1,6 +1,9 @@
 """Fail-closed target checks for private local-only inference."""
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 from alpecca.local_inference import (
@@ -154,3 +157,26 @@ def test_local_vision_rejects_remote_or_cloud_targets_before_client_use(
     monkeypatch.setattr(vision, "VISION_CLOUD_MODEL", "qwen3.5:397b-cloud")
 
     assert vision._describe_local(b"private pixels", "describe") is None
+
+
+def test_local_vision_disables_qwen_thinking_with_old_client_fallback(monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    class Client:
+        def chat(self, **kwargs):
+            calls.append(kwargs)
+            if "think" in kwargs:
+                raise TypeError("legacy client")
+            return {"message": {"content": "A verified local image description."}}
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(Client=lambda *_args, **_kwargs: Client()))
+    monkeypatch.setattr(vision, "OLLAMA_HOST", "http://127.0.0.1:11434")
+    monkeypatch.setattr(vision.VisionCfg, "MODEL", "qwen3.5:9b")
+    monkeypatch.setattr(vision, "VISION_CLOUD_MODEL", "hosted:cloud")
+
+    description = vision._describe_local(b"private pixels", "describe this")
+
+    assert description == "A verified local image description."
+    assert calls[0]["think"] is False
+    assert "think" not in calls[1]
+    assert calls[0]["options"] == calls[1]["options"]

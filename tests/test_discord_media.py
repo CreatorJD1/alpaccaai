@@ -1,9 +1,12 @@
 """Focused coverage for bounded Discord image ingress and egress."""
 from __future__ import annotations
 
+import asyncio
+import importlib.util
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +14,20 @@ from alpecca import discord_bridge
 from alpecca import discord_media
 from alpecca.bridge_actor_transport import DiscordActorBindings
 from alpecca import vision
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _discord_launcher_module():
+    spec = importlib.util.spec_from_file_location(
+        "test_discord_launcher",
+        ROOT / "scripts" / "run_discord_bridge.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _png(width: int = 3, height: int = 2) -> bytes:
@@ -317,6 +334,41 @@ def test_media_readiness_is_truthful_bounded_and_secret_free():
 
 
 @pytest.mark.parametrize(
+    ("secret_value", "process_value", "expected_status"),
+    (
+        ("", None, "explicit-closed-catalog"),
+        ("ALPECCA_DISCORD_MEDIA=0\n", None, "disabled"),
+        ("ALPECCA_DISCORD_MEDIA=1\n", "0", "disabled"),
+    ),
+    ids=("default-enabled", "secret-false", "process-false-wins"),
+)
+def test_direct_launcher_media_default_loads_secret_before_selecting_default(
+    monkeypatch,
+    capsys,
+    tmp_path,
+    secret_value: str,
+    process_value: str | None,
+    expected_status: str,
+):
+    launcher = _discord_launcher_module()
+    secret = tmp_path / "alpecca_discord.env"
+    secret.write_text(secret_value, encoding="utf-8")
+    monkeypatch.setattr(launcher, "SECRET", secret)
+    if process_value is None:
+        monkeypatch.delenv("ALPECCA_DISCORD_MEDIA", raising=False)
+    else:
+        monkeypatch.setenv("ALPECCA_DISCORD_MEDIA", process_value)
+
+    assert launcher.main(["--media-readiness"]) == 0
+
+    readiness = json.loads(capsys.readouterr().out)
+    assert readiness["send"]["image"]["status"] == expected_status
+    assert readiness["receive"]["image"]["status"] == (
+        "disabled" if expected_status == "disabled" else "unverified"
+    )
+
+
+@pytest.mark.parametrize(
     ("filename", "content_type", "expected"),
     (
         ("photo.png", "application/octet-stream", "image"),
@@ -423,3 +475,214 @@ def test_server_media_disablement_maps_only_the_exact_fixed_error(monkeypatch):
     assert discord_bridge.media_readiness()["receive"]["image"]["status"] == (
         "disabled"
     )
+
+
+def test_room_media_diagnostic_cannot_leak_from_history_into_later_turns(monkeypatch):
+    """A past image request remains model context, never a fresh media action."""
+
+    room = {"guild_id": "777", "channel_id": "3001"}
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    monkeypatch.setattr(discord_bridge, "MEDIA_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "CHANNEL_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", {"42"})
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())
+
+    model_prompts: list[str] = []
+
+    def ask(text: str, *_args, **_kwargs) -> str:
+        model_prompts.append(text)
+        return f"ordinary reply {len(model_prompts)}"
+
+    monkeypatch.setattr(discord_bridge, "_ask_alpecca", ask)
+    client = discord_bridge.build_client()
+    client._connection.user = SimpleNamespace(
+        id=9001,
+        name="Alpecca",
+        display_name="Alpecca",
+    )
+
+    class Typing:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class Channel:
+        id = 3001
+
+        def typing(self):
+            return Typing()
+
+        async def send(self, _content: str) -> None:
+            raise AssertionError("addressed turns should reply, not send directly")
+
+    channel = Channel()
+    guild = SimpleNamespace(
+        id=777,
+        me=SimpleNamespace(display_name="Alpecca"),
+        voice_client=None,
+    )
+    creator = SimpleNamespace(
+        id=42,
+        name="realcreatorjd",
+        display_name="CreatorJD",
+        bot=False,
+    )
+
+    def message(event_id: int, content: str, clean_content: str):
+        replies: list[str] = []
+
+        async def reply(value: str, **_kwargs) -> None:
+            replies.append(value)
+
+        return (
+            SimpleNamespace(
+                id=event_id,
+                author=creator,
+                guild=guild,
+                channel=channel,
+                content=content,
+                clean_content=clean_content,
+                mentions=[SimpleNamespace(id=9001)],
+                attachments=[],
+                reference=None,
+                reply=reply,
+            ),
+            replies,
+        )
+
+    media_turn, media_replies = message(
+        1001,
+        "<@9001> Can you send me an image of yourself?",
+        "@Alpecca Can you send me an image of yourself?",
+    )
+    name_turn, name_replies = message(
+        1002,
+        "<@9001> Alpecca",
+        "@Alpecca Alpecca",
+    )
+    hello_turn, hello_replies = message(
+        1003,
+        "<@9001> Hello",
+        "@Alpecca Hello",
+    )
+
+    async def scenario() -> None:
+        await client.on_message(media_turn)
+        await client.on_message(name_turn)
+        await client.on_message(hello_turn)
+
+    asyncio.run(scenario())
+
+    media_diagnostic = discord_media.media_diagnostic("media-disabled")
+    assert media_replies == [media_diagnostic]
+    assert name_replies == ["ordinary reply 1"]
+    assert hello_replies == ["ordinary reply 2"]
+    assert len(model_prompts) == 2
+    # The old request stays visible to the model as room context, but it cannot
+    # re-trigger the transport-level media diagnostic.
+    assert "Can you send me an image of yourself?" in model_prompts[0]
+
+
+def test_claimed_room_self_image_request_attaches_once_then_records_sent(monkeypatch):
+    """Guild catalog sends preserve the accepted -> Discord -> sent audit order."""
+
+    room = {"guild_id": "777", "channel_id": "3001"}
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    monkeypatch.setattr(discord_bridge, "MEDIA_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", {"42"})
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())
+    monkeypatch.setattr(discord_bridge, "_ask_alpecca", lambda *_args, **_kwargs: "Here it is.")
+
+    outbound = discord_media.OutboundDiscordImage(
+        kind="portrait",
+        filename="alpecca-portrait.png",
+        image_bytes=_png(),
+        mime_type="image/png",
+        size_bytes=len(_png()),
+        sha256="a" * 64,
+    )
+    resolve_calls: list[str] = []
+    monkeypatch.setattr(
+        discord_bridge.discord_media,
+        "resolve_outbound_media",
+        lambda text: resolve_calls.append(text) or outbound,
+    )
+    timeline: list[tuple[str, str]] = []
+
+    def record(direction: str, *, status: str, **_kwargs) -> int:
+        timeline.append((direction, status))
+        return len(timeline)
+
+    monkeypatch.setattr(discord_bridge.discord_media, "record_media_event", record)
+    client = discord_bridge.build_client()
+    client._connection.user = SimpleNamespace(
+        id=9001,
+        name="Alpecca",
+        display_name="Alpecca",
+    )
+
+    class Typing:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class Channel:
+        id = 3001
+
+        def typing(self):
+            return Typing()
+
+    channel = Channel()
+    guild = SimpleNamespace(
+        id=777,
+        me=SimpleNamespace(display_name="Alpecca"),
+        voice_client=None,
+    )
+    creator = SimpleNamespace(
+        id=42,
+        name="realcreatorjd",
+        display_name="CreatorJD",
+        bot=False,
+    )
+    replies: list[tuple[str, dict[str, object]]] = []
+
+    async def reply(content: str, **kwargs: object) -> None:
+        replies.append((content, kwargs))
+        timeline.append(("discord", "reply"))
+
+    message = SimpleNamespace(
+        id=1001,
+        author=creator,
+        guild=guild,
+        channel=channel,
+        content="<@9001> Can you send me an image of yourself?",
+        clean_content="@Alpecca Can you send me an image of yourself?",
+        mentions=[SimpleNamespace(id=9001)],
+        attachments=[],
+        reference=None,
+        reply=reply,
+    )
+
+    asyncio.run(client.on_message(message))
+
+    assert resolve_calls == ["Can you send me an image of yourself?"]
+    assert len(replies) == 1
+    content, kwargs = replies[0]
+    assert content == "Here it is."
+    assert kwargs["mention_author"] is False
+    assert kwargs["file"].filename == "alpecca-portrait.png"
+    assert timeline == [
+        ("outbound", "accepted"),
+        ("discord", "reply"),
+        ("outbound", "sent"),
+    ]

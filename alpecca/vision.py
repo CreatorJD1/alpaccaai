@@ -81,10 +81,10 @@ def _describe_local(image_bytes: bytes, prompt: str) -> Optional[str]:
     try:
         import ollama
         client = ollama.Client(host=OLLAMA_HOST)
-        resp = client.chat(
-            model=VisionCfg.MODEL,
-            messages=[{"role": "user", "content": prompt, "images": [image_bytes]}],
-            options={
+        kwargs = {
+            "model": VisionCfg.MODEL,
+            "messages": [{"role": "user", "content": prompt, "images": [image_bytes]}],
+            "options": {
                 "num_gpu": int(os.environ.get("ALPECCA_VISION_NUM_GPU", "0")),
                 # CRITICAL: without this cap Ollama sizes the KV cache for the
                 # model's full advertised window (qwen3.5's 256K -> a 16 GB
@@ -92,8 +92,15 @@ def _describe_local(image_bytes: bytes, prompt: str) -> Optional[str]:
                 # live 2026-07-04: one un-capped vision call wedged her app.
                 "num_ctx": OLLAMA_NUM_CTX,
             },
-            keep_alive=0,
-        )
+            "keep_alive": 0,
+        }
+        # Qwen 3.5 may put all output in a reasoning field unless thinking is
+        # disabled. Older Ollama Python clients do not accept this argument, so
+        # retain a bounded compatibility retry before reporting no perception.
+        try:
+            resp = client.chat(**kwargs, think=False)
+        except TypeError:
+            resp = client.chat(**kwargs)
         text = (resp["message"]["content"] or "").strip()
         return text or None
     except Exception:

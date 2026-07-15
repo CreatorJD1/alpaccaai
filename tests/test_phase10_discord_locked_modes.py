@@ -266,6 +266,30 @@ def test_readiness_command_is_offline_and_secret_free(tmp_path):
     assert "alpecca_home" not in serialized
 
 
+def test_direct_bridge_defaults_to_local_closed_catalog_media(tmp_path):
+    env = os.environ.copy()
+    env.pop("ALPECCA_DISCORD_MEDIA", None)
+    env["ALPECCA_HOME"] = str(tmp_path)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_discord_bridge.py",
+            "--media-readiness",
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    readiness = json.loads(completed.stdout.strip())
+    assert readiness["send"]["image"]["status"] == "explicit-closed-catalog"
+    assert readiness["receive"]["image"]["status"] == "unverified"
+
+
 @pytest.mark.parametrize("channel_kind", ("guild", "thread"))
 def test_guild_and_thread_messages_hard_return_with_zero_side_effects(
     monkeypatch,
@@ -400,6 +424,50 @@ def test_claimed_room_participation_can_choose_a_lightweight_reaction(monkeypatc
     assert message.replies == []
     assert prompts and "preference rather than a rigid rule" in prompts[0]
     assert "[react:eyes]" in prompts[0]
+
+
+def test_claimed_room_history_cannot_retrigger_an_old_media_request(monkeypatch):
+    room = {"guild_id": "777", "channel_id": "3001"}
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    monkeypatch.setattr(discord_bridge, "MEDIA_ENABLED", False)
+    model_prompts: list[str] = []
+    monkeypatch.setattr(
+        discord_bridge,
+        "_ask_alpecca",
+        lambda text, *_args, **_kwargs: model_prompts.append(text) or "Hi. What is on your mind?",
+    )
+    client = _client(monkeypatch)
+    guild = SimpleNamespace(
+        id=777,
+        voice_client=None,
+        me=SimpleNamespace(display_name="Alpecca_ai"),
+    )
+    channel = _HistoryChannel([])
+    channel.guild = guild
+
+    first = _Message(content="Can you send me an image of yourself?")
+    first.guild = guild
+    first.channel = channel
+    first.clean_content = first.content
+    first.mentions = [client.user]
+    first.reference = None
+    asyncio.run(client.on_message(first))
+    assert first.replies == [(
+        discord_media.media_diagnostic("media-disabled"),
+        {"mention_author": False},
+    )]
+
+    followup = _Message(content="Hello Alpecca")
+    followup.guild = guild
+    followup.channel = channel
+    followup.clean_content = followup.content
+    followup.mentions = [client.user]
+    followup.reference = None
+    asyncio.run(client.on_message(followup))
+
+    assert len(model_prompts) == 1
+    assert "Can you send me an image of yourself?" in model_prompts[0]
+    assert followup.replies == [("Hi. What is on your mind?", {"mention_author": False})]
 
 
 def test_unknown_room_reaction_directive_is_not_posted_as_text():

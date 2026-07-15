@@ -33,6 +33,10 @@ os.environ.setdefault("ALPECCA_SIGHT", "0")   # periodic screen glimpses
 os.environ.setdefault("ALPECCA_FACE", "0")    # webcam expression sense
 os.environ.setdefault("ALPECCA_VOICE", "0")   # mic voice-tone sense
 os.environ.setdefault("ALPECCA_APPS", "")     # explicit app allowlist only
+# The full local stack may share only Alpecca's closed, verified local image
+# catalog on Discord. This mirrors START_HERE.bat and does not enable arbitrary
+# file transfer, remote vision, screen capture, or any other sensing capability.
+os.environ.setdefault("ALPECCA_DISCORD_MEDIA", "1")
 
 # Import AFTER the env is set -- config.py reads these at import time.
 import uvicorn                                    # noqa: E402

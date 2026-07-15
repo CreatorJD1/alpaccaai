@@ -5990,6 +5990,15 @@ def test_run_full_checks_existing_instance_before_importing_server():
     assert "reusing the same mind instance" in text
 
 
+def test_run_full_enables_only_the_closed_discord_image_catalog():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "scripts" / "run_full.py").read_text(encoding="utf-8")
+    media_pos = text.index('os.environ.setdefault("ALPECCA_DISCORD_MEDIA", "1")')
+    import_pos = text.index("from server import app, mind")
+    assert media_pos < import_pos
+    assert "closed, verified local image" in text
+
+
 def test_app_reuses_existing_instance_before_starting_server_thread():
     root = Path(__file__).resolve().parent.parent
     text = (root / "app.py").read_text(encoding="utf-8")
