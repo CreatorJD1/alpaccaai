@@ -52,10 +52,14 @@ blocked or that Android 2.1.2 is the current public launcher.
   authority published local-primary epoch 9 at the then-current quick-tunnel
   origin. Use the authority or launcher discovery instead of copying that
   rotating hostname into source.
-- Verification: 28 focused Android/HF/gateway tests passed; Android release
+- Verification: 28 focused Android/HF/gateway tests and 364 core regression
+  tests passed; the clean-commit House production build passed; Android release
   build passed as package `ai.alpecca.launcher` version 2.2.2; the public APK
   bytes matched the manifest digest; Space standby, failover, WebSocket, local
-  failback, and cloud demotion were all observed live.
+  failback, and cloud demotion were all observed live. Clean commit `0aa46a0`
+  scanned 746 tracked files plus 153 built House assets with zero findings or
+  errors (receipt SHA-256
+  `12f6f1242f535862961171e7fa64b005049c3e000bfd9c378a762ef98c0e103e`).
 
 ## Codex Mobile Recovery And Ubuntu VM Scaffold (2026-07-15)
 
