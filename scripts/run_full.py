@@ -43,6 +43,12 @@ os.environ.setdefault("ALPECCA_APPS", "")     # explicit app allowlist only
 # catalog on Discord. This mirrors START_HERE.bat and does not enable arbitrary
 # file transfer, remote vision, screen capture, or any other sensing capability.
 os.environ.setdefault("ALPECCA_DISCORD_MEDIA", "1")
+# Match START_HERE.bat for the creator-approved Discord room: voice is scoped
+# to a claimed room, local TTS, and bounded local transcription. It is separate
+# from the ambient laptop microphone sensor above, which remains off. An
+# explicit ALPECCA_DISCORD_VOICE=0 or ALPECCA_DISCORD_VOICE_RECEIVE=0 still wins.
+os.environ.setdefault("ALPECCA_DISCORD_VOICE", "1")
+os.environ.setdefault("ALPECCA_DISCORD_VOICE_RECEIVE", "1")
 
 def _f5_worker_health(timeout: float = 0.4) -> bool:
     try:

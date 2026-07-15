@@ -5994,9 +5994,14 @@ def test_run_full_enables_only_the_closed_discord_image_catalog():
     root = Path(__file__).resolve().parent.parent
     text = (root / "scripts" / "run_full.py").read_text(encoding="utf-8")
     media_pos = text.index('os.environ.setdefault("ALPECCA_DISCORD_MEDIA", "1")')
+    voice_pos = text.index('os.environ.setdefault("ALPECCA_DISCORD_VOICE", "1")')
+    receive_pos = text.index('os.environ.setdefault("ALPECCA_DISCORD_VOICE_RECEIVE", "1")')
     import_pos = text.index("from server import app, mind")
     assert media_pos < import_pos
+    assert voice_pos < import_pos
+    assert receive_pos < import_pos
     assert "closed, verified local image" in text
+    assert "ambient laptop microphone sensor above, which remains off" in text
 
 
 def test_app_reuses_existing_instance_before_starting_server_thread():

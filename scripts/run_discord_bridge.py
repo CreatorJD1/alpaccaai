@@ -92,6 +92,11 @@ def main(argv: list[str] | None = None) -> int:
     # override. Load it before selecting the normal direct-launch default.
     _load_secret()
     os.environ.setdefault("ALPECCA_DISCORD_MEDIA", "1")
+    # Keep direct bridge launches aligned with the full-stack launcher and
+    # START_HERE.bat. These flags govern only the creator-approved Discord
+    # voice room; an explicit false value remains an opt-out.
+    os.environ.setdefault("ALPECCA_DISCORD_VOICE", "1")
+    os.environ.setdefault("ALPECCA_DISCORD_VOICE_RECEIVE", "1")
     args = list(sys.argv[1:] if argv is None else argv)
     if args == ["--media-readiness"]:
         _print_media_readiness()
