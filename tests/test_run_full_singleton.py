@@ -32,6 +32,16 @@ def test_full_launcher_acquires_and_releases_the_home_instance_lock() -> None:
     assert "finally:\n        lock.release()" in main
 
 
+def test_full_launcher_uses_validated_sqlite_snapshots_not_raw_file_copies() -> None:
+    source = RUN_FULL.read_text(encoding="utf-8")
+
+    assert "from alpecca.sqlite_backup import SQLiteBackupError, snapshot_database" in source
+    assert "snapshot_database(" in source
+    assert 'label="alpecca"' in source
+    assert "retention=7" in source
+    assert "shutil.copy2" not in source
+
+
 def test_second_full_launcher_never_enters_startup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     launcher = _load_launcher(monkeypatch, tmp_path)
     first_started = threading.Event()

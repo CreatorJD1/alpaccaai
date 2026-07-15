@@ -118,28 +118,31 @@ def _start_discord_bridge() -> None:
 
 
 def _backup_soul() -> None:
-    """Rotating startup backup of her save file (state, memories, journal --
-    everything). One copy per day under data/backups/, keep the last 7. Until
-    now the only safety net was a stale manual copy on the Desktop. Never
-    raises: a failed backup must not stop her from waking."""
+    """Publish one verified, WAL-safe local continuity snapshot at startup.
+
+    The SQLite backup API captures committed pages still held in the WAL, then
+    validates the staged copy before it becomes a retained snapshot. A backup
+    failure must never prevent Alpecca from waking, but it is reported instead
+    of silently leaving a misleading raw database copy behind.
+    """
     try:
         from config import DB_PATH
+        from alpecca.sqlite_backup import SQLiteBackupError, snapshot_database
+
         db = Path(DB_PATH)
         if not db.exists():
             return
-        backups = db.parent / "backups"
-        backups.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d")
-        dest = backups / f"alpecca-{stamp}.db"
-        if not dest.exists():
-            import shutil
-            shutil.copy2(db, dest)
-            print(f"Backed up her save to {dest.name}")
-        old = sorted(backups.glob("alpecca-*.db"))
-        for stale in old[:-7]:
-            stale.unlink(missing_ok=True)
-    except Exception:
-        pass
+        snapshot = snapshot_database(
+            db,
+            db.parent / "backups",
+            retention=7,
+            label="alpecca",
+        )
+        print(f"Backed up her continuity snapshot to {snapshot.path.name}")
+    except SQLiteBackupError as exc:
+        print(f"[backup] Alpecca continuity snapshot skipped: {exc}", file=sys.stderr)
+    except Exception as exc:
+        print(f"[backup] Alpecca continuity snapshot failed: {type(exc).__name__}", file=sys.stderr)
 
 
 def _ollama_up(timeout: float = 2.0) -> bool:
