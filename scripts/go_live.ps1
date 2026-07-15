@@ -76,7 +76,32 @@ try { $url | Set-Content (Join-Path $repo 'data\preview_public_url.txt') -Encodi
 #        ALPECCA_CORS_ORIGINS, so the origin is live from the server's first
 #        request -- the phone password sign-in now works. ---------------------
 Write-Host 'Starting Alpecca with her normal settings...' -ForegroundColor Cyan
-& cmd /c 'START_HERE.bat'
+$logDir = Join-Path $repo 'data\logs'
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+$pythonw = Get-Command 'pythonw.exe' -ErrorAction SilentlyContinue
+$pythonExe = if ($pythonw) { $pythonw.Source } else { (Get-Command 'python.exe').Source }
+$stack = Start-Process -FilePath $pythonExe `
+    -ArgumentList @('scripts\run_full.py') `
+    -WorkingDirectory $repo `
+    -RedirectStandardOutput (Join-Path $logDir 'go_live_stack.out.log') `
+    -RedirectStandardError (Join-Path $logDir 'go_live_stack.err.log') `
+    -WindowStyle Hidden -PassThru
+
+foreach ($i in 1..120) {
+    Start-Sleep -Milliseconds 500
+    try {
+        $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/healthz" -TimeoutSec 1
+        if ($health.service -eq 'alpecca' -and $health.version -eq 1) { break }
+    } catch {}
+}
+try {
+    & python scripts\publish_mobile_endpoint.py --url $url --kind quick
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host 'Mobile app discovery record updated.' -ForegroundColor Green
+    }
+} catch {
+    Write-Host 'Mobile app discovery could not be updated; the printed link still works.' -ForegroundColor Yellow
+}
 
 # --- 4. the phone link ------------------------------------------------------
 Write-Host ''

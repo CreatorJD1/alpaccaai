@@ -8,7 +8,11 @@ second mind.
 from __future__ import annotations
 
 import os
+import queue
+import re
+import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -17,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 TUNNEL_PROCS = []
+_LOCALTUNNEL_URL = re.compile(r"https://[a-z0-9-]+\.loca\.lt")
 
 
 def lan_ip() -> str:
@@ -31,8 +36,44 @@ def lan_ip() -> str:
         sock.close()
 
 
+def _start_https_fallback(port: int) -> tuple[str | None, subprocess.Popen | None]:
+    """Open a provider-neutral HTTPS fallback when Cloudflare is unavailable."""
+    npx = shutil.which("npx.cmd") or shutil.which("npx")
+    if not npx:
+        return None, None
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if os.name == "nt" else 0
+    proc = subprocess.Popen(
+        [npx, "--yes", "localtunnel", "--port", str(port)],
+        cwd=Path(__file__).resolve().parent.parent,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        creationflags=flags,
+    )
+    lines: queue.Queue[str] = queue.Queue()
+
+    def pump() -> None:
+        if proc.stdout is None:
+            return
+        for line in proc.stdout:
+            lines.put(line)
+
+    threading.Thread(target=pump, daemon=True, name="alpecca-localtunnel-output").start()
+    deadline = time.monotonic() + 35.0
+    while time.monotonic() < deadline and proc.poll() is None:
+        try:
+            line = lines.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        match = _LOCALTUNNEL_URL.search(line)
+        if match:
+            return match.group(0), proc
+    proc.terminate()
+    return None, None
+
+
 def start_tunnel(port: int) -> None:
-    """Open or reuse one Cloudflare preview tunnel to the local server."""
+    """Open a validated HTTPS tunnel to the one running Alpecca instance."""
     from alpecca import preview as preview_mod
 
     url, proc = preview_mod.ensure(port, reuse=True)
@@ -53,9 +94,30 @@ def start_tunnel(port: int) -> None:
         print(f"[tunnel] Cloudflare quick tunnel attempt {attempt} failed; retrying...")
 
     if not url:
-        print("\n[tunnel] Cloudflare preview unavailable. Install cloudflared or run:")
-        print("         python scripts\\preview.py\n")
-        return
+        print("[tunnel] Cloudflare is unavailable; trying the HTTPS fallback...")
+        url, proc = _start_https_fallback(port)
+        if proc is not None:
+            TUNNEL_PROCS.append(proc)
+        if url:
+            preview_mod.write_state(url, port, provider="localtunnel")
+        else:
+            print("\n[tunnel] No HTTPS phone relay could be opened.\n")
+            return
+
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                "scripts\\publish_mobile_endpoint.py",
+                "--url", url,
+                "--kind", "quick",
+            ],
+            cwd=Path(__file__).resolve().parent.parent,
+            check=True,
+        )
+        print("  Mobile app discovery record updated.")
+    except Exception as exc:
+        print(f"  Mobile discovery update failed: {type(exc).__name__}")
 
     print("\n" + "=" * 64)
     print("  PUBLIC LINK (same Alpecca instance, open on your phone):")

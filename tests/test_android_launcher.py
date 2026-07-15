@@ -67,3 +67,17 @@ def test_android_launcher_distribution_is_non_debuggable_and_origin_bounded():
     assert "confirmWebPermission()" in source
     assert "if (!isConfiguredOrigin(current))" in source
     assert "uri.getUserInfo() != null" in source
+
+
+def test_android_launcher_discovers_live_endpoint_and_has_no_baked_quick_tunnel():
+    source = (APP / "app" / "src" / "main" / "java" / "ai" / "alpecca" / "launcher" / "MainActivity.java").read_text(encoding="utf-8")
+    gradle = (APP / "app" / "build.gradle").read_text(encoding="utf-8")
+
+    assert "ALPECCA_DISCOVERY_URL" in gradle
+    assert "trycloudflare.com" not in gradle
+    assert '"/healthz"' in source
+    assert '"alpecca-mobile-discovery"' in source
+    assert 'payload.optString("service")' in source
+    assert "discoverAndConnect()" in source
+    assert "R.drawable.alpecca_portrait" in source
+    assert 'appendQueryParameter("view", "orthographic")' in source

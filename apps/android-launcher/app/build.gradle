@@ -10,9 +10,9 @@ android {
         applicationId "ai.alpecca.launcher"
         minSdk 26
         targetSdk 35
-        versionCode 1
-        versionName "1.0.0"
-        buildConfigField "String", "DEFAULT_ALPECCA_URL", '"https://design-citizen-expressions-cleanup.trycloudflare.com/house-hq"'
+        versionCode 2
+        versionName "2.0.0"
+        buildConfigField "String", "ALPECCA_DISCOVERY_URL", '"https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/alpecca-endpoint.json"'
     }
 
     buildFeatures {

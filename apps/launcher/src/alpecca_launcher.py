@@ -453,7 +453,7 @@ class Launcher:
                 self.say("Cannot open a phone link because the project root was not found.")
                 return
             subprocess.Popen(
-                ["cmd.exe", "/k", _launcher_python(), "scripts\\share.py"],
+                ["cmd.exe", "/k", _launcher_python(), "scripts\\share.py", "--tunnel"],
                 cwd=str(REPO_ROOT),
                 creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010),
             )

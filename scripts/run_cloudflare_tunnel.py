@@ -76,6 +76,16 @@ def main() -> int:
         print()
 
     proc = subprocess.Popen([exe, "tunnel", "--config", str(args.config), "run", args.name])
+    if public_url:
+        for _ in range(40):
+            if preview.health_check(public_url, route="/healthz", timeout=2.0):
+                subprocess.run(
+                    [sys.executable, "scripts\\publish_mobile_endpoint.py", "--url", public_url, "--kind", "named"],
+                    cwd=Path(__file__).resolve().parent.parent,
+                    check=False,
+                )
+                break
+            time.sleep(0.5)
     try:
         return proc.wait()
     except KeyboardInterrupt:

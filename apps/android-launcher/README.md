@@ -1,13 +1,17 @@
 # Alpecca Android Launcher
 
-An Android WebView launcher for the authenticated House HQ experience. The app
-stores only the selected HTTPS server URL and WebView's device-local trusted
-session. It does not contain creator passwords, API tokens, memories, or a
-second Alpecca runtime.
+The Android home for the authenticated House HQ experience. A full-screen
+native launch and recovery surface discovers the current live Alpecca endpoint,
+then hands the screen to House HQ on that same authenticated origin. The app
+stores only the last verified HTTPS server URL and WebView's device-local
+trusted session. It does not contain creator passwords, API tokens, memories,
+or a second Alpecca runtime.
 
 ## Phone capabilities
 
 - Keeps the creator trusted-device cookie between launches.
+- Discovers changing phone links from a stable, credential-free R2 record.
+- Requires an exact Alpecca `/healthz` identity before opening an endpoint.
 - Plays House HQ voice and live audio through Android WebView.
 - Bridges camera and microphone requests through Android runtime permissions
   plus a per-server confirmation inside the launcher.
@@ -40,6 +44,6 @@ With USB debugging enabled and the phone connected, build and install with:
 powershell -ExecutionPolicy Bypass -File apps\android-launcher\build_apk.ps1 -Install
 ```
 
-The first connection uses the current Cloudflare tunnel as a convenience. Use
-the app's **Server** control whenever the tunnel address changes or a stable
-named hostname becomes available.
+The app contains no temporary tunnel hostname. The desktop phone-access action
+publishes the latest validated tunnel to the stable discovery record. Manual
+connection settings remain available as a fallback.

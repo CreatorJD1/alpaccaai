@@ -64,3 +64,9 @@ def test_start_here_delegates_to_the_gui_without_a_terminal_prompt():
     assert "apps\\launcher\\src\\run_launcher.bat" in source
     assert "set /p choice" not in source
     assert "cmd /k python scripts\\run_full.py" not in source
+
+
+def test_gui_phone_access_opens_an_actual_tunnel():
+    source = LAUNCHER.read_text(encoding="utf-8")
+
+    assert '"scripts\\\\share.py", "--tunnel"' in source

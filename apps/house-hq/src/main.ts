@@ -1364,8 +1364,11 @@ camera.position.set(0.12, 1.55, 0.28);
 const orthographicCamera = new THREE.OrthographicCamera(-8, 8, 6, -6, 0.1, 80);
 const orthographicTarget = new THREE.Vector3(0, 0.7, 0);
 const alpeccaViewModeStorageKey = "alpeccaVoidViewMode";
+const requestedAlpeccaView = urlParamValue(["view", "camera"]).toLowerCase();
 let alpeccaViewMode: "first-person" | "orthographic" =
-  localStorage.getItem(alpeccaViewModeStorageKey) === "orthographic" ? "orthographic" : "first-person";
+  requestedAlpeccaView === "orthographic" || localStorage.getItem(alpeccaViewModeStorageKey) === "orthographic"
+    ? "orthographic"
+    : "first-person";
 let alpeccaOrthographicZoom = 1;
 
 function updateOrthographicCamera() {
