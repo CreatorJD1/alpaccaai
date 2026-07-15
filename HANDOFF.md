@@ -1,5 +1,60 @@
 # Alpecca — Handoff (updated 2026-07-14)
 
+## Codex Discord, Voice, Continuity, And V4 Checkpoint (2026-07-14)
+
+- Discord media transport now evaluates only the exact incoming Discord event.
+  Expanded room history remains model context but can no longer cause an old
+  image request to repeat a later `media disabled` diagnostic. An explicit
+  self-image request attaches the approved local portrait in both DMs and
+  claimed guild rooms, with `accepted -> Discord send -> sent` audit ordering.
+  The catalog is closed: it does not send arbitrary paths or files.
+- Discord image perception remains verified-local. The installed local
+  `qwen3.5:9b` vision call disables Qwen thinking when supported, then retries
+  once for older Ollama Python clients. This prevents an all-reasoning response
+  from being flattened into an empty `vision unavailable` result. Readiness is
+  correctly `unverified` until an actual approved image is processed.
+- Discord voice state is now derived from the live voice client, listener,
+  local transcriber, and playback facts rather than dependency imports alone.
+  The bridge injects those facts through `discord_presence_prompt()` and
+  deterministically corrects a false claim that Alpecca is text-only or absent
+  from voice while she is actually connected.
+- Discord Kokoro output no longer applies linear pitch resampling to the
+  explicitly selected `kokoro` route. That resampling could lower and distort
+  the locked `af_heart` speaker. Explicit Discord Kokoro now preserves native
+  voice timing/pitch, reports cold/warming/ready state truthfully, and gives
+  one synthesis caller a 45-second single-flight bound instead of piling up
+  duplicate cold-start work. A real CreatorJD Discord playback check is still
+  required to judge the acoustic result; do not claim it has been heard and
+  approved merely from unit tests.
+- `scripts/run_full.py` and `scripts/run_discord_bridge.py` now mirror the
+  normal `START_HERE.bat` creator-approved Discord posture: media, voice, and
+  bounded voice receive default on for the claimed Discord room, while the
+  separate ambient laptop microphone sensor remains off. Explicit `=0`
+  environment values still opt out.
+- The full launcher acquires an atomic OS-level `alpecca.instance` lock before
+  importing config, starting the bridge, or opening the database. A second
+  full-stack launch fails before it can create a duplicate CoreMind writer.
+  This does not yet guard every direct `python server.py` path, so the launcher
+  remains the supported way to start the live stack.
+- Startup continuity backup now uses SQLite's online backup API, validates the
+  staged copy with `PRAGMA integrity_check`, atomically publishes it, and keeps
+  seven `alpecca-*.sqlite3` snapshots. The latest live startup produced a
+  verified local snapshot. This protects local recovery; Mindscape remains a
+  passive continuity mirror, not a hosted second mind that can converse after
+  the laptop is off.
+- V4 now grounds with transformed raw-skeleton heel/toe contact anchors rather
+  than a fixed sole offset. The ground clamp ignores the airborne swing foot;
+  the gait phases contain toe-off, raised swing, dorsiflexion, and heel-led
+  contact. House telemetry on the current live V4 load reports the skinned
+  contact source and near-zero sole clearance. An authenticated visual walk is
+  still the final manual proof of the full motion loop.
+- Verification at this checkpoint: `python -m pytest -q tests/test_core.py`
+  passed (`359 passed`); focused Discord/media/voice/vision coverage passed
+  (`123 passed`); `npm.cmd run house:test:embodiment` passed (`16` tests); and
+  `npm.cmd run house:build` passed with only the retained Vite chunk-size
+  advisory. The live stack has one `run_full.py` process, one child Discord
+  bridge, and the bridge reports `mode=duplex` with local receive ready.
+
 ## Codex V4 Transformed Foot Contacts And Live Restart (2026-07-14)
 
 - The V4 gait contact solver no longer subtracts a fixed ankle-to-sole world-Y
