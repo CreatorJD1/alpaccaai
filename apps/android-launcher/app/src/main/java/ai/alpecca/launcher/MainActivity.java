@@ -6,13 +6,22 @@ import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
+import android.net.ConnectivityManager;
+import android.net.Network;
 import android.net.Uri;
 import android.net.http.SslError;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
+import android.util.Base64;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -37,15 +46,26 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.core.content.FileProvider;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPairGenerator;
+import java.security.KeyStore;
+import java.security.MessageDigest;
+import java.security.PrivateKey;
+import java.security.Signature;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -58,8 +78,21 @@ public final class MainActivity extends Activity {
     private static final String PREFS = "alpecca_launcher";
     private static final String PREF_SERVER_URL = "server_url";
     private static final String PREF_MEDIA_ORIGIN = "media_origin";
+    private static final String PREF_DEVICE_ID = "trusted_device_id";
+    private static final String PREF_LAST_UPDATE_CHECK_MS = "last_update_check_ms";
+    private static final String DEVICE_KEY_ALIAS = "alpecca_creator_device_v1";
     private static final int REQUEST_WEB_PERMISSIONS = 4001;
     private static final int REQUEST_FILE = 4002;
+    private static final long HEALTH_CHECK_INTERVAL_MS = 30_000L;
+    private static final long HEALTH_CHECK_CONFIRM_MS = 4_000L;
+    private static final long RECOVERY_RETRY_MAX_MS = 30_000L;
+    private static final long UPDATE_CHECK_COOLDOWN_MS = 12L * 60L * 60L * 1000L;
+    private static final long MAX_UPDATE_APK_BYTES = 250L * 1024L * 1024L;
+    private static final String UPDATE_CACHE_DIR = "updates";
+    private static final String APK_MIME_TYPE = "application/vnd.android.package-archive";
+    private static final String RELAY_BYPASS_HEADER = "bypass-tunnel-reminder";
+    private static final String RELAY_BYPASS_VALUE = "alpecca-android";
+    private static final String APP_USER_AGENT = "AlpeccaAndroid/" + BuildConfig.VERSION_NAME;
 
     private static final int BG = Color.rgb(10, 14, 21);
     private static final int PANEL = Color.rgb(19, 25, 36);
@@ -70,6 +103,9 @@ public final class MainActivity extends Activity {
     private static final int GOLD = Color.rgb(240, 189, 89);
 
     private final ExecutorService network = Executors.newSingleThreadExecutor();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Runnable healthCheckTask = this::runForegroundHealthCheck;
+    private final Runnable recoveryTask = () -> startDiscovery(true);
     private SharedPreferences preferences;
     private FrameLayout root;
     private WebView webView;
@@ -82,11 +118,40 @@ public final class MainActivity extends Activity {
     private TextView endpointLabel;
     private ProgressBar progress;
     private EditText serverField;
+    private Button updateButton;
     private ValueCallback<Uri[]> fileCallback;
     private PermissionRequest pendingWebPermission;
     private String[] pendingWebResources = new String[0];
     private boolean pageFailed;
     private int connectionAttempt;
+    private int automaticRetryCount;
+    private int consecutiveHealthFailures;
+    private boolean activityResumed;
+    private boolean discoveryRunning;
+    private boolean recoveryPending;
+    private boolean networkCallbackRegistered;
+    private boolean clearHistoryAfterLoad;
+    private boolean deviceEnrollmentRunning;
+    private boolean updateCheckRunning;
+    private boolean updateDownloadRunning;
+    private boolean startupUpdateCheckRequested;
+    private boolean awaitingInstallPermission;
+    private long trustGeneration;
+    private String activeServerUrl = "";
+    private UpdateInfo pendingAvailableUpdate;
+    private VerifiedUpdate pendingInstallUpdate;
+    private ConnectivityManager connectivityManager;
+    private final ConnectivityManager.NetworkCallback networkCallback = new ConnectivityManager.NetworkCallback() {
+        @Override
+        public void onAvailable(Network network) {
+            runOnUiThread(() -> {
+                if (activityResumed && recoveryPending && !discoveryRunning) {
+                    mainHandler.removeCallbacks(recoveryTask);
+                    startDiscovery(true);
+                }
+            });
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -101,6 +166,7 @@ public final class MainActivity extends Activity {
         });
         setContentView(root);
         configureWebView();
+        registerNetworkRecovery();
         discoverAndConnect();
     }
 
@@ -261,6 +327,15 @@ public final class MainActivity extends Activity {
         permissionParams.topMargin = dp(8);
         sheet.addView(permissions, permissionParams);
 
+        updateButton = secondaryButton("Check for launcher update");
+        updateButton.setOnClickListener(view -> {
+            hideSettings();
+            checkForUpdates(true);
+        });
+        LinearLayout.LayoutParams updateParams = fullButtonParams();
+        updateParams.topMargin = dp(8);
+        sheet.addView(updateButton, updateParams);
+
         Button clear = secondaryButton("Clear trusted session");
         clear.setOnClickListener(view -> confirmClearSession());
         LinearLayout.LayoutParams clearParams = fullButtonParams();
@@ -295,7 +370,7 @@ public final class MainActivity extends Activity {
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(true);
         settings.setJavaScriptCanOpenWindowsAutomatically(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " AlpeccaAndroid/2.0");
+        settings.setUserAgentString(settings.getUserAgentString() + " " + APP_USER_AGENT);
 
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);
@@ -315,6 +390,7 @@ public final class MainActivity extends Activity {
 
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                cancelHealthCheck();
                 pageFailed = false;
                 progress.setIndeterminate(false);
                 progress.setProgress(12);
@@ -328,7 +404,16 @@ public final class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 if (!pageFailed) {
+                    if (clearHistoryAfterLoad) {
+                        view.clearHistory();
+                        clearHistoryAfterLoad = false;
+                    }
+                    recoveryPending = false;
+                    automaticRetryCount = 0;
+                    consecutiveHealthFailures = 0;
                     showHouseSurface();
+                    scheduleHealthCheck(HEALTH_CHECK_INTERVAL_MS);
+                    ensureDeviceEnrollment();
                 }
                 CookieManager.getInstance().flush();
             }
@@ -336,21 +421,21 @@ public final class MainActivity extends Activity {
             @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 if (request.isForMainFrame()) {
-                    showConnectionFailure("Alpecca's server could not be reached.");
+                    beginAutomaticRecovery("Alpecca's server could not be reached.");
                 }
             }
 
             @Override
             public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse response) {
                 if (request.isForMainFrame() && response.getStatusCode() >= 500) {
-                    showConnectionFailure("Alpecca's server returned " + response.getStatusCode() + ".");
+                    beginAutomaticRecovery("Alpecca's server returned " + response.getStatusCode() + ".");
                 }
             }
 
             @Override
             public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
                 handler.cancel();
-                showConnectionFailure("The server certificate could not be verified.");
+                beginAutomaticRecovery("The server certificate could not be verified.");
             }
         });
 
@@ -404,8 +489,27 @@ public final class MainActivity extends Activity {
     }
 
     private void discoverAndConnect() {
+        automaticRetryCount = 0;
+        recoveryPending = false;
+        startDiscovery(false);
+    }
+
+    private void startDiscovery(boolean automatic) {
+        if (discoveryRunning) {
+            return;
+        }
+        mainHandler.removeCallbacks(recoveryTask);
+        cancelHealthCheck();
+        discoveryRunning = true;
         final int attempt = ++connectionAttempt;
-        showPortal("FINDING", "Opening House HQ", "Finding Alpecca's current secure connection.", true);
+        showPortal(
+            automatic ? "RECOVERING" : "FINDING",
+            automatic ? "Restoring House HQ" : "Opening House HQ",
+            automatic
+                ? "The previous connection stopped responding. Finding Alpecca's current secure connection."
+                : "Finding Alpecca's current secure connection.",
+            true
+        );
         endpointLabel.setText("Discovery: secure mobile record");
         network.execute(() -> {
             List<String> discovered = fetchDiscoveryCandidates();
@@ -423,6 +527,7 @@ public final class MainActivity extends Activity {
                 if (probeExactAlpecca(origin)) {
                     runOnUiThread(() -> {
                         if (attempt == connectionAttempt) {
+                            discoveryRunning = false;
                             openServer(candidate);
                         }
                     });
@@ -431,6 +536,8 @@ public final class MainActivity extends Activity {
             }
             runOnUiThread(() -> {
                 if (attempt == connectionAttempt) {
+                    discoveryRunning = false;
+                    recoveryPending = true;
                     showPortal(
                         "OFFLINE",
                         "Alpecca is offline",
@@ -438,6 +545,7 @@ public final class MainActivity extends Activity {
                         false
                     );
                     endpointLabel.setText(saved == null ? "No live endpoint discovered" : "Last server: " + displayHost(saved));
+                    scheduleAutomaticRediscovery();
                 }
             });
         });
@@ -451,6 +559,10 @@ public final class MainActivity extends Activity {
             return;
         }
         final int attempt = ++connectionAttempt;
+        mainHandler.removeCallbacks(recoveryTask);
+        cancelHealthCheck();
+        discoveryRunning = true;
+        recoveryPending = false;
         showPortal("CHECKING", "Checking the server", "Verifying that this address is Alpecca.", true);
         endpointLabel.setText(displayHost(normalized));
         network.execute(() -> {
@@ -459,6 +571,7 @@ public final class MainActivity extends Activity {
                 if (attempt != connectionAttempt) {
                     return;
                 }
+                discoveryRunning = false;
                 if (valid) {
                     openServer(normalized);
                 } else {
@@ -471,6 +584,7 @@ public final class MainActivity extends Activity {
 
     private List<String> fetchDiscoveryCandidates() {
         List<String> result = new ArrayList<>();
+        fetchContinuityCandidate(result);
         HttpURLConnection connection = null;
         try {
             String separator = BuildConfig.ALPECCA_DISCOVERY_URL.contains("?") ? "&" : "?";
@@ -481,7 +595,8 @@ public final class MainActivity extends Activity {
             connection.setInstanceFollowRedirects(false);
             connection.setUseCaches(false);
             connection.setRequestProperty("Accept", "application/json");
-            connection.setRequestProperty("User-Agent", "AlpeccaAndroid/2.0");
+            connection.setRequestProperty("User-Agent", APP_USER_AGENT);
+            applyRelayHeaders(connection);
             if (connection.getResponseCode() != 200) {
                 return result;
             }
@@ -522,6 +637,44 @@ public final class MainActivity extends Activity {
         return result;
     }
 
+    private void fetchContinuityCandidate(List<String> result) {
+        HttpURLConnection connection = null;
+        try {
+            URL url = requireHttpsUrl(
+                BuildConfig.ALPECCA_CONTINUITY_DISCOVERY_URL,
+                "continuity discovery"
+            );
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(7000);
+            connection.setReadTimeout(7000);
+            connection.setInstanceFollowRedirects(false);
+            connection.setUseCaches(false);
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("Cache-Control", "no-cache");
+            connection.setRequestProperty("User-Agent", APP_USER_AGENT);
+            if (connection.getResponseCode() != 200) {
+                return;
+            }
+            JSONObject payload = new JSONObject(
+                readLimited(connection.getInputStream(), 16 * 1024)
+            );
+            JSONObject endpoint = payload.optJSONObject("endpoint");
+            if (!payload.optBoolean("ok") || endpoint == null) {
+                return;
+            }
+            String normalized = normalizeServerUrl(endpoint.optString("url"));
+            if (normalized != null && !result.contains(normalized)) {
+                result.add(normalized);
+            }
+        } catch (Exception ignored) {
+            // The R2, saved, and manual endpoint paths remain available.
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
     private boolean probeExactAlpecca(String origin) {
         HttpURLConnection connection = null;
         try {
@@ -531,7 +684,8 @@ public final class MainActivity extends Activity {
             connection.setInstanceFollowRedirects(false);
             connection.setUseCaches(false);
             connection.setRequestProperty("Accept", "application/json");
-            connection.setRequestProperty("User-Agent", "AlpeccaAndroid/2.0");
+            connection.setRequestProperty("User-Agent", APP_USER_AGENT);
+            applyRelayHeaders(connection);
             if (connection.getResponseCode() != 200) {
                 return false;
             }
@@ -562,14 +716,460 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void checkForUpdates(boolean manual) {
+        if (updateCheckRunning || updateDownloadRunning) {
+            if (manual) {
+                Toast.makeText(this, "An update check is already running.", Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        long lastCheck = preferences.getLong(PREF_LAST_UPDATE_CHECK_MS, 0L);
+        if (!manual && lastCheck > 0L && now >= lastCheck
+            && now - lastCheck < UPDATE_CHECK_COOLDOWN_MS) {
+            return;
+        }
+
+        preferences.edit().putLong(PREF_LAST_UPDATE_CHECK_MS, now).apply();
+        updateCheckRunning = true;
+        updateUpdateButtonState();
+        if (manual) {
+            Toast.makeText(this, "Checking for an Alpecca update...", Toast.LENGTH_SHORT).show();
+        }
+
+        network.execute(() -> {
+            UpdateInfo fetched = null;
+            String failure = null;
+            try {
+                fetched = fetchUpdateManifest();
+            } catch (Exception error) {
+                failure = "Update check failed. Try again later.";
+            }
+            final UpdateInfo result = fetched;
+            final String failureMessage = failure;
+            runOnUiThread(() -> {
+                updateCheckRunning = false;
+                updateUpdateButtonState();
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                if (failureMessage != null) {
+                    if (manual) {
+                        Toast.makeText(this, failureMessage, Toast.LENGTH_LONG).show();
+                    }
+                    return;
+                }
+                if (result.versionCode <= BuildConfig.VERSION_CODE) {
+                    if (manual) {
+                        Toast.makeText(
+                            this,
+                            "Alpecca " + BuildConfig.VERSION_NAME + " is up to date.",
+                            Toast.LENGTH_SHORT
+                        ).show();
+                    }
+                    return;
+                }
+                if (activityResumed) {
+                    showUpdateAvailable(result);
+                } else {
+                    pendingAvailableUpdate = result;
+                }
+            });
+        });
+    }
+
+    private UpdateInfo fetchUpdateManifest() throws Exception {
+        URL manifestUrl = requireHttpsUrl(
+            BuildConfig.ALPECCA_UPDATE_MANIFEST_URL,
+            "update manifest"
+        );
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) manifestUrl.openConnection();
+            connection.setConnectTimeout(7000);
+            connection.setReadTimeout(7000);
+            connection.setInstanceFollowRedirects(false);
+            connection.setUseCaches(false);
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("Cache-Control", "no-cache");
+            connection.setRequestProperty("User-Agent", APP_USER_AGENT);
+            if (connection.getResponseCode() != 200) {
+                throw new IllegalStateException("update manifest unavailable");
+            }
+
+            JSONObject payload = new JSONObject(readLimited(connection.getInputStream(), 16 * 1024));
+            Object codeValue = payload.opt("versionCode");
+            if (!(codeValue instanceof Number)) {
+                throw new IllegalArgumentException("update version code missing");
+            }
+            Number codeNumber = (Number) codeValue;
+            long versionCode = codeNumber.longValue();
+            if (versionCode <= 0L || versionCode > Integer.MAX_VALUE
+                || codeNumber.doubleValue() != (double) versionCode) {
+                throw new IllegalArgumentException("update version code invalid");
+            }
+
+            String versionName = requiredManifestString(payload, "versionName");
+            String apkUrlValue = requiredManifestString(payload, "apkUrl");
+            String sha256 = requiredManifestString(payload, "sha256").toLowerCase(Locale.ROOT);
+            String packageName = requiredManifestString(payload, "packageName");
+            if (!versionName.matches("[0-9A-Za-z][0-9A-Za-z._+-]{0,63}")) {
+                throw new IllegalArgumentException("update version name invalid");
+            }
+            if (!sha256.matches("[0-9a-f]{64}")) {
+                throw new IllegalArgumentException("update digest invalid");
+            }
+            if (!BuildConfig.APPLICATION_ID.equals(packageName)
+                || !getPackageName().equals(packageName)) {
+                throw new SecurityException("update package mismatch");
+            }
+            URL apkUrl = requireHttpsUrl(apkUrlValue, "update APK");
+            return new UpdateInfo((int) versionCode, versionName, apkUrl, sha256, packageName);
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
+    private String requiredManifestString(JSONObject payload, String key) {
+        Object value = payload.opt(key);
+        if (!(value instanceof String) || ((String) value).isEmpty()) {
+            throw new IllegalArgumentException("update manifest field missing");
+        }
+        return (String) value;
+    }
+
+    private URL requireHttpsUrl(String raw, String label) throws Exception {
+        String value = raw == null ? "" : raw.trim();
+        URL url = new URL(value);
+        if (!"https".equalsIgnoreCase(url.getProtocol())
+            || url.getHost() == null || url.getHost().trim().isEmpty()
+            || url.getUserInfo() != null || url.getRef() != null) {
+            throw new SecurityException(label + " must use credential-free HTTPS");
+        }
+        return url;
+    }
+
+    private void showUpdateAvailable(UpdateInfo update) {
+        new AlertDialog.Builder(this)
+            .setTitle("Alpecca " + update.versionName + " is available")
+            .setMessage(
+                "Download the launcher update over HTTPS? The APK will be verified before Android is allowed to open it."
+            )
+            .setPositiveButton("Download update", (dialog, which) -> downloadAndVerifyUpdate(update))
+            .setNegativeButton("Not now", null)
+            .show();
+    }
+
+    private void downloadAndVerifyUpdate(UpdateInfo update) {
+        if (updateDownloadRunning) {
+            return;
+        }
+        updateDownloadRunning = true;
+        updateUpdateButtonState();
+        Toast.makeText(this, "Downloading and verifying the update...", Toast.LENGTH_LONG).show();
+        network.execute(() -> {
+            File downloaded = null;
+            String failure = null;
+            try {
+                downloaded = downloadUpdateApk(update);
+            } catch (Exception error) {
+                failure = "The update could not be downloaded or verified.";
+            }
+            final File verifiedApk = downloaded;
+            final String failureMessage = failure;
+            runOnUiThread(() -> {
+                updateDownloadRunning = false;
+                updateUpdateButtonState();
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                if (failureMessage != null) {
+                    Toast.makeText(this, failureMessage, Toast.LENGTH_LONG).show();
+                    return;
+                }
+                VerifiedUpdate verified = new VerifiedUpdate(update, verifiedApk);
+                if (activityResumed) {
+                    confirmInstallUpdate(verified);
+                } else {
+                    pendingInstallUpdate = verified;
+                }
+            });
+        });
+    }
+
+    private File downloadUpdateApk(UpdateInfo update) throws Exception {
+        File updateDir = new File(getCacheDir(), UPDATE_CACHE_DIR);
+        if ((!updateDir.exists() && !updateDir.mkdirs()) || !updateDir.isDirectory()) {
+            throw new IllegalStateException("update cache unavailable");
+        }
+        File[] staleFiles = updateDir.listFiles();
+        if (staleFiles != null) {
+            for (File stale : staleFiles) {
+                if (stale.isFile()) {
+                    stale.delete();
+                }
+            }
+        }
+
+        File partial = new File(updateDir, "AlpeccaLauncher-" + update.versionCode + ".apk.part");
+        File complete = new File(updateDir, "AlpeccaLauncher-" + update.versionCode + ".apk");
+        boolean verified = false;
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) update.apkUrl.openConnection();
+            connection.setConnectTimeout(10_000);
+            connection.setReadTimeout(30_000);
+            connection.setInstanceFollowRedirects(false);
+            connection.setUseCaches(false);
+            connection.setRequestProperty("Accept", APK_MIME_TYPE);
+            connection.setRequestProperty("User-Agent", APP_USER_AGENT);
+            if (connection.getResponseCode() != 200) {
+                throw new IllegalStateException("update APK unavailable");
+            }
+            long declaredLength = connection.getContentLengthLong();
+            if (declaredLength > MAX_UPDATE_APK_BYTES) {
+                throw new SecurityException("update APK too large");
+            }
+
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            long total = 0L;
+            try (InputStream input = connection.getInputStream();
+                 FileOutputStream output = new FileOutputStream(partial)) {
+                byte[] buffer = new byte[32 * 1024];
+                int read;
+                while ((read = input.read(buffer)) != -1) {
+                    total += read;
+                    if (total > MAX_UPDATE_APK_BYTES) {
+                        throw new SecurityException("update APK too large");
+                    }
+                    digest.update(buffer, 0, read);
+                    output.write(buffer, 0, read);
+                }
+                output.flush();
+            }
+            if (total <= 0L || (declaredLength >= 0L && declaredLength != total)) {
+                throw new SecurityException("update APK length mismatch");
+            }
+            if (!MessageDigest.isEqual(hexToBytes(update.sha256), digest.digest())) {
+                throw new SecurityException("update APK digest mismatch");
+            }
+            if (!partial.renameTo(complete)) {
+                throw new IllegalStateException("update APK could not be finalized");
+            }
+            verifyDownloadedPackage(complete, update);
+            verified = true;
+            return complete;
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+            partial.delete();
+            if (!verified) {
+                complete.delete();
+            }
+        }
+    }
+
+    private void verifyDownloadedPackage(File apk, UpdateInfo update) throws Exception {
+        PackageManager manager = getPackageManager();
+        int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+            ? PackageManager.GET_SIGNING_CERTIFICATES
+            : PackageManager.GET_SIGNATURES;
+        PackageInfo archive = manager.getPackageArchiveInfo(apk.getAbsolutePath(), flags);
+        PackageInfo installed = manager.getPackageInfo(getPackageName(), flags);
+        if (archive == null || !update.packageName.equals(archive.packageName)) {
+            throw new SecurityException("downloaded package identity mismatch");
+        }
+        if (packageVersionCode(archive) != update.versionCode
+            || !update.versionName.equals(archive.versionName)) {
+            throw new SecurityException("downloaded package version mismatch");
+        }
+        Set<String> installedSigners = signerDigests(installed);
+        Set<String> updateSigners = signerDigests(archive);
+        if (installedSigners.isEmpty() || !installedSigners.equals(updateSigners)) {
+            throw new SecurityException("downloaded package signer mismatch");
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private long packageVersionCode(PackageInfo info) {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+            ? info.getLongVersionCode()
+            : info.versionCode;
+    }
+
+    @SuppressWarnings("deprecation")
+    private Set<String> signerDigests(PackageInfo info) throws Exception {
+        android.content.pm.Signature[] signatures;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            if (info.signingInfo == null) {
+                throw new SecurityException("package signer unavailable");
+            }
+            signatures = info.signingInfo.getApkContentsSigners();
+        } else {
+            signatures = info.signatures;
+        }
+        Set<String> digests = new LinkedHashSet<>();
+        if (signatures != null) {
+            for (android.content.pm.Signature signature : signatures) {
+                digests.add(toHex(MessageDigest.getInstance("SHA-256").digest(signature.toByteArray())));
+            }
+        }
+        return digests;
+    }
+
+    private byte[] hexToBytes(String value) {
+        byte[] result = new byte[value.length() / 2];
+        for (int index = 0; index < value.length(); index += 2) {
+            int high = Character.digit(value.charAt(index), 16);
+            int low = Character.digit(value.charAt(index + 1), 16);
+            if (high < 0 || low < 0) {
+                throw new IllegalArgumentException("digest is not hexadecimal");
+            }
+            result[index / 2] = (byte) ((high << 4) | low);
+        }
+        return result;
+    }
+
+    private String toHex(byte[] value) {
+        StringBuilder result = new StringBuilder(value.length * 2);
+        for (byte item : value) {
+            result.append(String.format(Locale.ROOT, "%02x", item & 0xff));
+        }
+        return result.toString();
+    }
+
+    private void confirmInstallUpdate(VerifiedUpdate update) {
+        new AlertDialog.Builder(this)
+            .setTitle("Install Alpecca " + update.info.versionName + "?")
+            .setMessage(
+                "The APK passed SHA-256, package, version, and signing checks. Android will show its own installer confirmation next."
+            )
+            .setPositiveButton("Open installer", (dialog, which) -> openInstallerOrSettings(update))
+            .setNegativeButton("Not now", null)
+            .show();
+    }
+
+    private void openInstallerOrSettings(VerifiedUpdate update) {
+        if (!getPackageManager().canRequestPackageInstalls()) {
+            new AlertDialog.Builder(this)
+                .setTitle("Allow launcher updates?")
+                .setMessage(
+                    "Android must allow Alpecca to request package installs. This does not allow silent installation."
+                )
+                .setPositiveButton("Open Android settings", (dialog, which) -> {
+                    pendingInstallUpdate = update;
+                    awaitingInstallPermission = true;
+                    Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
+                    settings.setData(Uri.parse("package:" + getPackageName()));
+                    try {
+                        startActivity(settings);
+                    } catch (ActivityNotFoundException error) {
+                        awaitingInstallPermission = false;
+                        pendingInstallUpdate = null;
+                        Toast.makeText(this, "Android install settings are unavailable.", Toast.LENGTH_LONG).show();
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+            return;
+        }
+        launchPackageInstaller(update);
+    }
+
+    private void launchPackageInstaller(VerifiedUpdate update) {
+        if (!update.apk.isFile()) {
+            Toast.makeText(this, "The verified update file is no longer available.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        try {
+            Uri apkUri = FileProvider.getUriForFile(
+                this,
+                getPackageName() + ".updates",
+                update.apk
+            );
+            Intent installer = new Intent(Intent.ACTION_VIEW);
+            installer.setDataAndType(apkUri, APK_MIME_TYPE);
+            installer.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(installer);
+            pendingInstallUpdate = null;
+        } catch (ActivityNotFoundException | IllegalArgumentException | SecurityException error) {
+            Toast.makeText(this, "Android's package installer is unavailable.", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void resumePendingInstallerPermission() {
+        if (awaitingInstallPermission) {
+            awaitingInstallPermission = false;
+            VerifiedUpdate pending = pendingInstallUpdate;
+            pendingInstallUpdate = null;
+            if (pending != null && getPackageManager().canRequestPackageInstalls()) {
+                confirmInstallUpdate(pending);
+            } else if (pending != null) {
+                Toast.makeText(this, "Launcher update permission was not enabled.", Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+        if (pendingInstallUpdate != null) {
+            VerifiedUpdate pending = pendingInstallUpdate;
+            pendingInstallUpdate = null;
+            confirmInstallUpdate(pending);
+        }
+    }
+
+    private void updateUpdateButtonState() {
+        if (updateButton == null) {
+            return;
+        }
+        boolean busy = updateCheckRunning || updateDownloadRunning;
+        updateButton.setEnabled(!busy);
+        updateButton.setText(
+            updateDownloadRunning
+                ? "Downloading launcher update..."
+                : updateCheckRunning ? "Checking for launcher update..." : "Check for launcher update"
+        );
+    }
+
+    private static final class UpdateInfo {
+        final int versionCode;
+        final String versionName;
+        final URL apkUrl;
+        final String sha256;
+        final String packageName;
+
+        UpdateInfo(int versionCode, String versionName, URL apkUrl, String sha256, String packageName) {
+            this.versionCode = versionCode;
+            this.versionName = versionName;
+            this.apkUrl = apkUrl;
+            this.sha256 = sha256;
+            this.packageName = packageName;
+        }
+    }
+
+    private static final class VerifiedUpdate {
+        final UpdateInfo info;
+        final File apk;
+
+        VerifiedUpdate(UpdateInfo info, File apk) {
+            this.info = info;
+            this.apk = apk;
+        }
+    }
+
     private void openServer(String value) {
         String normalized = normalizeServerUrl(value);
         if (normalized == null) {
             showConnectionFailure("The discovered server address was invalid.");
             return;
         }
+        String previous = normalizeServerUrl(preferences.getString(PREF_SERVER_URL, ""));
         preferences.edit().putString(PREF_SERVER_URL, normalized).apply();
         serverField.setText(normalized);
+        activeServerUrl = normalized;
+        recoveryPending = false;
         Uri house = Uri.parse(normalized).buildUpon()
             .clearQuery()
             .appendQueryParameter("embodiment", "vrm")
@@ -577,7 +1177,369 @@ public final class MainActivity extends Activity {
             .appendQueryParameter("client", "android")
             .build();
         showPortal("OPENING", "Opening House HQ", "The secure server is ready. Loading Alpecca's embodied space.", true);
-        webView.loadUrl(house.toString());
+        webView.stopLoading();
+        if (previous != null && !serverOrigin(previous).equals(serverOrigin(normalized))) {
+            clearHistoryAfterLoad = true;
+        }
+        String deviceId = preferences.getString(PREF_DEVICE_ID, "");
+        if (!deviceId.isEmpty() && !hasDeviceKey()) {
+            preferences.edit().remove(PREF_DEVICE_ID).apply();
+            deviceId = "";
+        }
+        if (!deviceId.isEmpty() && hasDeviceKey()) {
+            final int attempt = connectionAttempt;
+            final long generation = trustGeneration;
+            final String trustedDeviceId = deviceId;
+            final String origin = serverOrigin(normalized);
+            showPortal("VERIFYING", "Recognizing this phone", "Restoring its trusted CreatorJD session for the current secure address.", true);
+            network.execute(() -> {
+                DeviceExchangeResult exchange = exchangeDeviceSession(origin, trustedDeviceId);
+                runOnUiThread(() -> {
+                    if (attempt != connectionAttempt || generation != trustGeneration) {
+                        return;
+                    }
+                    if (exchange.clearRegistration) {
+                        clearLocalDeviceRegistration();
+                    }
+                    if (!exchange.cookies.isEmpty()) {
+                        CookieManager manager = CookieManager.getInstance();
+                        for (String cookie : exchange.cookies) {
+                            manager.setCookie(origin, cookie);
+                        }
+                        manager.flush();
+                    }
+                    loadHouseUrl(house.toString());
+                });
+            });
+            return;
+        }
+        loadHouseUrl(house.toString());
+    }
+
+    private void loadHouseUrl(String houseUrl) {
+        // LocalTunnel otherwise inserts a browser-only warning page. Normal and
+        // Cloudflare origins ignore this header, so discovery has one load path.
+        webView.loadUrl(
+            houseUrl,
+            Collections.singletonMap(RELAY_BYPASS_HEADER, RELAY_BYPASS_VALUE)
+        );
+    }
+
+    private void applyRelayHeaders(HttpURLConnection connection) {
+        // LocalTunnel's reminder page otherwise makes a healthy Alpecca relay
+        // fail exact health and native device-session checks. The header is
+        // non-secret and ignored by Cloudflare, R2, and direct HTTPS servers.
+        connection.setRequestProperty(RELAY_BYPASS_HEADER, RELAY_BYPASS_VALUE);
+    }
+
+    private boolean hasDeviceKey() {
+        try {
+            KeyStore store = KeyStore.getInstance("AndroidKeyStore");
+            store.load(null);
+            return store.containsAlias(DEVICE_KEY_ALIAS);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private byte[] ensureDevicePublicKey() throws Exception {
+        KeyStore store = KeyStore.getInstance("AndroidKeyStore");
+        store.load(null);
+        if (!store.containsAlias(DEVICE_KEY_ALIAS)) {
+            KeyPairGenerator generator = KeyPairGenerator.getInstance(
+                KeyProperties.KEY_ALGORITHM_EC,
+                "AndroidKeyStore"
+            );
+            generator.initialize(new KeyGenParameterSpec.Builder(
+                DEVICE_KEY_ALIAS,
+                KeyProperties.PURPOSE_SIGN | KeyProperties.PURPOSE_VERIFY
+            )
+                .setDigests(KeyProperties.DIGEST_SHA256)
+                .setAlgorithmParameterSpec(new java.security.spec.ECGenParameterSpec("secp256r1"))
+                .setUserAuthenticationRequired(false)
+                .build());
+            generator.generateKeyPair();
+            store.load(null);
+        }
+        java.security.cert.Certificate certificate = store.getCertificate(DEVICE_KEY_ALIAS);
+        if (certificate == null) {
+            throw new IllegalStateException("device key certificate unavailable");
+        }
+        return certificate.getPublicKey().getEncoded();
+    }
+
+    private byte[] signDeviceChallenge(byte[] message) throws Exception {
+        KeyStore store = KeyStore.getInstance("AndroidKeyStore");
+        store.load(null);
+        PrivateKey key = (PrivateKey) store.getKey(DEVICE_KEY_ALIAS, null);
+        if (key == null) {
+            throw new IllegalStateException("device key unavailable");
+        }
+        Signature signer = Signature.getInstance("SHA256withECDSA");
+        signer.initSign(key);
+        signer.update(message);
+        return signer.sign();
+    }
+
+    private byte[] validateDeviceChallenge(
+        JSONObject challenge,
+        String deviceId,
+        String origin
+    ) throws Exception {
+        String challengeId = challenge.optString("challenge_id", "");
+        String encoded = challenge.optString("message", "");
+        long expiresAt = challenge.optLong("expires_at", 0L);
+        if (challengeId.length() < 12 || challengeId.length() > 64
+            || encoded.isEmpty() || encoded.length() > 1400) {
+            throw new SecurityException("invalid device challenge envelope");
+        }
+        byte[] message = Base64.decode(
+            encoded,
+            Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING
+        );
+        if (message.length == 0 || message.length > 1024) {
+            throw new SecurityException("invalid device challenge size");
+        }
+        String transcript = new String(message, StandardCharsets.UTF_8);
+        if (!java.util.Arrays.equals(message, transcript.getBytes(StandardCharsets.UTF_8))) {
+            throw new SecurityException("device challenge is not UTF-8");
+        }
+        String[] lines = transcript.split("\\n", -1);
+        if (lines.length != 6
+            || !"alpecca-device-auth-v2".equals(lines[0])
+            || !deviceId.equals(lines[1])
+            || !challengeId.equals(lines[2])
+            || !Long.toString(expiresAt).equals(lines[3])
+            || !origin.equals(lines[5])) {
+            throw new SecurityException("device challenge binding mismatch");
+        }
+        long now = System.currentTimeMillis() / 1000L;
+        if (expiresAt <= now - 30L || expiresAt > now + 180L) {
+            throw new SecurityException("device challenge expiry invalid");
+        }
+        String nonce = lines[4];
+        if (nonce.length() != 43) {
+            throw new SecurityException("device challenge nonce invalid");
+        }
+        for (int index = 0; index < nonce.length(); index++) {
+            char value = nonce.charAt(index);
+            if (!(value >= 'A' && value <= 'Z')
+                && !(value >= 'a' && value <= 'z')
+                && !(value >= '0' && value <= '9')
+                && value != '-' && value != '_') {
+                throw new SecurityException("device challenge nonce invalid");
+            }
+        }
+        byte[] decodedNonce = Base64.decode(
+            nonce,
+            Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING
+        );
+        if (decodedNonce.length != 32) {
+            throw new SecurityException("device challenge nonce invalid");
+        }
+        return message;
+    }
+
+    private void deleteDeviceKey() {
+        try {
+            KeyStore store = KeyStore.getInstance("AndroidKeyStore");
+            store.load(null);
+            if (store.containsAlias(DEVICE_KEY_ALIAS)) {
+                store.deleteEntry(DEVICE_KEY_ALIAS);
+            }
+        } catch (Exception ignored) {
+            // Clearing the local registration id still prevents future exchange.
+        }
+    }
+
+    private void clearLocalDeviceRegistration() {
+        trustGeneration++;
+        preferences.edit().remove(PREF_DEVICE_ID).apply();
+        deleteDeviceKey();
+    }
+
+    private void ensureDeviceEnrollment() {
+        if (deviceEnrollmentRunning || activeServerUrl.isEmpty()
+            || !preferences.getString(PREF_DEVICE_ID, "").isEmpty()) {
+            return;
+        }
+        String origin = serverOrigin(activeServerUrl);
+        String cookie = CookieManager.getInstance().getCookie(origin);
+        if (cookie == null || cookie.isEmpty()) {
+            return;
+        }
+        deviceEnrollmentRunning = true;
+        final long generation = trustGeneration;
+        final int attempt = connectionAttempt;
+        network.execute(() -> {
+            String enrolledId = "";
+            try {
+                byte[] publicKey = ensureDevicePublicKey();
+                JSONObject payload = new JSONObject()
+                    .put("label", "CreatorJD Android phone")
+                    .put("public_key", Base64.encodeToString(
+                        publicKey,
+                        Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING
+                    ));
+                HttpResult result = postDeviceJson(origin, "/auth/device/enroll", payload, cookie);
+                if (result.status == 200) {
+                    enrolledId = new JSONObject(result.body).optString("device_id", "");
+                }
+            } catch (Exception ignored) {
+                enrolledId = "";
+            }
+            String finalId = enrolledId;
+            runOnUiThread(() -> {
+                deviceEnrollmentRunning = false;
+                if (generation == trustGeneration
+                    && attempt == connectionAttempt
+                    && origin.equals(serverOrigin(activeServerUrl))
+                    && !finalId.isEmpty()) {
+                    preferences.edit().putString(PREF_DEVICE_ID, finalId).apply();
+                    Toast.makeText(this, "This phone is now trusted across secure address changes.", Toast.LENGTH_SHORT).show();
+                }
+            });
+        });
+    }
+
+    private DeviceExchangeResult exchangeDeviceSession(String origin, String deviceId) {
+        try {
+            HttpResult challengeResult = postDeviceJson(
+                origin,
+                "/auth/device/challenge",
+                new JSONObject().put("device_id", deviceId),
+                null
+            );
+            if (challengeResult.status != 200) {
+                return new DeviceExchangeResult(
+                    Collections.emptyList(),
+                    challengeResult.status == 401 || challengeResult.status == 404
+                );
+            }
+            JSONObject challenge = new JSONObject(challengeResult.body);
+            byte[] message = validateDeviceChallenge(challenge, deviceId, origin);
+            byte[] signature = signDeviceChallenge(message);
+            JSONObject exchange = new JSONObject()
+                .put("challenge_id", challenge.optString("challenge_id"))
+                .put("signature", Base64.encodeToString(
+                    signature,
+                    Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING
+                ));
+            HttpResult exchangeResult = postDeviceJson(origin, "/auth/device/exchange", exchange, null);
+            if (exchangeResult.status != 200) {
+                return new DeviceExchangeResult(
+                    Collections.emptyList(),
+                    exchangeResult.status == 401 || exchangeResult.status == 404
+                );
+            }
+            return new DeviceExchangeResult(exchangeResult.cookies, false);
+        } catch (Exception ignored) {
+            return new DeviceExchangeResult(Collections.emptyList(), !hasDeviceKey());
+        }
+    }
+
+    private static final class DeviceExchangeResult {
+        final List<String> cookies;
+        final boolean clearRegistration;
+
+        DeviceExchangeResult(List<String> cookies, boolean clearRegistration) {
+            this.cookies = cookies;
+            this.clearRegistration = clearRegistration;
+        }
+    }
+
+    private HttpResult postDeviceJson(String origin, String path, JSONObject payload, String cookie) throws Exception {
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) new URL(origin + path).openConnection();
+            connection.setConnectTimeout(7000);
+            connection.setReadTimeout(7000);
+            connection.setInstanceFollowRedirects(false);
+            connection.setUseCaches(false);
+            connection.setRequestMethod("POST");
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("Content-Type", "application/json");
+            connection.setRequestProperty("Origin", origin);
+            connection.setRequestProperty("User-Agent", APP_USER_AGENT);
+            applyRelayHeaders(connection);
+            if (cookie != null && !cookie.isEmpty()) {
+                connection.setRequestProperty("Cookie", cookie);
+            }
+            byte[] body = payload.toString().getBytes(StandardCharsets.UTF_8);
+            if (body.length > 8192) {
+                throw new IllegalArgumentException("device request too large");
+            }
+            connection.setFixedLengthStreamingMode(body.length);
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(body);
+            }
+            int status = connection.getResponseCode();
+            InputStream stream = status >= 200 && status < 400
+                ? connection.getInputStream()
+                : connection.getErrorStream();
+            String responseBody = stream == null ? "" : readLimited(stream, 16 * 1024);
+            List<String> cookies = new ArrayList<>();
+            for (java.util.Map.Entry<String, List<String>> header : connection.getHeaderFields().entrySet()) {
+                if (header.getKey() != null && "set-cookie".equalsIgnoreCase(header.getKey())) {
+                    cookies.addAll(header.getValue());
+                }
+            }
+            return new HttpResult(status, responseBody, cookies);
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
+    private void revokeDeviceRegistration(
+        String origin,
+        String deviceId,
+        String cookie
+    ) throws Exception {
+        if (origin.isEmpty() || deviceId.isEmpty() || cookie == null || cookie.isEmpty()) {
+            return;
+        }
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) new URL(
+                origin + "/auth/device/" + Uri.encode(deviceId)
+            ).openConnection();
+            connection.setConnectTimeout(7000);
+            connection.setReadTimeout(7000);
+            connection.setInstanceFollowRedirects(false);
+            connection.setUseCaches(false);
+            connection.setRequestMethod("DELETE");
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("Origin", origin);
+            connection.setRequestProperty("Cookie", cookie);
+            connection.setRequestProperty("User-Agent", APP_USER_AGENT);
+            applyRelayHeaders(connection);
+            int status = connection.getResponseCode();
+            InputStream stream = status >= 200 && status < 400
+                ? connection.getInputStream()
+                : connection.getErrorStream();
+            if (stream != null) {
+                readLimited(stream, 16 * 1024);
+            }
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
+    private static final class HttpResult {
+        final int status;
+        final String body;
+        final List<String> cookies;
+
+        HttpResult(int status, String body, List<String> cookies) {
+            this.status = status;
+            this.body = body;
+            this.cookies = cookies;
+        }
     }
 
     private String normalizeServerUrl(String entered) {
@@ -654,6 +1616,78 @@ public final class MainActivity extends Activity {
         endpointLabel.setText(saved.isEmpty() ? "No server saved" : "Last server: " + displayHost(saved));
     }
 
+    private void beginAutomaticRecovery(String message) {
+        if (recoveryPending || discoveryRunning) {
+            return;
+        }
+        pageFailed = true;
+        recoveryPending = true;
+        webView.stopLoading();
+        showPortal("RECOVERING", "Restoring House HQ", message + " Looking for Alpecca's latest secure phone link.", true);
+        startDiscovery(true);
+    }
+
+    private void scheduleAutomaticRediscovery() {
+        if (!activityResumed || discoveryRunning || !recoveryPending) {
+            return;
+        }
+        long multiplier = 1L << Math.min(automaticRetryCount, 4);
+        long delay = Math.min(RECOVERY_RETRY_MAX_MS, 2_000L * multiplier);
+        automaticRetryCount++;
+        mainHandler.removeCallbacks(recoveryTask);
+        mainHandler.postDelayed(recoveryTask, delay);
+    }
+
+    private void scheduleHealthCheck(long delayMs) {
+        cancelHealthCheck();
+        if (activityResumed && !activeServerUrl.isEmpty() && !recoveryPending && !discoveryRunning) {
+            mainHandler.postDelayed(healthCheckTask, delayMs);
+        }
+    }
+
+    private void cancelHealthCheck() {
+        mainHandler.removeCallbacks(healthCheckTask);
+    }
+
+    private void runForegroundHealthCheck() {
+        if (!activityResumed || activeServerUrl.isEmpty() || recoveryPending || discoveryRunning) {
+            return;
+        }
+        String checkedServer = activeServerUrl;
+        network.execute(() -> {
+            boolean healthy = probeExactAlpecca(serverOrigin(checkedServer));
+            runOnUiThread(() -> {
+                if (!activityResumed || !checkedServer.equals(activeServerUrl) || recoveryPending || discoveryRunning) {
+                    return;
+                }
+                if (healthy) {
+                    consecutiveHealthFailures = 0;
+                    scheduleHealthCheck(HEALTH_CHECK_INTERVAL_MS);
+                    return;
+                }
+                consecutiveHealthFailures++;
+                if (consecutiveHealthFailures < 2) {
+                    scheduleHealthCheck(HEALTH_CHECK_CONFIRM_MS);
+                } else {
+                    beginAutomaticRecovery("The current secure tunnel stopped responding.");
+                }
+            });
+        });
+    }
+
+    private void registerNetworkRecovery() {
+        connectivityManager = getSystemService(ConnectivityManager.class);
+        if (connectivityManager == null) {
+            return;
+        }
+        try {
+            connectivityManager.registerDefaultNetworkCallback(networkCallback);
+            networkCallbackRegistered = true;
+        } catch (RuntimeException ignored) {
+            networkCallbackRegistered = false;
+        }
+    }
+
     private void showSettings() {
         serverField.setText(preferences.getString(PREF_SERVER_URL, ""));
         settingsOverlay.setVisibility(View.VISIBLE);
@@ -672,18 +1706,59 @@ public final class MainActivity extends Activity {
     private void confirmClearSession() {
         new AlertDialog.Builder(this)
             .setTitle("Clear trusted session?")
-            .setMessage("This removes the trusted-device cookie from this phone. The creator password will be required again.")
-            .setPositiveButton("Clear", (dialog, which) -> {
-                CookieManager.getInstance().removeAllCookies(null);
-                CookieManager.getInstance().flush();
-                WebStorage.getInstance().deleteAllData();
-                preferences.edit().remove(PREF_MEDIA_ORIGIN).apply();
-                webView.clearCache(true);
-                hideSettings();
-                discoverAndConnect();
-            })
+            .setMessage("This removes the trusted session and this phone's device key. The creator password will be required again.")
+            .setPositiveButton("Clear", (dialog, which) -> clearTrustedSession())
             .setNegativeButton("Cancel", null)
             .show();
+    }
+
+    private void clearTrustedSession() {
+        final long generation = ++trustGeneration;
+        connectionAttempt++;
+        deviceEnrollmentRunning = false;
+        discoveryRunning = false;
+        mainHandler.removeCallbacks(recoveryTask);
+        cancelHealthCheck();
+        webView.stopLoading();
+
+        String configured = normalizeServerUrl(
+            activeServerUrl.isEmpty()
+                ? preferences.getString(PREF_SERVER_URL, "")
+                : activeServerUrl
+        );
+        String origin = configured == null ? "" : serverOrigin(configured);
+        String deviceId = preferences.getString(PREF_DEVICE_ID, "");
+        String cookie = origin.isEmpty() ? null : CookieManager.getInstance().getCookie(origin);
+        showPortal("CLEARING", "Clearing trusted phone", "Revoking this device and removing its local session.", true);
+
+        network.execute(() -> {
+            try {
+                revokeDeviceRegistration(origin, deviceId, cookie);
+            } catch (Exception ignored) {
+                // Local deletion still completes; server-side revocation remains available.
+            }
+            runOnUiThread(() -> {
+                if (generation != trustGeneration) {
+                    return;
+                }
+                CookieManager manager = CookieManager.getInstance();
+                manager.removeAllCookies(cleared -> runOnUiThread(() -> {
+                    if (generation != trustGeneration) {
+                        return;
+                    }
+                    manager.flush();
+                    WebStorage.getInstance().deleteAllData();
+                    preferences.edit()
+                        .remove(PREF_MEDIA_ORIGIN)
+                        .remove(PREF_DEVICE_ID)
+                        .apply();
+                    deleteDeviceKey();
+                    webView.clearCache(true);
+                    hideSettings();
+                    discoverAndConnect();
+                }));
+            });
+        });
     }
 
     private void openExternal(Uri uri) {
@@ -820,21 +1895,48 @@ public final class MainActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        activityResumed = true;
+        webView.onResume();
+        if (!startupUpdateCheckRequested) {
+            startupUpdateCheckRequested = true;
+            checkForUpdates(false);
+        }
+        resumePendingInstallerPermission();
+        if (pendingAvailableUpdate != null) {
+            UpdateInfo pending = pendingAvailableUpdate;
+            pendingAvailableUpdate = null;
+            showUpdateAvailable(pending);
+        }
+        if (recoveryPending) {
+            scheduleAutomaticRediscovery();
+        } else if (!activeServerUrl.isEmpty()) {
+            scheduleHealthCheck(1_000L);
+        }
+    }
+
+    @Override
     protected void onPause() {
+        activityResumed = false;
+        mainHandler.removeCallbacks(recoveryTask);
+        cancelHealthCheck();
         CookieManager.getInstance().flush();
         webView.onPause();
         super.onPause();
     }
 
     @Override
-    protected void onResume() {
-        super.onResume();
-        webView.onResume();
-    }
-
-    @Override
     protected void onDestroy() {
         connectionAttempt++;
+        mainHandler.removeCallbacksAndMessages(null);
+        if (networkCallbackRegistered && connectivityManager != null) {
+            try {
+                connectivityManager.unregisterNetworkCallback(networkCallback);
+            } catch (RuntimeException ignored) {
+                // Already unregistered by the platform.
+            }
+        }
         network.shutdownNow();
         if (fileCallback != null) {
             fileCallback.onReceiveValue(null);

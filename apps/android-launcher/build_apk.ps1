@@ -47,6 +47,8 @@ $OutputApk = Join-Path $OutputDir "AlpeccaLauncher.apk"
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 Copy-Item -LiteralPath $BuiltApk -Destination $OutputApk -Force
 Write-Host "APK ready: $OutputApk"
+$Sha256 = (Get-FileHash -LiteralPath $OutputApk -Algorithm SHA256).Hash.ToLowerInvariant()
+Write-Host "APK SHA-256: $Sha256"
 
 if ($Install) {
     $Adb = Join-Path $SdkRoot "platform-tools\adb.exe"
