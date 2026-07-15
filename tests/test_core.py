@@ -4753,10 +4753,10 @@ def test_house_has_intentional_alpecca_rest_nook_for_sleep_animation():
     assert "function isAlpeccaRestExplorePoint" in text
     assert "addSofa();" in text
     assert "alpecca-rest-nook" in text
-    choose_block = text[text.index("function chooseNextAlpeccaExploreIndex"):text.index("function advanceAlpeccaExplorePoint")]
-    assert "shouldRest" in choose_block
-    assert "restCandidate" in choose_block
     update_block = text[text.index("function updateAlpecca"):text.index("function createAlpeccaFallback")]
+    assert "sleepy && !anxious && !playerEngaged" in update_block
+    assert "alpecca.exploreIndex = alpeccaRestExploreIndex()" in update_block
+    assert "clearAlpeccaTerminalInteraction()" in update_block
     assert "(!sleepy || restPoint)" in update_block
     assert "alpecca.inspectTimer = restPoint ? 9.5 : 3.4" in update_block
     assert "playerNearRestingDistance" in update_block
@@ -4902,7 +4902,7 @@ def test_house_hq_room_features_read_real_alpecca_app_tools():
     assert "showAlpeccaProfileLine(summary" in bridge_block
     manual_block = main_ts[main_ts.index("function runAlpeccaFeature"):main_ts.index("function addSourceTerminal")]
     assert "void runAlpeccaFeatureToolBridge(feature.id, featureRoom, true)" in manual_block
-    autonomous_block = main_ts[main_ts.index("function runAlpeccaAutonomousFeature"):main_ts.index("function chooseNextAlpeccaExploreIndex")]
+    autonomous_block = main_ts[main_ts.index("function runAlpeccaAutonomousFeature"):main_ts.index("function completeAlpeccaMovementDirective")]
     assert "void runAlpeccaFeatureToolBridge(feature.id, room, false)" in autonomous_block
 
 
