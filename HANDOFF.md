@@ -1,5 +1,35 @@
 # Alpecca — Handoff (updated 2026-07-14)
 
+## Codex V4 Transformed Foot Contacts And Live Restart (2026-07-14)
+
+- The V4 gait contact solver no longer subtracts a fixed ankle-to-sole world-Y
+  offset. It uses V4's measured skinned heel and toe points in the raw VRM 1.0
+  foot/toe bone frames, transforms them every frame, and uses their actual
+  world-space low point for grounding and planted-foot targets.
+- The V4 rig signature is checked at load from the raw toe pivot. Another valid
+  VRM takes a conservative bone-local, rotation-aware fallback instead of
+  receiving V4-specific mesh anchors. Debug telemetry now exposes the contact
+  source plus heel, toe, low-sole, clearance, and planted-target values.
+- During a planted walk, the airborne foot is excluded from the root ground
+  clamp. A toe-off roll therefore cannot lift the whole avatar simply because
+  its swinging toe intersects the floor plane for a frame. This is a scoped
+  gait correction, not a full physics or collision rewrite.
+- Headless V4 verification after the same skeleton-combination path used by
+  House confirmed the V4 signature and flat contacts: heel `0.000025 m`, toe
+  `0.000671 m` above the floor. The pure contact test also pins heel rise and
+  toe-led contact under positive ankle pitch.
+- Verification: `npm.cmd run house:test:embodiment` passed (`16` tests),
+  `npm.cmd run house:build` passed (including TypeScript), and
+  `python -m pytest -q tests/test_phase10_discord_locked_modes.py` passed
+  (`44` tests; only the upstream Python `audioop` deprecation warning).
+- Live checkpoint: the rebuilt backend listens on `127.0.0.1:8765` and its
+  single Discord bridge on `127.0.0.1:8779`. Protected local routes return
+  expected `401` responses without a trusted session. The bridge reports its
+  closed local media catalog and duplex local voice path ready; Discord's
+  public gateway returned HTTP `200`. A logged transient DNS error occurred
+  during reconnect and resolved at the host level. An authenticated visual
+  walk remains the next manual proof, not a reason to bypass the session gate.
+
 ## Codex V4 Avatar Motion And Face Correction (2026-07-14)
 
 - The V4 procedural route no longer injects a random mid-route pause. Alpecca

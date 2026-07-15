@@ -22,6 +22,19 @@ export type VrmVowel = (typeof VRM_VOWELS)[number];
 
 export type VrmDebugPosition = Readonly<{ x: number; y: number; z: number }>;
 
+export type VrmFootContactSource = "skinned-geometry" | "bone-local-fallback" | "mixed" | "unavailable";
+
+export type VrmFootDebug = Readonly<{
+  swinging: boolean;
+  target: VrmDebugPosition | null;
+  rawFoot: VrmDebugPosition | null;
+  contactSource: VrmFootContactSource;
+  heelContact: VrmDebugPosition | null;
+  toeContact: VrmDebugPosition | null;
+  soleY: number | null;
+  soleClearance: number | null;
+}>;
+
 export type VrmEmbodimentDebug = Readonly<{
   groundBase: number;
   groundOffset: number;
@@ -42,6 +55,7 @@ export type VrmEmbodimentDebug = Readonly<{
   rootLocalPosition: VrmDebugPosition | null;
   hipsPosition: VrmDebugPosition | null;
   hipsLocalPosition: VrmDebugPosition | null;
+  feet: Readonly<{ left: VrmFootDebug; right: VrmFootDebug }>;
   handContactDistance: number | null;
   interactionPhase: "approach" | "reach" | "contact" | "retract";
   interactionTargetReachable: boolean;
@@ -210,6 +224,76 @@ export function resolveVrmFootSwing(phase: number, side: "left" | "right"): VrmF
 export function strideDistanceForMotion(speed: number, angularSpeed: number): number {
   if (!Number.isFinite(speed) || !Number.isFinite(angularSpeed) || speed <= 0 || angularSpeed <= 0) return 0;
   return THREE.MathUtils.clamp(speed * (Math.PI * 2) / angularSpeed, 0.14, 0.5);
+}
+
+// A zero horizontal stride is valid for the in-app walk reference. It still
+// needs an airborne foot so QA never disguises a sliding gait as a walk.
+export function resolveVrmFootLiftHeight(swingLift: number, stride: number): number {
+  const lift = Number.isFinite(swingLift) ? c01(swingLift) : 0;
+  const safeStride = Number.isFinite(stride) ? Math.max(0, stride) : 0;
+  return lift * (0.055 + safeStride * 0.24);
+}
+
+export type VrmFootRoll = Readonly<{
+  // Positive local X is toe-down / heel-up in the VRM 1.0 frame. Negative is
+  // toe-up / heel-down. The controller applies the 0.x frame conversion when
+  // writing this value to a bone.
+  pitch: number;
+  toeOff: number;
+  dorsiflex: number;
+  heelStrike: number;
+}>;
+
+function smoothRamp(value: number, start: number, end: number): number {
+  if (!Number.isFinite(value) || end <= start) return 0;
+  const t = c01((value - start) / (end - start));
+  return t * t * (3 - 2 * t);
+}
+
+// Feet are not flat paddles: at lift-off the heel rolls up around the toe;
+// through swing the toe flexes up for clearance; just before contact the heel
+// leads again. This is intentionally derived from the monotonic planted-foot
+// swing, not from a separate visual clock, so it cannot drift from the IK path.
+export function resolveVrmFootRoll(swing: VrmFootSwing): VrmFootRoll {
+  if (!swing.active) return { pitch: 0, toeOff: 0, dorsiflex: 0, heelStrike: 0 };
+  const progress = c01(swing.progress);
+  const toeOff = (1 - smoothRamp(progress, 0.03, 0.30)) * 0.20;
+  const dorsiflex = Math.sin(progress * Math.PI) * 0.14;
+  const heelStrike = smoothRamp(progress, 0.68, 0.86)
+    * (1 - smoothRamp(progress, 0.86, 1.0))
+    * 0.075;
+  return {
+    pitch: toeOff - dorsiflex - heelStrike,
+    toeOff,
+    dorsiflex,
+    heelStrike,
+  };
+}
+
+export type VrmFootContactLocal = Readonly<{ y: number; z: number }>;
+
+// A static ankle-to-floor distance is only correct while the foot is flat.
+// This mirrors the Y component of a local heel/toe point after ankle pitch so
+// tests can pin the geometry without a WebGL scene.
+export function resolveVrmFootContactY(
+  boneOriginY: number,
+  contact: VrmFootContactLocal,
+  pitch: number,
+): number {
+  if (![boneOriginY, contact.y, contact.z, pitch].every(Number.isFinite)) return Number.NaN;
+  return boneOriginY + contact.y * Math.cos(pitch) - contact.z * Math.sin(pitch);
+}
+
+export function resolveVrmLowestFootContactY(
+  boneOriginY: number,
+  heel: VrmFootContactLocal,
+  toe: VrmFootContactLocal,
+  pitch: number,
+): number {
+  const heelY = resolveVrmFootContactY(boneOriginY, heel, pitch);
+  const toeY = resolveVrmFootContactY(boneOriginY, toe, pitch);
+  if (!Number.isFinite(heelY) || !Number.isFinite(toeY)) return Number.NaN;
+  return Math.min(heelY, toeY);
 }
 
 export function shouldBlendVrmProceduralTransition(previous: string, next: string): boolean {
@@ -489,13 +573,86 @@ const PROCEDURAL_PERFORMANCE_SECONDS: Partial<Record<string, number>> = {
   jump: 1.4,
 };
 
-// vrmIK.js: the bone origin isn't the sole -- ankles sit ~7 cm above it, toe
-// bones ~2 cm. Model-space metres; scaled by the wrapper's world scale when
-// measuring in world space.
-const SOLE_OFFSET: Partial<Record<VRMHumanBoneName, number>> = {
-  leftFoot: 0.07, rightFoot: 0.07, leftToes: 0.02, rightToes: 0.02,
+type FootSide = "left" | "right";
+
+type FootContactAnchorSource = "skinned-geometry" | "bone-local-fallback";
+
+type FootContactAnchor = Readonly<{
+  bone: VRMHumanBoneName;
+  local: THREE.Vector3;
+  source: FootContactAnchorSource;
+}>;
+
+type FootContactGeometry = Readonly<{
+  heel: FootContactAnchor;
+  toe: FootContactAnchor;
+  source: Exclude<VrmFootContactSource, "unavailable">;
+}>;
+
+const FOOT_SIDES = ["left", "right"] as const;
+const FOOT_BONE: Readonly<Record<FootSide, VRMHumanBoneName>> = {
+  left: "leftFoot",
+  right: "rightFoot",
 };
-const SOLE_BONES = Object.keys(SOLE_OFFSET) as VRMHumanBoneName[];
+const TOE_BONE: Readonly<Record<FootSide, VRMHumanBoneName>> = {
+  left: "leftToes",
+  right: "rightToes",
+};
+
+// V4 was measured from actual posed skinned vertices. These points are local
+// to the raw bones and are transformed every frame, so heel/toe contact moves
+// correctly when the ankle rolls. They deliberately replace the old fixed
+// world-Y subtraction rather than adding another visual-only offset.
+const V4_CONTACT_LOCAL: Readonly<Record<FootSide, Readonly<{
+  heel: THREE.Vector3;
+  toe: THREE.Vector3;
+}>>> = {
+  left: {
+    heel: new THREE.Vector3(-0.006408, -0.129752, -0.042824),
+    toe: new THREE.Vector3(0.049325, -0.065245, -0.001596),
+  },
+  right: {
+    heel: new THREE.Vector3(0.006408, -0.129752, -0.042824),
+    toe: new THREE.Vector3(-0.049325, -0.065245, -0.001596),
+  },
+};
+
+// The fallback preserves grounding for another valid VRM without assuming V4
+// mesh data. It is still bone-local, so it remains rotation-aware; it simply
+// lacks the V4 heel/toe surface placement.
+const FALLBACK_SOLE_DEPTH: Partial<Record<VRMHumanBoneName, number>> = {
+  leftFoot: 0.12954, rightFoot: 0.12954, leftToes: 0.06590, rightToes: 0.06590,
+};
+
+function fallbackFootContactGeometry(side: FootSide): FootContactGeometry {
+  const heelBone = FOOT_BONE[side];
+  const toeBone = TOE_BONE[side];
+  const heel: FootContactAnchor = {
+    bone: heelBone,
+    local: new THREE.Vector3(0, -(FALLBACK_SOLE_DEPTH[heelBone] ?? 0), 0),
+    source: "bone-local-fallback",
+  };
+  const toe: FootContactAnchor = {
+    bone: toeBone,
+    local: new THREE.Vector3(0, -(FALLBACK_SOLE_DEPTH[toeBone] ?? 0), 0),
+    source: "bone-local-fallback",
+  };
+  return { heel, toe, source: "bone-local-fallback" };
+}
+
+function v4FootContactGeometry(side: FootSide): FootContactGeometry {
+  const heel: FootContactAnchor = {
+    bone: FOOT_BONE[side],
+    local: V4_CONTACT_LOCAL[side].heel.clone(),
+    source: "skinned-geometry",
+  };
+  const toe: FootContactAnchor = {
+    bone: TOE_BONE[side],
+    local: V4_CONTACT_LOCAL[side].toe.clone(),
+    source: "skinned-geometry",
+  };
+  return { heel, toe, source: "skinned-geometry" };
+}
 
 function withWatchdog<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -627,6 +784,15 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   };
   const footBaseWorld = new THREE.Vector3();
   let footPlantsReady = false;
+  let footContactGeometry: Record<FootSide, FootContactGeometry> = {
+    left: fallbackFootContactGeometry("left"),
+    right: fallbackFootContactGeometry("right"),
+  };
+  const heelContactWorld = new THREE.Vector3();
+  const toeContactWorld = new THREE.Vector3();
+  const footContactOriginWorld = new THREE.Vector3();
+  const debugHeelContactWorld = new THREE.Vector3();
+  const debugToeContactWorld = new THREE.Vector3();
 
   // A short blend makes an interrupted walk settle instead of hard-snapping
   // the pelvis, knees, and shoulders back to a neutral idle pose.
@@ -1086,9 +1252,70 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     return bone(side === "left" ? "leftFoot" : "rightFoot");
   }
 
+  function hasV4FootContactSignature(): boolean {
+    const humanoid = vrm?.humanoid;
+    if (!humanoid) return false;
+    for (const side of FOOT_SIDES) {
+      const foot = humanoid.getRawBoneNode(FOOT_BONE[side]);
+      const toe = humanoid.getRawBoneNode(TOE_BONE[side]);
+      if (!foot || !toe || toe.parent !== foot) return false;
+      // V4's raw toe pivot is a stable rig signature, not a world-space pose.
+      if (Math.abs(toe.position.x) > 0.004
+        || Math.abs(toe.position.y + 0.06303) > 0.004
+        || Math.abs(toe.position.z - 0.112069) > 0.004) return false;
+    }
+    return true;
+  }
+
+  function configureFootContactGeometry(): void {
+    footContactGeometry = hasV4FootContactSignature()
+      ? { left: v4FootContactGeometry("left"), right: v4FootContactGeometry("right") }
+      : { left: fallbackFootContactGeometry("left"), right: fallbackFootContactGeometry("right") };
+  }
+
+  function resolveFootContactPoint(anchor: FootContactAnchor, out: THREE.Vector3): boolean {
+    const raw = vrm?.humanoid.getRawBoneNode(anchor.bone) ?? null;
+    if (!raw) return false;
+    raw.updateWorldMatrix(true, false);
+    out.copy(anchor.local);
+    raw.localToWorld(out);
+    return Number.isFinite(out.x) && Number.isFinite(out.y) && Number.isFinite(out.z);
+  }
+
+  // Returns a bit mask: 1 = heel valid, 2 = toe valid. The raw skeleton is
+  // intentionally used here because it is the one that the skinned V4 mesh
+  // actually follows; normalized bones remain reserved for the IK solve.
+  function resolveFootContactPoints(
+    side: FootSide,
+    heelOut: THREE.Vector3,
+    toeOut: THREE.Vector3,
+  ): number {
+    const geometry = footContactGeometry[side];
+    let valid = 0;
+    if (resolveFootContactPoint(geometry.heel, heelOut)) valid |= 1;
+    if (resolveFootContactPoint(geometry.toe, toeOut)) valid |= 2;
+    return valid;
+  }
+
+  function lowestFootContactY(side: FootSide): number | null {
+    const valid = resolveFootContactPoints(side, heelContactWorld, toeContactWorld);
+    if (!valid) return null;
+    if (valid === 1) return heelContactWorld.y;
+    if (valid === 2) return toeContactWorld.y;
+    return Math.min(heelContactWorld.y, toeContactWorld.y);
+  }
+
   function footFloorY(side: "left" | "right"): number {
-    const name = side === "left" ? "leftFoot" : "rightFoot";
-    return groundY + (SOLE_OFFSET[name] ?? 0) * worldScaleY();
+    const foot = footBoneFor(side);
+    const contactY = lowestFootContactY(side);
+    if (foot && contactY != null) {
+      foot.getWorldPosition(footContactOriginWorld);
+      // Translate the normalized IK target by the measured raw-contact delta.
+      // This keeps the current heel/toe point at ground despite foot pitch.
+      return groundY + (footContactOriginWorld.y - contactY);
+    }
+    const name = FOOT_BONE[side];
+    return groundY + (FALLBACK_SOLE_DEPTH[name] ?? 0) * worldScaleY();
   }
 
   function resetFootPlants(): void {
@@ -1177,10 +1404,21 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     );
   }
 
+  function applyGaitFootRoll(side: "left" | "right", swing: VrmFootSwing): void {
+    const foot = footBoneFor(side);
+    if (!foot) return;
+    const upper = bone(side === "left" ? "leftUpperLeg" : "rightUpperLeg");
+    const lower = bone(side === "left" ? "leftLowerLeg" : "rightLowerLeg");
+    // The leg solver changes the thigh/shin after the procedural clip has set
+    // its initial ankle compensation. Rebuild that compensation here, then add
+    // the phase-locked heel/toe roll so the VRM 1.0 V4 foot never stays flat.
+    const parentPitch = (upper?.rotation.x ?? 0) + (lower?.rotation.x ?? 0);
+    foot.rotation.x = -parentPitch * 0.72 + axisFlip * resolveVrmFootRoll(swing).pitch;
+  }
+
   function applyPlantedFootGait(): void {
     if (!footPlantsReady && !initializeFootPlants()) return;
     const stride = strideDistanceForMotion(locomotionSpeed, gaitAngularSpeed);
-    if (stride <= 0) return;
 
     for (const side of ["left", "right"] as const) {
       const state = footPlantFor(side);
@@ -1195,13 +1433,14 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
         }
         const eased = swing.progress * swing.progress * (3 - 2 * swing.progress);
         state.target.lerpVectors(state.swingStart, state.swingEnd, eased);
-        state.target.y += swing.lift * (0.055 + stride * 0.24);
+        state.target.y += resolveVrmFootLiftHeight(swing.lift, stride);
       } else {
         if (state.swinging) state.plant.copy(state.swingEnd);
         state.swinging = false;
         state.target.copy(state.plant);
       }
       applyLegPlantIk(side, state.target);
+      applyGaitFootRoll(side, swing);
     }
   }
 
@@ -1653,26 +1892,25 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   let groundBase = 0;     // resting offset from snapGround (world units)
   let groundOffset = 0;   // current offset groundFeet eases (world units)
   const groundY = deps.groundClearance;
-  const _sole = new THREE.Vector3();
   const _wScale = new THREE.Vector3();
 
   function worldScaleY(): number {
     return wrapper ? Math.max(1e-6, wrapper.getWorldScale(_wScale).y) : 1;
   }
 
-  // Lowest sole-point Y of the posed skeleton (world space), or null. RAW
-  // bones, not normalized: the raw skeleton is what the mesh actually wears.
+  // Lowest transformed heel/toe contact of the posed skeleton (world space),
+  // or null. RAW bones, not normalized: the raw skeleton is what the V4 mesh
+  // actually wears. During a planted gait, the airborne foot cannot pull the
+  // whole body upward just because its toe rolls through the floor plane.
   function lowestSole(): number | null {
-    const h = vrm?.humanoid;
-    if (!h) return null;
-    const s = worldScaleY();
     let lowest = Infinity;
-    for (const name of SOLE_BONES) {
-      const b = h.getRawBoneNode(name);
-      if (!b) continue;
-      b.getWorldPosition(_sole);   // forces parent matrixWorld refresh
-      const sole = _sole.y - (SOLE_OFFSET[name] ?? 0) * s;
-      if (sole < lowest) lowest = sole;
+    const plantedOnly = footPlantsReady
+      && spriteMoving
+      && (clipName === "walk" || clipName === "run");
+    for (const side of FOOT_SIDES) {
+      if (plantedOnly && footPlantFor(side).swinging) continue;
+      const sole = lowestFootContactY(side);
+      if (sole != null && sole < lowest) lowest = sole;
     }
     return Number.isFinite(lowest) ? lowest : null;
   }
@@ -1764,6 +2002,8 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
 
       vrm = loaded;
       wrapper = w;
+      w.updateWorldMatrix(true, true);
+      configureFootContactGeometry();
       v4MoodCorrectionBindings = discoverV4MoodCorrections(loaded);
       clearV4MoodCorrections();
       resetFaceValues();
@@ -1857,6 +2097,37 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     };
   }
 
+  function debugVector(value: THREE.Vector3): VrmDebugPosition {
+    return {
+      x: roundTelemetry(value.x),
+      y: roundTelemetry(value.y),
+      z: roundTelemetry(value.z),
+    };
+  }
+
+  function debugFoot(side: "left" | "right"): VrmFootDebug {
+    const name = FOOT_BONE[side];
+    const raw = vrm?.humanoid.getRawBoneNode(name) ?? null;
+    const rawFoot = debugPositionOf(raw, true);
+    const valid = resolveFootContactPoints(side, debugHeelContactWorld, debugToeContactWorld);
+    const heelContact = valid & 1 ? debugVector(debugHeelContactWorld) : null;
+    const toeContact = valid & 2 ? debugVector(debugToeContactWorld) : null;
+    const soleY = heelContact == null
+      ? (toeContact == null ? null : toeContact.y)
+      : (toeContact == null ? heelContact.y : Math.min(heelContact.y, toeContact.y));
+    const state = footPlantFor(side);
+    return {
+      swinging: state.swinging,
+      target: footPlantsReady ? debugVector(state.target) : null,
+      rawFoot,
+      contactSource: valid ? footContactGeometry[side].source : "unavailable",
+      heelContact,
+      toeContact,
+      soleY,
+      soleClearance: soleY == null ? null : roundTelemetry(soleY - groundY),
+    };
+  }
+
   return {
     get status(): EmbodimentStatus {
       return status;
@@ -1933,6 +2204,10 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       deepDispose = null;
       groundBase = 0;
       groundOffset = 0;
+      footContactGeometry = {
+        left: fallbackFootContactGeometry("left"),
+        right: fallbackFootContactGeometry("right"),
+      };
       status = "idle";
     },
 
@@ -2087,7 +2362,6 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
             if (b) { b.rotation.x *= -1; b.rotation.z *= -1; }
           }
         }
-        if (poseClip === "walk" || poseClip === "run") applyPlantedFootGait();
         blendProceduralTransition(dt);
       }
 
@@ -2098,9 +2372,11 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       else autoBlink(dt);
       capEmotions();   // stacked layers must never exceed a natural face
 
-      // The mixer updates after any procedural writes so a fading action
-      // blends from/into the procedural pose instead of hard-cutting.
+      // A fading VRMA owns its channels until this call. The planted-foot
+      // solve therefore runs immediately afterward, so a prior gesture can
+      // never overwrite the swing foot and turn the first step into a slide.
       if (mixer) { mixer.update(dt); reapFaded(); }
+      if (!vrmaDriven && (poseClip === "walk" || poseClip === "run")) applyPlantedFootGait();
       // Terminal contact owns only the right arm and gaze. Absolute bounded
       // targets are rebuilt after the mixer every frame, preventing additive
       // rotation drift while still allowing a fading clip to settle beneath it.
@@ -2170,6 +2446,10 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
         rootLocalPosition: debugPositionOf(root, false),
         hipsPosition: debugPositionOf(rawHips, true),
         hipsLocalPosition: debugPositionOf(normalizedHips, false),
+        feet: {
+          left: debugFoot("left"),
+          right: debugFoot("right"),
+        },
         handContactDistance: interactionContactDistance == null
           ? null
           : roundTelemetry(interactionContactDistance),

@@ -4,7 +4,11 @@ import test from "node:test";
 import {
   isConfirmedVrmInteractionContact,
   isRotationOnlyVrmTrack,
+  resolveVrmFootRoll,
   resolveVrmFootSwing,
+  resolveVrmFootLiftHeight,
+  resolveVrmFootContactY,
+  resolveVrmLowestFootContactY,
   resolveVrmGroundTarget,
   resolveVrmMotionTelemetry,
   resolveVrmWalkGait,
@@ -83,6 +87,47 @@ test("stride distance remains synchronized to actual world movement", () => {
   near(strideDistanceForMotion(0.24, Math.PI * 2), 0.24);
   assert.equal(strideDistanceForMotion(0, Math.PI), 0);
   assert.equal(strideDistanceForMotion(0.8, 0.01), 0.5);
+});
+
+test("the walk-reference gait still lifts a foot with no horizontal stride", () => {
+  near(resolveVrmFootLiftHeight(1, 0), 0.055);
+  assert.ok(resolveVrmFootLiftHeight(1, 0.46) > 0.16);
+  assert.equal(resolveVrmFootLiftHeight(0, 0.46), 0);
+});
+
+test("foot roll is phase-locked: toe-off, airborne dorsiflexion, then heel-led contact", () => {
+  const liftOff = resolveVrmFootRoll(resolveVrmFootSwing(0.04 * Math.PI, "right"));
+  const midSwing = resolveVrmFootRoll(resolveVrmFootSwing(Math.PI / 2, "right"));
+  const preContact = resolveVrmFootRoll(resolveVrmFootSwing(0.82 * Math.PI, "right"));
+  const stance = resolveVrmFootRoll(resolveVrmFootSwing(Math.PI, "right"));
+
+  assert.ok(liftOff.toeOff > 0.15);
+  assert.ok(liftOff.pitch > 0);
+  assert.ok(midSwing.dorsiflex > 0.13);
+  assert.ok(midSwing.pitch < 0);
+  assert.ok(preContact.heelStrike > 0.01);
+  assert.ok(preContact.pitch < 0);
+  assert.deepEqual(stance, { pitch: 0, toeOff: 0, dorsiflex: 0, heelStrike: 0 });
+});
+
+test("transformed V4 heel/toe contacts follow ankle roll instead of a fixed world-Y offset", () => {
+  const ankleY = 0.12954;
+  // Measured from V4's skinned heel and toe surface in their raw-bone frames.
+  const heel = { y: -0.129752, z: -0.042824 };
+  // The toe lives under the child toe bone; expressed in the ankle frame this
+  // is its V4 pivot plus the measured toe-surface point.
+  const toe = { y: -0.128275, z: 0.110473 };
+  const flatHeel = resolveVrmFootContactY(ankleY, heel, 0);
+  const flatToe = resolveVrmFootContactY(ankleY, toe, 0);
+  const toeOffPitch = 0.2;
+  const rolledHeel = resolveVrmFootContactY(ankleY, heel, toeOffPitch);
+  const rolledToe = resolveVrmFootContactY(ankleY, toe, toeOffPitch);
+
+  assert.ok(Math.abs(flatHeel) < 0.001);
+  assert.ok(Math.abs(flatToe) < 0.002);
+  assert.ok(rolledHeel > flatHeel + 0.005, "heel rises during toe-off");
+  assert.ok(rolledToe < flatToe - 0.01, "toe becomes the lower contact during toe-off");
+  near(resolveVrmLowestFootContactY(ankleY, heel, toe, toeOffPitch), rolledToe);
 });
 
 test("only locomotion-to-rest transitions receive the short procedural blend", () => {
