@@ -3,7 +3,73 @@
 This is the canonical project context for coding agents working on Alpecca.
 Read this before `AGENTS.md`, `CLAUDE.md`, `HANDOFF.md`, or implementation files.
 
-## Current Implementation Checkpoint (2026-07-13)
+## Current Implementation Checkpoint (2026-07-15)
+
+This checkpoint supersedes older route, access, model, and phase-status text.
+
+- The verified P0-P14 matrix is: **complete bounded gates** P0, P2, P3, P4,
+  and P5; **operationally partial** P1, P6, P8, P9, P10, P11, and P12;
+  **blocked gates** P7, P13, and P14. Baseline completion never means
+  unrestricted autonomy, AGI, or literal consciousness.
+- House HQ's Void Prototype contains the live collapsible **Brain Garden**.
+  `GET /brain/graph` is its protected evidence source. It distinguishes
+  healthy, degraded, disabled, unfinished/blocked, and unknown state instead
+  of inferring readiness from the presence of a file.
+- The configured local model family is `qwen3.5:9b`; do not reintroduce
+  `qwen3:8b` defaults or describe it as the current model.
+- The supported full-stack workload split uses `gemma4:cloud` for hosted chat
+  and deep reflection, while `qwen3.5:9b` owns local reasoning, local vision,
+  short local choices, and every offline fallback. Supported launchers apply
+  this split with override-preserving defaults rather than treating the two
+  models as interchangeable.
+- The seven Soul roles remain deterministic perspectives feeding one
+  arbitration path, not seven independent transformer instances. The Soul now
+  emits a bounded seven-score perspective vector and contradiction/pressure
+  escalation evidence with zero model calls; this does not bypass `deliberate`.
+- Native phone trust uses a non-exportable Android Keystore P-256 key. Version
+  2.2.2 (code 8) validates the complete challenge transcript locally, binds
+  resulting cookies to the exact device and HTTPS origin, fences stale
+  enrollment work, and makes device revocation immediately invalidate its
+  sessions. The public reviewed APK is
+  `mobile/AlpeccaLauncher-v2.2.2.apk` in the credential-free `alpeccaai` R2
+  distribution bucket (SHA-256
+  `a5666d86074a94ab59f33d439087b0058b5007215bec4c4f2d7514ca645927d5`).
+  The launcher checks a signed-package/digest manifest automatically every 12
+  hours. Android still requires CreatorJD to confirm installation; this is not
+  a silent device-owner updater.
+- House and the Android launcher recover rotating HTTPS endpoints through the
+  fenced continuity authority first, then the credential-free R2 discovery
+  record. Launcher 2.2.2 also probes
+  `https://creatorjd-alpecca-survival-core.hf.space` last to wake a sleeping
+  standby; it accepts that origin only after `/healthz` reports the full
+  `alpecca` identity. The current local relay is a temporary Cloudflare quick
+  tunnel. Do not call it a permanent named tunnel.
+- Mindscape Vault is an encrypted passive R2 backup, never a second speaking
+  Alpecca. A public Hugging Face Docker standby now performs authenticated
+  restore and fenced promotion when the persistent CreatorJD deployment policy
+  `ALPECCA_CLOUD_AUTO_FAILOVER=1` is enabled. The controlled 2026-07-15 test
+  verified archive sequence 162, local epoch 5 to cloud epoch 7, a protected
+  cloud WebSocket response, local reclaim at epoch 9, and cloud demotion back
+  to health-only standby. The survival core uses hosted
+  `Qwen/Qwen3.5-9B`; it deliberately disables Discord, sensors, computer use,
+  local voice workers, and Vault writes. It preserves one chat/memory CoreMind
+  during a laptop outage, not the complete hardware-dependent stack.
+- `deploy/ubuntu-app-vm/` is still an inert provider-neutral desktop scaffold.
+  Its supervisor, app verifier, workspace template, and fenced continuity lease
+  are dry-run-only; no permanent Ubuntu desktop VM or downloadable-app host has
+  been provisioned. Do not confuse that unfinished desktop goal with the
+  working headless Hugging Face survival core.
+- P14 has an observation-only release-soak harness and a content-free source +
+  House bundle secret-scan receipt. This is real progress, not a completed
+  release soak. Continuity takeover evidence now exists, but live resource,
+  Discord voice, V4, long-duration, and broader deployment evidence is still
+  required.
+- V4 remains VRM 1.0 with the locked design and 74 spring joints. Procedural
+  walking now resets at lift-off, follows actual collision-resolved movement,
+  rejects unsafe repeated VRMA seams, and resets latched gaze. A live visual
+  walking/physics soak remains required.
+
+## Earlier Detailed Checkpoint (2026-07-13)
 
 This checkpoint supersedes older route, access, and phase-status language
 retained elsewhere for historical context.

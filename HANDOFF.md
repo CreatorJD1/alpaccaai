@@ -1,4 +1,147 @@
-# Alpecca — Handoff (updated 2026-07-14)
+# Alpecca — Handoff (updated 2026-07-15)
+
+## Codex Fenced Cloud Survival And Android 2.2.2 (2026-07-15)
+
+This section supersedes older claims below that transactional cloud failover is
+blocked or that Android 2.1.2 is the current public launcher.
+
+- The working survival host is the public Docker Space
+  `CREATORJD/alpecca-survival-core` at
+  `https://creatorjd-alpecca-survival-core.hf.space`. The earlier
+  `CREATORJD/alpecca-cloud-core` Space was provider-paused after its image
+  contacted a blocked `workers.dev` hostname and must not be advertised as a
+  usable fallback.
+- Hugging Face reaches the existing lease authority and encrypted Vault only
+  through `https://alpecca-continuity-gateway.pages.dev`. The Cloudflare Pages
+  Functions gateway has service bindings to both Workers, contains no secret,
+  stores no state, exposes a content-free `/healthz`, and keeps Worker-to-Worker
+  calls off public DNS.
+- The survival image never copies `.git`, deployment code, docs, scripts,
+  tests, notebooks, workflows, or local launcher artifacts into its final
+  runtime layer. Its health-only standby listener does not load CoreMind or a
+  model. Promotion requires an authenticated current Vault archive, no active
+  lease, no fresh local-primary heartbeat, a newer fencing epoch, and exact
+  endpoint publication under that grant.
+- A controlled live outage passed end to end. Fresh encrypted archive sequence
+  162 restored successfully; local-primary epoch 5 expired; cloud-standby
+  acquired epoch 7 and returned a protected WebSocket reply; restarting the
+  laptop stack reclaimed epoch 9; the Space then returned to
+  `alpecca-continuity-standby`. At no point did two endpoints own the authority.
+- The fallback model is hosted `Qwen/Qwen3.5-9B` on Hugging Face. The normal
+  launcher split remains `gemma4:cloud` for hosted chat/deep work and
+  `qwen3.5:9b` for local reasoning/vision/offline work. Never restore the
+  retired `qwen3:8b` default.
+- This is a headless survival CoreMind, not the requested permanent Ubuntu app
+  desktop. Discord, camera, screen, microphone, computer use, local voice
+  workers, legacy Mindscape sync, and cloud Vault writes remain disabled while
+  cloud-active. The Ubuntu desktop scaffold is still unprovisioned.
+- Android launcher 2.2.2 (version code 8) is built and publicly released at
+  `https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.2.2.apk`.
+  SHA-256 is
+  `a5666d86074a94ab59f33d439087b0058b5007215bec4c4f2d7514ca645927d5`;
+  signer certificate SHA-256 remains
+  `ed3f06906454aec9f36fd71ba7f1d4686c3ddf8c46ad178f9750f529752988b8`.
+- The public update manifest now advertises 2.2.2. The launcher checks it at
+  startup at most once per 12 hours, also offers a manual check, downloads into
+  private cache, and verifies HTTPS/no redirects, size, digest, package,
+  version, and exact signer set. Android still shows the final install prompt;
+  silent self-install is unavailable without managed device-owner/store
+  privileges.
+- After failback the local stack was healthy with one `run_full.py`, one
+  `share.py`/Cloudflare relay, one Discord bridge, and one F5 voice worker. The
+  authority published local-primary epoch 9 at the then-current quick-tunnel
+  origin. Use the authority or launcher discovery instead of copying that
+  rotating hostname into source.
+- Verification: 28 focused Android/HF/gateway tests passed; Android release
+  build passed as package `ai.alpecca.launcher` version 2.2.2; the public APK
+  bytes matched the manifest digest; Space standby, failover, WebSocket, local
+  failback, and cloud demotion were all observed live.
+
+## Codex Mobile Recovery And Ubuntu VM Scaffold (2026-07-15)
+
+- The July 15 phone failures had one transport cause: the WebView was still on
+  the retired `short-glasses-wink.loca.lt` origin. That made both the lazy VRM
+  module and protected Systems requests fail. House HQ now checks the public
+  endpoint record at startup, replaces a stale saved backend, performs one
+  bounded origin recovery, and handles stale Vite chunks without a reload loop.
+- The public R2 mobile-discovery object now has a GET/HEAD-only CORS policy so a
+  retired browser shell can read the replacement endpoint. The policy contains
+  no credentials or private state. R2 remains discovery/continuity storage, not
+  an art host.
+- The Android launcher now health-checks the active endpoint, rediscovers after
+  WebView/network/TLS failures, retries with a bounded backoff, preserves the
+  trusted-device cookie store, clears stale navigation history, and supplies
+  LocalTunnel's non-secret reminder-bypass header. The rebuilt APK is at
+  `output/alpecca-launcher/AlpeccaLauncher.apk`.
+- Cloudflare's accountless quick-tunnel API timed out on four bounded attempts.
+  The current R2 record therefore still points at the temporary
+  `some-meals-smile.loca.lt` endpoint. A permanent hostname still requires the
+  existing named-tunnel setup to be completed against a Cloudflare-owned DNS
+  zone; do not describe the temporary endpoint as permanent.
+- `deploy/ubuntu-app-vm/` now contains the inert first Ubuntu workspace
+  scaffold: separate Core and desktop services, loopback-only VNC/noVNC,
+  Cloudflare placeholder ingress, fail-closed leader/fencing contracts, and an
+  empty creator-approved APT/Flatpak catalog. No VM was provisioned and no unit
+  is enabled; this is foundation work, not an online backup Alpecca.
+- Verification: core suite `359 passed`; mobile/VM/Brain focused suite
+  `14 passed`; House production build passed; Android release build passed;
+  local Systems Overview showed live state and nonzero grounded affect.
+
+## Codex Live Brain Plugin Graph And Fallback Preparation (2026-07-15)
+
+- House HQ now includes a live **Alpecca Brain Garden** at
+  `/house-hq?system=internals`. The sunflower-centered, symmetric branch view
+  has collapsible nested nodes, evidence detail, progress, plugin provenance,
+  live refresh, explicit healthy/degraded/disabled/unfinished/unknown states,
+  and responsive mobile layout without horizontal overflow.
+- `GET /brain/graph` is the authoritative protected snapshot. Declarative JSON
+  plugins are discovered from `alpecca/brain_plugins/` and optional
+  `data/brain_plugins/`; manifests can select only allowlisted read-only probes
+  and cannot execute code or commands. Invalid plugins are surfaced without
+  breaking valid graph nodes.
+- The graph probes current Ollama/model readiness, persistent memory count,
+  seven Soul perspectives, senses, Discord bridge-process presence, server
+  voice, Mindpage, Mindscape configuration, and VRM availability. Missing
+  evidence is `unknown`, never inferred healthy. The Soul node explicitly
+  states that the seven perspectives are not seven independent transformers.
+- P0-P14 are represented individually. Only P0 and P3 are shown complete;
+  baseline-complete, unsoaked, or partially integrated phases remain
+  unfinished. P14 remains not started.
+- The VRM embodiment loader now prewarms download and parsing in parallel with
+  sprite startup, removes the mobile double-confirm delay, and separates load
+  from reveal. Cached 2D-to-3D switching measured `1 ms` in live telemetry.
+- `docs/ALPECCA_BRAIN_PLUGINS.md` documents the extension and accuracy contract.
+  `docs/UBUNTU_FALLBACK_CORE_PLAN.md` prepares a fenced, single-leader Ubuntu
+  app/desktop standby; its inert deployment scaffold is now implemented under
+  `deploy/ubuntu-app-vm/`, but no cloud VM is provisioned. `docs/SOURCE_QUALITY_AUDIT_PLAN.md`
+  prepares the post-stage source/dead-code/PDF archive audit.
+- Focused verification: Brain Graph tests passed (`4 passed`), House HQ
+  TypeScript and production build passed, the live graph returned 27 nodes in
+  0.184 seconds, mobile/desktop visual checks passed, the roadmap exposed 15
+  unique phase children, and the phone discovery endpoint was republished.
+
+## Codex Mindscape Vault Checkpoint (2026-07-15)
+
+- A separate Cloudflare R2-backed **Mindscape Vault** is deployed for encrypted
+  continuity recovery. It is a passive backup only: it never hosts a model,
+  serves a browser memory view, or creates a second active Alpecca.
+- The local vault endpoint is saved only at `data/secrets/mindscape_vault.env`.
+  The transport token and AES-256-GCM recovery key are separate Credential
+  Manager entries: `Alpecca/MindscapeVaultTransportToken` and
+  `Alpecca/MindscapeVaultEncryptionKey`. Neither is in source, Git, browser
+  links, or logs.
+- Cloud records are opaque, versioned R2 objects. Latest-record selection is
+  ordered by authenticated creation time, not a local writer sequence, so a
+  late retry or restored writer cannot displace newer continuity data.
+- Deployment and isolated live checks passed for encrypted snapshot round-trip,
+  cross-writer ordering, and encrypted SQLite archive recovery. A real
+  WAL-safe archive of the current `data/alpecca.db` was uploaded successfully
+  (`69,009,408` plaintext bytes, no pending archive outbox item).
+- The currently running server predates this source change. Its next normal
+  restart reads the saved endpoint and begins five-minute encrypted compact
+  syncs plus six-hour recovery archives. Do not start a second CoreMind just to
+  activate the Vault. `GET /mindscape/vault/status` shows content-free status;
+  `scripts/restore_mindscape_vault_archive.py` restores only into a new file.
 
 ## Codex Discord, Voice, Continuity, And V4 Checkpoint (2026-07-14)
 
@@ -26,11 +169,12 @@
   duplicate cold-start work. A real CreatorJD Discord playback check is still
   required to judge the acoustic result; do not claim it has been heard and
   approved merely from unit tests.
-- `scripts/run_full.py` and `scripts/run_discord_bridge.py` now mirror the
-  normal `START_HERE.bat` creator-approved Discord posture: media, voice, and
-  bounded voice receive default on for the claimed Discord room, while the
-  separate ambient laptop microphone sensor remains off. Explicit `=0`
-  environment values still opt out.
+- `scripts/run_full.py` mirrors the normal `START_HERE.bat` creator-approved
+  Discord posture. A direct `scripts/run_discord_bridge.py` launch defaults
+  media and voice send on but keeps voice receive off unless
+  `ALPECCA_DISCORD_VOICE_RECEIVE=1` is explicit. Voice send and media never
+  imply microphone receive; the separate ambient laptop microphone sensor also
+  remains off.
 - The full launcher acquires an atomic OS-level `alpecca.instance` lock before
   importing config, starting the bridge, or opening the database. A second
   full-stack launch fails before it can create a duplicate CoreMind writer.
