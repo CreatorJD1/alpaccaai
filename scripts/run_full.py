@@ -25,7 +25,13 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+# This import is deliberately safe before configuration or server startup. The
+# lock must be held before config can touch persistent state or any helper can
+# start a sidecar service.
+from alpecca import instance as instance_mod      # noqa: E402
 
 # Risky capabilities stay off unless the caller explicitly opted in.
 os.environ.setdefault("ALPECCA_COMPUTER_USE", "0")
@@ -37,13 +43,6 @@ os.environ.setdefault("ALPECCA_APPS", "")     # explicit app allowlist only
 # catalog on Discord. This mirrors START_HERE.bat and does not enable arbitrary
 # file transfer, remote vision, screen capture, or any other sensing capability.
 os.environ.setdefault("ALPECCA_DISCORD_MEDIA", "1")
-
-# Import AFTER the env is set -- config.py reads these at import time.
-import uvicorn                                    # noqa: E402
-from config import HOST, PORT                     # noqa: E402
-from config import F5_WORKER_ENABLED, F5_WORKER_HOST, F5_WORKER_PORT  # noqa: E402
-from alpecca import instance as instance_mod      # noqa: E402
-
 
 def _f5_worker_health(timeout: float = 0.4) -> bool:
     try:
@@ -232,21 +231,35 @@ def _open_local_app_when_ready(server_module, timeout: float = 25.0) -> None:
     webbrowser.open(url)
 
 
-existing = instance_mod.existing_server_url(PORT)
-if existing:
-    print(f"Alpecca is already awake at {existing}; reusing the same mind instance.")
-    print("Use the already-open authenticated surface; no second server was started.")
-    raise SystemExit(0)
+def _instance_lock_path() -> Path:
+    """Keep the launcher lock alongside the configured persistent state."""
+    return Path(os.environ.get("ALPECCA_HOME", ROOT / "data")) / "alpecca.instance"
 
-_backup_soul()
-_start_f5_worker()
-_start_discord_bridge()
-_ollama_watchdog()
 
-from server import app, mind                      # noqa: E402
-import server as server_mod                       # noqa: E402
+def _run() -> int:
+    """Start the stack after the process-wide instance lock is held."""
+    global F5_WORKER_ENABLED, F5_WORKER_HOST, F5_WORKER_PORT, HOST, PORT
 
-if __name__ == "__main__":
+    # Import AFTER the env is set and the lock is acquired: config.py creates
+    # the home directory and can migrate persistent state at import time.
+    import uvicorn
+    from config import F5_WORKER_ENABLED, F5_WORKER_HOST, F5_WORKER_PORT
+    from config import HOST, PORT
+
+    existing = instance_mod.existing_server_url(PORT)
+    if existing:
+        print(f"Alpecca is already awake at {existing}; reusing the same mind instance.")
+        print("Use the already-open authenticated surface; no second server was started.")
+        return 0
+
+    _backup_soul()
+    _start_f5_worker()
+    _start_discord_bridge()
+    _ollama_watchdog()
+
+    from server import app, mind
+    import server as server_mod
+
     print(f"Alpecca is waking up (safe capability defaults) at http://{HOST}:{PORT}")
     print(f"  LLM online: {mind.llm.online}")
     threading.Thread(
@@ -256,3 +269,23 @@ if __name__ == "__main__":
         name="LocalBootstrap",
     ).start()
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
+    return 0
+
+
+def main() -> int:
+    """Run one full stack, refusing a concurrent CoreMind/database writer."""
+    lock = instance_mod.LocalInstanceLock(_instance_lock_path())
+    try:
+        lock.acquire()
+    except instance_mod.InstanceLockError as exc:
+        print(f"Alpecca is already awake; no second full stack was started ({exc}).", file=sys.stderr)
+        return 1
+
+    try:
+        return _run()
+    finally:
+        lock.release()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
