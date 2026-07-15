@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="alpecca_background">#111318</color>
+    <color name="alpecca_panel">#1A1E27</color>
+    <color name="alpecca_teal">#70D6C2</color>
+    <color name="alpecca_text">#F1F3F8</color>
+</resources>

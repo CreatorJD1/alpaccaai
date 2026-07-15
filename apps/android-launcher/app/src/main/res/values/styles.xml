@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.AlpeccaLauncher" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackground">@color/alpecca_background</item>
+        <item name="android:colorAccent">@color/alpecca_teal</item>
+        <item name="android:navigationBarColor">@color/alpecca_background</item>
+        <item name="android:statusBarColor">@color/alpecca_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
