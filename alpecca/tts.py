@@ -21,6 +21,9 @@ import sys
 import json
 import re
 import importlib.util
+import contextvars
+import threading
+import time
 from pathlib import Path
 
 from config import (TTS_BACKEND, TTS_VOICE, TTS_RATE, TTS_PITCH,
@@ -30,6 +33,21 @@ _last_engine = ""
 _last_error = ""
 _last_modulation: dict = {}
 _voice_reference_cache: dict | None = None
+# Discord requests explicitly pin ``engine=kokoro``. Keep that route on the
+# canonical af_heart waveform rather than applying the generic pitch warp.
+_force_kokoro_identity_profile: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "force_kokoro_identity_profile",
+    default=False,
+)
+_KOKORO_CALL_TIMEOUT_SECONDS = 45.0
+_kokoro_call_lock = threading.Lock()
+_kokoro_call: dict | None = None
+_kokoro_metrics = {
+    "last_startup_seconds": None,
+    "last_synthesis_seconds": None,
+    "last_timeout_seconds": None,
+    "last_error": "",
+}
 # 'auto' blends both engines by emotion: calm/everyday speech uses Kokoro
 # af_heart (cleaner, more realistic), high-affect lines use the F5 voice clone
 # (its strength). This cutoff (0..1, on max(intensity, arousal)) tunes the mix;
@@ -99,17 +117,54 @@ def _kokoro_pipeline():
     if _kokoro_ready is False:
         return None
     if _kokoro is None:
+        started = time.monotonic()
         try:
             from kokoro import KPipeline
             _kokoro = KPipeline(lang_code="a")    # 'a' = American English
             _kokoro_ready = True
+            _kokoro_metrics["last_startup_seconds"] = round(time.monotonic() - started, 3)
+            _kokoro_metrics["last_error"] = ""
         except Exception as exc:
             print(f"[tts] kokoro unavailable ({type(exc).__name__}: {exc}); "
                   f"install with: python -m pip install kokoro soundfile  "
                   f"(and espeak-ng on the system).", file=sys.stderr)
             _kokoro_ready = False
+            _kokoro_metrics["last_startup_seconds"] = round(time.monotonic() - started, 3)
+            _kokoro_metrics["last_error"] = f"{type(exc).__name__}: {exc}"
             return None
     return _kokoro
+
+
+def kokoro_status() -> dict:
+    """Report installed versus initialized Kokoro state without loading it.
+
+    ``engine_status()["kokoro"]`` remains a compatibility availability flag.
+    This readout makes a cold model download/load or a bounded in-flight call
+    visible instead of calling that state ready.
+    """
+    installed = bool(importlib.util.find_spec("kokoro") and importlib.util.find_spec("soundfile"))
+    with _kokoro_call_lock:
+        call = _kokoro_call
+        busy = bool(call and not call["done"].is_set())
+        started = float(call["started"]) if busy else None
+    if not installed:
+        state = "unavailable"
+    elif busy:
+        state = "warming_or_synthesizing"
+    elif _kokoro_ready is False:
+        state = "failed"
+    elif _kokoro is not None:
+        state = "ready"
+    else:
+        state = "cold"
+    return {
+        "installed": installed,
+        "ready": state == "ready",
+        "state": state,
+        "call_timeout_seconds": _KOKORO_CALL_TIMEOUT_SECONDS,
+        "inflight_seconds": round(time.monotonic() - started, 3) if started is not None else 0.0,
+        **_kokoro_metrics,
+    }
 
 
 def _varispeed(audio, factor):
@@ -331,6 +386,7 @@ def engine_status() -> dict:
     backend = (TTS_BACKEND or "auto").lower()
     open_status = __import__("alpecca.open_tts", fromlist=["status"]).status()
     open_ready = bool(open_status.get("ready"))
+    kokoro = kokoro_status()
     return {
         "backend": backend,
         "server_enabled": backend not in ("off", "browser", "none"),
@@ -338,23 +394,74 @@ def engine_status() -> dict:
         "open_tts": open_status,
         "open_tts_ready": open_ready,
         "f5_worker": (open_status.get("worker") or {}),
-        "kokoro": bool(importlib.util.find_spec("kokoro") and importlib.util.find_spec("soundfile")),
+        # Backward-compatible installed/available signal. Consumers that need
+        # actual readiness must use kokoro_status rather than treating an import
+        # spec as a warmed model.
+        "kokoro": kokoro["installed"],
+        "kokoro_status": kokoro,
         "edge": bool(importlib.util.find_spec("edge_tts")),
         "browser_fallback": True,
     }
 
 
 def _synth_kokoro(text: str, state=None):
+    """Run one Kokoro call with a caller-visible deadline and no duplicate work.
+
+    Python cannot safely cancel a thread while Torch is loading a model or
+    generating audio. A single daemon worker therefore continues its one cold
+    call, while callers get an honest fallback rather than waiting forever or
+    starting another competing initialization.
+    """
+    global _kokoro_call, _last_error
+    identity_profile = _force_kokoro_identity_profile.get()
+    with _kokoro_call_lock:
+        if _kokoro_call is not None and not _kokoro_call["done"].is_set():
+            _last_error = "Kokoro is still warming or synthesizing"
+            return None
+        call = {
+            "done": threading.Event(),
+            "started": time.monotonic(),
+            "result": None,
+            "error": "",
+        }
+        _kokoro_call = call
+        _kokoro_metrics["last_timeout_seconds"] = None
+        _kokoro_metrics["last_error"] = ""
+
+    def _run() -> None:
+        try:
+            call["result"] = _synth_kokoro_unbounded(text, state, identity_profile=identity_profile)
+        except Exception as exc:
+            call["error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            call["done"].set()
+
+    threading.Thread(target=_run, name="alpecca-kokoro", daemon=True).start()
+    if not call["done"].wait(_KOKORO_CALL_TIMEOUT_SECONDS):
+        _kokoro_metrics["last_timeout_seconds"] = _KOKORO_CALL_TIMEOUT_SECONDS
+        _kokoro_metrics["last_error"] = "Kokoro call exceeded bounded readiness deadline"
+        _last_error = _kokoro_metrics["last_error"]
+        return None
+    if call["error"]:
+        _kokoro_metrics["last_error"] = call["error"]
+        _last_error = call["error"]
+        return None
+    if call["result"] is None and _kokoro_metrics["last_error"]:
+        _last_error = _kokoro_metrics["last_error"]
+    return call["result"]
+
+
+def _synth_kokoro_unbounded(text: str, state=None, *, identity_profile: bool = False):
+    """Perform the Kokoro work after the bounded single-flight wrapper."""
+    started = time.monotonic()
     pipe = _kokoro_pipeline()
     if pipe is None:
         return None
     import numpy as np
     import soundfile as sf
-    # Kokoro uses its own voice names (af_heart...) -- never the edge TTS_VOICE.
-    # Pitch/volume are HERS, modulated from her emotion around the anime baseline:
-    # by default preserve the original af_heart timbre, then apply subtle speed
-    # and volume. Experimental pitch shifting is opt-in.
-    voice = KOKORO_VOICE or "af_heart"
+    # The trusted Discord route pins the public identity rather than inheriting
+    # a configurable speaker name or a post-generation pitch transform.
+    voice = "af_heart" if identity_profile else (KOKORO_VOICE or "af_heart")
     dyn = _kokoro_dynamics(state)
     pitch, gain, speed = dyn["pitch"], dyn["volume"], dyn["speed"]
     shaped = _shape_text_for_alpecca_voice(text, dyn)
@@ -363,20 +470,38 @@ def _synth_kokoro(text: str, state=None):
     for seg_text, seg_speed, pause_ms in segments:
         if not seg_text:
             continue
-        # Generate at a compensating speed, then varispeed back. Final tempo
-        # stays near seg_speed while the small pitch color becomes real audio.
-        gen_speed = max(0.55, min(1.35, seg_speed / max(0.05, pitch)))
+        # Discord keeps Kokoro's original af_heart waveform. Native speed still
+        # carries prosody, but linear sample-rate pitch warping can introduce
+        # artifacts and a low pitch can change the perceived speaker identity.
+        gen_speed = (
+            seg_speed
+            if identity_profile
+            else max(0.55, min(1.35, seg_speed / max(0.05, pitch)))
+        )
         chunks.extend(audio for _gs, _ps, audio in pipe(seg_text, voice=voice, speed=gen_speed))
         if pause_ms > 0:
             chunks.append(np.zeros(int(24000 * pause_ms / 1000), dtype=np.float32))
     if not chunks:
         return None
     audio = np.concatenate(chunks)
-    audio = _varispeed(audio, pitch)
+    if not identity_profile:
+        audio = _varispeed(audio, pitch)
     audio = _naturalize_audio(audio, gain, dyn.get("warmth", 0.5), dyn.get("breath", 0.25))
     buf = io.BytesIO()
     sf.write(buf, audio, 24000, format="WAV")
-    return ("audio/wav", buf.getvalue())
+    _kokoro_metrics["last_synthesis_seconds"] = round(time.monotonic() - started, 3)
+    _kokoro_metrics["last_error"] = ""
+    return (
+        "audio/wav",
+        buf.getvalue(),
+        {
+            "engine": "kokoro",
+            "profile": "af_heart_identity_locked" if identity_profile else "kokoro_modulated",
+            "voice": voice,
+            "pitch_resampling": not identity_profile,
+            "native_speed": bool(identity_profile),
+        },
+    )
 
 
 def _alpecca_voice_segments(text: str, dyn: dict) -> list[tuple[str, float, int]]:
@@ -511,74 +636,86 @@ def synth(text: str, state=None, *, backend_override: str = ""):
     if not text:
         return None
     backend = (backend_override or TTS_BACKEND or "auto").strip().lower()
+    # The Discord bridge is the only current caller that pins an engine. Its
+    # explicit Kokoro request is also a request for the locked af_heart profile.
+    identity_token = _force_kokoro_identity_profile.set(
+        (backend_override or "").strip().lower() == "kokoro"
+    )
     print(f"[tts] synth: backend={backend!r} "
           f"(env ALPECCA_TTS_BACKEND={os.environ.get('ALPECCA_TTS_BACKEND')!r})",
           file=sys.stderr)
-    if backend in ("off", "browser", "none"):
-        print("[tts] backend disables server TTS -> browser voice", file=sys.stderr)
-        _last_error = "server TTS disabled by backend setting"
-        return None
-    if backend in ("open", "f5", "f5-tts"):
-        from alpecca import open_tts
+    try:
+        if backend in ("off", "browser", "none"):
+            print("[tts] backend disables server TTS -> browser voice", file=sys.stderr)
+            _last_error = "server TTS disabled by backend setting"
+            return None
+        if backend in ("open", "f5", "f5-tts"):
+            from alpecca import open_tts
 
-        order = (open_tts.synth,)
-    elif backend == "kokoro":
-        # Kokoro af_heart is her actual voice profile. Do not substitute a
-        # different server voice and label it as Alpecca.
-        order = (_synth_kokoro,)
-    elif backend == "edge":
-        order = (_synth_edge,)
-    else:                                     # auto: blend F5 clone + Kokoro by emotion
-        from alpecca import open_tts
-
-        if open_tts.ready():
-            # High-affect moments lead with the F5 clone; calm/everyday speech
-            # leads with Kokoro af_heart. Whichever leads, the other stays as
-            # fallback so a single-engine failure still speaks.
-            order = ((open_tts.synth, _synth_kokoro)
-                     if _prefers_clone_voice(state)
-                     else (_synth_kokoro, open_tts.synth))
-        else:
+            order = (open_tts.synth,)
+        elif backend == "kokoro":
+            # Kokoro af_heart is her actual voice profile. Do not substitute a
+            # different server voice and label it as Alpecca.
             order = (_synth_kokoro,)
-    for fn in order:
-        try:
-            r = fn(text, state)
-            if r:
-                metadata = {}
-                if isinstance(r, tuple) and len(r) == 3:
-                    mime, data, metadata = r
-                    r = (mime, data)
-                _last_engine = str(metadata.get("engine") or fn.__name__.replace("_synth_", ""))
-                _last_error = ""
-                _last_modulation = {
-                    k: voice_state(state).get(k)
-                    for k in (
-                        "voice", "pitch", "volume", "speed", "tone",
-                        "primary", "tempo", "rate_pct", "pitch_semitones",
-                        "style", "warmth", "breath", "personality",
-                        "identity_lock", "profile", "modulation_strength",
-                    )
-                }
-                if metadata:
-                    _last_modulation.update({
-                        "engine_profile": metadata.get("profile", ""),
-                        "reference": metadata.get("reference", {}),
-                    })
-                print(f"[tts] -> spoke via {fn.__name__}", file=sys.stderr)
-                return r
-            print(f"[tts] {fn.__name__} returned None", file=sys.stderr)
-            if fn.__name__ == "synth":
-                try:
-                    from alpecca import open_tts
+        elif backend == "edge":
+            order = (_synth_edge,)
+        else:                                     # auto: blend F5 clone + Kokoro by emotion
+            from alpecca import open_tts
 
-                    _last_error = open_tts.status().get("last_error") or f"{fn.__name__} returned no audio"
-                except Exception:
-                    _last_error = f"{fn.__name__} returned no audio"
+            if open_tts.ready():
+                # High-affect moments lead with the F5 clone; calm/everyday speech
+                # leads with Kokoro af_heart. Whichever leads, the other stays as
+                # fallback so a single-engine failure still speaks.
+                order = ((open_tts.synth, _synth_kokoro)
+                         if _prefers_clone_voice(state)
+                         else (_synth_kokoro, open_tts.synth))
             else:
-                _last_error = f"{fn.__name__} returned no audio"
-        except Exception as exc:
-            _last_error = f"{type(exc).__name__}: {exc}"
-            print(f"[tts] {fn.__name__} errored: {type(exc).__name__}: {exc}",
-                  file=sys.stderr)
-    print("[tts] no engine produced audio -> browser voice", file=sys.stderr)
-    return None
+                order = (_synth_kokoro,)
+        for fn in order:
+            try:
+                r = fn(text, state)
+                if r:
+                    metadata = {}
+                    if isinstance(r, tuple) and len(r) == 3:
+                        mime, data, metadata = r
+                        r = (mime, data)
+                    _last_engine = str(metadata.get("engine") or fn.__name__.replace("_synth_", ""))
+                    _last_error = ""
+                    _last_modulation = {
+                        k: voice_state(state).get(k)
+                        for k in (
+                            "voice", "pitch", "volume", "speed", "tone",
+                            "primary", "tempo", "rate_pct", "pitch_semitones",
+                            "style", "warmth", "breath", "personality",
+                            "identity_lock", "profile", "modulation_strength",
+                        )
+                    }
+                    if metadata:
+                        _last_modulation.update({
+                            "engine_profile": metadata.get("profile", ""),
+                            "reference": metadata.get("reference", {}),
+                            "voice": metadata.get("voice") or _last_modulation.get("voice"),
+                            "profile": metadata.get("profile") or _last_modulation.get("profile"),
+                            "pitch_resampling": metadata.get("pitch_resampling"),
+                            "native_speed": metadata.get("native_speed"),
+                        })
+                    print(f"[tts] -> spoke via {fn.__name__}", file=sys.stderr)
+                    return r
+                print(f"[tts] {fn.__name__} returned None", file=sys.stderr)
+                if fn.__name__ == "synth":
+                    try:
+                        from alpecca import open_tts
+
+                        _last_error = open_tts.status().get("last_error") or f"{fn.__name__} returned no audio"
+                    except Exception:
+                        _last_error = f"{fn.__name__} returned no audio"
+                elif not _last_error:
+                    _last_error = f"{fn.__name__} returned no audio"
+            except Exception as exc:
+                _last_error = f"{type(exc).__name__}: {exc}"
+                print(f"[tts] {fn.__name__} errored: {type(exc).__name__}: {exc}",
+                      file=sys.stderr)
+        print("[tts] no engine produced audio -> browser voice", file=sys.stderr)
+        return None
+    finally:
+        _force_kokoro_identity_profile.reset(identity_token)
