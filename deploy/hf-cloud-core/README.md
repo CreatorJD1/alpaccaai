@@ -78,6 +78,17 @@ Required Space variables:
 - `ALPECCA_CLOUD_AUTO_FAILOVER=1` to authorize unattended promotion after an
   authenticated Vault restore; omit it to require one-use approval instead
 
+The deployed Space uses the service-binding gateway rather than direct
+`workers.dev` URLs because Hugging Face blocks that DNS suffix in Space
+containers. Configure:
+
+- `ALPECCA_CONTINUITY_LEASE_URL=https://alpecca-continuity-gateway.pages.dev/lease`
+- `ALPECCA_MINDSCAPE_VAULT_URL=https://alpecca-continuity-gateway.pages.dev/vault`
+
+Those prefixes forward to the existing Workers without copying continuity
+state. The final Docker image also removes repository deployment scripts,
+documentation, and `.git`; the survival container retains runtime source only.
+
 Hugging Face supplies `SPACE_HOST` and `SPACE_ID`. `SPACE_HOST` becomes the
 published HTTPS origin. `ALPECCA_PUBLIC_URL` and
 `ALPECCA_CONTINUITY_NODE_ID` are optional explicit overrides. Secrets must stay

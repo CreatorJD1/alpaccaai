@@ -37,7 +37,8 @@ COPY requirements.txt /tmp/cloud-core-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/cloud-core-requirements.txt
 COPY --from=source /opt/alpecca /opt/alpecca
 COPY --chown=1000:1000 app.py cloud_entrypoint.py start.sh /opt/hf-cloud-core/
-RUN sed -i 's/\r$//' /opt/hf-cloud-core/start.sh \
+RUN rm -rf /opt/alpecca/.git /opt/alpecca/deploy /opt/alpecca/docs /opt/alpecca/scripts \
+    && sed -i 's/\r$//' /opt/hf-cloud-core/start.sh \
     && chmod 0555 /opt/hf-cloud-core/start.sh
 
 WORKDIR /opt/alpecca

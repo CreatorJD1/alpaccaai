@@ -1,0 +1,17 @@
+{
+  "$schema": "../continuity-lease-worker/node_modules/wrangler/config-schema.json",
+  "name": "alpecca-continuity-gateway",
+  "pages_build_output_dir": "./public",
+  "compatibility_date": "2026-07-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "services": [
+    {
+      "binding": "LEASE_SERVICE",
+      "service": "alpecca-continuity-lease"
+    },
+    {
+      "binding": "VAULT_SERVICE",
+      "service": "alpecca-mindscape-vault"
+    }
+  ]
+}
