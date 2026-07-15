@@ -7,7 +7,7 @@ pinned: false
 
 # Alpecca Continuity Core
 
-This private Docker Space is an on-demand fallback for Alpecca. It is not a
+This public-repository Docker Space is an on-demand fallback for Alpecca. It is not a
 second active CoreMind and is not an always-on guarantee. Free Hugging Face
 Spaces may sleep and stop executing; every enabled wake starts from a closed
 port and must pass verified restore, the configured promotion policy, and
@@ -20,27 +20,38 @@ The image does not run Ollama or substitute an older Qwen family.
 
 ## Startup order
 
-`app.py` enforces this sequence:
+`cloud_entrypoint.py` and `app.py` enforce this sequence:
 
-1. Create a fresh private runtime directory.
-2. Fetch `/archive/latest` from Mindscape Vault. The existing Vault client
+1. Serve a health-only standby identity on port 7860. It is explicitly not
+   CoreMind and the phone launcher will not accept it as active Alpecca.
+2. Poll authenticated authority status without loading a model or memory. A
+   promotion attempt begins only when there is no active lease and no fresh
+   local-primary heartbeat.
+3. Create a fresh private runtime directory and install the SHA-256-locked V.4
+   VRM from Alpecca's Hugging Face asset dataset.
+4. Fetch `/archive/latest` from Mindscape Vault. The existing Vault client
    authenticates AES-256-GCM, checks ciphertext and plaintext digests, and runs
    SQLite `PRAGMA integrity_check` before installing `alpecca.db`.
-3. Require either a short-lived CreatorJD approval bound to the restored
+5. Require either a short-lived CreatorJD approval bound to the restored
    archive and next fencing epoch, or the explicit deployment-level unattended
    failover policy described below.
-4. Acquire the remote continuity lease as `cloud-standby`. In manual mode the
+6. Acquire the remote continuity lease as `cloud-standby`. In manual mode the
    exact grant must consume the approval's one-use epoch; automatic mode still
    cannot proceed while a fresh local heartbeat or another lease exists.
-5. Publish the Space HTTPS origin under that lease, then and only then spawn
+7. Publish the Space HTTPS origin under that lease, then and only then spawn
    `uvicorn server:app` on port 7860.
-6. Renew every 10 seconds. Lease loss sends `SIGKILL` to the server process
+8. Renew every 10 seconds. Lease loss sends `SIGKILL` to the server process
    group so no shutdown hook or descendant can write after the fence is gone.
+   The supervisor then returns to health-only standby. An unexpected clean
+   server exit also returns to standby; only a container shutdown ends the
+   entrypoint.
 
-There is no pre-lease CoreMind or public standby server. A disabled deployment,
-missing configuration, Vault failure, promotion-policy failure, lease denial,
-or endpoint-publication failure leaves port 7860 closed. The local laptop
-remains preferred while its heartbeat is fresh.
+There is no pre-lease CoreMind. The credential-free standby response contains
+only service/state flags and no memory, model output, credential, or private
+status. A disabled deployment leaves the process inert; missing configuration,
+Vault failure, promotion-policy failure, lease denial, or endpoint-publication
+failure returns the enabled process to standby. The local laptop remains
+preferred while its heartbeat is fresh.
 
 ## Space settings
 
@@ -128,10 +139,10 @@ The standalone Space Dockerfile clones the reviewed source branch
 then copies this supervisor from the Space repository. Override
 `ALPECCA_GIT_REF` only with another reviewed ref.
 
-`cloud_entrypoint.install_vrm()` retains a SHA-256-locked optional fetch from
-Alpecca's Hugging Face runtime-assets dataset. Core startup does not depend on
-that download. Art remains on Hugging Face and is never uploaded to Cloudflare
-by this scaffold.
+`cloud_entrypoint.install_vrm()` fetches V.4 from Alpecca's Hugging Face
+runtime-assets dataset and verifies its locked SHA-256 before restore or lease
+acquisition. A failed or changed body blocks promotion. Art remains on Hugging
+Face and is never uploaded to Cloudflare by this scaffold.
 
 ## Network-free tests
 

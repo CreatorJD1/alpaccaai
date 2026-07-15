@@ -12,7 +12,9 @@ runtime.
 
 - Keeps the creator trusted-device cookie between launches.
 - Discovers the exact endpoint owned by Alpecca's active continuity lease, then
-  falls back to the stable credential-free R2 record and the last verified URL.
+  falls back to the stable credential-free R2 record, the stable Hugging Face
+  standby wake URL, and the last verified URL. The standby is not accepted as
+  Alpecca until it owns the lease and reports the exact active health identity.
 - Requires an exact Alpecca `/healthz` identity before opening an endpoint.
 - Plays House HQ voice and live audio through Android WebView.
 - Bridges camera and microphone requests through Android runtime permissions
@@ -48,7 +50,7 @@ privileges.
 
 ## Launcher updates
 
-Version 2.2.1 (code 7) reads the update manifest from:
+Version 2.2.2 (code 8) reads the update manifest from:
 
 ```text
 https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/alpecca-launcher-update.json
@@ -58,9 +60,9 @@ The response must be HTTPS JSON with these required fields:
 
 ```json
 {
-  "versionCode": 7,
-  "versionName": "2.2.1",
-  "apkUrl": "https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.2.1.apk",
+  "versionCode": 8,
+  "versionName": "2.2.2",
+  "apkUrl": "https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.2.2.apk",
   "sha256": "<64 lowercase hexadecimal characters>",
   "packageName": "ai.alpecca.launcher"
 }
@@ -105,10 +107,11 @@ distribution lane at
 `https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.1.2.apk`.
 The APK contains no creator password, runtime token, memory, or tunnel hostname.
 
-Version 2.2.1 keeps the 2.2.0 bounded, user-confirmed update flow and adds the
-credential-free continuity-authority lookup. That lookup returns only the URL
-published by the exact active singleton lease, so the app can follow a guarded
-local-to-cloud failover without accepting an unfenced backend.
+Version 2.2.2 keeps the bounded, user-confirmed update flow and the
+credential-free continuity-authority lookup. It also probes the stable cloud
+standby URL to wake a sleeping Space when no active endpoint answers. The app
+still requires the exact `alpecca` health identity, so the health-only standby
+cannot be mistaken for an active companion before fencing succeeds.
 
 With USB debugging enabled and the phone connected, build and install with:
 

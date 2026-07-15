@@ -75,7 +75,9 @@ def test_android_launcher_discovers_live_endpoint_and_has_no_baked_quick_tunnel(
 
     assert "ALPECCA_DISCOVERY_URL" in gradle
     assert "ALPECCA_CONTINUITY_DISCOVERY_URL" in gradle
+    assert "ALPECCA_CLOUD_STANDBY_URL" in gradle
     assert "alpecca-continuity-lease.jasondixon1994.workers.dev/v1/endpoint" in gradle
+    assert "creatorjd-alpecca-cloud-core.hf.space" in gradle
     assert "trycloudflare.com" not in gradle
     assert '"/healthz"' in source
     assert '"alpecca-mobile-discovery"' in source
@@ -86,6 +88,10 @@ def test_android_launcher_discovers_live_endpoint_and_has_no_baked_quick_tunnel(
         "BuildConfig.ALPECCA_DISCOVERY_URL"
     )
     assert 'payload.optJSONObject("endpoint")' in source
+    assert "addDiscoveryCandidate(result, BuildConfig.ALPECCA_CLOUD_STANDBY_URL);" in source
+    assert source.index("fetchContinuityCandidate(result);") < source.index(
+        "addDiscoveryCandidate(result, BuildConfig.ALPECCA_CLOUD_STANDBY_URL);"
+    )
     assert "R.drawable.alpecca_portrait" in source
     assert 'appendQueryParameter("view", "orthographic")' in source
     assert 'RELAY_BYPASS_HEADER = "bypass-tunnel-reminder"' in source
@@ -98,8 +104,8 @@ def test_android_device_trust_validates_transcript_and_fences_clear_races():
     source = (APP / "app" / "src" / "main" / "java" / "ai" / "alpecca" / "launcher" / "MainActivity.java").read_text(encoding="utf-8")
     gradle = (APP / "app" / "build.gradle").read_text(encoding="utf-8")
 
-    assert 'versionCode 7' in gradle
-    assert 'versionName "2.2.1"' in gradle
+    assert 'versionCode 8' in gradle
+    assert 'versionName "2.2.2"' in gradle
     assert 'APP_USER_AGENT = "AlpeccaAndroid/" + BuildConfig.VERSION_NAME' in source
     assert "validateDeviceChallenge(" in source
     assert '"alpecca-device-auth-v2".equals(lines[0])' in source

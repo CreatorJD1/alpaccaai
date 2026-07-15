@@ -402,6 +402,11 @@ class CloudCoreSupervisor:
     def request_shutdown(self, *_args: object) -> None:
         self._shutdown.set()
 
+    @property
+    def shutdown_requested(self) -> bool:
+        """Whether the container asked this promotion attempt to stop."""
+        return self._shutdown.is_set()
+
     def install_signal_handlers(self) -> None:
         signal.signal(signal.SIGTERM, self.request_shutdown)
         signal.signal(signal.SIGINT, self.request_shutdown)
@@ -548,27 +553,41 @@ class CloudCoreSupervisor:
                     shutil.rmtree(runtime_home, ignore_errors=True)
 
 
-def main(
+def run_supervisor_once(
     _argv: Sequence[str] | None = None,
     *,
     vrm_installer: Callable[[Path], Path] | None = None,
-) -> int:
+) -> tuple[int, bool]:
+    """Run one fenced promotion attempt and report if shutdown caused it."""
     supervisor = CloudCoreSupervisor(vrm_installer=vrm_installer)
     supervisor.install_signal_handlers()
     try:
-        return supervisor.run()
+        result = supervisor.run()
     except CloudCoreStartupError as exc:
         print(f"[hf-cloud-core] startup blocked: {exc.code}", file=sys.stderr)
-        return 2
+        result = 2
     except ContinuityLeaseError:
         print("[hf-cloud-core] startup blocked: continuity_lease_unavailable", file=sys.stderr)
-        return 3
+        result = 3
     except Exception as exc:
         print(
             f"[hf-cloud-core] startup blocked: unexpected_{type(exc).__name__}",
             file=sys.stderr,
         )
-        return 1
+        result = 1
+    return result, supervisor.shutdown_requested
+
+
+def main(
+    _argv: Sequence[str] | None = None,
+    *,
+    vrm_installer: Callable[[Path], Path] | None = None,
+) -> int:
+    result, _shutdown_requested = run_supervisor_once(
+        _argv,
+        vrm_installer=vrm_installer,
+    )
+    return result
 
 
 if __name__ == "__main__":

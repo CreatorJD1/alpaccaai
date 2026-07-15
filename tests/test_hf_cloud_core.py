@@ -4,9 +4,11 @@ import hashlib
 import importlib.util
 import io
 import json
+import socket
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+import urllib.request
 
 import pytest
 
@@ -46,6 +48,75 @@ def test_cloud_core_requires_explicit_enable_switch():
     assert cloud.cloud_core_enabled({}) is False
     assert cloud.cloud_core_enabled({"ALPECCA_CLOUD_CORE_ENABLED": "0"}) is False
     assert cloud.cloud_core_enabled({"ALPECCA_CLOUD_CORE_ENABLED": "true"}) is True
+
+
+def test_standby_promotes_only_after_positive_empty_authority_state():
+    assert cloud.promotion_eligible({}) is False
+    assert cloud.promotion_eligible({"ok": False}) is False
+    assert cloud.promotion_eligible({
+        "ok": True,
+        "activeLeaseCount": 1,
+        "activeLease": {"leaseId": "local"},
+        "localPrimaryPreferred": True,
+    }) is False
+    assert cloud.promotion_eligible({
+        "ok": True,
+        "activeLeaseCount": 0,
+        "activeLease": None,
+        "localPrimaryPreferred": True,
+    }) is False
+    assert cloud.promotion_eligible({
+        "ok": True,
+        "activeLeaseCount": 0,
+        "activeLease": None,
+        "localPrimaryPreferred": False,
+    }) is True
+
+
+def test_standby_health_identity_is_not_coremind_and_releases_its_port():
+    server = cloud.StandbyServer(0)
+    port = server.port
+    server.start()
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/healthz",
+            timeout=2,
+        ) as response:
+            payload = json.loads(response.read())
+        assert payload == {
+            "service": "alpecca-continuity-standby",
+            "version": 1,
+            "state": "waiting-for-singleton-lease",
+            "coreMind": False,
+        }
+    finally:
+        server.stop()
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", port))
+
+
+def test_supervisor_once_reports_clean_exit_vs_container_shutdown(monkeypatch):
+    class FakeSupervisor:
+        def __init__(self, *, vrm_installer):
+            self.vrm_installer = vrm_installer
+            self.shutdown_requested = False
+
+        def install_signal_handlers(self):
+            return None
+
+        def run(self):
+            return 0
+
+    fake = FakeSupervisor(vrm_installer=None)
+    monkeypatch.setattr(
+        supervisor_module,
+        "CloudCoreSupervisor",
+        lambda *, vrm_installer: fake,
+    )
+    assert supervisor_module.run_supervisor_once(vrm_installer=None) == (0, False)
+    fake.shutdown_requested = True
+    assert supervisor_module.run_supervisor_once(vrm_installer=None) == (0, True)
 
 
 class _Response:

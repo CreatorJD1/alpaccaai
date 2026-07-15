@@ -541,7 +541,7 @@ public final class MainActivity extends Activity {
                     showPortal(
                         "OFFLINE",
                         "Alpecca is offline",
-                        "Start Alpecca on the laptop, then reconnect. This app will discover her latest secure phone link automatically.",
+                        "Waiting for the local runtime or fenced cloud continuity core. This app will reconnect automatically.",
                         false
                     );
                     endpointLabel.setText(saved == null ? "No live endpoint discovered" : "Last server: " + displayHost(saved));
@@ -597,44 +597,51 @@ public final class MainActivity extends Activity {
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("User-Agent", APP_USER_AGENT);
             applyRelayHeaders(connection);
-            if (connection.getResponseCode() != 200) {
-                return result;
-            }
-            JSONObject payload = new JSONObject(readLimited(connection.getInputStream(), 16 * 1024));
-            if (!"alpecca-mobile-discovery".equals(payload.optString("service")) || payload.optInt("version") != 1) {
-                return result;
-            }
-            long now = System.currentTimeMillis() / 1000L;
-            JSONArray endpoints = payload.optJSONArray("endpoints");
-            List<JSONObject> rows = new ArrayList<>();
-            if (endpoints != null) {
-                for (int index = 0; index < Math.min(8, endpoints.length()); index++) {
-                    JSONObject row = endpoints.optJSONObject(index);
-                    if (row != null) {
-                        rows.add(row);
+            if (connection.getResponseCode() == 200) {
+                JSONObject payload = new JSONObject(readLimited(connection.getInputStream(), 16 * 1024));
+                if ("alpecca-mobile-discovery".equals(payload.optString("service"))
+                    && payload.optInt("version") == 1) {
+                    long now = System.currentTimeMillis() / 1000L;
+                    JSONArray endpoints = payload.optJSONArray("endpoints");
+                    List<JSONObject> rows = new ArrayList<>();
+                    if (endpoints != null) {
+                        for (int index = 0; index < Math.min(8, endpoints.length()); index++) {
+                            JSONObject row = endpoints.optJSONObject(index);
+                            if (row != null) {
+                                rows.add(row);
+                            }
+                        }
+                    }
+                    rows.sort(Comparator.comparingInt(row -> row.optInt("priority", 100)));
+                    for (JSONObject row : rows) {
+                        String kind = row.optString("kind");
+                        long expiresAt = row.optLong("expiresAt", 0L);
+                        if (!"named".equals(kind) && (!"quick".equals(kind) || expiresAt <= now)) {
+                            continue;
+                        }
+                        addDiscoveryCandidate(result, row.optString("url"));
                     }
                 }
             }
-            rows.sort(Comparator.comparingInt(row -> row.optInt("priority", 100)));
-            for (JSONObject row : rows) {
-                String kind = row.optString("kind");
-                long expiresAt = row.optLong("expiresAt", 0L);
-                if (!"named".equals(kind) && (!"quick".equals(kind) || expiresAt <= now)) {
-                    continue;
-                }
-                String normalized = normalizeServerUrl(row.optString("url"));
-                if (normalized != null && !result.contains(normalized)) {
-                    result.add(normalized);
-                }
-            }
         } catch (Exception ignored) {
-            // The saved/manual endpoint fallback remains available.
+            // Continuity, cloud wake, saved, and manual paths remain available.
         } finally {
             if (connection != null) {
                 connection.disconnect();
             }
         }
+        // A request wakes a sleeping free Space. Its standby identity still
+        // fails probeExactAlpecca until it acquires and publishes the singleton
+        // lease, so the launcher cannot open an unfenced cloud runtime.
+        addDiscoveryCandidate(result, BuildConfig.ALPECCA_CLOUD_STANDBY_URL);
         return result;
+    }
+
+    private void addDiscoveryCandidate(List<String> result, String value) {
+        String normalized = normalizeServerUrl(value);
+        if (normalized != null && !result.contains(normalized)) {
+            result.add(normalized);
+        }
     }
 
     private void fetchContinuityCandidate(List<String> result) {

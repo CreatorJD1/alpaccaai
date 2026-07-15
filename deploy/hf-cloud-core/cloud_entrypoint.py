@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
+import json
 import os
 from pathlib import Path
 import socket
 import sys
+import threading
+import time
 import urllib.request
 
 
@@ -29,6 +33,8 @@ REQUIRED_URLS = (
     "ALPECCA_MINDSCAPE_VAULT_URL",
 )
 _TRUE_VALUES = {"1", "true", "yes", "on"}
+STANDBY_SERVICE = "alpecca-continuity-standby"
+STANDBY_POLL_SECONDS = 10.0
 
 
 def _load_supervisor_module():
@@ -104,6 +110,81 @@ def cloud_core_enabled(environ: dict[str, str]) -> bool:
     return str(environ.get("ALPECCA_CLOUD_CORE_ENABLED") or "").strip().lower() in _TRUE_VALUES
 
 
+def promotion_eligible(status: object) -> bool:
+    """Require positive authority evidence that no local or cloud owner exists."""
+    if not isinstance(status, dict) or status.get("ok") is not True:
+        return False
+    if status.get("activeLeaseCount") != 0 or status.get("activeLease") is not None:
+        return False
+    return status.get("localPrimaryPreferred") is False
+
+
+class _StandbyHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802 - stdlib callback name
+        route = self.path.split("?", 1)[0]
+        if route not in {"/", "/healthz"}:
+            self.send_error(404)
+            return
+        body = json.dumps(
+            {
+                "service": STANDBY_SERVICE,
+                "version": 1,
+                "state": "waiting-for-singleton-lease",
+                "coreMind": False,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
+
+
+class _StandbyHttpServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+class StandbyServer:
+    """A health-only listener; it never imports or constructs CoreMind."""
+
+    def __init__(self, port: int) -> None:
+        self._server = _StandbyHttpServer(("0.0.0.0", port), _StandbyHandler)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever,
+            name="AlpeccaCloudStandby",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    @property
+    def port(self) -> int:
+        return int(self._server.server_address[1])
+
+    def stop(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=3.0)
+
+
+def wait_until_promotion_eligible(client, *, sleep=time.sleep) -> None:
+    """Poll authenticated status without restoring memory or starting a model."""
+    while True:
+        try:
+            if promotion_eligible(client.status()):
+                return
+        except Exception:
+            pass
+        sleep(STANDBY_POLL_SECONDS)
+
+
 def install_vrm(home: Path, opener=urllib.request.urlopen) -> Path:
     target = home / "avatar" / "vrm" / "alpecca.vrm"
     if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == VRM_SHA256:
@@ -133,7 +214,36 @@ def main() -> int:
     if missing:
         print("Cloud continuity configuration is incomplete: " + ", ".join(missing), flush=True)
         return 2
-    return supervisor.main(vrm_installer=install_vrm)
+    from alpecca.continuity_lease import client_from_env
+
+    status_client = client_from_env(role="cloud-standby")
+    if status_client is None:
+        print("Cloud continuity lease client is unavailable.", flush=True)
+        return 2
+
+    port = int(os.environ.get("PORT", "7860"))
+    while True:
+        standby = StandbyServer(port)
+        standby.start()
+        print(
+            "Cloud continuity standby is healthy; no CoreMind or model is active.",
+            flush=True,
+        )
+        try:
+            wait_until_promotion_eligible(status_client)
+        finally:
+            standby.stop()
+
+        result, shutdown_requested = supervisor.run_supervisor_once(
+            vrm_installer=install_vrm,
+        )
+        if shutdown_requested:
+            return result
+        print(
+            f"Cloud promotion ended with code {result}; returning to fenced standby.",
+            flush=True,
+        )
+        time.sleep(2.0)
 
 
 if __name__ == "__main__":
