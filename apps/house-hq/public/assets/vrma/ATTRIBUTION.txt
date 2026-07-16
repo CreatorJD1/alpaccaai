@@ -1,7 +1,14 @@
 Bundled gesture VRMA clips are copied from apps/vcs/frontend/public/vrma.
-Source: https://github.com/tk256ailab/vrm-viewer
+
+Verified source for Clapping, Goodbye, Jump, LookAround, Relax, Sad, Sleepy,
+Surprised, and Thinking:
+https://github.com/tk256ailab/vrm-viewer
 License: MIT
 Copyright: (c) 2025 TK256
+
+Hello.vrma and PeaceSign.vrma do not match that upstream inventory. Their
+original source and redistribution terms are unresolved; do not include them
+in a public binary release until provenance is recorded or they are replaced.
 
 Locomotion note (2026-07-15): the bundled set contains no authored Walk or
 Run VRMA. House HQ therefore uses its bounded procedural locomotion fallback.
