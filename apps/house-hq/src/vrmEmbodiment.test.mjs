@@ -31,6 +31,7 @@ import {
   shouldScheduleVrmPerformance,
   shouldSettleProceduralPerformance,
   shouldStabilizeVrmSpringTransition,
+  shouldVrmTrackCamera,
   solveTwoBoneReach,
   strideDistanceForMotion,
   v4MoodMouthCorrectionWeights,
@@ -128,10 +129,21 @@ test("stale planted feet are reacquired before the leg can split", () => {
 });
 
 test("authored locomotion cadence follows measured world speed within safe bounds", () => {
-  assert.equal(resolveVrmLocomotionTimeScale(0.18, false), 1);
-  assert.equal(resolveVrmLocomotionTimeScale(0.32, true), 1);
-  assert.equal(resolveVrmLocomotionTimeScale(0, false), 0.65);
-  assert.equal(resolveVrmLocomotionTimeScale(99, true), 1.65);
+  near(resolveVrmLocomotionTimeScale(0.18, false), 0.18 * 0.767 / 0.42);
+  near(resolveVrmLocomotionTimeScale(0.32, true), 0.32 * 0.708 / 0.62);
+  assert.equal(resolveVrmLocomotionTimeScale(0, false), 0.16);
+  assert.equal(resolveVrmLocomotionTimeScale(99, true), 1.45);
+  assert.ok(
+    resolveVrmLocomotionTimeScale(0.18, false) < 0.4,
+    "slow world travel cannot play the authored walk at treadmill speed",
+  );
+});
+
+test("camera awareness persists across the room and throughout speech", () => {
+  assert.equal(shouldVrmTrackCamera(false, false, 10), true);
+  assert.equal(shouldVrmTrackCamera(false, false, 12), false);
+  assert.equal(shouldVrmTrackCamera(true, false, Infinity), true);
+  assert.equal(shouldVrmTrackCamera(false, true, Infinity), true);
 });
 
 test("planted-leg IK uses the forward anatomical plane instead of folding laterally", () => {

@@ -767,8 +767,18 @@ export const VRM_LOCOMOTION_SEAM_LIMIT_RADIANS = THREE.MathUtils.degToRad(12);
 
 export function resolveVrmLocomotionTimeScale(speed: number, running: boolean): number {
   const measured = Number.isFinite(speed) ? Math.max(0, speed) : 0;
-  const reference = running ? 0.32 : 0.18;
-  return THREE.MathUtils.clamp(measured / reference, running ? 0.8 : 0.65, running ? 1.65 : 1.5);
+  // The admitted clips contain one complete stride per loop. Drive that loop
+  // from actual distance travelled, rather than treating a very slow 0.18 m/s
+  // walk as full authored speed. This keeps foot cadence matched to House
+  // displacement and prevents the rapid treadmill look on mobile.
+  const clipSeconds = running ? 0.708 : 0.767;
+  const strideMetres = running ? 0.62 : 0.42;
+  const distanceLockedScale = measured * clipSeconds / strideMetres;
+  return THREE.MathUtils.clamp(
+    distanceLockedScale,
+    running ? 0.22 : 0.16,
+    running ? 1.45 : 1.15,
+  );
 }
 
 type VrmQuaternionTrackLike = Readonly<{
@@ -882,6 +892,16 @@ const NOTICE_DISTANCE = 4.5;   // she notices you approaching inside this range
 const BLINK_INTERVAL_MIN = 2.8;
 const BLINK_INTERVAL_MAX = 6.5;
 const MAX_MOUTH_WEIGHT = 0.55;
+
+export function shouldVrmTrackCamera(
+  talking: boolean,
+  engaged: boolean,
+  distanceToPlayer: number,
+): boolean {
+  return talking
+    || engaged
+    || (Number.isFinite(distanceToPlayer) && distanceToPlayer < NOTICE_DISTANCE * 2.5);
+}
 const INTERACTION_REACH_WEIGHT = {
   approach: 0.28,
   reach: 1,
@@ -1505,9 +1525,11 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   function resetLipTiming(): void {
     lipShape = "aa";
     lipShapeIndex = 0;
-    lipTarget = 0;
+    // Speech must be visible from its first audible frames. Starting at zero
+    // made short phrases look frozen, especially at mobile rendering scale.
+    lipTarget = 0.32;
     lipNow = 0;
-    lipPhaseIn = 0.04;
+    lipPhaseIn = 0.09;
   }
 
   function resetFaceValues(): void {
@@ -2904,7 +2926,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
         interactionLookTarget.position.copy(interactionTarget);
         nextGazeTarget = interactionLookTarget;
         gazeTargetKind = "interaction";
-      } else if (engaged || distanceToPlayer < NOTICE_DISTANCE) {
+      } else if (shouldVrmTrackCamera(spriteTalking, engaged, distanceToPlayer)) {
         camera.getWorldPosition(gazeTargetWorld);
         nextGazeTarget = camera;
         gazeTargetKind = "camera";
