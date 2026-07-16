@@ -294,6 +294,31 @@ def test_disconnected_voice_guard_corrects_false_capability_denial():
     ) == "I can't join voice chat."
 
 
+def test_voice_context_is_only_attached_to_current_audio_questions():
+    assert discord_bridge._message_needs_voice_context("can you join voice?") is True
+    assert discord_bridge._message_needs_voice_context("can you hear me in vc") is True
+    assert discord_bridge._message_needs_voice_context("hello, are you there?") is False
+    assert discord_bridge._message_is_presence_cue("@Alpecca Are you here with me?") is True
+
+
+def test_irrelevant_voice_denial_recovers_as_text_presence_instead_of_repeating():
+    reply, correction = discord_bridge._resolve_direct_room_voice_correction(
+        "I'm not connected to Discord voice right now.",
+        "I'm not connected to Discord voice right now.",
+        voice_relevant=False,
+    )
+    assert correction == "irrelevant_voice_state"
+    assert reply == "I'm here in this Discord room with you. What's on your mind?"
+
+    reply, correction = discord_bridge._resolve_direct_room_voice_correction(
+        "I'm a text-only AI and can't join voice.",
+        "I'm not connected to Discord voice right now.",
+        voice_relevant=False,
+    )
+    assert correction == "irrelevant_voice_state"
+    assert reply == "I'm here in this Discord room with you. What's on your mind?"
+
+
 def test_collector_filters_user_and_emits_bounded_memory_wav():
     utterances: list[discord_voice.VoiceUtterance] = []
     starts: list[str] = []

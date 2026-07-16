@@ -298,6 +298,52 @@ _VOICE_DENIAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_VOICE_CONTEXT_REQUEST_RE = re.compile(
+    r"\b(?:voice|vc|call|audio|microphone|mic|hear(?:ing)?|listen(?:ing)?|"
+    r"speak(?:ing)?|talk(?:ing)?\s+(?:in|on)\s+(?:voice|vc|the\s+call))\b",
+    re.IGNORECASE,
+)
+_VOICE_STATUS_DENIAL_RE = re.compile(
+    r"\b(?:not|isn't|is\s+not)\s+connected\s+to\s+(?:discord\s+)?voice\b",
+    re.IGNORECASE,
+)
+
+
+def _message_needs_voice_context(text: object) -> bool:
+    """Return whether the current event actually asks about Discord audio."""
+
+    return _VOICE_CONTEXT_REQUEST_RE.search(str(text or "")) is not None
+
+
+_PRESENCE_CUE_RE = re.compile(
+    r"\b(?:(?:are\s+)?you\s+(?:here|there)(?:\s+with\s+me)?|anyone\s+there)\b",
+    re.IGNORECASE,
+)
+
+
+def _message_is_presence_cue(text: object) -> bool:
+    return _PRESENCE_CUE_RE.search(str(text or "")) is not None
+
+
+def _resolve_direct_room_voice_correction(
+    reply: str,
+    grounded_reply: str,
+    *,
+    voice_relevant: bool,
+) -> tuple[str, str | None]:
+    """Keep voice truth guards from hijacking unrelated text conversation."""
+
+    guarded = _voice_guard_text(reply)
+    if not voice_relevant and (
+        _VOICE_DENIAL_RE.search(guarded) or _VOICE_STATUS_DENIAL_RE.search(guarded)
+    ):
+        return "I'm here in this Discord room with you. What's on your mind?", "irrelevant_voice_state"
+    if grounded_reply == reply:
+        return reply, None
+    if voice_relevant:
+        return grounded_reply, "voice_state"
+    return "I'm here in this Discord room with you. What's on your mind?", "irrelevant_voice_state"
+
 
 def _voice_guard_text(text: object) -> str:
     """Normalize presentation-only apostrophe variants before policy matching."""
@@ -2531,7 +2577,19 @@ def build_client() -> discord.Client:
         try:
             async with message.channel.typing():
                 context = f"Discord message from {sender} via {channel_label}"
+                voice_relevant = False
                 if not is_dm and message.guild is not None:
+                    runtime_voice_connected = (
+                        _voice_runtime_state(message.guild).get("connected") is True
+                    )
+                    voice_relevant = bool(
+                        _message_needs_voice_context(media_request_text)
+                        or (
+                            runtime_voice_connected
+                            and _message_is_presence_cue(media_request_text)
+                        )
+                    )
+                if voice_relevant and message.guild is not None:
                     context += f"; {_voice_presence_context(message.guild)}"
                 if outbound_media is not None:
                     context += (
@@ -2570,9 +2628,11 @@ def build_client() -> discord.Client:
         truth_correction: str | None = None
         if not is_dm and message.guild is not None:
             grounded_reply = _ground_voice_presence_reply(reply, message.guild)
-            if grounded_reply != reply:
-                truth_correction = "voice_state"
-            reply = grounded_reply
+            reply, truth_correction = _resolve_direct_room_voice_correction(
+                reply,
+                grounded_reply,
+                voice_relevant=voice_relevant,
+            )
         event_correction = None
         if not is_dm:
             reply, event_correction = _correct_room_reply_for_current_event(
@@ -2767,7 +2827,12 @@ def build_client() -> discord.Client:
                 else:
                     last_empty_room_nudge_at[chan] = tick_now
                 guild = getattr(ch, "guild", None)
-                voice_context = _voice_presence_context(guild)
+                voice_relevant = _message_needs_voice_context(context)
+                voice_context = (
+                    "\n\n" + _voice_presence_context(guild)
+                    if voice_relevant and guild is not None
+                    else ""
+                )
                 if initiative_kind == "empty-room":
                     prompt_prefix = (
                         "Initiative kind: deliberate empty-room check-in.\n"
@@ -2786,7 +2851,6 @@ def build_client() -> discord.Client:
                     prompt_prefix
                     + "\nRecent room messages:\n"
                     + context
-                    + "\n\n"
                     + voice_context
                 )[:7_500]
                 try:
@@ -2813,6 +2877,9 @@ def build_client() -> discord.Client:
                     if guild is not None
                     else raw_reply
                 )
+                if reply != raw_reply and not voice_relevant:
+                    _diagnostic("proactive_room_passed", status="irrelevant_voice_state")
+                    return
                 if _room_reply_repeats_self(
                     reply,
                     history_buf.get(chan, []),
@@ -2883,13 +2950,18 @@ def build_client() -> discord.Client:
                 if not room_key or room_key not in social_rooms:
                     continue
                 context = _recent_context(chan)
+                voice_relevant = _message_needs_voice_context(context)
+                voice_context = (
+                    "\n\n" + _voice_presence_context(guild)
+                    if voice_relevant and guild is not None
+                    else ""
+                )
                 prompt = (
                     "Initiative kind: one bounded follow-up after Alpecca spoke.\n"
                     "Lines labeled Alpecca are her own prior messages.\n\n"
                     "Recent room messages:\n"
                     + context
-                    + "\n\n"
-                    + _voice_presence_context(guild)
+                    + voice_context
                 )[:7_500]
                 # Share the same one-initiative-per-human-turn reservation as
                 # proactive speech. Recursive reasoning cannot begin a second
@@ -2916,6 +2988,10 @@ def build_client() -> discord.Client:
                     _diagnostic("recursive_room_passed", status="model")
                     continue
                 reply = _ground_voice_presence_reply(raw_reply, guild)
+                if reply != raw_reply and not voice_relevant:
+                    chain_depth[chan] = RECURSIVE_MAX
+                    _diagnostic("recursive_room_passed", status="irrelevant_voice_state")
+                    continue
                 if _room_reply_repeats_self(
                     reply,
                     history_buf.get(chan, []),
