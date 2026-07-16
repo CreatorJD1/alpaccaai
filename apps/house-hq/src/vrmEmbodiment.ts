@@ -231,6 +231,55 @@ export function resolveVrmKneeFlex(amount: number, axisFlip: 1 | -1): number {
   return axisFlip < 0 ? -flex : flex;
 }
 
+export type VrmJointEuler = Readonly<{ x: number; y: number; z: number }>;
+
+// Runtime safety limits for the normalized humanoid rig. Authored VRMA remains
+// the motion source; this projection only rejects poses a human lower body
+// cannot sustain. The narrow lower-leg swing/twist range is especially
+// important because a two-bone solver can otherwise choose a visually valid
+// but anatomically inverted knee plane.
+export function constrainVrmLowerBodyJoint(
+  name: "upperLeg" | "lowerLeg" | "foot",
+  rotation: VrmJointEuler,
+  axisFlip: 1 | -1,
+): VrmJointEuler {
+  const finite = (value: number): number => Number.isFinite(value) ? value : 0;
+  const x = finite(rotation.x);
+  const y = finite(rotation.y);
+  const z = finite(rotation.z);
+  if (name === "lowerLeg") {
+    const flex = axisFlip < 0
+      ? THREE.MathUtils.clamp(x, -2.15, 0.03)
+      : THREE.MathUtils.clamp(x, -0.03, 2.15);
+    return {
+      x: flex,
+      y: THREE.MathUtils.clamp(y, -0.09, 0.09),
+      z: THREE.MathUtils.clamp(z, -0.09, 0.09),
+    };
+  }
+  if (name === "upperLeg") {
+    return {
+      x: THREE.MathUtils.clamp(x, -1.25, 1.1),
+      y: THREE.MathUtils.clamp(y, -0.42, 0.42),
+      z: THREE.MathUtils.clamp(z, -0.38, 0.38),
+    };
+  }
+  return {
+    x: THREE.MathUtils.clamp(x, -0.6, 0.48),
+    y: THREE.MathUtils.clamp(y, -0.3, 0.3),
+    z: THREE.MathUtils.clamp(z, -0.28, 0.28),
+  };
+}
+
+export function isVrmFootPlantWithinReach(
+  horizontalDistance: number,
+  strideDistance: number,
+): boolean {
+  if (!Number.isFinite(horizontalDistance) || !Number.isFinite(strideDistance)) return false;
+  const leash = Math.max(0.12, Math.min(0.32, Math.max(0, strideDistance) * 0.72));
+  return horizontalDistance <= leash;
+}
+
 export function resolveVrmKneePole(
   currentKnee: THREE.Vector3,
   targetDirection: THREE.Vector3,
@@ -1796,6 +1845,21 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     foot.rotation.x = -parentPitch * 0.72 + axisFlip * resolveVrmFootRoll(swing).pitch;
   }
 
+  function constrainLowerBodyPose(): void {
+    for (const side of ["left", "right"] as const) {
+      for (const [suffix, limitName] of [
+        ["UpperLeg", "upperLeg"],
+        ["LowerLeg", "lowerLeg"],
+        ["Foot", "foot"],
+      ] as const) {
+        const joint = bone(`${side}${suffix}` as VRMHumanBoneName);
+        if (!joint) continue;
+        const bounded = constrainVrmLowerBodyJoint(limitName, joint.rotation, axisFlip);
+        joint.rotation.set(bounded.x, bounded.y, bounded.z, joint.rotation.order);
+      }
+    }
+  }
+
   function applyPlantedFootGait(): void {
     if (!footPlantsReady && !initializeFootPlants()) return;
     const stride = strideDistanceForMotion(locomotionSpeed, gaitAngularSpeed);
@@ -1821,6 +1885,21 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
         state.swinging = false;
         state.target.copy(state.plant);
       }
+      if (!plantBaselineWorld(state, footBaseWorld)) {
+        resetFootPlants();
+        return;
+      }
+      const horizontalReach = Math.hypot(
+        state.target.x - footBaseWorld.x,
+        state.target.z - footBaseWorld.z,
+      );
+      if (!isVrmFootPlantWithinReach(horizontalReach, stride)) {
+        // A frame hitch, collision correction, or sharp route turn can leave a
+        // world-space plant behind the moving body. Reacquire instead of
+        // stretching the leg into a split or allowing the knee to flip.
+        resetFootPlants();
+        return;
+      }
       if (!applyLegPlantIk(side, state.target)) {
         // Ground/contact data or a sharp turn invalidated this world-space
         // plant. Rebuild both targets from the current measured soles next frame.
@@ -1829,6 +1908,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       }
       applyGaitFootRoll(side, swing);
     }
+    constrainLowerBodyPose();
   }
 
   /* ---- the studio's clip engine (ported from web/vrm.html) ---- */
@@ -2790,6 +2870,10 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       // solve therefore runs immediately afterward, so a prior gesture can
       // never overwrite the swing foot and turn the first step into a slide.
       if (mixer) { mixer.update(dt); reapFaded(); }
+      // VRMA and procedural poses both pass through the same humanoid safety
+      // projection before any contact solve. This keeps imported full-body
+      // clips from introducing knee twist or ankle roll outside the V4 rig.
+      constrainLowerBodyPose();
       if (!vrmaDriven && (poseClip === "walk" || poseClip === "run")) applyPlantedFootGait();
       // Terminal contact owns only the right arm. Gaze is layered afterward,
       // from this frame's final animated head pose, so neither solve drifts.

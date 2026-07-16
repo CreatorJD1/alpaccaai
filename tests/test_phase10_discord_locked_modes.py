@@ -205,7 +205,7 @@ def test_social_presence_and_voice_output_can_be_enabled(tmp_path):
         "recursive": True,
         "participate": True,
         "voice": True,
-        "debug": False,
+        "debug": True,
         "voice_states": True,
     }
 
@@ -465,6 +465,57 @@ def test_claimed_room_participation_can_choose_a_lightweight_reaction(monkeypatc
     assert message.replies == []
     assert prompts and "preference rather than a rigid rule" in prompts[0]
     assert "[react:eyes]" in prompts[0]
+
+
+def test_plain_greeting_in_claimed_room_is_a_direct_reply(monkeypatch):
+    room = {"guild_id": "777", "channel_id": "3001"}
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    monkeypatch.setattr(discord_bridge, "PARTICIPATE", True)
+    monkeypatch.setattr(discord_bridge, "CHANNEL_MIN_INTERVAL", 0.0)
+    prompts: list[str] = []
+
+    def ask(text: str, *_args: object, **_kwargs: object) -> str:
+        prompts.append(text)
+        return "Hi Jason. I'm here."
+
+    monkeypatch.setattr(discord_bridge, "_ask_alpecca", ask)
+    monkeypatch.setattr(
+        discord_bridge.discord_media,
+        "resolve_outbound_media",
+        lambda _text: None,
+    )
+    client = _client(monkeypatch)
+    message = _Message(content="hello")
+    message.author = _Author(name="realcreatorjd")
+    message.guild = SimpleNamespace(
+        id=777,
+        voice_client=None,
+        me=SimpleNamespace(display_name="Alpecca_ai"),
+    )
+    message.clean_content = message.content
+    message.mentions = []
+    message.reference = None
+
+    asyncio.run(client.on_message(message))
+
+    assert message.replies == [("Hi Jason. I'm here.", {"mention_author": False})]
+    assert prompts and "You are replying in an approved Discord room" in prompts[0]
+    assert "[react:eyes]" not in prompts[0]
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    (
+        ("Hello!", True),
+        ("good morning", True),
+        ("anyone there?", True),
+        ("The animation is still inverted.", False),
+    ),
+)
+def test_direct_room_greeting_classifier_is_narrow(content, expected):
+    assert discord_bridge._message_is_direct_room_greeting(
+        SimpleNamespace(content=content)
+    ) is expected
 
 
 def test_claimed_room_history_cannot_retrigger_an_old_media_request(monkeypatch):

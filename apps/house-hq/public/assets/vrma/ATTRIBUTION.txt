@@ -1,0 +1,11 @@
+Bundled gesture VRMA clips are copied from apps/vcs/frontend/public/vrma.
+Source: https://github.com/tk256ailab/vrm-viewer
+License: MIT
+Copyright: (c) 2025 TK256
+
+Locomotion note (2026-07-15): the bundled set contains no authored Walk or
+Run VRMA. House HQ therefore uses its bounded procedural locomotion fallback.
+The candidate CC0 Walk/SlowRun/Run BOOTH pack is:
+https://booth.pm/ja/items/7861818
+It must be downloaded through the creator's BOOTH account and pass V4 loop,
+root-track, foot-contact, joint-limit, and redistribution QA before bundling.

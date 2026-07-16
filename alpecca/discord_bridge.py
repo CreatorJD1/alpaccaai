@@ -196,7 +196,12 @@ RECURSIVE_ENABLED = True
 RECURSIVE_MAX = 1
 RECURSIVE_DELAY = max(45.0, float(os.environ.get("ALPECCA_DISCORD_RECURSIVE_DELAY", "90")))
 RECURSIVE_SWEEP = float(os.environ.get("ALPECCA_DISCORD_RECURSIVE_SWEEP", "20"))  # how often the loop checks
-DEBUG = _environment_enabled("ALPECCA_DISCORD_DEBUG")
+# Diagnostics contain only allowlisted event labels and bounded scalar metadata.
+# Keep them on by default so a live bridge cannot fail silently; deployments may
+# still opt out explicitly with ALPECCA_DISCORD_DEBUG=0.
+DEBUG = os.environ.get("ALPECCA_DISCORD_DEBUG", "1").strip().lower() not in {
+    "", "0", "false", "no", "off",
+}
 # Contextual participation: she reads the recent channel conversation and may
 # speak WITHOUT being mentioned -- but she decides per message whether she has
 # something worth adding (she can choose "(pass)"), throttled so it isn't spam.
@@ -617,6 +622,31 @@ def _message_mentions_user(message: object, user_id: object) -> bool:
             return True
     raw = str(getattr(message, "content", "") or "")
     return bool(re.search(rf"<@!?{re.escape(wanted)}>", raw))
+
+
+_DIRECT_ROOM_GREETING_RE = re.compile(
+    r"^\s*(?:"
+    r"h(?:ello|i|ey)(?:\s+there)?|"
+    r"good\s+(?:morning|afternoon|evening)|"
+    r"anyone\s+there|"
+    r"(?:are\s+)?you\s+there|"
+    r"jason\?"
+    r")\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _message_is_direct_room_greeting(message: object) -> bool:
+    """Treat a short room greeting as addressed speech in a claimed room.
+
+    A claimed social room is an active conversation surface. Requiring an
+    explicit mention for a plain ``hello`` made Alpecca silently delegate the
+    turn to optional participation, where ``[pass]`` is valid. Keep this cue
+    deliberately narrow so unrelated group chatter still uses social judgment.
+    """
+
+    content = str(getattr(message, "content", "") or "")
+    return _DIRECT_ROOM_GREETING_RE.fullmatch(content) is not None
 
 
 def _room_control_action(message: object, user_id: object) -> str | None:
@@ -2180,6 +2210,7 @@ def build_client() -> discord.Client:
                 mentioned
                 or _is_reply_to_me(message, client)
                 or "alpecca" in message.content.lower()
+                or _message_is_direct_room_greeting(message)
             )
             in_conversation = message.author.id in convo
 

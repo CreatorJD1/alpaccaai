@@ -4,8 +4,10 @@ import * as THREE from "three";
 
 import {
   applyVrmLookAtTransition,
+  constrainVrmLowerBodyJoint,
   isNeutralVrmGaze,
   isConfirmedVrmInteractionContact,
+  isVrmFootPlantWithinReach,
   isRotationOnlyVrmTrack,
   normalizeVrmEmotionWeights,
   resolveVrmBodyYawFromDisplacement,
@@ -101,6 +103,27 @@ test("knee flex maps to the anatomical side for VRM 1.0 and legacy VRM 0.x", () 
   assert.ok(resolveVrmKneeFlex(0.8, 1) > 0, "VRM 1.0 shin flexes on positive local X");
   assert.ok(resolveVrmKneeFlex(0.8, -1) < 0, "rotated VRM 0.x uses the opposite local axis");
   assert.equal(resolveVrmKneeFlex(-0.8, 1), 0, "knee flex never becomes hyperextension");
+});
+
+test("lower-body joint projection blocks inverted knees and excessive twist", () => {
+  assert.deepEqual(
+    constrainVrmLowerBodyJoint("lowerLeg", { x: -1.4, y: 0.8, z: -0.7 }, 1),
+    { x: -0.03, y: 0.09, z: -0.09 },
+  );
+  assert.deepEqual(
+    constrainVrmLowerBodyJoint("lowerLeg", { x: 1.4, y: -0.8, z: 0.7 }, -1),
+    { x: 0.03, y: -0.09, z: 0.09 },
+  );
+  assert.deepEqual(
+    constrainVrmLowerBodyJoint("upperLeg", { x: -4, y: 2, z: -2 }, 1),
+    { x: -1.25, y: 0.42, z: -0.38 },
+  );
+});
+
+test("stale planted feet are reacquired before the leg can split", () => {
+  assert.equal(isVrmFootPlantWithinReach(0.2, 0.4), true);
+  assert.equal(isVrmFootPlantWithinReach(0.31, 0.4), false);
+  assert.equal(isVrmFootPlantWithinReach(Number.NaN, 0.4), false);
 });
 
 test("planted-leg IK uses the forward anatomical plane instead of folding laterally", () => {
