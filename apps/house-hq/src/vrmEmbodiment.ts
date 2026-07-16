@@ -6,8 +6,8 @@
  * expression profiles) into a self-contained module: the caller owns the
  * scene and the sprite state machine; this module only wears the body. Real
  * VRoid motion clips (.vrma) drive her when available -- the procedural clips
- * below are the always-there fallback, and locomotion is procedural-only
- * (no walking .vrma exists). The heavy deps (GLTFLoader, @pixiv/three-vrm,
+ * below are the always-there fallback. Authored CC0 walk/slow-run clips drive
+ * locomotion when they pass admission QA. The heavy deps (GLTFLoader, @pixiv/three-vrm,
  * three-vrm-animation) are dynamically imported inside activate() so Vite
  * code-splits them and the default bundle is unchanged.
  */
@@ -729,9 +729,9 @@ const MOOD_CLIPS: Record<string, string> = {
 // Internal clip id -> real VRoid motion clip served at /assets/vrma/. This is
 // VCS's approved ALPECCA_MOOD_VRMA table (VRMViewer.jsx) with two changes:
 // wave plays "Hello" here (a player greeting), not "Goodbye", and point plays
-// the new "PeaceSign". Locomotion (walk/run/jump) is intentionally absent --
-// no such .vrma exists, the procedural cycles carry it. Also absent by
-// design: talking (procedural sway + visemes only -- a looping LookAround
+// the new "PeaceSign". The admitted CC0 pack supplies walk and slow-run;
+// jump remains procedural because the pack's Run clip failed loop-seam QA.
+// Also absent by design: talking (procedural sway + visemes only -- a looping LookAround
 // read as her ignoring you mid-sentence) and idle/idle_soft (the procedural
 // sway is the resting base; IDLE_FLAVOR_VRMA one-shots decorate it).
 const CLIP_VRMA: Record<string, string> = {
@@ -743,6 +743,8 @@ const CLIP_VRMA: Record<string, string> = {
   dance: "Jump",
   sit: "Relax",
   point: "PeaceSign",
+  walk: "CC0-walk",
+  run: "CC0-slowrun",
 };
 
 // Procedural idle already supplies breathing, gaze, and natural blinking.
@@ -761,6 +763,13 @@ export type PlayMode = "loop" | "once" | "twice";
 type VrmMotionPlayback = Readonly<{ name: string; mode: PlayMode }>;
 
 export const VRM_QUATERNION_SEAM_LIMIT_RADIANS = THREE.MathUtils.degToRad(8);
+export const VRM_LOCOMOTION_SEAM_LIMIT_RADIANS = THREE.MathUtils.degToRad(12);
+
+export function resolveVrmLocomotionTimeScale(speed: number, running: boolean): number {
+  const measured = Number.isFinite(speed) ? Math.max(0, speed) : 0;
+  const reference = running ? 0.32 : 0.18;
+  return THREE.MathUtils.clamp(measured / reference, running ? 0.8 : 0.65, running ? 1.65 : 1.5);
+}
 
 type VrmQuaternionTrackLike = Readonly<{
   name: string;
@@ -1183,6 +1192,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   // procedural base until the state or mood changes.
   const VRMA_MODE: Record<string, PlayMode> = {
     sleep: "loop", sit: "loop",
+    walk: "loop", run: "loop",
     wave: "once", point: "once",
     cheer: "twice", dance: "twice", cry: "twice", thinking: "twice",
   };
@@ -2284,7 +2294,12 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       mixer = new THREE.AnimationMixer(vrm.scene);
       mixer.addEventListener("finished", onActionFinished as never);
     }
-    const effectiveMode = resolveVrmPlayModeForQuaternionSeam(mode, clip.tracks);
+    const locomotion = name === "CC0-walk" || name === "CC0-slowrun";
+    const effectiveMode = resolveVrmPlayModeForQuaternionSeam(
+      mode,
+      clip.tracks,
+      locomotion ? VRM_LOCOMOTION_SEAM_LIMIT_RADIANS : VRM_QUATERNION_SEAM_LIMIT_RADIANS,
+    );
     const next = mixer.clipAction(clip);
     const revived = fading.indexOf(next);
     if (revived >= 0) fading.splice(revived, 1);   // wanted again mid-fade-out
@@ -2774,9 +2789,8 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       advanceGait(dt);
 
       // Real .vrma motion when its clip is ready; procedural otherwise.
-      // Locomotion is always procedural -- no walking/running .vrma exists,
-      // the ported cycles carry it -- and while moving any playing action
-      // fades out underneath the cycle. Idle stays procedural unless an actual
+      // Admitted locomotion clips own the skeleton while the House owns world
+      // displacement and grounding. Idle stays procedural unless an actual
       // state requests a clip; finished one-shot and twice performances settle
       // back to the procedural base instead of looping like an animatronic.
       let vrmaDriven = false;
@@ -2791,7 +2805,10 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
         // late animation fetch cannot perform the same one-shot a second time.
         finishedForClip = clipName;
       }
-      if (!spriteMoving && !interactionActive) {
+      if (spriteMoving && !interactionActive && mapped && (clipName === "walk" || clipName === "run")) {
+        wantVrma = mapped;
+        wantMode = "loop";
+      } else if (!spriteMoving && !interactionActive) {
         if (mapped && shouldScheduleVrmPerformance(clipName, finishedForClip)) {
           wantVrma = mapped;
           wantMode = VRMA_MODE[clipName] ?? "once";
@@ -2824,6 +2841,9 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       }
       if (!vrmaDriven) stopVrma();
       if (vrmaDriven) clearProceduralTransition();
+      if (vrmaDriven && currentAction && (clipName === "walk" || clipName === "run")) {
+        currentAction.setEffectiveTimeScale(resolveVrmLocomotionTimeScale(locomotionSpeed, clipName === "run"));
+      }
 
       // The face belongs entirely to this frame. resetValues clears every
       // registered expression, including custom values an animation or prior

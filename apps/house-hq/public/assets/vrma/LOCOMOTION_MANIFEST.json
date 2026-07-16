@@ -1,0 +1,32 @@
+{
+  "source": "https://booth.pm/ja/items/7861818",
+  "downloaded": "2026-07-15",
+  "archiveSha256": "e552049e2b118e41da39bef1880d09d5090b0bec98d31efc4b09ac167e8073c3",
+  "declaredLicense": "CC0",
+  "assets": [
+    {
+      "file": "CC0-walk.vrma",
+      "sha256": "51c4158488a86a6bb99b978fb4d269e1798f9749bceaf0420473bae413fc3271",
+      "durationSeconds": 0.767,
+      "maxQuaternionSeamDegrees": 9.329,
+      "runtime": "walk",
+      "status": "admitted"
+    },
+    {
+      "file": "CC0-slowrun.vrma",
+      "sha256": "54fff21bbbbbe6364dc812f39dd849eadb61de3888b556580143d386592d17e5",
+      "durationSeconds": 0.708,
+      "maxQuaternionSeamDegrees": 10.767,
+      "runtime": "run",
+      "status": "admitted"
+    },
+    {
+      "file": "CC0-run.vrma",
+      "sha256": "eb3045b9fba8f900f0fe538fc66dae6796e4f4bec03a403c33994086dfa77fff",
+      "durationSeconds": 0.5,
+      "maxQuaternionSeamDegrees": 44.001,
+      "runtime": null,
+      "status": "rejected-loop-seam"
+    }
+  ]
+}

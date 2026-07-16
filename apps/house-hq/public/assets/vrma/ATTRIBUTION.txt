@@ -11,8 +11,13 @@ original source and redistribution terms are unresolved; do not include them
 in a public binary release until provenance is recorded or they are replaced.
 
 Locomotion note (2026-07-15): the bundled set contains no authored Walk or
-Run VRMA. House HQ therefore uses its bounded procedural locomotion fallback.
-The candidate CC0 Walk/SlowRun/Run BOOTH pack is:
+Run VRMA from the original gesture set. The CC0 Walk/SlowRun/Run BOOTH pack is:
 https://booth.pm/ja/items/7861818
-It must be downloaded through the creator's BOOTH account and pass V4 loop,
-root-track, foot-contact, joint-limit, and redistribution QA before bundling.
+Source motion: https://jenjell.itch.io/josie-character-model
+Retargeting workflow: https://github.com/ahujasid/blender-mcp
+License declared by the BOOTH author: CC0
+
+CC0-walk.vrma and CC0-slowrun.vrma are admitted for runtime locomotion. Their
+hips translation is stripped because House HQ owns world movement. The more
+discontinuous CC0-run.vrma is retained for provenance but disabled at runtime.
+See LOCOMOTION_MANIFEST.json for immutable hashes and QA results.

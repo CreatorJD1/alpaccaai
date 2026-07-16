@@ -10,6 +10,7 @@ import {
   isVrmFootPlantWithinReach,
   isRotationOnlyVrmTrack,
   normalizeVrmEmotionWeights,
+  resolveVrmLocomotionTimeScale,
   resolveVrmBodyYawFromDisplacement,
   resolveVrmFootRoll,
   resolveVrmFootSwing,
@@ -124,6 +125,13 @@ test("stale planted feet are reacquired before the leg can split", () => {
   assert.equal(isVrmFootPlantWithinReach(0.2, 0.4), true);
   assert.equal(isVrmFootPlantWithinReach(0.31, 0.4), false);
   assert.equal(isVrmFootPlantWithinReach(Number.NaN, 0.4), false);
+});
+
+test("authored locomotion cadence follows measured world speed within safe bounds", () => {
+  assert.equal(resolveVrmLocomotionTimeScale(0.18, false), 1);
+  assert.equal(resolveVrmLocomotionTimeScale(0.32, true), 1);
+  assert.equal(resolveVrmLocomotionTimeScale(0, false), 0.65);
+  assert.equal(resolveVrmLocomotionTimeScale(99, true), 1.65);
 });
 
 test("planted-leg IK uses the forward anatomical plane instead of folding laterally", () => {
