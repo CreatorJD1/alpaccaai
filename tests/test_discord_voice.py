@@ -301,6 +301,15 @@ def test_voice_context_is_only_attached_to_current_audio_questions():
     assert discord_bridge._message_is_presence_cue("@Alpecca Are you here with me?") is True
 
 
+def test_discord_backend_defaults_to_loopback_and_allows_explicit_remote_override(monkeypatch):
+    monkeypatch.delenv("ALPECCA_BACKEND_URL", raising=False)
+    monkeypatch.setenv("ALPECCA_PUBLIC_URL", "https://slow-tunnel.invalid")
+    assert discord_bridge._resolve_backend_url() == "http://127.0.0.1:8765"
+
+    monkeypatch.setenv("ALPECCA_BACKEND_URL", "https://remote-bridge.invalid/")
+    assert discord_bridge._resolve_backend_url() == "https://remote-bridge.invalid"
+
+
 def test_irrelevant_voice_denial_recovers_as_text_presence_instead_of_repeating():
     reply, correction = discord_bridge._resolve_direct_room_voice_correction(
         "I'm not connected to Discord voice right now.",

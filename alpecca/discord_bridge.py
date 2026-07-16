@@ -70,23 +70,22 @@ from alpecca import (
     hearing,
 )
 from alpecca.prompts import discord_presence_prompt
-from config import HOME, HOST, PORT, PUBLIC_URL
+from config import HOME, PORT
 
 
 _BRIDGE_AUTHORIZATION_SECRET = load_or_create_bridge_authorization_secret(HOME)
 
 def _resolve_backend_url() -> str:
-    """Prefer explicit backend override, then shared public URL, then local host."""
+    """Use loopback by default; remote bridges must provide an explicit URL.
+
+    The Discord bridge normally runs beside CoreMind. Routing that traffic out
+    through a share tunnel adds latency and turns a tunnel interruption into a
+    dropped Discord reply even though the local backend is healthy.
+    """
     configured = os.environ.get("ALPECCA_BACKEND_URL", "").strip()
-    public_url = (os.environ.get("ALPECCA_PUBLIC_URL", "").strip() or PUBLIC_URL).strip()
     if configured:
         return configured.rstrip("/")
-    if public_url:
-        parsed = urlparse(public_url)
-        if parsed.scheme and parsed.netloc:
-            return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
-        return public_url.rstrip("/")
-    return f"http://{HOST}:{PORT}".rstrip("/")
+    return f"http://127.0.0.1:{PORT}"
 
 
 BACKEND_URL = _resolve_backend_url()
@@ -812,8 +811,9 @@ def _diagnostic(event: str, **metadata: object) -> None:
         "control",
         "count",
         "creator_allowed",
-        "dimensions",
-        "dm",
+            "dimensions",
+            "dm",
+            "elapsed_ms",
         "in_conversation",
         "mentioned",
         "mime_type",
@@ -2250,10 +2250,12 @@ def build_client() -> discord.Client:
                 _diagnostic("actor_bindings_rejected")
                 return
             if now - last_reply_at.get(chan, 0.0) < CHANNEL_MIN_INTERVAL:
+                _diagnostic("message_gate_closed", status="minimum_interval")
                 return                                    # anti-flood, every path
 
             addressed = (
-                mentioned
+                creator_allowed
+                or mentioned
                 or _is_reply_to_me(message, client)
                 or "alpecca" in message.content.lower()
                 or _message_is_direct_room_greeting(message)
@@ -2574,6 +2576,7 @@ def build_client() -> discord.Client:
                 )
                 return
 
+        request_started = time.monotonic()
         try:
             async with message.channel.typing():
                 context = f"Discord message from {sender} via {channel_label}"
@@ -2620,9 +2623,30 @@ def build_client() -> discord.Client:
                 discord_media.media_diagnostic(exc.reason),
             )
             return
-        except Exception:
-            _diagnostic("backend_request_failed")
+        except Exception as exc:
+            _diagnostic(
+                "backend_request_failed",
+                status=type(exc).__name__,
+                elapsed_ms=int((time.monotonic() - request_started) * 1000),
+            )
+            if (
+                outbound_media is None
+                and not image_dataurl
+                and (is_dm or (not is_dm and mode == "reply"))
+            ):
+                try:
+                    await message.reply(
+                        "I saw your message, but my local reply path stalled. Please try once more.",
+                        mention_author=False,
+                    )
+                except Exception:
+                    _diagnostic("backend_failure_reply_failed")
             return
+
+        _diagnostic(
+            "backend_reply_ready",
+            elapsed_ms=int((time.monotonic() - request_started) * 1000),
+        )
 
         reply = (reply or "").strip()
         truth_correction: str | None = None

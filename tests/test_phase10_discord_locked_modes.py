@@ -503,6 +503,39 @@ def test_plain_greeting_in_claimed_room_is_a_direct_reply(monkeypatch):
     assert "[react:eyes]" not in prompts[0]
 
 
+def test_creator_message_in_claimed_room_never_falls_into_optional_participation(monkeypatch):
+    room = {"guild_id": "777", "channel_id": "3001"}
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    monkeypatch.setattr(discord_bridge, "PARTICIPATE", True)
+    monkeypatch.setattr(discord_bridge, "CHANNEL_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr(discord_bridge, "_dm_author_allowed", lambda _author: True)
+    prompts: list[str] = []
+
+    def ask(text: str, *_args: object, **_kwargs: object) -> str:
+        prompts.append(text)
+        return "I noticed that too."
+
+    monkeypatch.setattr(discord_bridge, "_ask_alpecca", ask)
+    monkeypatch.setattr(discord_bridge.discord_media, "resolve_outbound_media", lambda _text: None)
+    client = _client(monkeypatch)
+    message = _Message(content="The walking motion still needs tuning.")
+    message.author = _Author(name="realcreatorjd")
+    message.guild = SimpleNamespace(
+        id=777,
+        voice_client=None,
+        me=SimpleNamespace(display_name="Alpecca_ai"),
+    )
+    message.clean_content = message.content
+    message.mentions = []
+    message.reference = None
+
+    asyncio.run(client.on_message(message))
+
+    assert message.replies == [("I noticed that too.", {"mention_author": False})]
+    assert prompts and "You are replying in an approved Discord room" in prompts[0]
+    assert "Decide whether you genuinely" not in prompts[0]
+
+
 @pytest.mark.parametrize(
     ("content", "expected"),
     (
