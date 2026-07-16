@@ -53,7 +53,7 @@ privileges.
 
 ## Launcher updates
 
-Version 2.2.3 (code 9) reads the update manifest from:
+Version 2.2.5 (code 11) reads the update manifest from:
 
 ```text
 https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/alpecca-launcher-update.json
@@ -63,9 +63,9 @@ The response must be HTTPS JSON with these required fields:
 
 ```json
 {
-  "versionCode": 9,
-  "versionName": "2.2.3",
-  "apkUrl": "https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.2.3.apk",
+  "versionCode": 10,
+  "versionName": "2.2.5",
+  "apkUrl": "https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.2.5.apk",
   "sha256": "<64 lowercase hexadecimal characters>",
   "packageName": "ai.alpecca.launcher"
 }
@@ -110,13 +110,16 @@ distribution lane at
 `https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.1.2.apk`.
 The APK contains no creator password, runtime token, memory, or tunnel hostname.
 
-Version 2.2.3 keeps the bounded, user-confirmed update flow and the
+Version 2.2.5 keeps the bounded, user-confirmed update flow and the
 credential-free continuity-authority lookup. It also probes the stable cloud
 standby URL to wake a sleeping Space when no active endpoint answers. The app
 still requires the exact `alpecca` health identity, so the health-only standby
 cannot be mistaken for an active companion before fencing succeeds. Its Update
 Center keeps the download bar visible through package verification and exposes
-the verified install action until Android's installer is opened.
+the verified install action until Android's installer is opened. Native device
+session restoration waits for Android WebView to finish persisting the new
+origin-scoped cookie before House HQ loads, preventing a successful key exchange
+from racing the first authenticated page and WebSocket requests.
 
 With USB debugging enabled and the phone connected, build and install with:
 

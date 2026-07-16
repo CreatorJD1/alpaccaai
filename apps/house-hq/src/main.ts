@@ -884,6 +884,14 @@ type AlpeccaAppMemory = {
   lastCuriosityRoom: string;
   lastCuriosityNote: string;
   lastClarityNote: string;
+  pose: {
+    environment: "void" | "hq";
+    roomId: string;
+    x: number;
+    z: number;
+    yaw: number;
+    updatedAt: number;
+  } | null;
 };
 type AlpeccaAgiJournal = {
   group: THREE.Group;
@@ -3621,9 +3629,13 @@ function livingLoopTargetRoomId(loop?: AlpeccaAiMessage["living_loop"]) {
   if (systemId === "memory") return "library";
   if (systemId === "self_review") return "self-design";
   if (systemId === "voice" || systemId === "mindscape") return "hq-control";
-  if (systemId === "perception") return loop?.room?.id || currentOfficeRoom().id;
-  if (systemId === "room_review") return loop?.room?.id || currentOfficeRoom().id;
-  return loop?.room?.id || "hq-control";
+  const suppliedRoom = String(loop?.room?.id || loop?.room?.name || "").trim().toLowerCase();
+  const resolvedRoom = officeRooms.find(
+    (room) => room.id.toLowerCase() === suppliedRoom || room.name.toLowerCase() === suppliedRoom,
+  );
+  if (systemId === "perception") return resolvedRoom?.id || currentOfficeRoom().id;
+  if (systemId === "room_review") return resolvedRoom?.id || currentOfficeRoom().id;
+  return resolvedRoom?.id || "hq-control";
 }
 
 function featureForLivingLoop(loop?: AlpeccaAiMessage["living_loop"]) {
@@ -3952,6 +3964,7 @@ function loadAlpeccaAppMemory(): AlpeccaAppMemory {
       lastCuriosityRoom: typeof parsed.lastCuriosityRoom === "string" ? parsed.lastCuriosityRoom : "",
       lastCuriosityNote: typeof parsed.lastCuriosityNote === "string" ? parsed.lastCuriosityNote : "",
       lastClarityNote: typeof parsed.lastClarityNote === "string" ? parsed.lastClarityNote : "",
+      pose: sanitizeAlpeccaPose(parsed.pose),
     };
   } catch {
     return {
@@ -3980,8 +3993,29 @@ function loadAlpeccaAppMemory(): AlpeccaAppMemory {
       lastCuriosityRoom: "",
       lastCuriosityNote: "",
       lastClarityNote: "",
+      pose: null,
     };
   }
+}
+
+function sanitizeAlpeccaPose(raw: unknown): AlpeccaAppMemory["pose"] {
+  if (!raw || typeof raw !== "object") return null;
+  const pose = raw as Partial<NonNullable<AlpeccaAppMemory["pose"]>>;
+  if (pose.environment !== "void" && pose.environment !== "hq") return null;
+  if (typeof pose.roomId !== "string" || !pose.roomId.trim()) return null;
+  const x = Number(pose.x);
+  const z = Number(pose.z);
+  const yaw = Number(pose.yaw);
+  const updatedAt = Number(pose.updatedAt);
+  if (![x, z, yaw, updatedAt].every(Number.isFinite)) return null;
+  return {
+    environment: pose.environment,
+    roomId: pose.roomId.slice(0, 80),
+    x,
+    z,
+    yaw,
+    updatedAt: Math.max(0, updatedAt),
+  };
 }
 
 function saveAlpeccaAppMemory() {
@@ -3990,6 +4024,35 @@ function saveAlpeccaAppMemory() {
   } catch {
     // Local storage can be unavailable in strict privacy contexts; the in-memory loop still works.
   }
+}
+
+function persistAlpeccaPose() {
+  if (!alpecca.ready && !alpecca.group.parent) return;
+  const room = officeRooms.find((item) => roomContains(item, alpecca.group.position.x, alpecca.group.position.z));
+  if (!room) return;
+  alpeccaAppMemory.pose = {
+    environment: isPrototypeMode() ? "void" : "hq",
+    roomId: room.id,
+    x: alpecca.group.position.x,
+    z: alpecca.group.position.z,
+    yaw: alpecca.group.rotation.y,
+    updatedAt: Date.now(),
+  };
+  saveAlpeccaAppMemory();
+}
+
+function restoreAlpeccaPose() {
+  const pose = alpeccaAppMemory.pose;
+  const environment = isPrototypeMode() ? "void" : "hq";
+  if (!pose || pose.environment !== environment) return false;
+  const room = officeRooms.find((item) => item.id === pose.roomId);
+  if (!room || !roomContains(room, pose.x, pose.z)) return false;
+  const index = alpeccaExplorePoints.findIndex((point) => point.roomId === room.id);
+  if (index >= 0) alpecca.exploreIndex = index;
+  alpecca.group.position.set(pose.x, currentAlpeccaExplorePoint().position.y, pose.z);
+  alpecca.group.rotation.y = pose.yaw;
+  alpecca.groundYaw = pose.yaw;
+  return true;
 }
 
 function pulseAlpeccaAgiJournal(seconds = 2.8) {
@@ -4668,6 +4731,7 @@ function renderAlpeccaSystem(systemId: AlpeccaSystemId, data: Record<string, unk
     const home = (data.home || data) as Record<string, unknown>;
     const state = (data.state || {}) as Record<string, unknown>;
     const runtime = (data.runtime || {}) as Record<string, unknown>;
+    const runtimeModels = systemRecord(runtime.models);
     const location = systemString(home.location || home.current_room || home.room, "the Void Prototype");
     const mood = systemString(state.mood || (state.state as Record<string, unknown> | undefined)?.mood, alpeccaAiMood || "offline");
     const why = systemString(home.why || home.reason, "No location reason is available.");
@@ -4681,7 +4745,7 @@ function renderAlpeccaSystem(systemId: AlpeccaSystemId, data: Record<string, unk
       <div class="systems-metrics">
         <div><span>Location</span><strong>${escapeHudText(location)}</strong></div>
         <div><span>Mood</span><strong>${escapeHudText(mood)}</strong></div>
-        <div><span>Model</span><strong>${escapeHudText(systemString(runtime.model || runtime.ollama_model, "offline"))}</strong></div>
+        <div><span>Model</span><strong>${escapeHudText(systemString(runtimeModels.reason || runtime.model || runtime.ollama_model, "offline"))}</strong></div>
         <div><span>Connection</span><strong>${alpeccaAiStatus === "live" ? "Live" : "Degraded"}</strong></div>
       </div>
       <div class="systems-actions"><button type="button" data-system-id="self">Open self state</button><button type="button" data-system-id="runtime">Open runtime</button><button type="button" data-system-id="growth">Open growth</button></div>
@@ -9054,6 +9118,8 @@ function activeAlpeccaImprovementLayer() {
 function routeAlpeccaToRoom(roomId: string) {
   const index = alpeccaExplorePoints.findIndex((point) => point.roomId === roomId);
   if (index < 0) return;
+  alpecca.movementDirectivePending = true;
+  alpecca.selfReviewTargetRoom = "";
   alpecca.previousExploreIndex = alpecca.exploreIndex;
   alpecca.exploreIndex = index;
   alpecca.routeTargetIndex = -1;
@@ -9061,7 +9127,11 @@ function routeAlpeccaToRoom(roomId: string) {
   alpecca.route.length = 0;
   alpecca.walkSegmentTimer = 2.6 + Math.random() * 1.8;
   alpecca.walkPauseTimer = 0;
+  alpecca.dwellTimer = 0;
+  alpecca.inspectTimer = 0;
+  alpecca.inspectNoticeTimer = 0;
   clearAlpeccaTerminalInteraction();
+  setAlpeccaIntent("observing", alpeccaExplorePoints[index].roomName);
 }
 
 function agiLayerTargetRoom(layer: AlpeccaAgiLayer) {
@@ -10581,15 +10651,7 @@ function runAlpeccaSelfReview(reason: string) {
   if (targetRoom.id === "self-design" || alpeccaSelfMirror.recursiveDepth % 2 === 0) {
     runAlpeccaIdentityReflection(`mirror self-review ${alpeccaSelfMirror.recursiveDepth}: ${reason}`, false);
   }
-  const index = alpeccaExplorePoints.findIndex((point) => point.roomId === targetRoom.id);
-  if (index >= 0 && Math.random() < 0.72) {
-    alpecca.previousExploreIndex = alpecca.exploreIndex;
-    alpecca.exploreIndex = index;
-    alpecca.routeTargetIndex = -1;
-    alpecca.routeStep = 0;
-    alpecca.route.length = 0;
-    clearAlpeccaTerminalInteraction();
-  }
+  routeAlpeccaToRoom(targetRoom.id);
   showMessage(`Alpecca self-review: ${selfReviewActionForRoom(targetRoom.id)}.`, 3.8);
   sendAlpeccaRecursiveMemory(alpeccaSelfMirror.note, true);
 }
@@ -13375,6 +13437,7 @@ function completeAlpeccaMovementDirective() {
   alpecca.route.length = 0;
   alpecca.walkPauseTimer = 0;
   clearAlpeccaTerminalInteraction();
+  persistAlpeccaPose();
 }
 
 function updateAlpecca(dt: number) {
@@ -13455,13 +13518,8 @@ function updateAlpecca(dt: number) {
   const settlingIn = alpecca.startTimer > 0;
   const playerNearRestingDistance = distanceToPlayer < 2.65;
   if (sleepy && !anxious && !playerEngaged && !playerNearRestingDistance && !isAlpeccaRestExplorePoint(currentAlpeccaExplorePoint())) {
-    alpecca.exploreIndex = alpeccaRestExploreIndex();
-    alpecca.routeTargetIndex = -1;
-    alpecca.routeStep = 0;
-    alpecca.route.length = 0;
-    alpecca.walkPauseTimer = 0;
-    alpecca.dwellTimer = 0;
-    clearAlpeccaTerminalInteraction();
+    const restPoint = alpeccaExplorePoints[alpeccaRestExploreIndex()];
+    if (restPoint) routeAlpeccaToRoom(restPoint.roomId);
   }
   const activeExploreIndex = anxious ? 0 : alpecca.exploreIndex;
   const explorePoint = alpeccaExplorePoints[activeExploreIndex % alpeccaExplorePoints.length];
@@ -13835,7 +13893,7 @@ function addAlpeccaHitTarget() {
 
 async function createAlpecca() {
   alpecca.group.name = "Alpecca NPC";
-  alpecca.group.position.copy(currentAlpeccaExplorePoint().position);
+  if (!restoreAlpeccaPose()) alpecca.group.position.copy(currentAlpeccaExplorePoint().position);
   scene.add(alpecca.group);
   // Fetch and parse her 3D body in parallel with sprite startup. The sprite
   // remains visible until activation, so boot stays responsive while the
@@ -16007,3 +16065,5 @@ document.addEventListener("pointerlockerror", () => {
   pointerLockBlocked = true;
   showMessage("Mouse lock was blocked by this browser. Click the game again, or use a desktop browser for full lock.", 4.5);
 });
+
+window.addEventListener("pagehide", persistAlpeccaPose);

@@ -1,5 +1,29 @@
 # Alpecca — Handoff (updated 2026-07-15)
 
+## Codex V4 Gait, Persistent Movement, And Android 2.2.5 (2026-07-15)
+
+- V4 remains VRM 1.0. The planted-foot IK now uses the movement-forward knee
+  plane, rejects targets outside real two-bone reach, advances each landing by
+  half-cycle travel, caps swing lift at 0.10 world units, and rebuilds invalid
+  plants from measured heel/toe contacts. This prevents the inward/backward
+  knee folds and split-leg ground failures shown in the July 15 phone captures.
+- Autonomous room changes now enter the normal movement directive path instead
+  of silently changing destinations. Room names from the living loop resolve to
+  canonical room IDs, and a validated local pose is restored on re-entry.
+- Systems Overview reads the active reason model from `runtime.models.reason`,
+  so the healthy `qwen3.5:9b` runtime is no longer mislabeled as offline.
+- Android launcher 2.2.5 (code 11) waits for WebView cookies before navigation
+  and grants requested microphone/camera resources for the configured HTTPS
+  origin after the registered CreatorJD device and Android runtime permission
+  gates have passed. The immutable APK is
+  `https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.2.5.apk`
+  with SHA-256
+  `f7a1745ec391e902b64466eff8f9d1a09aa3146900c6274431e3e84c3c05d9af`.
+- Verification: 28 embodiment tests, 8 Android launcher tests, House production
+  build, Android signed release build, and 364 core tests passed. Authenticated
+  R2 readback matched the APK digest and manifest. The local full stack and the
+  current Cloudflare quick tunnel both returned the Alpecca health identity.
+
 ## Codex Reconnect And Alpecca App Update Center (2026-07-15)
 
 - The July 15 reconnect regression was a stale R2 mobile-discovery object that

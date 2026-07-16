@@ -1343,19 +1343,41 @@ public final class MainActivity extends Activity {
                     if (exchange.clearRegistration) {
                         clearLocalDeviceRegistration();
                     }
-                    if (!exchange.cookies.isEmpty()) {
-                        CookieManager manager = CookieManager.getInstance();
-                        for (String cookie : exchange.cookies) {
-                            manager.setCookie(origin, cookie);
-                        }
-                        manager.flush();
-                    }
-                    loadHouseUrl(house.toString());
+                    installDeviceCookies(
+                        origin,
+                        exchange.cookies,
+                        () -> loadHouseUrl(house.toString())
+                    );
                 });
             });
             return;
         }
         loadHouseUrl(house.toString());
+    }
+
+    private void installDeviceCookies(String origin, List<String> cookies, Runnable completion) {
+        if (cookies.isEmpty()) {
+            completion.run();
+            return;
+        }
+        installDeviceCookie(origin, cookies, 0, completion);
+    }
+
+    private void installDeviceCookie(
+        String origin,
+        List<String> cookies,
+        int index,
+        Runnable completion
+    ) {
+        CookieManager manager = CookieManager.getInstance();
+        manager.setCookie(origin, cookies.get(index), accepted -> runOnUiThread(() -> {
+            if (index + 1 < cookies.size()) {
+                installDeviceCookie(origin, cookies, index + 1, completion);
+                return;
+            }
+            manager.flush();
+            completion.run();
+        }));
     }
 
     private void loadHouseUrl(String houseUrl) {
@@ -1998,6 +2020,15 @@ public final class MainActivity extends Activity {
             return;
         }
         String origin = pendingWebPermission.getOrigin().toString();
+        String deviceId = preferences.getString(PREF_DEVICE_ID, "");
+        if (!deviceId.isEmpty() && hasDeviceKey()) {
+            // Device registration already establishes CreatorJD's trusted phone.
+            // Android runtime permissions remain the explicit camera/mic gate.
+            preferences.edit().putString(PREF_MEDIA_ORIGIN, origin).apply();
+            pendingWebPermission.grant(pendingWebResources);
+            clearPendingWebPermission();
+            return;
+        }
         String trustedOrigin = preferences.getString(PREF_MEDIA_ORIGIN, "");
         if (origin.equals(trustedOrigin)) {
             pendingWebPermission.grant(pendingWebResources);

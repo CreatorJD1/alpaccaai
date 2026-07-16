@@ -223,6 +223,37 @@ export function resolveVrmWalkGait(phase: number, stride = 1): VrmWalkGait {
   };
 }
 
+export function resolveVrmKneeFlex(amount: number, axisFlip: 1 | -1): number {
+  const flex = Math.max(0, Number.isFinite(amount) ? amount : 0);
+  if (flex === 0) return 0;
+  // VRoid VRM 1.0 lower-leg bones flex toward the anatomical back on +X.
+  // rotateVRM0 reverses that local rotation sense for legacy models.
+  return axisFlip < 0 ? -flex : flex;
+}
+
+export function resolveVrmKneePole(
+  currentKnee: THREE.Vector3,
+  targetDirection: THREE.Vector3,
+  forwardHeading: THREE.Vector3,
+  out = new THREE.Vector3(),
+  scratch = new THREE.Vector3(),
+): THREE.Vector3 | null {
+  out.copy(targetDirection);
+  const targetLength = out.length();
+  if (targetLength < 1e-4) return null;
+  out.normalize();
+  const currentDot = currentKnee.dot(out);
+  scratch.copy(forwardHeading).addScaledVector(out, -forwardHeading.dot(out));
+  if (scratch.lengthSq() >= 1e-8) {
+    // Locomotion owns the anatomical knee plane. Retaining a lateral component
+    // from a nearly straight source pose lets the two-bone solve fold inward.
+    return out.copy(scratch).normalize();
+  }
+  out.copy(currentKnee).addScaledVector(targetDirection, -currentDot / targetLength);
+  if (out.lengthSq() < 1e-8) return null;
+  return out.normalize();
+}
+
 export type VrmFootSwing = Readonly<{
   active: boolean;
   progress: number;
@@ -257,7 +288,7 @@ export function strideDistanceForMotion(speed: number, angularSpeed: number): nu
 export function resolveVrmFootLiftHeight(swingLift: number, stride: number): number {
   const lift = Number.isFinite(swingLift) ? c01(swingLift) : 0;
   const safeStride = Number.isFinite(stride) ? Math.max(0, stride) : 0;
-  return lift * (0.055 + safeStride * 0.24);
+  return lift * Math.min(0.1, 0.055 + safeStride * 0.24);
 }
 
 export type VrmFootRoll = Readonly<{
@@ -1023,6 +1054,8 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   const legFootWorld = new THREE.Vector3();
   const legTargetDirection = new THREE.Vector3();
   const legPoleWorld = new THREE.Vector3();
+  const legPoleScratchWorld = new THREE.Vector3();
+  const legKneeOffsetWorld = new THREE.Vector3();
   const legKneeTargetWorld = new THREE.Vector3();
   const debugPositionVector = new THREE.Vector3();
 
@@ -1277,10 +1310,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
   }
 
   function kneeFlex(amount: number): number {
-    // VRM 1.0 faces +Z. On this rig, positive local X moves the ankle toward
-    // -Z, so it is the anatomical knee-flex direction rather than a forward
-    // hyperextension. Legacy VRM 0.x pose values are flipped in update().
-    return axisFlip < 0 ? -amount : amount;
+    return resolveVrmKneeFlex(amount, axisFlip);
   }
 
   // Keep the sole roughly parallel to the floor as the leg swings: the foot is
@@ -1704,12 +1734,12 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     return true;
   }
 
-  function applyLegPlantIk(side: "left" | "right", target: THREE.Vector3): void {
+  function applyLegPlantIk(side: "left" | "right", target: THREE.Vector3): boolean {
     const upper = bone(side === "left" ? "leftUpperLeg" : "rightUpperLeg");
     const lower = bone(side === "left" ? "leftLowerLeg" : "rightLowerLeg");
     const foot = footBoneFor(side);
     const parent = upper?.parent;
-    if (!upper || !lower || !foot || !parent) return;
+    if (!upper || !lower || !foot || !parent) return false;
 
     parent.updateWorldMatrix(true, true);
     upper.getWorldPosition(legHipWorld);
@@ -1719,20 +1749,19 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     const lowerLength = legKneeWorld.distanceTo(legFootWorld);
     legTargetDirection.copy(target).sub(legHipWorld);
     const solution = solveTwoBoneReach(upperLength, lowerLength, legTargetDirection.length());
-    if (!solution.valid) return;
+    if (!solution.valid || !solution.reachable) return false;
     legTargetDirection.normalize();
 
-    // Keep the knee on its current anatomical side of the hip-to-foot line.
-    // If the starting pose is nearly straight, the current movement heading
-    // provides a stable forward knee pole instead of allowing a frame flip.
-    legPoleWorld.copy(legKneeWorld).sub(legHipWorld);
-    legPoleWorld.addScaledVector(legTargetDirection, -legPoleWorld.dot(legTargetDirection));
-    if (legPoleWorld.lengthSq() < 1e-8) {
-      legPoleWorld.copy(locomotionHeading);
-      legPoleWorld.addScaledVector(legTargetDirection, -legPoleWorld.dot(legTargetDirection));
-    }
-    if (legPoleWorld.lengthSq() < 1e-8) return;
-    legPoleWorld.normalize();
+    // Project the knee onto the movement-forward anatomical plane. Source-pose
+    // lateral drift is not retained because it can make a planted leg fold in.
+    const pole = resolveVrmKneePole(
+      legKneeOffsetWorld.copy(legKneeWorld).sub(legHipWorld),
+      legTargetDirection,
+      locomotionHeading,
+      legPoleWorld,
+      legPoleScratchWorld,
+    );
+    if (!pole) return false;
     legKneeTargetWorld.copy(legHipWorld)
       .addScaledVector(legTargetDirection, solution.elbowAlong)
       .addScaledVector(legPoleWorld, solution.elbowOffset);
@@ -1743,10 +1772,10 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       legKneeTargetWorld,
       MAX_HIP_IK_DELTA,
       1,
-    )) return;
+    )) return false;
     lower.getWorldPosition(legKneeWorld);
     foot.getWorldPosition(legFootWorld);
-    aimBoneTowardWorldPoint(
+    return aimBoneTowardWorldPoint(
       lower,
       legFootWorld,
       target,
@@ -1779,7 +1808,9 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
           state.swinging = true;
           state.swingStart.copy(state.plant);
           if (!plantBaselineWorld(state, footBaseWorld)) continue;
-          state.swingEnd.copy(footBaseWorld).addScaledVector(locomotionHeading, stride);
+          // One foot swings for half a gait cycle, so its landing advances by
+          // half the full-cycle travel distance rather than a full extra stride.
+          state.swingEnd.copy(footBaseWorld).addScaledVector(locomotionHeading, stride * 0.5);
           state.swingEnd.y = footFloorY(side);
         }
         const eased = swing.progress * swing.progress * (3 - 2 * swing.progress);
@@ -1790,7 +1821,12 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
         state.swinging = false;
         state.target.copy(state.plant);
       }
-      applyLegPlantIk(side, state.target);
+      if (!applyLegPlantIk(side, state.target)) {
+        // Ground/contact data or a sharp turn invalidated this world-space
+        // plant. Rebuild both targets from the current measured soles next frame.
+        resetFootPlants();
+        return;
+      }
       applyGaitFootRoll(side, swing);
     }
   }

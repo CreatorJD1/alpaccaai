@@ -27,13 +27,13 @@ This checkpoint supersedes older route, access, model, and phase-status text.
   emits a bounded seven-score perspective vector and contradiction/pressure
   escalation evidence with zero model calls; this does not bypass `deliberate`.
 - Native phone trust uses a non-exportable Android Keystore P-256 key. Version
-  2.2.3 (code 9) validates the complete challenge transcript locally, binds
+  2.2.5 (code 11) validates the complete challenge transcript locally, binds
   resulting cookies to the exact device and HTTPS origin, fences stale
   enrollment work, and makes device revocation immediately invalidate its
   sessions. The public reviewed APK is
-  `mobile/AlpeccaLauncher-v2.2.3.apk` in the credential-free `alpeccaai` R2
+  `mobile/AlpeccaLauncher-v2.2.5.apk` in the credential-free `alpeccaai` R2
   distribution bucket (SHA-256
-  `52d7a4f5452e438657cb3fdeedfa8c3225e0fd4fdced31411bd2f70cbeb64165`).
+  `f7a1745ec391e902b64466eff8f9d1a09aa3146900c6274431e3e84c3c05d9af`).
   Its Alpecca App Update Center checks a signed-package/digest manifest
   automatically every 12 hours, shows persistent download/verification/install
   progress, and can force-refresh House source assets without clearing the
@@ -41,7 +41,7 @@ This checkpoint supersedes older route, access, model, and phase-status text.
   installation; this is not a silent device-owner updater.
 - House and the Android launcher recover rotating HTTPS endpoints through the
   fenced continuity authority first, then the credential-free R2 discovery
-  record. Launcher 2.2.3 also probes
+  record. Launcher 2.2.5 also probes
   `https://creatorjd-alpecca-survival-core.hf.space` last to wake a sleeping
   standby; it accepts that origin only after `/healthz` reports the full
   `alpecca` identity. The current local relay is a temporary Cloudflare quick
@@ -68,7 +68,9 @@ This checkpoint supersedes older route, access, model, and phase-status text.
   required.
 - V4 remains VRM 1.0 with the locked design and 74 spring joints. Procedural
   walking now resets at lift-off, follows actual collision-resolved movement,
-  rejects unsafe repeated VRMA seams, and resets latched gaze. A live visual
+  rejects unsafe repeated VRMA seams, resets latched gaze, uses the
+  movement-forward anatomical knee plane, and discards unreachable foot-plant
+  targets before they can fold a leg inward or below the ground. A live visual
   walking/physics soak remains required.
 
 ## Earlier Detailed Checkpoint (2026-07-13)

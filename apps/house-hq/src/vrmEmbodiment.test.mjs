@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as THREE from "three";
 
 import {
   applyVrmLookAtTransition,
@@ -17,6 +18,8 @@ import {
   resolveVrmGazeFollow,
   resolveVrmGazeTargetAngles,
   resolveVrmMotionTelemetry,
+  resolveVrmKneeFlex,
+  resolveVrmKneePole,
   resolveVrmPlayModeForQuaternionSeam,
   resolveVrmWalkGait,
   shouldBlendVrmProceduralTransition,
@@ -94,6 +97,23 @@ test("walk gait alternates swing-foot lift and uses stronger anatomical knee fle
   assert.ok(leftSwing.leftUpperLegX < 0);
 });
 
+test("knee flex maps to the anatomical side for VRM 1.0 and legacy VRM 0.x", () => {
+  assert.ok(resolveVrmKneeFlex(0.8, 1) > 0, "VRM 1.0 shin flexes on positive local X");
+  assert.ok(resolveVrmKneeFlex(0.8, -1) < 0, "rotated VRM 0.x uses the opposite local axis");
+  assert.equal(resolveVrmKneeFlex(-0.8, 1), 0, "knee flex never becomes hyperextension");
+});
+
+test("planted-leg IK uses the forward anatomical plane instead of folding laterally", () => {
+  const target = new THREE.Vector3(0, -1, 0);
+  const forward = new THREE.Vector3(0, 0, 1);
+  const corrected = resolveVrmKneePole(new THREE.Vector3(0.8, -0.5, -0.2), target, forward);
+  const retained = resolveVrmKneePole(new THREE.Vector3(-0.8, -0.5, 0.2), target, forward);
+  assert.ok(corrected && corrected.z > 0.99);
+  assert.ok(retained && retained.z > 0.99);
+  near(corrected.x, 0);
+  near(retained.x, 0);
+});
+
 test("planted-foot gait gives one foot a monotonic lifted swing while the other stays planted", () => {
   const rightLiftOff = resolveVrmFootSwing(0, "right");
   const rightMidSwing = resolveVrmFootSwing(Math.PI / 2, "right");
@@ -118,7 +138,7 @@ test("stride distance remains synchronized to actual world movement", () => {
 
 test("the walk-reference gait still lifts a foot with no horizontal stride", () => {
   near(resolveVrmFootLiftHeight(1, 0), 0.055);
-  assert.ok(resolveVrmFootLiftHeight(1, 0.46) > 0.16);
+  near(resolveVrmFootLiftHeight(1, 0.46), 0.1);
   assert.equal(resolveVrmFootLiftHeight(0, 0.46), 0);
 });
 

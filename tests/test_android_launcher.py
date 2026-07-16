@@ -130,8 +130,8 @@ def test_android_device_trust_validates_transcript_and_fences_clear_races():
     source = (APP / "app" / "src" / "main" / "java" / "ai" / "alpecca" / "launcher" / "MainActivity.java").read_text(encoding="utf-8")
     gradle = (APP / "app" / "build.gradle").read_text(encoding="utf-8")
 
-    assert 'versionCode 9' in gradle
-    assert 'versionName "2.2.3"' in gradle
+    assert 'versionCode 11' in gradle
+    assert 'versionName "2.2.5"' in gradle
     assert 'APP_USER_AGENT = "AlpeccaAndroid/" + BuildConfig.VERSION_NAME' in source
     assert "validateDeviceChallenge(" in source
     assert '"alpecca-device-auth-v2".equals(lines[0])' in source
@@ -141,6 +141,12 @@ def test_android_device_trust_validates_transcript_and_fences_clear_races():
     assert "decodedNonce.length != 32" in source
     assert "generation != trustGeneration" in source
     assert "clearLocalDeviceRegistration()" in source
+    assert "installDeviceCookies(" in source
+    assert "manager.setCookie(origin, cookies.get(index), accepted ->" in source
+    assert source.index("manager.flush();") < source.index("completion.run();", source.index("manager.flush();"))
+    assert 'String deviceId = preferences.getString(PREF_DEVICE_ID, "");' in source
+    assert "if (!deviceId.isEmpty() && hasDeviceKey())" in source
+    assert source.index("pendingWebPermission.grant(pendingWebResources);") < source.index('String trustedOrigin = preferences.getString(PREF_MEDIA_ORIGIN, "");')
     assert "revokeDeviceRegistration(" in source
     assert "removeAllCookies(cleared ->" in source
     assert "removeAllCookies(null)" not in source

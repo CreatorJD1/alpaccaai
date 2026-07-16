@@ -4835,7 +4835,7 @@ def test_house_has_intentional_alpecca_rest_nook_for_sleep_animation():
     assert "alpecca-rest-nook" in text
     update_block = text[text.index("function updateAlpecca"):text.index("function createAlpeccaFallback")]
     assert "sleepy && !anxious && !playerEngaged" in update_block
-    assert "alpecca.exploreIndex = alpeccaRestExploreIndex()" in update_block
+    assert "routeAlpeccaToRoom(restPoint.roomId)" in update_block
     assert "clearAlpeccaTerminalInteraction()" in update_block
     assert "(!sleepy || restPoint)" in update_block
     assert "alpecca.inspectTimer = restPoint ? 9.5 : 3.4" in update_block

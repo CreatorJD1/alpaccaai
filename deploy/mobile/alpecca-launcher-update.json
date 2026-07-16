@@ -1,7 +1,7 @@
 {
-  "versionCode": 9,
-  "versionName": "2.2.3",
-  "apkUrl": "https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.2.3.apk",
-  "sha256": "52d7a4f5452e438657cb3fdeedfa8c3225e0fd4fdced31411bd2f70cbeb64165",
+  "versionCode": 11,
+  "versionName": "2.2.5",
+  "apkUrl": "https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.2.5.apk",
+  "sha256": "f7a1745ec391e902b64466eff8f9d1a09aa3146900c6274431e3e84c3c05d9af",
   "packageName": "ai.alpecca.launcher"
 }
