@@ -1,0 +1,51 @@
+{
+  "schema": "alpecca.remote-design-assets.v1",
+  "repo_id": "CREATORJD/alpecca-art-library",
+  "repo_type": "dataset",
+  "revision": "e24f55fe76e1f1b59fe795532e00b7dfd8ad815e",
+  "private": true,
+  "assets": [
+    {
+      "role": "live-v4-runtime-body",
+      "remote_path": "remote-design/v5-input/vrm/alpecca_live_v4.vrm",
+      "local_path": "data/avatar/vrm/alpecca.vrm",
+      "bytes": 17958964,
+      "sha256": "0b6385de90be7c2401f94f8f2450c6a0e1198942ba11083e68a6c3233fde27d3"
+    },
+    {
+      "role": "pristine-v4-rollback",
+      "remote_path": "remote-design/v5-input/vrm/alpecca_pristine_v4_20260709.vrm",
+      "local_path": "data/avatar/vrm/alpecca_vroid_prototype_v4_20260709.vrm",
+      "bytes": 17945112,
+      "sha256": "12c5ea603422b388846c0bde93847b6ebeed16ea6045568b709c5de928810bc0"
+    },
+    {
+      "role": "editable-vroid-v13",
+      "remote_path": "remote-design/v5-input/source/alpecca_vroid_proxy_v13_base_view_170cm.vroid",
+      "local_path": "data/alpecca_art_source/vrm_experiments/alpecca_vroid_proxy_v13_base_view_170cm.vroid",
+      "bytes": 9603521,
+      "sha256": "26db8b01b7df97e2b98f982dfffbf03ad645add08eb6d54790cd16ef3623f35c"
+    },
+    {
+      "role": "locked-master-character-sheet",
+      "remote_path": "remote-design/v5-input/reference/master-character-sheet.png",
+      "local_path": "data/character/reference/master-character-sheet.png",
+      "bytes": 2113720,
+      "sha256": "5343196a5ad8e4c13e150e917c26a856880871c134b026c060a8667ba865e62f"
+    },
+    {
+      "role": "locked-reference-sheet-001",
+      "remote_path": "remote-design/v5-input/reference/ref-sheet-001.png",
+      "local_path": "data/character/reference/ref-sheet/ref-sheet-001.png",
+      "bytes": 1768147,
+      "sha256": "f7cba03f072a615b44e364af9e36b9eec37606a558da66cf1936b80844a3ed33"
+    },
+    {
+      "role": "locked-reference-sheet-002",
+      "remote_path": "remote-design/v5-input/reference/ref-sheet-002.png",
+      "local_path": "data/character/reference/ref-sheet/ref-sheet-002.png",
+      "bytes": 1640324,
+      "sha256": "b967868632b59b5d3388eaf198f8fc91ea44392237b13040bc6f6fbfba2f06e5"
+    }
+  ]
+}
