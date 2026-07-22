@@ -18,8 +18,9 @@ is missing, each capability quietly reports nothing -- same degradation
 contract as every other sense.
 
 Privacy: every generic public wrapper requires a verified-local Ollama target.
-Private cloud-provider helpers remain available for a future exact-consent
-adapter, but configuration alone never routes pixels to them.
+The only standing cloud exception is a deliberate image upload from the
+cryptographically verified CreatorJD Discord actor when that creator preference
+is enabled. Ambient screen, webcam, and guest pixels remain local-only.
 """
 from __future__ import annotations
 
@@ -67,20 +68,37 @@ _FACE_PROMPT = (
     "calm, focused, none."
 )
 
+_VISION_CALL_LOCK = threading.Lock()
+
+
+def _timeout_seconds(name: str, default: float) -> float:
+    try:
+        return max(5.0, min(120.0, float(os.environ.get(name, str(default)))))
+    except (TypeError, ValueError):
+        return default
+
 
 def _describe_local(image_bytes: bytes, prompt: str) -> Optional[str]:
-    """Local Ollama vision, forced onto CPU (num_gpu=0) and unloaded right after
-    so the 6 GB vision model can't fight the chat model for the small GPU's VRAM
-    -- running it on the GPU OOM-crashes Ollama. Reliable but slow."""
+    """Run one bounded local Ollama vision call.
+
+    The configured fallback is the smaller Qwen 3.5 4B vision model. Calls are
+    serialized so an attachment, ScreenSight, and FaceSense cannot compete for
+    the same four-gigabyte GPU or silently queue several large model loads.
+    """
     if not verified_local_ollama_target(
         OLLAMA_HOST,
         VisionCfg.MODEL,
         known_cloud_models={VISION_CLOUD_MODEL},
     ):
         return None
+    if not _VISION_CALL_LOCK.acquire(timeout=2.0):
+        return None
     try:
         import ollama
-        client = ollama.Client(host=OLLAMA_HOST)
+        client = ollama.Client(
+            host=OLLAMA_HOST,
+            timeout=_timeout_seconds("ALPECCA_VISION_TIMEOUT", 60.0),
+        )
         kwargs = {
             "model": VisionCfg.MODEL,
             "messages": [{"role": "user", "content": prompt, "images": [image_bytes]}],
@@ -91,6 +109,7 @@ def _describe_local(image_bytes: bytes, prompt: str) -> Optional[str]:
                 # allocation that thrashes the whole machine on CPU). Found
                 # live 2026-07-04: one un-capped vision call wedged her app.
                 "num_ctx": OLLAMA_NUM_CTX,
+                "num_predict": 192,
             },
             # The same local model handles the grounded reply after perception.
             # Keeping it warm briefly avoids immediately unloading and loading
@@ -108,6 +127,8 @@ def _describe_local(image_bytes: bytes, prompt: str) -> Optional[str]:
         return text or None
     except Exception:
         return None
+    finally:
+        _VISION_CALL_LOCK.release()
 
 
 def _describe_ollama_cloud(image_bytes: bytes, prompt: str) -> Optional[str]:
@@ -117,17 +138,30 @@ def _describe_ollama_cloud(image_bytes: bytes, prompt: str) -> Optional[str]:
     text comes back. Retained for a future exact-consent adapter."""
     if not VISION_CLOUD_MODEL:
         return None
+    if not _VISION_CALL_LOCK.acquire(timeout=2.0):
+        return None
     try:
         import ollama
-        client = ollama.Client(host=OLLAMA_HOST, timeout=90)
-        resp = client.chat(
-            model=VISION_CLOUD_MODEL,
-            messages=[{"role": "user", "content": prompt, "images": [image_bytes]}],
+        client = ollama.Client(
+            host=OLLAMA_HOST,
+            timeout=_timeout_seconds("ALPECCA_VISION_CLOUD_TIMEOUT", 45.0),
         )
+        kwargs = {
+            "model": VISION_CLOUD_MODEL,
+            "messages": [
+                {"role": "user", "content": prompt, "images": [image_bytes]}
+            ],
+        }
+        try:
+            resp = client.chat(**kwargs, think=False)
+        except TypeError:
+            resp = client.chat(**kwargs)
         text = (resp["message"]["content"] or "").strip()
         return text or None
     except Exception:
         return None
+    finally:
+        _VISION_CALL_LOCK.release()
 
 
 def _describe_zerogpu(image_bytes: bytes, prompt: str) -> Optional[str]:
@@ -314,6 +348,34 @@ def describe_and_recognize_result(
         image_bytes,
         prompt=_self_recognition_prompt(),
         ambient=local_only,
+    )
+    if result is None:
+        return None
+    return VisionDescription(
+        text=_enrich_self_recognition(result.text),
+        backend=result.backend,
+        processing_location=result.processing_location,
+        cloud_egress=result.cloud_egress,
+    )
+
+
+def describe_and_recognize_via_consent(
+    image_bytes: bytes,
+    *,
+    gate: PerceptionEgressGate,
+    route_id: str,
+    operation_id: str,
+    provider: str,
+) -> Optional[VisionDescription]:
+    """Run self-recognizing remote vision through the exact consent gate."""
+
+    result = describe_image_via_consent(
+        image_bytes,
+        gate=gate,
+        route_id=route_id,
+        operation_id=operation_id,
+        provider=provider,
+        prompt=_self_recognition_prompt(),
     )
     if result is None:
         return None

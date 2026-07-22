@@ -1,4 +1,34 @@
-# Alpecca — Handoff (updated 2026-07-15)
+# Alpecca - Handoff (updated 2026-07-22)
+
+## 2026-07-22 ASUS ROG remote-host evaluation
+
+- `Jason_HOLYROG` was last observed online in CreatorJD's Codex Remote view on
+  2026-07-22, but this checkout cannot continuously verify it and has not
+  received its measured CPU, RAM, GPU/VRAM, disk, or repository checkpoint. Do
+  not claim it is synchronized or performance-qualified yet.
+- Until that inventory and a continuity takeover test pass, use the ROG as a
+  non-speaking compute/design worker for builds, tests, VRoid/VRM, video, and
+  bounded model benchmarks. It must not start Discord or a second CoreMind.
+- Promotion to Alpecca's primary local host requires the exact source commit,
+  encrypted memory restore, one continuity-lease owner, local model/voice
+  readiness, and controlled old-host-to-ROG failover/failback evidence.
+
+## 2026-07-22 Continuous House and duplex voice checkpoint
+
+- During an active user-started live call, House HQ keeps one microphone stream
+  open, endpoints bounded PCM16 WAV turns with adaptive voice activity, and
+  releases raw audio after delivery. Spoken replies are sentence-segmented,
+  ordered, and interruptible for barge-in.
+- Default House and `auto` voice routing are cloud-first through the exact
+  authenticated Kokoro endpoint when configured, with local Kokoro and the
+  existing local fallback stack retained when cloud voice is unavailable.
+  Explicit engine selections remain pinned to their requested engine.
+- Discord duplex voice now fences transcription, reply, and segmented playback
+  by generation so newer speech or interruption suppresses stale output.
+- The complete House voice Node suite passed (29 tests) and the House production
+  build passed. Live browser microphone/playback, live Discord duplex, and
+  deployed authenticated cloud-voice soaks remain pending; this is not live or
+  deployment proof.
 
 ## 2026-07-22 Silero Discord voice stage
 

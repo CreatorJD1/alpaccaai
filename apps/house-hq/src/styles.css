@@ -1156,6 +1156,76 @@ body.alpecca-chat-open #touchInteract {
   background: rgba(178, 53, 47, 0.82);
 }
 
+.chat-row .chat-tools button[data-state="live-starting"],
+.chat-row .chat-tools button[data-state="live-listening"],
+.chat-row .chat-tools button[data-state="live-hearing"],
+.chat-row .chat-tools button[data-state="live-processing"] {
+  box-sizing: border-box;
+  transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+}
+
+.chat-row .chat-tools button[data-state="live-listening"] {
+  border-color: rgba(142, 238, 255, 0.82);
+  color: #fff8e8;
+  background: rgba(20, 91, 101, 0.72);
+  box-shadow: 0 0 0 1px rgba(142, 238, 255, 0.2), inset 0 0 0 2px rgba(5, 8, 8, 0.48);
+}
+
+.chat-row .chat-tools button[data-state="live-starting"] {
+  border-color: rgba(240, 189, 89, 0.88);
+  color: #fff8e8;
+  background: rgba(92, 68, 24, 0.92);
+  box-shadow: 0 0 0 1px rgba(240, 189, 89, 0.24), inset 0 0 0 2px rgba(5, 8, 8, 0.48);
+}
+
+.chat-row .chat-tools button[data-state="live-hearing"] {
+  border-color: rgba(255, 139, 174, 0.92);
+  color: #fff8e8;
+  background: rgba(154, 43, 86, 0.86);
+  animation: houseMicHearing 900ms ease-in-out infinite;
+}
+
+.chat-row .chat-tools button[data-state="live-processing"] {
+  border-color: rgba(240, 189, 89, 0.88);
+  color: #fff8e8;
+  background-color: rgba(92, 68, 24, 0.92);
+  background-image: repeating-linear-gradient(
+    135deg,
+    rgba(240, 189, 89, 0.18) 0,
+    rgba(240, 189, 89, 0.18) 4px,
+    transparent 4px,
+    transparent 8px
+  );
+  background-size: 12px 12px;
+  animation: houseMicProcessing 720ms linear infinite;
+}
+
+@keyframes houseMicHearing {
+  0%, 100% {
+    box-shadow: 0 0 0 1px rgba(255, 139, 174, 0.2), inset 0 0 0 1px rgba(255, 248, 232, 0.12);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(255, 139, 174, 0.28), inset 0 0 0 2px rgba(255, 248, 232, 0.24);
+  }
+}
+
+@keyframes houseMicProcessing {
+  to {
+    background-position: 12px 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-row .chat-tools button[data-state="live-hearing"],
+  .chat-row .chat-tools button[data-state="live-processing"] {
+    animation: none;
+  }
+
+  .chat-row .chat-tools button[data-state="live-hearing"] {
+    box-shadow: 0 0 0 3px rgba(255, 139, 174, 0.28), inset 0 0 0 2px rgba(255, 248, 232, 0.24);
+  }
+}
+
 .chat-row .chat-tools button:disabled {
   cursor: wait;
   opacity: 0.62;

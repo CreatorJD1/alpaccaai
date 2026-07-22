@@ -10,8 +10,14 @@ import {
   VoiceQueueFullError,
   createHouseVoiceSessionCoordinator,
   createVoiceAvatarPlaybackSignal,
+  splitVoiceSpeechSegments,
   type VoiceSessionState,
 } from "./voiceSession";
+import {
+  LiveVoiceInput,
+  type EncodedVoiceMetadata,
+  type LiveVoiceState,
+} from "./liveVoiceInput";
 import {
   createDesktopHttpDataSource,
   createDesktopPanel,
@@ -1117,7 +1123,7 @@ hud.innerHTML = `
     </div>
     <div class="chat-row">
       <div class="chat-tools" role="group" aria-label="Voice and camera controls">
-        <button id="alpeccaPushToTalk" type="button" title="Start push-to-talk" aria-label="Start push-to-talk" aria-pressed="false">
+        <button id="alpeccaPushToTalk" type="button" title="Start live voice call" aria-label="Start live voice call" aria-pressed="false">
           <span data-mic-idle aria-hidden="true">&#127908;</span><span data-mic-recording aria-hidden="true">&#9632;</span>
         </button>
         <button id="alpeccaCameraOpen" type="button" title="Open camera" aria-label="Open camera" aria-pressed="false">
@@ -1733,22 +1739,21 @@ let alpeccaLiveAttentionTimer = 0;
 let alpeccaVoiceAudio: HTMLAudioElement | null = null;
 let alpeccaVoiceObjectUrl = "";
 let alpeccaVoiceLastText = "";
+let alpeccaVoiceSpeechGeneration = 0;
 let alpeccaVoiceAudioContext: AudioContext | null = null;
 let alpeccaVoicePlaybackUnlocked = false;
 let alpeccaVoiceSessionState: VoiceSessionState = "idle";
 const alpeccaSpokenRepliesStorageKey = "alpeccaHouseSpokenReplies";
 let alpeccaSpokenRepliesEnabled = localStorage.getItem(alpeccaSpokenRepliesStorageKey) !== "off";
-const ALPECCA_PUSH_TO_TALK_MAX_MS = 60_000;
 // The local F5 worker may need more than 45s for a full emotional reply. This
 // must outlast F5_WORKER_TIMEOUT while remaining below the server's route cap.
 const ALPECCA_TTS_REQUEST_TIMEOUT_MS = 60_000;
 const ALPECCA_DRIVE_REQUEST_TIMEOUT_MS = 12_000;
-let alpeccaPushToTalkRecorder: MediaRecorder | null = null;
-let alpeccaPushToTalkStream: MediaStream | null = null;
-let alpeccaPushToTalkChunks: Blob[] = [];
-let alpeccaPushToTalkSequence = 0;
-let alpeccaPushToTalkStopTimer: number | null = null;
-let alpeccaPushToTalkRequest: AbortController | null = null;
+let alpeccaLiveVoiceRequest: AbortController | null = null;
+let alpeccaLiveVoiceRecognitionChain: Promise<void> = Promise.resolve();
+let alpeccaLiveVoiceTurnChain: Promise<void> = Promise.resolve();
+let alpeccaLiveVoiceGeneration = 0;
+let alpeccaLiveVoiceSpeechGeneration = 0;
 let alpeccaCameraStream: MediaStream | null = null;
 let alpeccaCameraSequence = 0;
 let alpeccaVoiceEngine = "";
@@ -1816,7 +1821,7 @@ function setVisibleAlpeccaVoiceSession(state: VoiceSessionState) {
 }
 
 const alpeccaVoiceSession = createHouseVoiceSessionCoordinator({
-  maxQueueSize: 4,
+  maxQueueSize: 32,
   onStateChange: ({ current }) => setVisibleAlpeccaVoiceSession(current),
   onPlaybackStart: (moment) => alpeccaAvatarPlaybackSignal.start(moment),
   onPlaybackStop: (moment) => alpeccaAvatarPlaybackSignal.stop(moment),
@@ -1829,6 +1834,23 @@ const alpeccaVoiceSession = createHouseVoiceSessionCoordinator({
     setAlpeccaProfileMode("listening", alpeccaActiveProfileFeature);
     updateAlpeccaVoiceReadout();
     showMessage(`Alpecca's original voice is warming or unavailable: ${reason}`, 3.4);
+  },
+});
+const alpeccaLiveVoiceInput = new LiveVoiceInput({
+  onSpeechStart: () => {
+    alpeccaLiveVoiceSpeechGeneration += 1;
+    alpeccaVoiceSession.interrupt({ clearQueue: true, reason: "creator spoke during live voice" });
+    setAlpeccaLiveVoiceUiState("hearing");
+    showAlpeccaProfileLine("I'm listening.", "listening");
+  },
+  onSegment: (wavBytes, metadata) => enqueueAlpeccaLiveVoiceSegment(wavBytes, metadata),
+  onStateChange: (state) => handleAlpeccaLiveVoiceState(state),
+  onError: (error) => {
+    const detail = error instanceof Error ? error.message : "live microphone unavailable";
+    appendAlpeccaLog("System", detail);
+    if (alpeccaLiveVoiceInput.state === "unavailable") {
+      showAlpeccaProfileLine("Live voice could not access this microphone.", "listening");
+    }
   },
 });
 let chatWasPointerLocked = false;
@@ -5794,201 +5816,147 @@ function toggleAlpeccaSpokenReplies() {
   appendAlpeccaLog("System", `Spoken replies ${alpeccaSpokenRepliesEnabled ? "enabled" : "muted"}.`);
 }
 
-function setAlpeccaPushToTalkState(state: "idle" | "recording" | "processing") {
-  const recording = state === "recording";
-  alpeccaPushToTalkButton.dataset.state = state;
-  alpeccaPushToTalkButton.disabled = state === "processing";
-  alpeccaPushToTalkButton.setAttribute("aria-pressed", String(recording));
-  alpeccaPushToTalkButton.setAttribute("aria-label", recording ? "Stop and send voice input" : "Start push-to-talk");
-  alpeccaPushToTalkButton.title = recording ? "Stop and send voice input" : state === "processing" ? "Transcribing voice input" : "Start push-to-talk";
-  if (state === "recording") alpeccaVoiceSession.setConversationState("listening", "microphone recording");
-  else if (state === "processing") alpeccaVoiceSession.setConversationState("thinking", "transcribing microphone input");
-  else if (!alpeccaAiAwaitingReply) alpeccaVoiceSession.setConversationState("listening", "ready for voice input");
+type AlpeccaLiveVoiceUiState = "idle" | "starting" | "listening" | "hearing" | "processing";
+
+function setAlpeccaLiveVoiceUiState(state: AlpeccaLiveVoiceUiState) {
+  const active = state !== "idle";
+  alpeccaPushToTalkButton.dataset.state = state === "idle" ? "idle" : `live-${state}`;
+  alpeccaPushToTalkButton.disabled = false;
+  alpeccaPushToTalkButton.setAttribute("aria-pressed", String(active));
+  alpeccaPushToTalkButton.setAttribute(
+    "aria-label",
+    active ? "End live voice call" : "Start live voice call",
+  );
+  alpeccaPushToTalkButton.title = active
+    ? state === "hearing"
+      ? "Live voice: hearing you"
+      : state === "processing"
+        ? "Live voice: understanding your last turn"
+        : "End live voice call"
+    : "Start live voice call";
 }
 
-function stopAlpeccaPushToTalkStream() {
-  alpeccaPushToTalkStream?.getTracks().forEach((track) => {
-    track.onended = null;
-    track.stop();
-  });
-  alpeccaPushToTalkStream = null;
-}
-
-function clearAlpeccaPushToTalkStopTimer() {
-  if (alpeccaPushToTalkStopTimer === null) return;
-  window.clearTimeout(alpeccaPushToTalkStopTimer);
-  alpeccaPushToTalkStopTimer = null;
+function handleAlpeccaLiveVoiceState(state: LiveVoiceState) {
+  if (state === "starting") setAlpeccaLiveVoiceUiState("starting");
+  else if (state === "live") {
+    setAlpeccaLiveVoiceUiState("listening");
+    if (!alpeccaAiAwaitingReply) {
+      alpeccaVoiceSession.setConversationState("listening", "live microphone open");
+    }
+  } else if (state === "idle" || state === "unavailable") {
+    setAlpeccaLiveVoiceUiState("idle");
+  }
 }
 
 async function cancelAlpeccaPushToTalk(stopLease = true) {
-  alpeccaPushToTalkSequence += 1;
-  clearAlpeccaPushToTalkStopTimer();
-  alpeccaPushToTalkRequest?.abort();
-  alpeccaPushToTalkRequest = null;
-  const recorder = alpeccaPushToTalkRecorder;
-  alpeccaPushToTalkRecorder = null;
-  alpeccaPushToTalkChunks = [];
-  if (recorder) {
-    recorder.ondataavailable = null;
-    recorder.onstop = null;
-    recorder.onerror = null;
-    if (recorder.state !== "inactive") recorder.stop();
-  }
-  stopAlpeccaPushToTalkStream();
-  setAlpeccaPushToTalkState("idle");
+  alpeccaLiveVoiceGeneration += 1;
+  alpeccaLiveVoiceSpeechGeneration += 1;
+  alpeccaLiveVoiceRequest?.abort();
+  alpeccaLiveVoiceRequest = null;
+  await alpeccaLiveVoiceInput.stop();
+  setAlpeccaLiveVoiceUiState("idle");
   if (stopLease) await stopAlpeccaCapabilityLease("push_to_talk");
 }
 
-async function transcribeAlpeccaPushToTalk(
-  blob: Blob,
-  sequence: number,
-  lease: AlpeccaCapabilityLease,
+function enqueueAlpeccaLiveVoiceSegment(
+  wavBytes: Uint8Array,
+  metadata: EncodedVoiceMetadata,
+): Promise<void> {
+  const generation = alpeccaLiveVoiceGeneration;
+  const speechGeneration = alpeccaLiveVoiceSpeechGeneration;
+  const task = alpeccaLiveVoiceRecognitionChain
+    .catch(() => undefined)
+    .then(() => transcribeAlpeccaLiveVoiceSegment(wavBytes, metadata, generation, speechGeneration));
+  alpeccaLiveVoiceRecognitionChain = task.catch(() => undefined);
+  return task;
+}
+
+async function transcribeAlpeccaLiveVoiceSegment(
+  wavBytes: Uint8Array,
+  metadata: EncodedVoiceMetadata,
+  generation: number,
+  speechGeneration: number,
 ) {
-  if (sequence !== alpeccaPushToTalkSequence || alpeccaChat.classList.contains("hidden")) {
-    await stopAlpeccaCapabilityLease(lease);
-    return;
-  }
-  if (!blob.size || !alpeccaAiBaseUrl) {
-    showAlpeccaProfileLine("Voice input needs the live local backend.", "listening");
-    setAlpeccaPushToTalkState("idle");
-    await stopAlpeccaCapabilityLease(lease);
-    return;
-  }
+  if (
+    generation !== alpeccaLiveVoiceGeneration
+    || !alpeccaLiveVoiceInput.live
+    || !wavBytes.byteLength
+    || !alpeccaAiBaseUrl
+  ) return;
+  let lease: AlpeccaCapabilityLease | null = null;
   const request = new AbortController();
-  alpeccaPushToTalkRequest = request;
-  setAlpeccaPushToTalkState("processing");
-  showAlpeccaProfileLine("Transcribing your voice locally...", "thinking");
+  alpeccaLiveVoiceRequest = request;
+  if (speechGeneration === alpeccaLiveVoiceSpeechGeneration) {
+    setAlpeccaLiveVoiceUiState("processing");
+  }
   try {
+    lease = await acquireAlpeccaCapabilityLease("push_to_talk");
+    if (
+      generation !== alpeccaLiveVoiceGeneration
+      || !alpeccaLiveVoiceInput.live
+      || request.signal.aborted
+    ) return;
+    const audio = new Blob([Uint8Array.from(wavBytes)], { type: "audio/wav" });
     const response = await alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/listen`), {
       method: "POST",
-      headers: alpeccaCapabilityLeaseHeaders(
-        lease,
-        blob.type ? { "Content-Type": blob.type } : undefined,
-      ),
-      body: blob,
+      headers: alpeccaCapabilityLeaseHeaders(lease, { "Content-Type": "audio/wav" }),
+      body: audio,
       signal: request.signal,
     });
-    if (!response.ok) throw new Error(`voice input returned ${response.status}`);
+    if (!response.ok) throw new Error(`live voice input returned ${response.status}`);
     const data = await response.json() as Record<string, unknown>;
-    void stopAlpeccaCapabilityLease(lease);
-    if (sequence !== alpeccaPushToTalkSequence || alpeccaChat.classList.contains("hidden")) return;
+    if (generation !== alpeccaLiveVoiceGeneration || !alpeccaLiveVoiceInput.live) return;
     const heard = data.heard === true ? systemString(data.text, "") : "";
     if (!heard) {
-      showAlpeccaProfileLine("I could not make that out. Try speaking a little closer to the microphone.", "listening");
+      showAlpeccaProfileLine("I heard you speak, but I could not make out the words.", "listening");
       return;
     }
-    await sendAlpeccaChat(heard, "", "microphone");
+    appendAlpeccaLog("System", `Live voice heard ${Math.round(metadata.durationMs)} ms of speech.`);
+    const turn = alpeccaLiveVoiceTurnChain
+      .catch(() => undefined)
+      .then(async () => {
+        if (generation !== alpeccaLiveVoiceGeneration || !alpeccaLiveVoiceInput.live) return;
+        await sendAlpeccaChat(heard, "", "microphone");
+      });
+    alpeccaLiveVoiceTurnChain = turn.catch(() => undefined);
   } catch (error) {
-    if (sequence !== alpeccaPushToTalkSequence || request.signal.aborted) return;
-    const detail = error instanceof Error ? error.message : "voice input failed";
+    if (request.signal.aborted) return;
+    const detail = error instanceof Error ? error.message : "live voice input failed";
     appendAlpeccaLog("System", detail);
-    showAlpeccaProfileLine("Voice transcription is unavailable right now.", "listening");
+    showAlpeccaProfileLine("Live voice could not understand that turn.", "listening");
   } finally {
-    if (alpeccaPushToTalkRequest === request) alpeccaPushToTalkRequest = null;
-    if (sequence === alpeccaPushToTalkSequence) setAlpeccaPushToTalkState("idle");
-    await stopAlpeccaCapabilityLease(lease);
+    if (alpeccaLiveVoiceRequest === request) alpeccaLiveVoiceRequest = null;
+    if (lease) await stopAlpeccaCapabilityLease(lease);
+    if (
+      generation === alpeccaLiveVoiceGeneration
+      && speechGeneration === alpeccaLiveVoiceSpeechGeneration
+      && alpeccaLiveVoiceInput.live
+    ) setAlpeccaLiveVoiceUiState("listening");
   }
 }
 
 async function toggleAlpeccaPushToTalk() {
-  const activeRecorder = alpeccaPushToTalkRecorder;
-  if (activeRecorder) {
-    if (activeRecorder.state === "recording") {
-      clearAlpeccaPushToTalkStopTimer();
-      activeRecorder.stop();
-    }
+  unlockAlpeccaVoicePlayback();
+  if (alpeccaLiveVoiceInput.live || alpeccaLiveVoiceInput.state === "starting") {
+    await cancelAlpeccaPushToTalk();
+    showAlpeccaProfileLine("Live voice ended.", "listening");
     return;
   }
-  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-    showAlpeccaProfileLine("This browser does not provide microphone recording.", "listening");
+  if (!navigator.mediaDevices?.getUserMedia) {
+    showAlpeccaProfileLine("This browser does not provide live microphone access.", "listening");
     return;
   }
   await closeAlpeccaCamera();
   await cancelAlpeccaVoiceEnrollment();
-  alpeccaVoiceSession.interrupt({ clearQueue: true, reason: "creator started speaking" });
   if (alpeccaChat.classList.contains("hidden")) return;
-  const sequence = ++alpeccaPushToTalkSequence;
-  let lease: AlpeccaCapabilityLease | null = null;
+  const generation = ++alpeccaLiveVoiceGeneration;
   try {
-    lease = await acquireAlpeccaCapabilityLease("push_to_talk");
-    const recorderLease = lease;
-    if (sequence !== alpeccaPushToTalkSequence || alpeccaChat.classList.contains("hidden")) {
-      await stopAlpeccaCapabilityLease(recorderLease);
-      return;
+    await alpeccaLiveVoiceInput.start();
+    if (generation === alpeccaLiveVoiceGeneration && alpeccaLiveVoiceInput.live) {
+      showAlpeccaProfileLine("Live voice is open. Talk whenever you're ready.", "listening");
     }
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    if (sequence !== alpeccaPushToTalkSequence || alpeccaChat.classList.contains("hidden")) {
-      stream.getTracks().forEach((track) => track.stop());
-      await stopAlpeccaCapabilityLease(recorderLease);
-      return;
-    }
-    alpeccaPushToTalkStream = stream;
-    const supportedMime = [
-      "audio/webm;codecs=opus",
-      "audio/webm",
-      "audio/ogg;codecs=opus",
-      "audio/ogg",
-    ].find((mime) => MediaRecorder.isTypeSupported(mime));
-    if (!supportedMime) {
-      stream.getTracks().forEach((track) => track.stop());
-      alpeccaPushToTalkStream = null;
-      throw new Error("Microphone recording format is not supported by this browser.");
-    }
-    const recorder = new MediaRecorder(stream, { mimeType: supportedMime });
-    alpeccaPushToTalkRecorder = recorder;
-    alpeccaPushToTalkChunks = [];
-    recorder.ondataavailable = (event) => {
-      if (
-        sequence === alpeccaPushToTalkSequence
-        && alpeccaPushToTalkRecorder === recorder
-        && event.data.size
-      ) {
-        alpeccaPushToTalkChunks.push(event.data);
-      }
-    };
-    recorder.onerror = () => {
-      if (sequence !== alpeccaPushToTalkSequence || alpeccaPushToTalkRecorder !== recorder) return;
-      void cancelAlpeccaPushToTalk();
-      showAlpeccaProfileLine("Microphone recording stopped unexpectedly.", "listening");
-    };
-    recorder.onstop = () => {
-      recorder.ondataavailable = null;
-      recorder.onstop = null;
-      recorder.onerror = null;
-      if (sequence !== alpeccaPushToTalkSequence || alpeccaPushToTalkRecorder !== recorder) return;
-      clearAlpeccaPushToTalkStopTimer();
-      const chunks = alpeccaPushToTalkChunks;
-      const mimeType = recorder.mimeType || "audio/webm";
-      alpeccaPushToTalkRecorder = null;
-      alpeccaPushToTalkChunks = [];
-      stopAlpeccaPushToTalkStream();
-      void transcribeAlpeccaPushToTalk(new Blob(chunks, { type: mimeType }), sequence, recorderLease);
-    };
-    stream.getAudioTracks().forEach((track) => {
-      track.onended = () => {
-        if (alpeccaPushToTalkStream === stream) void cancelAlpeccaPushToTalk();
-      };
-    });
-    recorder.start();
-    const stopTimer = window.setTimeout(() => {
-      if (alpeccaPushToTalkStopTimer !== stopTimer) return;
-      alpeccaPushToTalkStopTimer = null;
-      if (sequence !== alpeccaPushToTalkSequence || alpeccaPushToTalkRecorder !== recorder) return;
-      if (recorder.state === "recording") recorder.stop();
-    }, ALPECCA_PUSH_TO_TALK_MAX_MS);
-    alpeccaPushToTalkStopTimer = stopTimer;
-    setAlpeccaPushToTalkState("recording");
-    showAlpeccaProfileLine("Listening - tap the microphone again to send.", "listening");
-  } catch (error) {
-    if (sequence !== alpeccaPushToTalkSequence) {
-      if (lease) await stopAlpeccaCapabilityLease(lease);
-      return;
-    }
-    await cancelAlpeccaPushToTalk();
-    const detail = error instanceof Error && /^(Live House|Microphone)/.test(error.message)
-      ? error.message
-      : "Microphone access was unavailable or denied.";
-    showAlpeccaProfileLine(detail, "listening");
+  } catch {
+    if (generation === alpeccaLiveVoiceGeneration) await cancelAlpeccaPushToTalk();
   }
 }
 
@@ -6075,7 +6043,7 @@ async function sendAlpeccaCameraFrame() {
 }
 
 updateAlpeccaSpokenRepliesButton();
-setAlpeccaPushToTalkState("idle");
+setAlpeccaLiveVoiceUiState("idle");
 
 function setAlpeccaProfileMode(mode: string, featureId = alpeccaActiveProfileFeature) {
   alpeccaProfileMode = mode;
@@ -6356,6 +6324,7 @@ async function sendAlpeccaChat(
     situation: alpeccaContextPrefix(),
     context: alpeccaContextPrefix(),
     speaker: "guest",
+    delivery: privatePerception === "microphone" ? "voice" : "text",
     request_id: requestId,
     ...(image ? { image } : {}),
     ...(privatePerception ? { private_perception: privatePerception } : {}),
@@ -6461,6 +6430,7 @@ async function sendAlpeccaChat(
       text: promptText,
       context: alpeccaContextPrefix(),
       source: "house-chat",
+      delivery: privatePerception === "microphone" ? "voice" : "text",
       request_id: requestId,
       ...(image ? { image } : {}),
       ...(privatePerception ? { private_perception: privatePerception } : {}),
@@ -11975,24 +11945,28 @@ function captureAlpeccaVoiceHeaders(response: Response) {
 }
 
 function unlockAlpeccaVoicePlayback() {
-  if (alpeccaVoicePlaybackUnlocked) return;
   const AudioContextCtor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioContextCtor) return;
   try {
-    alpeccaVoiceAudioContext = alpeccaVoiceAudioContext || new AudioContextCtor();
-    if (alpeccaVoiceAudioContext.state === "suspended") {
-      void alpeccaVoiceAudioContext.resume()
+    if (alpeccaVoicePlaybackUnlocked && alpeccaVoiceAudioContext?.state === "running") return;
+    if (!alpeccaVoiceAudioContext || alpeccaVoiceAudioContext.state === "closed") {
+      alpeccaVoiceAudioContext = new AudioContextCtor();
+    }
+    const context = alpeccaVoiceAudioContext;
+    alpeccaVoicePlaybackUnlocked = context.state === "running";
+    if (context.state !== "running") {
+      void context.resume()
         .then(() => {
-          alpeccaVoicePlaybackUnlocked = true;
+          if (alpeccaVoiceAudioContext === context && context.state === "running") {
+            alpeccaVoicePlaybackUnlocked = true;
+          }
         })
         .catch(() => undefined);
-    } else {
-      alpeccaVoicePlaybackUnlocked = true;
     }
-    const buffer = alpeccaVoiceAudioContext.createBuffer(1, 1, 22050);
-    const source = alpeccaVoiceAudioContext.createBufferSource();
+    const buffer = context.createBuffer(1, 1, 22050);
+    const source = context.createBufferSource();
     source.buffer = buffer;
-    source.connect(alpeccaVoiceAudioContext.destination);
+    source.connect(context.destination);
     source.start(0);
   } catch {
     // Some mobile browsers reject audio unlock outside a direct tap. The next
@@ -12068,24 +12042,30 @@ function playAlpeccaVoice(
   const clean = text.trim();
   const requestKey = `${preview || "current"}:${clean}`;
   if (!clean || (requestKey === alpeccaVoiceLastText && alpeccaVoiceSession.state !== "idle")) return;
+  const segments = splitVoiceSpeechSegments(clean);
+  if (!segments.length) return;
   if (priority !== "proactive") {
     alpeccaVoiceSession.interrupt({ clearQueue: true, reason: `${priority} speech took focus` });
   }
+  const generation = ++alpeccaVoiceSpeechGeneration;
   alpeccaVoiceLastText = requestKey;
   try {
-    const speech = alpeccaVoiceSession.enqueueSpeech({
+    const speech = segments.map((segment) => alpeccaVoiceSession.enqueueSpeech({
       label: priority,
-      preparePlayback: ({ signal }) => prepareAlpeccaVoiceAudio(clean, preview, signal),
+      preparePlayback: ({ signal }) => prepareAlpeccaVoiceAudio(segment, preview, signal),
       releasePlayback: releaseAlpeccaVoiceAudio,
-    });
-    void speech.completion.then((result) => {
-      if (alpeccaVoiceLastText === requestKey) alpeccaVoiceLastText = "";
-      if (result.outcome === "completed") alpeccaVoicePlaybackUnlocked = true;
-      if (result.outcome === "unavailable" && /notallowed|gesture/i.test(result.reason)) {
+    }));
+    void Promise.all(speech.map((handle) => handle.completion)).then((results) => {
+      if (generation === alpeccaVoiceSpeechGeneration && alpeccaVoiceLastText === requestKey) {
+        alpeccaVoiceLastText = "";
+      }
+      if (results.some((result) => result.outcome === "completed")) alpeccaVoicePlaybackUnlocked = true;
+      if (results.some((result) => result.outcome === "unavailable" && /notallowed|gesture/i.test(result.reason))) {
         appendAlpeccaLog("System", "Voice playback was blocked by this browser. Tap Hear voice once, then try again.");
       }
     });
   } catch (error) {
+    alpeccaVoiceSession.interrupt({ clearQueue: true, reason: "voice segment queue failed" });
     if (error instanceof VoiceQueueFullError && priority === "proactive") return;
     alpeccaVoiceLastText = "";
     alpeccaVoiceSession.markUnavailable(error instanceof Error ? error.message : "voice queue unavailable");
@@ -16275,4 +16255,29 @@ document.addEventListener("pointerlockerror", () => {
   showMessage("Mouse lock was blocked by this browser. Click the game again, or use a desktop browser for full lock.", 4.5);
 });
 
-window.addEventListener("pagehide", persistAlpeccaPose);
+function stopAlpeccaHouseVoiceForPageLifecycle(reason: string) {
+  if (alpeccaLiveVoiceInput.state !== "idle" && alpeccaLiveVoiceInput.state !== "unavailable") {
+    void cancelAlpeccaPushToTalk();
+  }
+  if (alpeccaVoiceSession.state !== "idle") {
+    alpeccaVoiceLastText = "";
+    alpeccaVoiceSession.interrupt({ clearQueue: true, reason });
+    alpeccaVoiceSession.reset("idle", reason);
+    alpeccaAvatarPlaybackSignal.reset(reason);
+  }
+  const context = alpeccaVoiceAudioContext;
+  alpeccaVoiceAudioContext = null;
+  alpeccaVoicePlaybackUnlocked = false;
+  if (context && context.state !== "closed") void context.close().catch(() => undefined);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    stopAlpeccaHouseVoiceForPageLifecycle("House moved to the background");
+  }
+});
+
+window.addEventListener("pagehide", () => {
+  persistAlpeccaPose();
+  stopAlpeccaHouseVoiceForPageLifecycle("House page hidden");
+});

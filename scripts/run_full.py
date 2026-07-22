@@ -78,9 +78,19 @@ os.environ.setdefault("ALPECCA_DEEP_BACKEND", "ollama-cloud")
 os.environ.setdefault("ALPECCA_OLLAMA_CLOUD_MODEL", "gemma4:cloud")
 os.environ.setdefault("ALPECCA_REFLECT_MODEL", "qwen3.5:9b")
 os.environ.setdefault("ALPECCA_VISION_BACKEND", "local")
-os.environ.setdefault("ALPECCA_VISION_CLOUD_MODEL", "")
-os.environ.setdefault("ALPECCA_VISION_MODEL", "qwen3.5:9b")
+os.environ.setdefault("ALPECCA_VISION_CLOUD_MODEL", "gemma4:cloud")
+os.environ.setdefault("ALPECCA_DISCORD_CREATOR_CLOUD_VISION", "1")
+os.environ.setdefault("ALPECCA_VISION_CLOUD_TRANSPORT_ROUTE", "https://ollama.com/api/chat")
+os.environ.setdefault("ALPECCA_VISION_CLOUD_DEPLOYMENT", "ollama-cloud")
+os.environ.setdefault("ALPECCA_VISION_CLOUD_PROCESSING_LOCATION", "provider-managed")
+os.environ.setdefault("ALPECCA_VISION_MODEL", "qwen3.5:4b")
+os.environ.setdefault("ALPECCA_VISION_NUM_GPU", "99")
+os.environ.setdefault("ALPECCA_VISION_TIMEOUT", "60")
 os.environ.setdefault("ALPECCA_CLOUD_STANDBY_URL", "https://creatorjd-alpecca-survival-core.hf.space")
+os.environ.setdefault(
+    "ALPECCA_CLOUD_TTS_ENDPOINT",
+    os.environ["ALPECCA_CLOUD_STANDBY_URL"].rstrip("/") + "/voice/tts",
+)
 
 # Risky capabilities stay off unless the caller explicitly opts in.
 os.environ.setdefault("ALPECCA_COMPUTER_USE", "0")
@@ -98,7 +108,7 @@ os.environ.setdefault("ALPECCA_DISCORD_MEDIA", "1")
 # explicit ALPECCA_DISCORD_VOICE=0 or ALPECCA_DISCORD_VOICE_RECEIVE=0 still wins.
 os.environ.setdefault("ALPECCA_DISCORD_VOICE", "1")
 os.environ.setdefault("ALPECCA_DISCORD_VOICE_RECEIVE", "1")
-os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "f5")
+os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "auto")
 
 def _f5_worker_health(timeout: float = 0.4) -> bool:
     try:

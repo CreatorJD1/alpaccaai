@@ -4,7 +4,24 @@ import test from "node:test";
 import {
   createHouseVoiceSessionCoordinator,
   createVoiceAvatarPlaybackSignal,
+  splitVoiceSpeechSegments,
 } from "./voiceSession.ts";
+
+test("spoken replies are segmented without changing or dropping their words", () => {
+  const text = "First short thought. Second thought has enough detail to stand alone! Third?";
+  const segments = splitVoiceSpeechSegments(text, 80);
+
+  assert.deepEqual(segments, [
+    "First short thought. Second thought has enough detail to stand alone! Third?",
+  ]);
+  assert.equal(segments.join(" "), text);
+
+  const long = `One sentence ${"with repeated words ".repeat(12)}at the end.`.replace(/\s+/g, " ");
+  const longSegments = splitVoiceSpeechSegments(long, 90);
+  assert.ok(longSegments.length > 1);
+  assert.ok(longSegments.every((segment) => segment.length <= 90));
+  assert.equal(longSegments.join(" "), long);
+});
 
 class FakeAudio extends EventTarget {
   currentTime = 0;
@@ -102,6 +119,34 @@ test("an interruption pauses the active element before the next speech starts", 
   assert.equal(second.playCalls, 1);
   assert.equal(session.activeRequestId, secondSpeech.id);
 
+  second.finish();
+  assert.equal((await secondSpeech.completion).outcome, "completed");
+});
+
+test("speech segments stay FIFO when later preparation would resolve first", async () => {
+  const order = [];
+  const first = new FakeAudio();
+  const second = new FakeAudio();
+  const session = createHouseVoiceSessionCoordinator();
+  const firstSpeech = session.enqueueSpeech({
+    preparePlayback: async () => {
+      order.push("prepare:first");
+      return first;
+    },
+  });
+  const secondSpeech = session.enqueueSpeech({
+    preparePlayback: async () => {
+      order.push("prepare:second");
+      return second;
+    },
+  });
+
+  await settlePlayback();
+  assert.deepEqual(order, ["prepare:first"]);
+  first.finish();
+  await firstSpeech.completion;
+  await settlePlayback();
+  assert.deepEqual(order, ["prepare:first", "prepare:second"]);
   second.finish();
   assert.equal((await secondSpeech.completion).outcome, "completed");
 });

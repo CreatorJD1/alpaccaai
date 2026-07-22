@@ -99,6 +99,19 @@ def test_master_launcher_invokes_gui_source_directly_without_bat_delegation():
         assert wrapper.lower() not in source.lower()
 
 
+def test_master_launcher_preserves_cloud_first_discord_voice_auto_default():
+    launcher = (ROOT / "ALPECCA_LAUNCHER.bat").read_text(encoding="utf-8")
+    full_launcher = (ROOT / "scripts" / "run_full.py").read_text(encoding="utf-8")
+    direct_launcher = (ROOT / "scripts" / "run_discord_bridge.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ALPECCA_DISCORD_TTS_ENGINE=f5" not in launcher
+    assert 'set "ALPECCA_TTS_BACKEND=auto"' in launcher
+    assert 'os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "auto")' in full_launcher
+    assert 'os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "auto")' in direct_launcher
+
+
 def test_python_build_driver_targets_single_file_no_console_executable():
     spec = importlib.util.spec_from_file_location("alpecca_launcher_build_test", BUILD_LAUNCHER)
     assert spec is not None and spec.loader is not None
@@ -125,7 +138,14 @@ def test_full_stack_pins_the_hosted_and_local_workload_split_with_overridable_de
         "ALPECCA_OLLAMA_CLOUD_MODEL": "gemma4:cloud",
         "ALPECCA_REFLECT_MODEL": "qwen3.5:9b",
         "ALPECCA_VISION_BACKEND": "local",
-        "ALPECCA_VISION_MODEL": "qwen3.5:9b",
+        "ALPECCA_VISION_CLOUD_MODEL": "gemma4:cloud",
+        "ALPECCA_DISCORD_CREATOR_CLOUD_VISION": "1",
+        "ALPECCA_VISION_CLOUD_TRANSPORT_ROUTE": "https://ollama.com/api/chat",
+        "ALPECCA_VISION_CLOUD_DEPLOYMENT": "ollama-cloud",
+        "ALPECCA_VISION_CLOUD_PROCESSING_LOCATION": "provider-managed",
+        "ALPECCA_VISION_MODEL": "qwen3.5:4b",
+        "ALPECCA_VISION_NUM_GPU": "99",
+        "ALPECCA_VISION_TIMEOUT": "60",
     }
     for name, value in expected_defaults.items():
         assert f'os.environ.setdefault("{name}", "{value}")' in source

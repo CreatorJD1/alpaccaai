@@ -173,7 +173,7 @@ def test_listen_valid_wav_calls_local_hearing_once_and_returns_metadata(
     _assert_audio_perception(
         body["perception"],
         payload,
-        source="house-hq:push-to-talk",
+        source="house-hq:live-voice",
         scope_prefix="listen:",
         status="transcribed",
     )
@@ -261,7 +261,7 @@ def test_listen_no_transcript_returns_scoped_metadata_status(client, audio_model
     _assert_audio_perception(
         body["perception"],
         payload,
-        source="house-hq:push-to-talk",
+        source="house-hq:live-voice",
         scope_prefix="listen:",
         status="no-transcript",
     )

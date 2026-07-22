@@ -72,6 +72,7 @@ from config import (HOME, HOST, PORT, DEEP_BACKEND, OLLAMA_HOST,
                     CORE_MEMORY_LEARN_ONLY, DISCORD_CLIENT_ID,
                     CLOUDFLARE_HOSTNAME, OLLAMA_TIMEOUT_SECONDS, STREAM_CHAT,
                     DB_PATH, VISION_CLOUD_MODEL, VISION_CLOUD_TRANSPORT_ROUTE,
+                    DISCORD_CREATOR_CLOUD_VISION,
                     VISION_CLOUD_DEPLOYMENT, VISION_CLOUD_PROCESSING_LOCATION,
                     ZEROGPU_VISION_TRANSPORT_ROUTE, ZEROGPU_VISION_DEPLOYMENT,
                     ZEROGPU_VISION_MODEL, ZEROGPU_VISION_PROCESSING_LOCATION)
@@ -80,6 +81,7 @@ from alpecca.mind import (
     CoreMind,
     ProactiveCandidate,
     _server_validated_discord_perception,
+    _server_validated_discord_visual_observation,
 )
 from alpecca.sensory import WindowSensor
 from alpecca.voice import VoiceSensor
@@ -131,6 +133,7 @@ from alpecca import preferences as preferences_mod
 from alpecca import overload as overload_mod
 from alpecca import incident_learning as incident_learning_mod
 from alpecca import brain_graph as brain_graph_mod
+from alpecca import voice_runtime as voice_runtime_mod
 from alpecca import pagefile_approval as pagefile_approval_mod
 from alpecca import pagefile_telemetry as pagefile_telemetry_mod
 from alpecca import system_pressure as system_pressure_mod
@@ -151,6 +154,8 @@ def _environment_enabled(name: str, default: str = "0") -> bool:
 
 
 DISCORD_MEDIA_ENABLED = _environment_enabled("ALPECCA_DISCORD_MEDIA")
+TTS_MAX_REQUEST_BYTES = 16 * 1024
+TTS_MAX_TEXT_CHARS = 1_200
 
 
 async def _read_bounded_body(req: Request, *, max_bytes: int) -> bytes:
@@ -578,8 +583,104 @@ def _sense_status() -> dict:
     }
 
 
-def _runtime_status(check_models: bool = True) -> dict:
+_VOICE_ROUTE_ALIASES = {
+    "cloud": "cloud",
+    "cloud-tts": "cloud",
+    "hosted": "cloud",
+    "f5": "f5",
+    "f5-tts": "f5",
+    "f5-tts-worker": "f5",
+    "open-tts": "f5",
+    "kokoro": "kokoro",
+}
+
+
+def _status_mapping(value: object) -> Mapping[str, object]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _status_bool(record: Mapping[str, object], key: str) -> bool | None:
+    value = record.get(key)
+    return value if type(value) is bool else None
+
+
+def _canonical_voice_route(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return _VOICE_ROUTE_ALIASES.get(value.strip().casefold())
+
+
+def _tts_synthesis_runtime(tts_status: object) -> dict[str, object]:
+    """Reduce the broad TTS readout to content-free runtime evidence."""
+
+    status = _status_mapping(tts_status)
+    engines = _status_mapping(status.get("engines"))
+
+    cloud = _status_mapping(engines.get("cloud"))
+    cloud_enabled = _status_bool(cloud, "configured")
+    cloud_ready = _status_bool(cloud, "ready")
+    cloud_state = cloud.get("state")
+    cloud_state = cloud_state.strip().casefold() if isinstance(cloud_state, str) else ""
+    if cloud_state in {"degraded", "failed", "unavailable"}:
+        cloud_ready = False
+    elif cloud_state == "unverified":
+        # Configured but unverified is enablement, not live readiness.
+        cloud_ready = False if cloud_ready is False else None
+    elif cloud_state in {"ready", "succeeded"} and cloud_ready is None:
+        cloud_ready = True
+
+    open_tts = _status_mapping(engines.get("open_tts"))
+    f5_worker = _status_mapping(open_tts.get("worker"))
+    if not f5_worker:
+        f5_worker = _status_mapping(engines.get("f5_worker"))
+    f5_ready = _status_bool(open_tts, "ready")
+    if f5_ready is None:
+        f5_ready = _status_bool(engines, "open_tts_ready")
+    f5_enabled = _status_bool(f5_worker, "enabled")
+    if f5_enabled is None:
+        f5_enabled = _status_bool(open_tts, "enabled")
+    if f5_ready is True:
+        f5_enabled = True
+
+    kokoro = _status_mapping(engines.get("kokoro_status"))
+    kokoro_ready = _status_bool(kokoro, "ready")
+    kokoro_enabled = True if kokoro_ready is True else None
+
+    selected = _canonical_voice_route(status.get("active_engine"))
+    if selected is None:
+        selected = _canonical_voice_route(status.get("last_engine"))
+
+    return {
+        "active_route": selected,
+        "routes": {
+            "cloud": {"enabled": cloud_enabled, "ready": cloud_ready},
+            "f5": {"enabled": f5_enabled, "ready": f5_ready},
+            "kokoro": {"enabled": kokoro_enabled, "ready": kokoro_ready},
+        },
+    }
+
+
+def _voice_runtime_status(
+    tts_status: object,
+    *,
+    house: object = None,
+    discord: object = None,
+) -> dict[str, object]:
+    return voice_runtime_mod.voice_runtime_snapshot(
+        house={} if house is None else house,
+        synthesis=_tts_synthesis_runtime(tts_status),
+        discord={} if discord is None else discord,
+    )
+
+
+def _runtime_status(
+    check_models: bool = True,
+    *,
+    house_voice_status: object = None,
+    discord_voice_status: object = None,
+) -> dict:
     from alpecca import tts as tts_mod
+    tts_status = tts_mod.voice_state(mind.state)
     models = {
         "reason": mind.llm.model_for("reason"),
         "fast": mind.llm.model_for("fast"),
@@ -603,12 +704,21 @@ def _runtime_status(check_models: bool = True) -> dict:
         llm_online=mind.llm.online,
         deep_backend=DEEP_BACKEND,
         deep_online=mind.llm.deep_online(),
-        voice=tts_mod.voice_state(mind.state),
+        voice=tts_status,
         senses=_sense_status(),
         ollama=ollama,
     )
     status["optional_work"] = _optional_work_telemetry()
     status["host_resources"] = _host_resource_sampler.snapshot()
+    status["research_runtime"] = {
+        "temporal_memory": mind.temporal_memory_status(),
+        "selective_soul": mind.soul_runtime_status(),
+        "voice": _voice_runtime_status(
+            tts_status,
+            house=house_voice_status,
+            discord=discord_voice_status,
+        ),
+    }
     return status
 
 
@@ -1433,7 +1543,7 @@ def _repair_echo_reply(user_text: str, result: dict,
     return {**result, **repaired}
 
 
-def _house_chat_reply_tier(user_text: str) -> str:
+def _house_chat_reply_tier(user_text: str, *, delivery: str = "text") -> str:
     """House HQ player chat should use the same natural core as Discord.
 
     Background chatter can use the fast tier, but direct player messages in the
@@ -1441,7 +1551,11 @@ def _house_chat_reply_tier(user_text: str) -> str:
     made the HQ feel less responsive/natural than Discord whenever the fast
     model or Colab path was weaker, stale, or unavailable.
     """
-    return "reason"
+    # Live duplex turns need a prompt-sized, low-latency answer so speech can
+    # begin while the exchange is still conversational. Typed House chat keeps
+    # the fuller reasoning tier. The same CoreMind, memory, and safety gates run
+    # in both cases; this only selects the bounded generation tier.
+    return "fast" if delivery == "voice" else "reason"
 
 
 async def _locked_ws_chat_turn(turn: turn_context_mod.TurnContext,
@@ -1451,8 +1565,9 @@ async def _locked_ws_chat_turn(turn: turn_context_mod.TurnContext,
                                reply_tier: str = "reason",
                                on_token=None,
                                 activity_recorded: bool = False,
-                                private_context: bool = False,
-                                _trusted_perception: object | None = None,
+                                 private_context: bool = False,
+                                 _trusted_perception: object | None = None,
+                                 _trusted_visual_observation: object | None = None,
                                 _persist_verified_discord_memory: bool = False,
                                 _persist_verified_discord_history: bool = False,
                                 _verified_discord_memory_text: str = "") -> dict:
@@ -1493,6 +1608,8 @@ async def _locked_ws_chat_turn(turn: turn_context_mod.TurnContext,
         kwargs = {}
         if _trusted_perception is not None:
             kwargs["_trusted_perception"] = _trusted_perception
+        if _trusted_visual_observation is not None:
+            kwargs["_trusted_visual_observation"] = _trusted_visual_observation
         if _persist_verified_discord_memory:
             kwargs["_persist_verified_discord_memory"] = True
             kwargs["_persist_verified_discord_history"] = bool(
@@ -1537,6 +1654,7 @@ async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = No
                                       turn: turn_context_mod.TurnContext | None = None,
                                       private_context: bool = False,
                                       _trusted_perception: object | None = None,
+                                      _trusted_visual_observation: object | None = None,
                                       _persist_verified_discord_memory: bool = False,
                                       _persist_verified_discord_history: bool = False,
                                       _verified_discord_memory_text: str = "") -> dict:
@@ -1564,6 +1682,7 @@ async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = No
             on_token=on_token,
             activity_recorded=activity_recorded,
             _trusted_perception=_trusted_perception,
+            _trusted_visual_observation=_trusted_visual_observation,
             _persist_verified_discord_memory=_persist_verified_discord_memory,
             _persist_verified_discord_history=_persist_verified_discord_history,
             _verified_discord_memory_text=_verified_discord_memory_text,
@@ -3576,7 +3695,7 @@ def _with_cors(resp: Response, origin: str) -> Response:
         "X-Alpecca-Voice-Breath, X-Alpecca-Voice-Modulation-Strength, "
         "X-Alpecca-Voice-Engine-Profile, X-Alpecca-Voice-Reference, "
         "X-Alpecca-Voice-Personality, X-Alpecca-Voice-Identity-Lock, "
-        "X-Alpecca-Voice-Preview, X-Alpecca-Spoken-Text, X-Alpecca-Speech-Cues"
+        "X-Alpecca-Voice-Preview, X-Alpecca-Speech-Cues"
     )
     vary = resp.headers.get("Vary")
     resp.headers["Vary"] = "Origin" if not vary else f"{vary}, Origin"
@@ -4760,6 +4879,54 @@ def _perception_egress_components() -> tuple[
     if not isinstance(gate, egress_consent_mod.PerceptionEgressGate):
         raise RuntimeError("private-perception gate unavailable")
     return authority, gate
+
+
+def _describe_verified_creator_discord_upload(
+    image_bytes: bytes,
+) -> vision.VisionDescription | None:
+    """Consume one exact cloud-vision grant for a signed creator upload.
+
+    The standing launcher preference is not a generic pixel-egress bypass. The
+    signed CreatorJD attachment itself creates and resolves one byte-bound,
+    single-use authority request, then the existing PerceptionEgressGate checks
+    and consumes it. No image bytes are retained by the authority or ledger.
+    """
+
+    if not DISCORD_CREATOR_CLOUD_VISION or not image_bytes:
+        return None
+    operation_id = "op_" + secrets.token_urlsafe(24)
+    route_id = "vision-ollama-cloud"
+    try:
+        authority, gate = _perception_egress_components()
+        before = {item["request_id"] for item in authority.list_requests()}
+        try:
+            gate.authorize_attempt(
+                operation_id=operation_id,
+                route_id=route_id,
+                payload=image_bytes,
+            )
+        except egress_consent_mod.EgressConsentDenied:
+            pending = [
+                item
+                for item in authority.list_requests()
+                if item["request_id"] not in before
+                and item["route_id"] == route_id
+                and item["byte_count"] == len(image_bytes)
+            ]
+            if len(pending) != 1:
+                return None
+            resolved = authority.resolve(pending[0]["request_id"], allowed=True)
+            if resolved is None or resolved.get("state") != "approved":
+                return None
+        return vision.describe_and_recognize_via_consent(
+            image_bytes,
+            gate=gate,
+            route_id=route_id,
+            operation_id=operation_id,
+            provider="ollama-cloud",
+        )
+    except Exception:
+        return None
 
 
 def _ingest_egress_image(value: object, operation_id: str) -> attachment_ingress_mod.ImageIngress:
@@ -7691,10 +7858,15 @@ def brain_graph() -> dict:
         pass
     facts = {
         "runtime": runtime,
+        "voice_runtime": _status_mapping(
+            _status_mapping(runtime.get("research_runtime")).get("voice")
+        ),
         "model": mind.llm.model_for("reason"),
         "memory_count": memory_store.count(),
         "soul_agent_count": len(soul_mod.SUBAGENT_SPECS),
         "soul_perspective_vector": soul_vector,
+        "soul_runtime": mind.soul_runtime_status(),
+        "temporal_memory": mind.temporal_memory_status(),
         "senses": _sense_status(),
         "discord_configured": bool(_discord_bot_token() or DISCORD_CLIENT_ID),
         "discord_running": discord_running,
@@ -8951,9 +9123,12 @@ def avatar_portrait(name: str) -> FileResponse:
 
 @app.post("/listen")
 async def listen(req: Request) -> dict:
-    """Push-to-talk: the browser records an utterance and sends the audio here;
-    we transcribe it locally (faster-whisper) and hand the words back. The
-    audio is never stored -- it exists exactly long enough to become text."""
+    """Decode one automatically delimited utterance from a live House call.
+
+    Speech recognition is an internal listening stage, not the user-facing
+    interaction mode. House keeps the microphone session open and sends only a
+    completed in-memory utterance here; raw audio is never stored.
+    """
     _require_creator_request(req)
     await _validate_request_capability_lease(req, purpose="push_to_talk")
     audio = await _read_bounded_body(req, max_bytes=audio_ingress_mod.MAX_AUDIO_BYTES)
@@ -8966,7 +9141,7 @@ async def listen(req: Request) -> dict:
             audio,
             scope=scope,
             authorized_scopes={scope},
-            source="house-hq:push-to-talk",
+            source="house-hq:live-voice",
             declared_mime_type=content_type,
         )
     except audio_ingress_mod.AudioIngressRejected as exc:
@@ -9055,6 +9230,7 @@ def people_state() -> dict:
 
 
 @app.post("/tts")
+@app.post("/voice/tts")
 async def tts(req: Request):
     """Speak her reply in a real voice. Body {text}. Returns the synthesized
     audio (wav/mp3) from the best installed engine, or 204 if Alpecca's voice
@@ -9065,13 +9241,20 @@ async def tts(req: Request):
     from alpecca import tts as tts_mod
     from alpecca import speech as speech_mod
     from alpecca.homeostasis import EmotionalState
-    try:
-        body = await req.json()
-    except Exception:
-        body = {}
-    text = (body.get("text") or "").strip()
+    body = await _read_bounded_json_object(
+        req,
+        max_bytes=TTS_MAX_REQUEST_BYTES,
+    )
+    raw_text = body.get("text")
+    text = raw_text.strip() if isinstance(raw_text, str) else ""
     if not text:
         return Response(status_code=204)
+    if len(text) > TTS_MAX_TEXT_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail="voice text is too long",
+            headers={"Cache-Control": "no-store"},
+        )
     engine = str(body.get("engine") or "").strip().lower()
     if engine not in {"", "auto", "kokoro", "f5", "f5-tts", "open"}:
         return Response(
@@ -9087,12 +9270,25 @@ async def tts(req: Request):
     }
     synth_state = preview_states.get(preview, mind.state)
     preview_header = preview if preview in preview_states else "current"
-    spoken_text = (body.get("spoken_text") or body.get("spoken_reply") or "").strip()
+    raw_spoken_text = body.get("spoken_text") or body.get("spoken_reply")
+    spoken_text = raw_spoken_text.strip() if isinstance(raw_spoken_text, str) else ""
+    if len(spoken_text) > TTS_MAX_TEXT_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail="spoken voice text is too long",
+            headers={"Cache-Control": "no-store"},
+        )
     performance_mode = bool(body.get("performance_mode") or body.get("performative"))
     # Default to the exact model/user-visible reply. The House HQ conversation
     # should never sound like Alpecca is answering a different line than the one
     # shown in chat; expressive text shaping is opt-in for previews/tests.
     synth_text = spoken_text or (speech_mod.spoken_performance_text(text, synth_state) if performance_mode else text)
+    if len(synth_text) > TTS_MAX_TEXT_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail="final voice text is too long",
+            headers={"Cache-Control": "no-store"},
+        )
     speech_cues = speech_mod.speech_cues(synth_state)
     global active_tts_requests
     active_tts_requests += 1
@@ -9152,7 +9348,6 @@ async def tts(req: Request):
             "X-Alpecca-Voice-Modulation-Strength": str(modulation.get("modulation_strength") or ""),
             "X-Alpecca-Voice-Engine-Profile": str(modulation.get("engine_profile") or ""),
             "X-Alpecca-Voice-Reference": _header_text(json.dumps(modulation.get("reference") or {}, ensure_ascii=True)),
-            "X-Alpecca-Spoken-Text": _header_text(synth_text),
             "X-Alpecca-Speech-Cues": _header_text(json.dumps(speech_cues, ensure_ascii=True)),
             "X-Alpecca-Voice-Personality": str(modulation.get("personality") or ""),
             "X-Alpecca-Voice-Identity-Lock": "1" if modulation.get("identity_lock") else "0",
@@ -9415,7 +9610,7 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     situation_hint = field("situation", "context")
     room = field("room", "location")
     discord_interaction = field("interaction", default="reply").lower()
-    discord_delivery = field("delivery", default="text").lower()
+    delivery = field("delivery", default="text").lower()
     discord_memory_text = field("memory_text")
     image_data = field("image")
     private_perception = field("private_perception")
@@ -9431,10 +9626,10 @@ async def channel_inbound(req: Request, response: Response) -> dict:
             detail="invalid Discord interaction mode",
             headers={"Cache-Control": "no-store"},
         )
-    if route_surface == "discord" and discord_delivery not in {"text", "voice"}:
+    if route_surface in {"discord", "house-hq"} and delivery not in {"text", "voice"}:
         raise HTTPException(
             status_code=400,
-            detail="invalid Discord delivery mode",
+            detail=f"invalid {route_surface} delivery mode",
             headers={"Cache-Control": "no-store"},
         )
     trusted_discord_live_context = ""
@@ -9451,7 +9646,7 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     persist_verified_discord_memory = bool(
         route_surface == "discord"
         and verified_discord_actor is not None
-        and trusted_discord_live_context
+        and (trusted_discord_live_context or image_data)
     )
     if has_legacy_file_payload:
         raise HTTPException(
@@ -9606,6 +9801,7 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     attachment_context = ""
     file_attachment: dict[str, object] | None = None
     trusted_perception: object | None = None
+    trusted_visual_observation: object | None = None
     if source_ref_value is not None:
         decision = _require_creator_request(req)
         root_id, relative_path = _parse_source_ref(source_ref_value)
@@ -9733,11 +9929,26 @@ async def channel_inbound(req: Request, response: Response) -> dict:
             "cloud_egress": "denied",
         }
         if route_surface == "discord":
-            vision_result = await asyncio.to_thread(
-                vision.describe_and_recognize_result,
-                inspected_image.image_bytes,
-                local_only=True,
+            creator_cloud = bool(
+                principal == "creator" and DISCORD_CREATOR_CLOUD_VISION
             )
+            if creator_cloud:
+                vision_result = await asyncio.to_thread(
+                    _describe_verified_creator_discord_upload,
+                    inspected_image.image_bytes,
+                )
+                if vision_result is None:
+                    vision_result = await asyncio.to_thread(
+                        vision.describe_and_recognize_result,
+                        inspected_image.image_bytes,
+                        local_only=True,
+                    )
+            else:
+                vision_result = await asyncio.to_thread(
+                    vision.describe_and_recognize_result,
+                    inspected_image.image_bytes,
+                    local_only=True,
+                )
             image_desc = vision_result.text if vision_result else None
             if vision_result is not None:
                 vision_processing = {
@@ -9751,6 +9962,10 @@ async def channel_inbound(req: Request, response: Response) -> dict:
                     "processing_location": "none",
                     "cloud_egress": "denied",
                 }
+            if image_desc and principal != "creator":
+                trusted_visual_observation = (
+                    _server_validated_discord_visual_observation(turn, image_desc)
+                )
         else:
             image_desc = await asyncio.to_thread(
                 vision.describe_and_recognize,
@@ -9776,8 +9991,6 @@ async def channel_inbound(req: Request, response: Response) -> dict:
             trusted_context_parts.append(trusted_discord_live_context)
         if verified_discord_contact_context:
             trusted_context_parts.append(verified_discord_contact_context)
-        if image_desc:
-            trusted_context_parts.append(f"Validated image description: {image_desc}")
         trusted_perception = _server_validated_discord_perception(
             turn,
             " ".join(trusted_context_parts),
@@ -9790,6 +10003,12 @@ async def channel_inbound(req: Request, response: Response) -> dict:
             situation_hint = f"{situation_hint} (room: {room})"
     else:
         situation_hint = "guest conversation"
+    if delivery == "voice":
+        situation_hint = (
+            f"{situation_hint} Live duplex voice turn: answer the person directly "
+            "in one to three short, natural spoken sentences. Do not narrate the "
+            "voice pipeline or ask them to resend a recording."
+        ).strip()
 
     result = await _ws_chat_turn_with_timeout(
         text,
@@ -9807,12 +10026,13 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         situation_hint=situation_hint,
         reply_tier=(
             "fast"
-            if route_surface == "discord" and discord_delivery == "voice"
-            else _house_chat_reply_tier(text)
+            if route_surface == "discord" and delivery == "voice"
+            else _house_chat_reply_tier(text, delivery=delivery)
         ),
         activity_recorded=True,
         turn=turn,
         _trusted_perception=trusted_perception,
+        _trusted_visual_observation=trusted_visual_observation,
         _persist_verified_discord_memory=persist_verified_discord_memory,
         _persist_verified_discord_history=(
             persist_verified_discord_memory and discord_interaction == "reply"
@@ -10032,6 +10252,20 @@ async def ws(socket: WebSocket) -> None:
             source = ws_field("source")
             context = ws_field("context", "situation")
             private_perception = ws_field("private_perception")
+            delivery = ws_field("delivery").lower() or "text"
+            if delivery not in {"text", "voice"}:
+                if not await _send_ws_json(
+                    socket,
+                    {
+                        "type": "error",
+                        "request_id": request_id,
+                        "source": source,
+                        "code": "invalid_delivery_mode",
+                    },
+                    portal_epoch=portal_epoch,
+                ):
+                    return
+                continue
             if not user_text and not image_url:
                 continue
             if _ws_background_source(source) and user_text:
@@ -10243,6 +10477,11 @@ async def ws(socket: WebSocket) -> None:
                     _pump_reply_tokens(
                         socket, token_q, request_id, source, active_turn,
                     ))
+            if delivery == "voice":
+                context = (
+                    f"{context} Live duplex voice turn: answer the person directly "
+                    "in one to three short, natural spoken sentences."
+                ).strip()
             result = await _ws_chat_turn_with_timeout(
                 user_text,
                 image_desc=image_desc,
@@ -10254,7 +10493,7 @@ async def ws(socket: WebSocket) -> None:
                     )
                 ),
                 situation_hint=context,
-                reply_tier=_house_chat_reply_tier(user_text),
+                reply_tier=_house_chat_reply_tier(user_text, delivery=delivery),
                 on_token=on_token,
                 activity_recorded=True,
                 turn=active_turn,

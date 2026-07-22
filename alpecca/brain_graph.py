@@ -16,11 +16,16 @@ from typing import Any, Callable, Mapping
 
 
 SCHEMA_VERSION = 1
-VALID_STATES = {"healthy", "degraded", "disabled", "unfinished", "unknown"}
+VALID_STATES = {"healthy", "live", "degraded", "disabled", "unfinished", "unknown"}
 BUILTIN_PLUGIN_DIR = Path(__file__).with_name("brain_plugins")
 LOCAL_PLUGIN_DIR = Path(__file__).resolve().parents[1] / "data" / "brain_plugins"
 SOUL_VECTOR_SCHEMA = "alpecca.soul-perspective-vector.v1"
 PAGEFILE_LIVE_EVIDENCE_SCHEMA = "alpecca.phase7.pagefile-live-evidence.v1"
+SOUL_RUNTIME_SCHEMA = "alpecca.soul-runtime-decision.v1"
+ASR_DISPATCH_STATUS_SCHEMA = "alpecca.asr-dispatch-status.v1"
+ASR_SELECTION_SCHEMA = "alpecca.asr-selection.v1"
+VOICE_RUNTIME_SCHEMA = "alpecca.voice-runtime.v1"
+MAX_PROBE_COUNT = 1_000_000
 SOUL_PERSPECTIVE_ORDER = (
     "Feeler",
     "Expressor",
@@ -206,9 +211,159 @@ def _probe_soul(facts: Mapping[str, Any]) -> ProbeResult:
 
 
 def _probe_voice(facts: Mapping[str, Any]) -> ProbeResult:
-    voice = _mapping(_runtime(facts).get("voice"))
-    ready = bool(voice.get("original_alpecca_voice_ready") or voice.get("server_voice_ready"))
-    return ProbeResult("healthy" if ready else "degraded", "Alpecca's server voice route is ready." if ready else "Voice is configured but not currently verified ready.", 100 if ready else 45, ("runtime.voice",))
+    """Project only bounded voice-runtime facts; supplied reason prose is ignored."""
+
+    status = _mapping(facts.get("voice_runtime"))
+    if not status:
+        return ProbeResult(
+            "unknown",
+            "No authoritative voice runtime snapshot was supplied.",
+            None,
+            ("facts.voice_runtime",),
+        )
+    house = _mapping(status.get("house"))
+    synthesis = _mapping(status.get("synthesis"))
+    discord = _mapping(status.get("discord"))
+    safety = _mapping(status.get("safety"))
+    routes = _mapping(synthesis.get("routes"))
+    route_names = ("cloud", "f5", "kokoro")
+    route_statuses = {name: _mapping(routes.get(name)) for name in route_names}
+    component_states = {
+        "house": _bounded_identifier(
+            house.get("state"),
+            frozenset({"idle", "listening", "thinking", "speaking", "degraded", "unknown"}),
+        ),
+        "synthesis": _bounded_identifier(
+            synthesis.get("state"),
+            frozenset({"active", "ready", "unavailable", "degraded", "disabled", "unknown"}),
+        ),
+        "discord": _bounded_identifier(
+            discord.get("state"),
+            frozenset({"active", "ready", "disconnected", "unavailable", "degraded", "disabled", "unknown"}),
+        ),
+    }
+    selected_route = synthesis.get("selected_route")
+    if selected_route is not None and selected_route not in route_names:
+        selected_route = None
+    valid = (
+        status.get("schema") == VOICE_RUNTIME_SCHEMA
+        and status.get("state") in {"healthy", "degraded", "disabled", "unknown"}
+        and isinstance(status.get("ready"), bool)
+        and status.get("ready") is (status.get("state") == "healthy")
+        and isinstance(status.get("degraded"), bool)
+        and all(value is not None for value in component_states.values())
+        and all(route_statuses.values())
+        and all(
+            route.get("state")
+            in {"active", "ready", "unavailable", "degraded", "disabled", "unknown"}
+            and (route.get("enabled") is None or isinstance(route.get("enabled"), bool))
+            and (route.get("ready") is None or isinstance(route.get("ready"), bool))
+            and isinstance(route.get("active"), bool)
+            for route in route_statuses.values()
+        )
+        and all(
+            safety.get(key) is False
+            for key in (
+                "contains_secrets",
+                "contains_content",
+                "contains_raw_audio",
+                "readiness_from_installed_files",
+            )
+        )
+    )
+    if not valid:
+        return ProbeResult(
+            "unknown",
+            "The supplied voice runtime snapshot did not satisfy the bounded evidence contract.",
+            None,
+            ("facts.voice_runtime",),
+        )
+
+    evidence = (
+        "voice_runtime.schema=v1",
+        f"voice_runtime.state={status['state']}",
+        f"voice_runtime.house={component_states['house']}",
+        f"voice_runtime.synthesis={component_states['synthesis']}",
+        f"voice_runtime.discord={component_states['discord']}",
+        "voice_runtime.selected_route=" + (str(selected_route) if selected_route else "none"),
+        "voice_runtime.content_free=true",
+    )
+    degraded = (
+        status.get("degraded") is True
+        or status.get("state") == "degraded"
+        or house.get("degraded") is True
+        or synthesis.get("degraded") is True
+        or discord.get("degraded") is True
+        or "degraded" in component_states.values()
+        or any(route.get("state") == "degraded" for route in route_statuses.values())
+    )
+    if degraded:
+        return ProbeResult(
+            "degraded",
+            "Voice runtime evidence is present, but one or more live paths reported degraded.",
+            50,
+            evidence,
+        )
+
+    house_active = (
+        (component_states["house"] == "listening" and house.get("listening") is True and house.get("mic_live") is True)
+        or (component_states["house"] == "thinking" and house.get("thinking") is True)
+        or (component_states["house"] == "speaking" and house.get("speaking") is True)
+    )
+    synthesis_live = any(
+        route.get("ready") is True
+        and route.get("state") in {"active", "ready"}
+        for route in route_statuses.values()
+    )
+    send = _mapping(discord.get("send"))
+    receive = _mapping(discord.get("receive"))
+    vad = _mapping(discord.get("vad"))
+    discord_live = component_states["discord"] in {"active", "ready"} and any(
+        channel.get("ready") is True
+        and channel.get("state") in {"active", "ready"}
+        for channel in (send, receive, vad)
+    )
+    live = status.get("ready") is True and status.get("state") == "healthy" and (
+        house_active or synthesis_live or discord_live
+    )
+    if live:
+        return ProbeResult(
+            "live",
+            "Bounded runtime evidence verifies a live House, synthesis, or Discord voice path.",
+            100,
+            evidence,
+        )
+
+    all_routes_disabled = all(
+        route.get("enabled") is False and route.get("state") == "disabled"
+        for route in route_statuses.values()
+    )
+    discord_disabled = all(
+        channel.get("enabled") is False and channel.get("state") == "disabled"
+        for channel in (send, receive, vad)
+    )
+    house_inactive = (
+        house.get("mic_live") is False
+        and house.get("listening") is False
+        and house.get("thinking") is False
+        and house.get("speaking") is False
+    )
+    disabled = status.get("state") == "disabled" or (
+        all_routes_disabled and discord_disabled and house_inactive
+    )
+    if disabled:
+        return ProbeResult(
+            "disabled",
+            "Voice runtime evidence explicitly reports all House, synthesis, and Discord paths disabled.",
+            0,
+            evidence,
+        )
+    return ProbeResult(
+        "unknown",
+        "A bounded voice runtime snapshot was supplied, but it did not verify a live, degraded, or disabled path.",
+        None,
+        evidence,
+    )
 
 
 def _probe_senses(facts: Mapping[str, Any]) -> ProbeResult:
@@ -368,6 +523,376 @@ def _probe_pagefile(facts: Mapping[str, Any]) -> ProbeResult:
     return ProbeResult("unfinished", summary, progress, evidence)
 
 
+def _bounded_count(value: object, *, positive: bool = False) -> int | None:
+    minimum = 1 if positive else 0
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not minimum <= value <= MAX_PROBE_COUNT
+    ):
+        return None
+    return value
+
+
+def _bounded_limit(value: object) -> int | None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 1 <= value <= 1_000_000_000
+    ):
+        return None
+    return value
+
+
+def _bounded_seconds(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return None
+    result = float(value)
+    if not math.isfinite(result) or not 0.0 <= result <= 31_536_000.0:
+        return None
+    return result
+
+
+def _bounded_identifier(value: object, allowed: frozenset[str]) -> str | None:
+    return value if isinstance(value, str) and value in allowed else None
+
+
+def _unknown_research_stage(key: str) -> ProbeResult:
+    return ProbeResult(
+        "unknown",
+        "No bounded authoritative runtime facts were supplied for this stage.",
+        None,
+        (f"facts.{key}",),
+    )
+
+
+def _probe_temporal_memory_shadow(facts: Mapping[str, Any]) -> ProbeResult:
+    status = _mapping(facts.get("temporal_memory"))
+    if not status:
+        return _unknown_research_stage("temporal_memory")
+    if status.get("available") is False:
+        return ProbeResult(
+            "unfinished",
+            "The additive temporal shadow runtime is not available; legacy "
+            "SQLite Mindpage recall remains authoritative.",
+            20,
+            ("temporal_memory.available=false",),
+        )
+    counters = {
+        name: _bounded_count(status.get(name))
+        for name in (
+            "pending_observations",
+            "observations_processed",
+            "facts_derived",
+            "shadow_comparisons",
+        )
+    }
+    valid = (
+        status.get("available") is True
+        and status.get("authority") == "sqlite_mindpage"
+        and status.get("mode") == "shadow"
+        and all(value is not None for value in counters.values())
+    )
+    if not valid:
+        return ProbeResult(
+            "unknown",
+            "Temporal memory facts did not satisfy the bounded shadow contract.",
+            None,
+            ("facts.temporal_memory",),
+        )
+    return ProbeResult(
+        "healthy",
+        "Temporal memory is processing observations in additive shadow mode; "
+        "legacy SQLite Mindpage recall remains authoritative.",
+        100,
+        (
+            "temporal_memory.available=true",
+            "temporal_memory.mode=shadow",
+            "temporal_memory.authority=sqlite_mindpage",
+            f"temporal_memory.pending={counters['pending_observations']}",
+            f"temporal_memory.processed={counters['observations_processed']}",
+            f"temporal_memory.facts={counters['facts_derived']}",
+            f"temporal_memory.shadow_comparisons={counters['shadow_comparisons']}",
+        ),
+    )
+
+
+def _probe_selective_soul_runtime(facts: Mapping[str, Any]) -> ProbeResult:
+    status = _mapping(facts.get("soul_runtime"))
+    if not status:
+        return _unknown_research_stage("soul_runtime")
+    outcomes = frozenset({
+        "not_eligible", "callback_unavailable", "callback_failed",
+        "response_rejected", "textual_selection", "invalid_plan",
+    })
+    outcome = _bounded_identifier(status.get("outcome"), outcomes)
+    roles = status.get("roles")
+    valid = (
+        status.get("schema") == SOUL_RUNTIME_SCHEMA
+        and status.get("advisory_only") is True
+        and isinstance(status.get("callback_invoked"), bool)
+        and isinstance(roles, (list, tuple))
+        and tuple(roles) == SOUL_PERSPECTIVE_ORDER
+        and outcome is not None
+    )
+    if not valid:
+        return ProbeResult(
+            "unknown",
+            "No valid bounded selective Soul advisory receipt was supplied.",
+            None,
+            ("facts.soul_runtime",),
+        )
+    degraded = outcome in {
+        "callback_unavailable", "callback_failed", "response_rejected", "invalid_plan",
+    }
+    return ProbeResult(
+        "degraded" if degraded else "healthy",
+        (
+            "The selective Soul runtime produced a bounded advisory receipt, but "
+            "its optional deliberation path was unavailable or rejected."
+            if degraded
+            else "The selective Soul runtime produced a bounded advisory receipt; "
+            "it does not choose or execute actions."
+        ),
+        60 if degraded else 100,
+        (
+            "soul_runtime.schema=v1",
+            f"soul_runtime.outcome={outcome}",
+            "soul_runtime.advisory_only=true",
+            "soul_runtime.roles=7",
+            "soul_runtime.callback_invoked="
+            + str(status["callback_invoked"]).lower(),
+        ),
+    )
+
+
+def _probe_video_companion(facts: Mapping[str, Any]) -> ProbeResult:
+    status = _mapping(facts.get("video_companion"))
+    if not status:
+        return _unknown_research_stage("video_companion")
+    if status.get("available") is False:
+        return ProbeResult(
+            "unfinished", "No bounded Video Companion runtime was verified.", 25,
+            ("video_companion.available=false",),
+        )
+    runtime_state = _bounded_identifier(
+        status.get("status"),
+        frozenset({"active", "paused", "interrupted", "completed", "stopped"}),
+    )
+    source_kind = _bounded_identifier(
+        status.get("source_kind"), frozenset({"file", "live"})
+    )
+    timeline_entries = _bounded_count(status.get("timeline_entries"))
+    deferred_entries = _bounded_count(status.get("deferred_entries"))
+    valid = (
+        status.get("available") is True
+        and runtime_state is not None
+        and source_kind is not None
+        and timeline_entries is not None
+        and deferred_entries is not None
+        and deferred_entries <= timeline_entries
+        and status.get("raw_media_retained") is False
+    )
+    if not valid:
+        return ProbeResult(
+            "unknown",
+            "Video Companion facts did not satisfy the descriptor-only contract.",
+            None,
+            ("facts.video_companion",),
+        )
+    state_map = {
+        "active": "healthy", "paused": "degraded", "interrupted": "degraded",
+        "completed": "healthy", "stopped": "disabled",
+    }
+    graph_state = state_map[runtime_state]
+    return ProbeResult(
+        graph_state,
+        "Video Companion reported bounded derived timeline state without retaining "
+        "raw media.",
+        100 if graph_state == "healthy" else (0 if graph_state == "disabled" else 60),
+        (
+            f"video_companion.status={runtime_state}",
+            f"video_companion.source_kind={source_kind}",
+            f"video_companion.timeline_entries={timeline_entries}",
+            f"video_companion.deferred_entries={deferred_entries}",
+            "video_companion.raw_media_retained=false",
+        ),
+    )
+
+
+def _probe_asr_dispatch(facts: Mapping[str, Any]) -> ProbeResult:
+    status = _mapping(facts.get("asr_dispatch"))
+    if not status:
+        return _unknown_research_stage("asr_dispatch")
+    selection = _mapping(status.get("selection"))
+    capabilities = _mapping(status.get("capabilities"))
+    selected = selection.get("selected_backend")
+    capability = (
+        _mapping(capabilities.get(selected)) if isinstance(selected, str) else {}
+    )
+    valid = (
+        status.get("schema") == ASR_DISPATCH_STATUS_SCHEMA
+        and selection.get("schema") == ASR_SELECTION_SCHEMA
+        and isinstance(selected, str)
+        and selected in {"faster-whisper", "moonshine"}
+        and isinstance(capability.get("configured"), bool)
+        and isinstance(capability.get("ready"), bool)
+    )
+    if not valid:
+        return ProbeResult(
+            "unknown", "No valid bounded ASR dispatch status was supplied.", None,
+            ("facts.asr_dispatch",),
+        )
+    ready = capability["configured"] and capability["ready"]
+    return ProbeResult(
+        "healthy" if ready else "unfinished",
+        (
+            "The selected ASR backend is configured and reported ready."
+            if ready
+            else "ASR selected a backend, but readiness was not verified."
+        ),
+        100 if ready else 45,
+        (
+            "asr_dispatch.schema=v1",
+            f"asr_dispatch.selected={selected}",
+            f"asr_dispatch.configured={str(capability['configured']).lower()}",
+            f"asr_dispatch.ready={str(capability['ready']).lower()}",
+        ),
+    )
+
+
+def _probe_speaker_worker(facts: Mapping[str, Any]) -> ProbeResult:
+    status = _mapping(facts.get("speaker_worker"))
+    if not status:
+        return _unknown_research_stage("speaker_worker")
+    profiles = _bounded_count(status.get("enrolled_profiles"))
+    max_audio = _bounded_seconds(status.get("max_audio_seconds"))
+    backend = status.get("backend")
+    valid = (
+        status.get("purpose") == "familiarity-only"
+        and status.get("may_authenticate") is False
+        and status.get("may_grant_authority") is False
+        and status.get("device") == "cpu"
+        and isinstance(backend, str)
+        and 0 < len(backend) <= 128
+        and profiles is not None
+        and max_audio is not None
+        and max_audio > 0
+    )
+    if not valid:
+        return ProbeResult(
+            "unknown",
+            "Speaker worker facts did not satisfy its bounded safety contract.",
+            None,
+            ("facts.speaker_worker",),
+        )
+    return ProbeResult(
+        "healthy",
+        "The CPU speaker-familiarity worker reported bounded non-authoritative status.",
+        100,
+        (
+            "speaker_worker.purpose=familiarity-only",
+            "speaker_worker.device=cpu",
+            "speaker_worker.may_authenticate=false",
+            "speaker_worker.may_grant_authority=false",
+            f"speaker_worker.enrolled_profiles={profiles}",
+        ),
+    )
+
+
+def _probe_face_worker(facts: Mapping[str, Any]) -> ProbeResult:
+    status = _mapping(facts.get("face_worker"))
+    if not status:
+        return _unknown_research_stage("face_worker")
+    worker_state = _bounded_identifier(
+        status.get("status"), frozenset({"ready", "unavailable"})
+    )
+    max_bytes = _bounded_limit(status.get("max_image_bytes"))
+    max_pixels = _bounded_limit(status.get("max_image_pixels"))
+    valid = (
+        worker_state is not None
+        and status.get("purpose") == "familiarity-only"
+        and status.get("device") == "cpu"
+        and status.get("may_authenticate") is False
+        and status.get("may_authorize_creator") is False
+        and status.get("may_grant_authority") is False
+        and status.get("image_retained") is False
+        and max_bytes is not None
+        and max_pixels is not None
+    )
+    if not valid:
+        return ProbeResult(
+            "unknown",
+            "Face worker facts did not satisfy its bounded safety contract.",
+            None,
+            ("facts.face_worker",),
+        )
+    ready = worker_state == "ready"
+    return ProbeResult(
+        "healthy" if ready else "unfinished",
+        (
+            "The CPU face-familiarity worker reported ready without authentication "
+            "authority or image retention."
+            if ready
+            else "The bounded face-familiarity backend reported unavailable."
+        ),
+        100 if ready else 35,
+        (
+            f"face_worker.status={worker_state}",
+            "face_worker.purpose=familiarity-only",
+            "face_worker.device=cpu",
+            "face_worker.may_authenticate=false",
+            "face_worker.may_authorize_creator=false",
+            "face_worker.image_retained=false",
+        ),
+    )
+
+
+def _probe_event_vision(facts: Mapping[str, Any]) -> ProbeResult:
+    status = _mapping(facts.get("vision_dispatch"))
+    if not status:
+        return _unknown_research_stage("vision_dispatch")
+    if status.get("available") is False:
+        return ProbeResult(
+            "unfinished", "Event-driven vision was not reported available.", 25,
+            ("vision_dispatch.available=false",),
+        )
+    maximum = _bounded_count(status.get("max_queued"), positive=True)
+    queued = _bounded_count(status.get("queued_count"))
+    retained = _bounded_count(status.get("retained_frame_count"))
+    valid = (
+        status.get("available") is True
+        and status.get("serialized") is True
+        and status.get("raw_frame_persisted") is False
+        and maximum is not None
+        and queued is not None
+        and retained is not None
+        and queued <= maximum
+        and retained <= maximum
+    )
+    if not valid:
+        return ProbeResult(
+            "unknown",
+            "Vision facts did not satisfy serialized queue and persistence bounds.",
+            None,
+            ("facts.vision_dispatch",),
+        )
+    return ProbeResult(
+        "healthy",
+        "Event-driven vision reported one serialized bounded lane with no raw-frame "
+        "persistence.",
+        100,
+        (
+            "vision_dispatch.available=true",
+            "vision_dispatch.serialized=true",
+            "vision_dispatch.raw_frame_persisted=false",
+            f"vision_dispatch.queued={queued}",
+            f"vision_dispatch.max_queued={maximum}",
+            f"vision_dispatch.retained_frames={retained}",
+        ),
+    )
+
+
 PROBES: dict[str, Callable[[Mapping[str, Any]], ProbeResult]] = {
     "server": _probe_server,
     "model": _probe_model,
@@ -386,6 +911,13 @@ PROBES: dict[str, Callable[[Mapping[str, Any]], ProbeResult]] = {
     "stage.not_started": _probe_stage_not_started,
     "stage.blocked": _probe_stage_blocked,
     "pagefile": _probe_pagefile,
+    "research.temporal_memory_shadow": _probe_temporal_memory_shadow,
+    "research.selective_soul_runtime": _probe_selective_soul_runtime,
+    "research.video_companion": _probe_video_companion,
+    "research.asr_dispatch": _probe_asr_dispatch,
+    "research.speaker_worker": _probe_speaker_worker,
+    "research.face_worker": _probe_face_worker,
+    "research.event_vision": _probe_event_vision,
 }
 
 

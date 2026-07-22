@@ -3142,6 +3142,13 @@ def test_house_hq_chat_uses_natural_reason_tier_like_discord():
     assert server._house_chat_reply_tier("can you hear me?") == "reason"
 
 
+def test_house_live_voice_uses_fast_tier_without_changing_typed_chat():
+    import server
+
+    assert server._house_chat_reply_tier("can you hear me?", delivery="voice") == "fast"
+    assert server._house_chat_reply_tier("can you hear me?", delivery="text") == "reason"
+
+
 def test_ws_house_chat_timeout_still_returns_reply(monkeypatch):
     from fastapi.testclient import TestClient
     import server
@@ -4629,14 +4636,15 @@ def test_soul_slate_ordered_by_directive_rank():
     assert ranks == sorted(ranks)
     assert any(i["category"] == "self_care" for i in plan["slate"])
 
-def test_soul_llm_tiebreak_stays_within_winning_rank(monkeypatch):
+def test_selective_soul_llm_stays_within_winning_rank(monkeypatch):
     from alpecca import mind as mind_mod
     from alpecca import soul as soul_mod
 
     mind = mind_mod.CoreMind()
-    mind.llm._backend = "ollama"
-    mind.llm._client = object()
-    mind.llm.generate = lambda *a, **k: '{"pick": 2}'
+    mind.llm.local_inference_available = lambda *a, **k: True
+    mind.llm.generate = lambda *a, **k: (
+        '{"selected_role":"Carer","reason":"The close scores need care."}'
+    )
     plan = {
         "focus": {"subagent": "Doer", "category": "actions", "action": "a", "reason": "a", "rank": 3},
         "slate": [
@@ -4646,13 +4654,42 @@ def test_soul_llm_tiebreak_stays_within_winning_rank(monkeypatch):
         ],
         "by_category": {},
         "principle": "test",
+        "agents": {
+            name: {"kind": "test"}
+            for name in (
+                "Feeler", "Expressor", "Carer", "Doer",
+                "Wanderer", "Reflector", "Improver",
+            )
+        },
+        "perspective_vector": {
+            "schema": "alpecca.soul-perspective-vector.v1",
+            "order": [
+                "Feeler", "Expressor", "Carer", "Doer",
+                "Wanderer", "Reflector", "Improver",
+            ],
+            "scores": [0.1, 0.1, 0.69, 0.7, 0.2, 0.2, 0.1],
+            "active": [1, 1, 1, 1, 1, 1, 1],
+            "ranks": [4, 4, 3, 3, 4, 4, 4],
+            "focus_index": 3,
+            "contradiction": False,
+            "pressure": "none",
+            "escalate": False,
+            "source": "deterministic",
+            "model_calls": 0,
+            "independent_transformers": False,
+        },
     }
-    monkeypatch.setattr(soul_mod.soul, "deliberate", lambda snap: dict(plan))
+    monkeypatch.setattr(
+        soul_mod.soul,
+        "deliberate",
+        lambda snap, *, verbose=True: dict(plan),
+    )
 
     out = mind.soul_state()
 
     assert out["focus"]["subagent"] == "Carer"
     assert out["focus"]["rank"] == 3
+    assert out["soul_runtime"]["callback_invoked"] is True
 
 def test_soul_steers_to_act_on_a_standing_connection_want():
     # The Soul drives her idle loop now: with a standing connection want, real
@@ -4908,6 +4945,7 @@ def test_tts_route_has_timeout_fallback_for_slow_voice_engine():
     assert "asyncio.wait_for" in route
     assert "server voice timed out" in route
     assert "X-Alpecca-TTS-Error" in route
+    assert '@app.post("/voice/tts")' in route
     assert '@app.post("/tts/warmup")' in text
     assert "_warm_alpecca_voice" in text
     assert "edge-timeout-fallback" not in route

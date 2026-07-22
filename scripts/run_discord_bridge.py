@@ -248,11 +248,12 @@ def main(argv: list[str] | None = None) -> int:
     # override. Load it before selecting the normal direct-launch default.
     _load_secret()
     os.environ.setdefault("ALPECCA_DISCORD_MEDIA", "1")
-    # Direct bridge launches default voice send on. Microphone receive is a
-    # separate capability and remains off unless the process or secret file
-    # explicitly sets ALPECCA_DISCORD_VOICE_RECEIVE=1.
+    # Direct bridge launches default full duplex on. An explicit process or
+    # secret-file false value still wins because the loader and setdefault do
+    # not overwrite configured values.
     os.environ.setdefault("ALPECCA_DISCORD_VOICE", "1")
-    os.environ.setdefault("ALPECCA_DISCORD_VOICE_RECEIVE", "0")
+    os.environ.setdefault("ALPECCA_DISCORD_VOICE_RECEIVE", "1")
+    os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "auto")
     args = list(sys.argv[1:] if argv is None else argv)
     if args == ["--media-readiness"]:
         _print_media_readiness()

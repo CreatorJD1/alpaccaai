@@ -85,6 +85,33 @@ def test_new_human_input_interrupts_active_discord_voice_playback(monkeypatch):
     assert voice_client.playing is False
 
 
+def test_vad_onset_interrupts_playback_without_invalidating_committed_reply(
+    monkeypatch,
+):
+    client = _build_voice_client(monkeypatch)
+    voice_client = _VoiceClient(playing=True)
+    guild = SimpleNamespace(id=77, voice_client=voice_client)
+    generations = getattr(client, "_alpecca_voice_generation")
+
+    interrupt = getattr(client, "_alpecca_interrupt_voice_playback")
+    interrupt(
+        guild,
+        reason="voice_input",
+        invalidate_generation=False,
+    )
+    interrupt(
+        guild,
+        reason="duplicate_vad_start",
+        invalidate_generation=False,
+    )
+
+    assert voice_client.playing is False
+    assert generations.get(77, 0) == 0
+
+    interrupt(guild, reason="text_input")
+    assert generations[77] == 1
+
+
 def test_same_channel_voice_state_change_does_not_restart_listener(monkeypatch):
     monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", {"42"})
     monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())

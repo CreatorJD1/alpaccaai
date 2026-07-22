@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
+import threading
 from types import SimpleNamespace
 import wave
 
@@ -690,6 +692,461 @@ def test_creator_voice_session_transcribes_replies_and_discards_audio(monkeypatc
         channel_id="3001",
     )
     assert getattr(client, "_alpecca_voice_receive_sessions") == {}
+
+
+def test_duplicate_completed_audio_does_not_supersede_inflight_voice_reply(monkeypatch):
+    room = {"guild_id": "777", "channel_id": "3001"}
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "VOICE_RECEIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "VOICE_MEMORY_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", {"42"})
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())
+    monkeypatch.setattr(
+        discord_bridge,
+        "voice_readiness",
+        lambda: {
+            "enabled": True,
+            "mode": "duplex",
+            "status": "ready",
+            "receive": {"enabled": True, "status": "ready"},
+        },
+    )
+    monkeypatch.setattr(discord_bridge.hearing, "transcribe", lambda _audio: "Hello there")
+    monkeypatch.setattr(
+        discord_bridge.discord_voice,
+        "record_voice_event",
+        lambda *_args, **_kwargs: 1,
+    )
+    started = threading.Event()
+    release = threading.Event()
+    model_calls: list[str] = []
+
+    def ask(*_args, **_kwargs):
+        model_calls.append("asked")
+        started.set()
+        assert release.wait(2.0)
+        return "I heard you."
+
+    monkeypatch.setattr(discord_bridge, "_ask_alpecca", ask)
+    monkeypatch.setattr(discord_bridge, "_synth_voice_wav", lambda _text: None)
+    client = discord_bridge.build_client()
+    voice_client = _ReceiveVoiceClient()
+    guild = SimpleNamespace(id=777, voice_client=voice_client)
+    channel = _ReceiveTextChannel()
+    creator = SimpleNamespace(id=42, name="realcreatorjd", display_name="CreatorJD")
+
+    async def emit() -> None:
+        data = SimpleNamespace(pcm=_packet())
+        for _ in range(20):
+            voice_client.sink.write(creator, data)
+        voice_client.sink.on_voice_member_speaking_stop(creator)
+
+    async def scenario() -> None:
+        assert await getattr(client, "_alpecca_start_voice_receive")(
+            guild, channel, creator
+        )
+        await emit()
+        for _ in range(100):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert started.is_set()
+        generation = getattr(client, "_alpecca_voice_generation")[777]
+
+        # The same completed WAV may be delivered twice by a noisy receive
+        # transition. It is not a new human turn and must not supersede reply 1.
+        await emit()
+        await asyncio.sleep(0.05)
+        assert getattr(client, "_alpecca_voice_generation")[777] == generation
+        release.set()
+        for _ in range(100):
+            if channel.sent:
+                break
+            await asyncio.sleep(0.01)
+        await getattr(client, "_alpecca_stop_voice_receive")(guild)
+
+    asyncio.run(scenario())
+
+    assert model_calls == ["asked"]
+    assert channel.sent == ["I heard you."]
+
+
+def test_distinct_committed_utterance_supersedes_inflight_voice_reply(monkeypatch):
+    room = {"guild_id": "777", "channel_id": "3001"}
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "VOICE_RECEIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "VOICE_MEMORY_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", {"42"})
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())
+    monkeypatch.setattr(
+        discord_bridge,
+        "voice_readiness",
+        lambda: {
+            "enabled": True,
+            "mode": "duplex",
+            "status": "ready",
+            "receive": {"enabled": True, "status": "ready"},
+        },
+    )
+    transcripts = iter(("first utterance", "second utterance"))
+    monkeypatch.setattr(
+        discord_bridge.hearing,
+        "transcribe",
+        lambda _audio: next(transcripts),
+    )
+    monkeypatch.setattr(
+        discord_bridge.discord_voice,
+        "record_voice_event",
+        lambda *_args, **_kwargs: 1,
+    )
+    started = threading.Event()
+    release = threading.Event()
+    model_calls: list[str] = []
+
+    def ask(*_args, **_kwargs):
+        model_calls.append("asked")
+        if len(model_calls) == 1:
+            started.set()
+            assert release.wait(2.0)
+            return "stale reply"
+        return "new reply"
+
+    monkeypatch.setattr(discord_bridge, "_ask_alpecca", ask)
+    monkeypatch.setattr(discord_bridge, "_synth_voice_wav", lambda _text: None)
+    client = discord_bridge.build_client()
+    voice_client = _ReceiveVoiceClient()
+    guild = SimpleNamespace(id=777, voice_client=voice_client)
+    channel = _ReceiveTextChannel()
+    creator = SimpleNamespace(id=42, name="realcreatorjd", display_name="CreatorJD")
+
+    async def emit(packet: bytes) -> None:
+        data = SimpleNamespace(pcm=packet)
+        for _ in range(20):
+            voice_client.sink.write(creator, data)
+        voice_client.sink.on_voice_member_speaking_stop(creator)
+
+    async def scenario() -> None:
+        assert await getattr(client, "_alpecca_start_voice_receive")(
+            guild, channel, creator
+        )
+        await emit(_packet())
+        for _ in range(100):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert started.is_set()
+        first_generation = getattr(client, "_alpecca_voice_generation")[777]
+        distinct_packet = b"\x01\x00\x01\x00" * (len(_packet()) // 4)
+        await emit(distinct_packet)
+        for _ in range(100):
+            if getattr(client, "_alpecca_voice_generation")[777] > first_generation:
+                break
+            await asyncio.sleep(0.01)
+        release.set()
+        for _ in range(200):
+            if channel.sent:
+                break
+            await asyncio.sleep(0.01)
+        await getattr(client, "_alpecca_stop_voice_receive")(guild)
+
+    asyncio.run(scenario())
+
+    assert model_calls == ["asked", "asked"]
+    assert channel.sent == ["new reply"]
+
+
+def test_direct_launcher_defaults_voice_receive_on(monkeypatch):
+    from scripts import run_discord_bridge
+
+    monkeypatch.delenv("ALPECCA_DISCORD_VOICE_RECEIVE", raising=False)
+    monkeypatch.delenv("ALPECCA_DISCORD_TTS_ENGINE", raising=False)
+    monkeypatch.setattr(run_discord_bridge, "_load_secret", lambda: None)
+    observed: list[tuple[str | None, str | None]] = []
+    monkeypatch.setattr(
+        run_discord_bridge,
+        "_print_voice_readiness",
+        lambda: observed.append(
+            (
+                os.environ.get("ALPECCA_DISCORD_VOICE_RECEIVE"),
+                os.environ.get("ALPECCA_DISCORD_TTS_ENGINE"),
+            )
+        ),
+    )
+
+    assert run_discord_bridge.main(["--voice-readiness"]) == 0
+    assert observed == [("1", "auto")]
+
+
+def test_cloud_engine_alias_uses_canonical_server_auto_route(monkeypatch):
+    request_bodies: list[dict[str, object]] = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> bool:
+            return False
+
+        def read(self, _limit: int) -> bytes:
+            return b"w" * 2048
+
+    def open_request(request, **_kwargs: object) -> Response:
+        request_bodies.append(__import__("json").loads(request.data))
+        return Response()
+
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "DISCORD_VOICE_ENGINE", "cloud")
+    monkeypatch.setattr(discord_bridge, "_open_backend_request", open_request)
+
+    assert discord_bridge._synth_voice_wav("Exact words in order.") == b"w" * 2048
+    assert request_bodies == [
+        {"text": "Exact words in order.", "engine": "auto"}
+    ]
+
+
+def test_auto_tts_readiness_reports_configuration_without_cloud_secrets(monkeypatch):
+    from alpecca import open_tts
+
+    endpoint = "https://private-voice.example.test/voice/tts"
+    authorization = "Bearer must-not-appear"
+    monkeypatch.setenv("ALPECCA_CLOUD_TTS_ENDPOINT", endpoint)
+    monkeypatch.setenv("ALPECCA_CLOUD_TTS_AUTHORIZATION", authorization)
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "DISCORD_VOICE_ENGINE", "auto")
+    monkeypatch.setattr(
+        open_tts,
+        "status",
+        lambda: {"ready": False, "worker": {"enabled": True, "ready": False}},
+    )
+    monkeypatch.setattr(discord_bridge.importlib.util, "find_spec", lambda _name: None)
+
+    readiness = discord_bridge._local_discord_tts_readiness()
+    serialized = repr(readiness)
+
+    assert readiness == {
+        "engine": "auto",
+        "status": "unverified",
+        "cloud_status": "configured",
+        "f5_worker_status": "unavailable",
+    }
+    assert endpoint not in serialized
+    assert authorization not in serialized
+
+
+def test_auto_tts_readiness_uses_resolved_protected_cloud_authorization(monkeypatch):
+    import config
+    from alpecca import open_tts
+
+    endpoint = "https://protected-voice.example.test/voice/tts"
+    protected_authorization = "Bearer credential-manager-secret"
+    monkeypatch.setenv("ALPECCA_CLOUD_TTS_ENDPOINT", endpoint)
+    monkeypatch.delenv("ALPECCA_CLOUD_TTS_AUTHORIZATION", raising=False)
+    monkeypatch.setattr(config, "CLOUD_TTS_ENDPOINT", endpoint)
+    monkeypatch.setattr(
+        config,
+        "CLOUD_TTS_AUTHORIZATION",
+        protected_authorization,
+    )
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "DISCORD_VOICE_ENGINE", "auto")
+    monkeypatch.setattr(
+        open_tts,
+        "status",
+        lambda: {"ready": False, "worker": {"enabled": True, "ready": False}},
+    )
+    monkeypatch.setattr(discord_bridge.importlib.util, "find_spec", lambda _name: None)
+
+    readiness = discord_bridge._local_discord_tts_readiness()
+    serialized = repr(readiness)
+
+    assert readiness["cloud_status"] == "configured"
+    assert readiness["status"] == "unverified"
+    assert endpoint not in serialized
+    assert protected_authorization not in serialized
+
+
+def test_full_launcher_defaults_discord_tts_to_auto():
+    source = (discord_bridge.ROOT / "scripts" / "run_full.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "auto")' in source
+
+
+def test_voice_sentence_segments_preserve_words_order_and_bound_requests():
+    text = (
+        "First sentence. "
+        + " ".join(f"word{index}" for index in range(55))
+        + "! Final sentence?"
+    )
+
+    segments = discord_bridge._voice_sentence_segments(text)
+
+    assert segments[0] == "First sentence."
+    assert segments[-1] == "Final sentence?"
+    assert all(
+        len(segment) <= discord_bridge.MAX_VOICE_SEGMENT_CHARS
+        for segment in segments
+    )
+    assert " ".join(segments) == " ".join(text.split())
+
+
+class _SequentialPlaybackVoiceClient:
+    def __init__(self) -> None:
+        self.channel = SimpleNamespace(
+            name="General",
+            members=[SimpleNamespace(id=42, bot=False)],
+        )
+        self.played: list[object] = []
+        self._after = None
+        self.playing = False
+
+    def is_connected(self) -> bool:
+        return True
+
+    def is_playing(self) -> bool:
+        return self.playing
+
+    def play(self, source: object, *, after) -> None:
+        assert not self.playing
+        self.played.append(source)
+        self._after = after
+        self.playing = True
+
+    def finish(self, error: object = None) -> None:
+        assert self.playing
+        callback = self._after
+        self._after = None
+        self.playing = False
+        callback(error)
+
+    def stop_playing(self) -> None:
+        if self.playing:
+            self.finish()
+
+
+def test_sentence_voice_playback_is_sequential_locked_and_cleans_each_file(monkeypatch):
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {})
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "PHASE10_GUILD_MODES_LOCKED", False)
+    monkeypatch.setattr(discord_bridge.discord.opus, "is_loaded", lambda: True)
+    monkeypatch.setattr(discord_bridge, "_ffmpeg_exe", lambda: "ffmpeg-test")
+    synth_calls: list[str] = []
+    source_paths: list[str] = []
+
+    def synth(text: str) -> bytes:
+        synth_calls.append(text)
+        return b"w" * 2048
+
+    def fake_audio(path: str, *, executable: str) -> object:
+        assert executable == "ffmpeg-test"
+        assert os.path.exists(path)
+        source_paths.append(path)
+        return SimpleNamespace(path=path)
+
+    monkeypatch.setattr(discord_bridge, "_synth_voice_wav", synth)
+    monkeypatch.setattr(discord_bridge.discord, "FFmpegPCMAudio", fake_audio)
+    client = discord_bridge.build_client()
+    voice_client = _SequentialPlaybackVoiceClient()
+    guild = SimpleNamespace(id=777, voice_client=voice_client)
+
+    async def wait_for_plays(count: int) -> None:
+        for _ in range(100):
+            if len(voice_client.played) >= count:
+                return
+            await asyncio.sleep(0.01)
+        pytest.fail(f"voice playback {count} did not start")
+
+    async def scenario() -> None:
+        first = asyncio.create_task(
+            getattr(client, "_alpecca_speak_in_voice")(
+                guild,
+                "First sentence. Second sentence!",
+            )
+        )
+        await wait_for_plays(1)
+        assert synth_calls == ["First sentence."]
+
+        second = asyncio.create_task(
+            getattr(client, "_alpecca_speak_in_voice")(guild, "Queued reply.")
+        )
+        await asyncio.sleep(0.02)
+        assert synth_calls == ["First sentence."]
+
+        voice_client.finish()
+        await wait_for_plays(2)
+        assert synth_calls == ["First sentence.", "Second sentence!"]
+        voice_client.finish()
+        await wait_for_plays(3)
+        assert synth_calls == [
+            "First sentence.",
+            "Second sentence!",
+            "Queued reply.",
+        ]
+        voice_client.finish()
+        await asyncio.gather(first, second)
+
+    asyncio.run(scenario())
+
+    assert len(source_paths) == 3
+    assert all(not os.path.exists(path) for path in source_paths)
+
+
+def test_voice_generation_interrupt_stops_remaining_sentence_segments(monkeypatch):
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {})
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "PHASE10_GUILD_MODES_LOCKED", False)
+    monkeypatch.setattr(discord_bridge.discord.opus, "is_loaded", lambda: True)
+    monkeypatch.setattr(discord_bridge, "_ffmpeg_exe", lambda: "ffmpeg-test")
+    synth_calls: list[str] = []
+    source_paths: list[str] = []
+    monkeypatch.setattr(
+        discord_bridge,
+        "_synth_voice_wav",
+        lambda text: synth_calls.append(text) or b"w" * 2048,
+    )
+
+    def fake_audio(path: str, *, executable: str) -> object:
+        assert executable == "ffmpeg-test"
+        source_paths.append(path)
+        return SimpleNamespace(path=path)
+
+    monkeypatch.setattr(discord_bridge.discord, "FFmpegPCMAudio", fake_audio)
+    client = discord_bridge.build_client()
+    voice_client = _SequentialPlaybackVoiceClient()
+    guild = SimpleNamespace(id=777, voice_client=voice_client)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            getattr(client, "_alpecca_speak_in_voice")(
+                guild,
+                "First sentence. Second sentence. Must not play.",
+            )
+        )
+        for _ in range(100):
+            if len(voice_client.played) == 1:
+                break
+            await asyncio.sleep(0.01)
+        voice_client.finish()
+        for _ in range(100):
+            if len(voice_client.played) == 2:
+                break
+            await asyncio.sleep(0.01)
+        getattr(client, "_alpecca_interrupt_voice_playback")(
+            guild,
+            reason="newer_committed_turn",
+        )
+        await task
+
+    asyncio.run(scenario())
+
+    assert synth_calls == ["First sentence.", "Second sentence."]
+    assert len(source_paths) == 2
+    assert all(not os.path.exists(path) for path in source_paths)
 
 
 def test_creator_voice_session_fails_closed_when_audit_is_unavailable(monkeypatch):

@@ -610,6 +610,94 @@ def test_verified_discord_traffic_persists_only_its_scoped_continuity(monkeypatc
     ]]
 
 
+def test_verified_discord_image_description_survives_follow_up_without_pixels(
+    monkeypatch,
+):
+    prompts: list[str] = []
+    writes: list[tuple[str, dict]] = []
+    saved_visual: dict[str, object] = {}
+
+    def generate(system_prompt, _user_msg, _history, **_kwargs):
+        prompts.append(system_prompt)
+        return "I can answer from the image observation."
+
+    mind, mind_mod = _core_mind(monkeypatch, generate)
+
+    def recall(query, **_kwargs):
+        if str(query).startswith("visual observation") and saved_visual:
+            return [dict(saved_visual)]
+        return []
+
+    def remember(content, **kwargs):
+        writes.append((content, kwargs))
+        if kwargs.get("source") == "discord_visual_observation":
+            saved_visual.update(
+                id=len(writes),
+                content=content,
+                kind="episodic",
+                salience=kwargs["salience"],
+            )
+        return len(writes)
+
+    monkeypatch.setattr(mind_mod.memory_store, "recall", recall)
+    monkeypatch.setattr(mind_mod.memory_store, "remember_with_id", remember)
+    first = turn_context.TurnContext.create(
+        "discord-image-first",
+        principal="guest",
+        surface="discord",
+        privacy_scope="guest-discord-image-continuity",
+    )
+    first_live = mind_mod._server_validated_discord_perception(
+        first, "Verified Discord participant uploaded one image.",
+    )
+    first_visual = mind_mod._server_validated_discord_visual_observation(
+        first,
+        "A phone screenshot showing Alpecca saying she cannot see an attachment.",
+    )
+
+    mind.chat(
+        "What is shown in this image?",
+        turn=first,
+        _trusted_perception=first_live,
+        _trusted_visual_observation=first_visual,
+        _persist_verified_discord_memory=True,
+        _verified_discord_memory_text="What is shown in this image?",
+    )
+
+    second = turn_context.TurnContext.create(
+        "discord-image-follow-up",
+        principal="guest",
+        surface="discord",
+        privacy_scope="guest-discord-image-continuity",
+    )
+    second_live = mind_mod._server_validated_discord_perception(
+        second, "Verified Discord participant sent a follow-up message.",
+    )
+    mind.chat(
+        "Can you still see the screenshot above?",
+        turn=second,
+        _trusted_perception=second_live,
+        _persist_verified_discord_memory=True,
+        _verified_discord_memory_text="Can you still see the screenshot above?",
+    )
+
+    visual_writes = [
+        (content, kwargs)
+        for content, kwargs in writes
+        if kwargs.get("source") == "discord_visual_observation"
+    ]
+    assert len(visual_writes) == 1
+    assert "phone screenshot" in visual_writes[0][0]
+    assert visual_writes[0][1]["scope"] == "guest-discord-image-continuity"
+    assert "data:image" not in repr(writes)
+    assert "http://" not in repr(writes)
+    assert "https://" not in repr(writes)
+    assert "VERIFIED VISUAL OBSERVATION" in prompts[0]
+    assert "phone screenshot" in prompts[0]
+    assert "SCOPED DISCORD MEMORY" in prompts[1]
+    assert "phone screenshot" in prompts[1]
+
+
 def test_unvalidated_discord_turn_cannot_enable_durable_guest_memory(monkeypatch):
     mind, mind_mod = _core_mind(monkeypatch, lambda *_args, **_kwargs: "Guest reply.")
     turn = turn_context.TurnContext.create(

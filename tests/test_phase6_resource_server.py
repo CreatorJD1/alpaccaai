@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 
 import pytest
@@ -521,8 +522,10 @@ def test_tts_route_defers_optional_work_while_synthesis_is_active(
     release = threading.Event()
 
     class JsonRequest:
-        async def json(self):
-            return {"text": "Speak this"}
+        headers = {}
+
+        async def stream(self):
+            yield b'{"text":"Speak this"}'
 
     def synth(_text, _state):
         started.set()
@@ -555,8 +558,10 @@ def test_tts_route_honors_bounded_engine_override(monkeypatch, optional_work):
     calls: list[tuple[str, str]] = []
 
     class JsonRequest:
-        async def json(self):
-            return {"text": "Speak this", "engine": "kokoro"}
+        headers = {}
+
+        async def stream(self):
+            yield b'{"text":"Speak this","engine":"kokoro"}'
 
     def synth(_text, _state, *, backend_override=""):
         calls.append((_text, backend_override))
@@ -569,6 +574,7 @@ def test_tts_route_honors_bounded_engine_override(monkeypatch, optional_work):
 
     assert response.status_code == 200
     assert response.headers["x-alpecca-tts-engine"] == "server"
+    assert "x-alpecca-spoken-text" not in response.headers
     assert calls == [("Speak this", "kokoro")]
 
 
@@ -576,8 +582,10 @@ def test_tts_route_rejects_unknown_engine_before_synthesis(monkeypatch, optional
     from alpecca import tts as tts_mod
 
     class JsonRequest:
-        async def json(self):
-            return {"text": "Speak this", "engine": "unknown"}
+        headers = {}
+
+        async def stream(self):
+            yield b'{"text":"Speak this","engine":"unknown"}'
 
     monkeypatch.setattr(
         tts_mod,
@@ -589,6 +597,81 @@ def test_tts_route_rejects_unknown_engine_before_synthesis(monkeypatch, optional
 
     assert response.status_code == 422
     assert response.headers["x-alpecca-tts-error"] == "unsupported voice engine"
+
+
+def test_tts_route_rejects_oversized_body_before_synthesis(monkeypatch, optional_work):
+    from alpecca import tts as tts_mod
+
+    class OversizedRequest:
+        headers = {"content-length": str(server.TTS_MAX_REQUEST_BYTES + 1)}
+
+        async def stream(self):
+            pytest.fail("declared oversized body should not be read")
+            yield b""
+
+    monkeypatch.setattr(
+        tts_mod,
+        "synth",
+        lambda *_args, **_kwargs: pytest.fail("oversized body reached synthesis"),
+    )
+
+    with pytest.raises(server.HTTPException) as rejected:
+        asyncio.run(server.tts(OversizedRequest()))
+
+    assert rejected.value.status_code == 413
+
+
+def test_tts_route_rejects_oversized_text_before_synthesis(monkeypatch, optional_work):
+    from alpecca import tts as tts_mod
+
+    class OversizedTextRequest:
+        headers = {}
+
+        async def stream(self):
+            payload = {"text": "x" * (server.TTS_MAX_TEXT_CHARS + 1)}
+            yield json.dumps(payload).encode("utf-8")
+
+    monkeypatch.setattr(
+        tts_mod,
+        "synth",
+        lambda *_args, **_kwargs: pytest.fail("oversized text reached synthesis"),
+    )
+
+    with pytest.raises(server.HTTPException) as rejected:
+        asyncio.run(server.tts(OversizedTextRequest()))
+
+    assert rejected.value.status_code == 413
+
+
+def test_tts_route_bounds_final_performance_text(monkeypatch, optional_work):
+    from alpecca import speech as speech_mod
+    from alpecca import tts as tts_mod
+
+    class PerformanceRequest:
+        headers = {}
+
+        async def stream(self):
+            payload = {
+                "text": "x" * server.TTS_MAX_TEXT_CHARS,
+                "performance_mode": True,
+            }
+            yield json.dumps(payload).encode("utf-8")
+
+    monkeypatch.setattr(
+        speech_mod,
+        "spoken_performance_text",
+        lambda text, _state: text + " expanded",
+    )
+    monkeypatch.setattr(
+        tts_mod,
+        "synth",
+        lambda *_args, **_kwargs: pytest.fail("expanded text reached synthesis"),
+    )
+
+    with pytest.raises(server.HTTPException) as rejected:
+        asyncio.run(server.tts(PerformanceRequest()))
+
+    assert rejected.value.status_code == 413
 
 
 def test_routines_use_routine_category_and_leave_deferred_rows_unrecorded(

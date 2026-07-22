@@ -276,10 +276,17 @@ ZEROGPU_TOKEN = os.environ.get("ALPECCA_ZEROGPU_TOKEN", HF_TOKEN)
 # authorizes pixels to leave the laptop.
 ZEROGPU_VISION_API = _gradio_api_name("ALPECCA_ZEROGPU_VISION_API", "/vision")
 VISION_BACKEND = os.environ.get("ALPECCA_VISION_BACKEND", "local").lower()
-# A model identifier is not egress consent. The future adapter must additionally
-# bind an attestable provider, deployment, processing location, destination,
-# HTTPS route, exact payload, and one interactive creator decision.
+# A model identifier is not egress consent. Generic private-perception routes
+# still require their exact interactive approval. The separately named Discord
+# creator-upload preference below is limited to images deliberately attached by
+# the cryptographically verified creator actor.
 VISION_CLOUD_MODEL = os.environ.get("ALPECCA_VISION_CLOUD_MODEL", "")
+# A Discord image deliberately uploaded by the authenticated creator may use
+# the configured hosted vision model when this standing preference is enabled.
+# It does not apply to ambient screen/webcam capture or ordinary participants.
+DISCORD_CREATOR_CLOUD_VISION = os.environ.get(
+    "ALPECCA_DISCORD_CREATOR_CLOUD_VISION", "0"
+) not in ("", "0", "false", "False")
 # Exact private-perception routes. These values describe a destination only;
 # they never authorize egress. The authenticated creator consent broker in
 # server.py must still approve and consume one byte-bound use.
@@ -369,13 +376,36 @@ HF_MATTE_API = os.environ.get("ALPECCA_HF_MATTE_API", "")
 
 # --- Her voice (text-to-speech) ------------------------------------------------
 # Server-side TTS for a real, natural voice (alpecca/tts.py), replacing the
-# robotic browser engine. 'auto' uses the best installed engine: Kokoro (best
-# open, fully local) if present, else edge-tts (Microsoft neural voices, no
-# install pain, uses the network). 'kokoro'/'edge' force one; 'browser'/'off'
-# keep the old built-in voice. TTS_VOICE picks the speaker (e.g. af_heart for
-# Kokoro, en-US-AriaNeural for edge); blank = a warm default.
+# robotic browser engine. 'auto' uses authenticated cloud Kokoro when fully
+# configured, then the local F5/Kokoro routes. 'cloud', 'f5', and 'kokoro'
+# force one route; 'browser'/'off' keep the old built-in voice. TTS_VOICE picks
+# the speaker for engines that support it; blank = a warm default.
 TTS_BACKEND = os.environ.get("ALPECCA_TTS_BACKEND", "auto").lower()
 TTS_VOICE = os.environ.get("ALPECCA_TTS_VOICE", "")
+# Optional authenticated Kokoro route. Merely setting an endpoint is not enough:
+# alpecca.cloud_tts requires both values and validates the exact HTTPS
+# /voice/tts target before any text can leave this process.
+CLOUD_TTS_ENDPOINT = os.environ.get("ALPECCA_CLOUD_TTS_ENDPOINT", "")
+
+
+def _cloud_tts_authorization(endpoint: str, explicit: str) -> str:
+    """Resolve cloud voice auth without persisting or reporting its value."""
+    if explicit != "":
+        return explicit
+    if not endpoint.strip():
+        return ""
+    try:
+        from alpecca import auth as auth_mod
+
+        return auth_mod.load_or_create_authorization_secret(HOME)
+    except Exception:
+        return ""
+
+
+CLOUD_TTS_AUTHORIZATION = _cloud_tts_authorization(
+    CLOUD_TTS_ENDPOINT,
+    os.environ.get("ALPECCA_CLOUD_TTS_AUTHORIZATION", ""),
+)
 # Open-source cloned/emotional TTS path. "auto" means: try an installed open
 # voice engine first (currently F5-TTS), then fall back to Kokoro. Use
 # ALPECCA_TTS_BACKEND=kokoro to bypass this while testing.
@@ -687,7 +717,9 @@ class Hearing:
 # Only the model's short text description is kept; frames are dropped
 # immediately and never written to disk.
 class Vision:
-    MODEL = os.environ.get("ALPECCA_VISION_MODEL", "qwen3.5:9b")
+    # Keep the 9B model for Alpecca's reasoning. The smaller multimodal model is
+    # a bounded local fallback for sight on 4 GB GPUs.
+    MODEL = os.environ.get("ALPECCA_VISION_MODEL", "qwen3.5:4b")
     SIGHT_ENABLED = os.environ.get("ALPECCA_SIGHT", "0") not in ("", "0", "false", "False")
     FACE_ENABLED = os.environ.get("ALPECCA_FACE", "0") not in ("", "0", "false", "False")
     SIGHT_INTERVAL = 60.0     # seconds between screen glimpses

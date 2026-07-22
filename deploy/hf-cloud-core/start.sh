@@ -10,4 +10,4 @@ export ALPECCA_REMOTE=1
 export ALPECCA_SERVER_PORT=7860
 
 cd "${ALPECCA_SOURCE_ROOT:-/opt/alpecca}"
-exec python /opt/hf-cloud-core/cloud_entrypoint.py
+exec python /opt/hf-cloud-core/cloud_process_supervisor.py

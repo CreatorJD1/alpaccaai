@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import sqlite3
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -93,6 +94,7 @@ def test_authority_requires_stage_approval_and_consumes_once(tmp_path: Path):
     except consent_mod.EgressConsentDenied:
         pass
 
+
     pending = authority.list_requests()
     assert len(pending) == 1
     assert pending[0]["state"] == "pending"
@@ -115,6 +117,35 @@ def test_authority_requires_stage_approval_and_consumes_once(tmp_path: Path):
         raise AssertionError("a consumed decision must not replay")
     except consent_mod.EgressConsentDenied:
         pass
+
+
+def test_signed_creator_discord_upload_uses_exact_single_use_vision_grant(
+    tmp_path: Path, monkeypatch,
+):
+    runtime = _runtime(tmp_path)
+    calls: list[bytes] = []
+    monkeypatch.setattr(server, "_PERCEPTION_EGRESS_RUNTIME", runtime)
+    monkeypatch.setattr(server, "DISCORD_CREATOR_CLOUD_VISION", True)
+
+    def remote(payload: bytes, _prompt: str):
+        calls.append(payload)
+        return "A Discord screenshot showing an image continuity error.\nSELF: no"
+
+    monkeypatch.setattr(vision, "_describe_ollama_cloud", remote)
+
+    result = server._describe_verified_creator_discord_upload(_png())
+
+    assert result is not None
+    assert result.text == "A Discord screenshot showing an image continuity error."
+    assert result.processing_location == "provider-managed"
+    assert result.cloud_egress == "managed-model-api"
+    assert calls == [_png()]
+    with sqlite3.connect(tmp_path / "requests.sqlite3") as conn:
+        states = conn.execute(
+            "SELECT state FROM interactive_egress_requests"
+        ).fetchall()
+    assert states == [("consumed",)]
+    assert _png() not in (tmp_path / "requests.sqlite3").read_bytes()
 
 
 def test_server_flow_is_creator_only_exact_and_payload_free(

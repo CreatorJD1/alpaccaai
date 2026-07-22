@@ -3,7 +3,7 @@
 This is the canonical project context for coding agents working on Alpecca.
 Read this before `AGENTS.md`, `CLAUDE.md`, `HANDOFF.md`, or implementation files.
 
-## Current Implementation Checkpoint (2026-07-16)
+## Current Implementation Checkpoint (2026-07-22)
 
 This checkpoint supersedes older route, access, model, and phase-status text.
 
@@ -23,8 +23,17 @@ This checkpoint supersedes older route, access, model, and phase-status text.
 - House HQ has a distinct live Tools view. It reads protected endpoints,
   reports Parlor as internal-home state rather than a rendered House room, and
   disables source controls while disconnected instead of simulating success.
-- F5/TTS5 receives bounded affect-derived speed, gain, and style controls. The
-  worker reports requested versus applied modulation; fallbacks remain.
+- Default House and `auto` voice routing now prefer the exact authenticated
+  cloud Kokoro endpoint when configured, then retain local Kokoro and the
+  existing local fallback stack. Explicit engine selections stay explicit.
+  F5/TTS5 still receives bounded affect-derived speed, gain, and style controls,
+  and reports requested versus applied modulation.
+- House HQ continuous live voice keeps one Web Audio microphone stream, uses
+  adaptive bounded PCM16 WAV segmentation, supports barge-in, and plays ordered
+  sentence-segmented replies. Discord duplex voice generation fences stale
+  transcription, replies, and remaining playback after newer speech or
+  interruption. Focused tests and the House production build pass; live browser,
+  Discord, and deployed cloud-voice soaks remain pending.
 - `ALPECCA_LAUNCHER.bat` is the only supported user-facing BAT.
 - Cleanup is gated by `docs/REPOSITORY_CLEANUP_MANIFEST.md`. Active memory,
   pending Vault files, V4/V13 assets, voice models, and release artifacts stay.
@@ -84,7 +93,8 @@ This checkpoint supersedes older route, access, model, and phase-status text.
   cloud WebSocket response, local reclaim at epoch 9, and cloud demotion back
   to health-only standby. The survival core uses hosted
   `Qwen/Qwen3.5-9B`; it deliberately disables Discord, sensors, computer use,
-  local voice workers, and Vault writes. It preserves one chat/memory CoreMind
+  in-process voice workers except for the isolated standby Kokoro sidecar, and
+  Vault writes. It preserves one chat/memory CoreMind
   during a laptop outage, not the complete hardware-dependent stack.
 - `deploy/ubuntu-app-vm/` is still an inert provider-neutral desktop scaffold.
   Its supervisor, app verifier, workspace template, and fenced continuity lease

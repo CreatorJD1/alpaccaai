@@ -1,6 +1,7 @@
-"""Her voice: server-side text-to-speech, free and local, with graceful fallback.
+"""Her voice: bounded server-side text-to-speech with graceful fallback.
 
-Two free engines, picked automatically (ALPECCA_TTS_BACKEND overrides):
+An authenticated cloud Kokoro route is used only when its exact endpoint and
+secret validate. Local engines remain available (ALPECCA_TTS_BACKEND overrides):
   - kokoro : the best free LOCAL voice -- Kokoro-82M, natural, runs on CPU or the
              (now-free) GPU. Needs the `kokoro` + `soundfile` packages.
   - edge   : Microsoft's neural voices via `edge-tts` -- natural, no model, uses
@@ -26,13 +27,33 @@ import threading
 import time
 from pathlib import Path
 
-from config import (TTS_BACKEND, TTS_VOICE, TTS_RATE, TTS_PITCH,
-                    KOKORO_VOICE, KOKORO_PITCH, KOKORO_IDENTITY_LOCK)
+from alpecca.cloud_tts import (
+    AUTHORIZATION_ENV as CLOUD_TTS_AUTHORIZATION_ENV,
+    ENDPOINT_ENV as CLOUD_TTS_ENDPOINT_ENV,
+    CloudTTSClient,
+)
+from config import (
+    CLOUD_TTS_AUTHORIZATION,
+    CLOUD_TTS_ENDPOINT,
+    KOKORO_IDENTITY_LOCK,
+    KOKORO_PITCH,
+    KOKORO_VOICE,
+    TTS_BACKEND,
+    TTS_PITCH,
+    TTS_RATE,
+    TTS_VOICE,
+)
 
 _last_engine = ""
 _last_error = ""
 _last_modulation: dict = {}
 _voice_reference_cache: dict | None = None
+_cloud_tts_client = CloudTTSClient.from_env(
+    {
+        CLOUD_TTS_ENDPOINT_ENV: CLOUD_TTS_ENDPOINT,
+        CLOUD_TTS_AUTHORIZATION_ENV: CLOUD_TTS_AUTHORIZATION,
+    }
+)
 # Discord requests explicitly pin ``engine=kokoro``. Keep that route on the
 # canonical af_heart waveform rather than applying the generic pitch warp.
 _force_kokoro_identity_profile: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -387,10 +408,29 @@ def engine_status() -> dict:
     open_status = __import__("alpecca.open_tts", fromlist=["status"]).status()
     open_ready = bool(open_status.get("ready"))
     kokoro = kokoro_status()
+    cloud_status = _cloud_tts_client.status()
+    cloud = cloud_status.as_dict()
+    cloud["enabled"] = cloud_status.configured
+    cloud["ready"] = (
+        True
+        if cloud_status.state == "ready"
+        else False
+        if cloud_status.state in {"degraded", "unavailable"}
+        else None
+    )
     return {
         "backend": backend,
         "server_enabled": backend not in ("off", "browser", "none"),
-        "primary": "f5-tts-worker" if open_ready else ("kokoro" if importlib.util.find_spec("kokoro") else "edge"),
+        "primary": (
+            "cloud"
+            if backend in {"auto", "cloud"} and cloud["ready"] is True
+            else "f5-tts-worker"
+            if open_ready
+            else "kokoro"
+            if importlib.util.find_spec("kokoro")
+            else "edge"
+        ),
+        "cloud": cloud,
         "open_tts": open_status,
         "open_tts_ready": open_ready,
         "f5_worker": (open_status.get("worker") or {}),
@@ -403,6 +443,26 @@ def engine_status() -> dict:
         # House HQ intentionally does not use an unrelated browser/system
         # speaker when Alpecca's installed voice is unavailable.
         "browser_fallback": False,
+    }
+
+
+def _synth_cloud(text: str, state=None):
+    """Use only the validated, authenticated cloud client."""
+    del state
+    global _last_error
+    status = _cloud_tts_client.status()
+    if not status.configured:
+        _last_error = f"Cloud TTS unavailable: {status.reason}"
+        return None
+    result = _cloud_tts_client.synthesize(text)
+    if result is None:
+        _last_error = f"Cloud TTS unavailable: {_cloud_tts_client.status().reason}"
+        return None
+    mime, data, metadata = result
+    return mime, data, {
+        **metadata,
+        "engine": "cloud",
+        "profile": "authenticated_cloud_kokoro",
     }
 
 
@@ -627,10 +687,11 @@ def _prefers_clone_voice(state=None) -> bool:
 def synth(text: str, state=None, *, backend_override: str = ""):
     """Return (mime_type, audio_bytes) for `text`, or None to let the browser
     voice handle it. `state` is her live EmotionalState so the voice carries
-    emotion. ALPECCA_TTS_BACKEND: auto (default) blends the F5 clone and Kokoro
-    by emotion; 'kokoro'/'edge'/'f5' force one; 'browser'/'off' disable server
-    TTS. Trusted channel bridges may pin one engine for a request so a bad
-    clone render cannot silently replace the channel's established voice."""
+    emotion. ALPECCA_TTS_BACKEND: auto (default) tries configured cloud Kokoro,
+    then blends the local F5 clone and Kokoro by emotion. 'cloud', 'kokoro',
+    'edge', and 'f5' force one route; 'browser'/'off' disable server TTS.
+    Trusted channel bridges may pin one engine for a request so a bad clone
+    render cannot silently replace the channel's established voice."""
     text = (text or "").strip()
     global _last_engine, _last_error, _last_modulation
     _last_engine = ""
@@ -656,6 +717,8 @@ def synth(text: str, state=None, *, backend_override: str = ""):
             from alpecca import open_tts
 
             order = (open_tts.synth,)
+        elif backend == "cloud":
+            order = (_synth_cloud,)
         elif backend == "kokoro":
             # Kokoro af_heart is her actual voice profile. Do not substitute a
             # different server voice and label it as Alpecca.
@@ -674,6 +737,8 @@ def synth(text: str, state=None, *, backend_override: str = ""):
                          else (_synth_kokoro, open_tts.synth))
             else:
                 order = (_synth_kokoro,)
+            if _cloud_tts_client.status().configured:
+                order = (_synth_cloud,) + order
         for fn in order:
             try:
                 r = fn(text, state)

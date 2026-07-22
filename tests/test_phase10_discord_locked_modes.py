@@ -241,16 +241,22 @@ def test_discord_voice_output_defaults_off_without_explicit_flag(tmp_path):
     }
 
 
-def test_direct_voice_send_only_never_enables_microphone_receive(tmp_path):
+def test_direct_voice_defaults_to_bidirectional_live_voice(tmp_path):
     completed = _run_direct_voice_readiness(tmp_path, receive_value=None)
 
     assert completed.returncode == 0, completed.stderr
     readiness = json.loads(completed.stdout.strip())
     assert readiness["enabled"] is True
-    assert readiness["mode"] == "output-only"
+    assert readiness["receive"]["enabled"] is True
+    both_directions_ready = (
+        readiness["status"] == "ready"
+        and readiness["receive"]["status"] == "ready"
+    )
+    assert readiness["mode"] == (
+        "duplex" if both_directions_ready else "output-only"
+    )
     assert readiness["status"] in {"ready", "unavailable"}
-    assert readiness["receive"]["enabled"] is False
-    assert readiness["receive"]["status"] == "disabled"
+    assert readiness["receive"]["status"] in {"ready", "unavailable"}
     serialized = completed.stdout.casefold()
     assert "voice-secret-must-not-appear" not in serialized
     assert "discord_bot_token" not in serialized

@@ -22,6 +22,54 @@ export type VoicePlaybackStopReason =
 
 export const DEFAULT_VOICE_QUEUE_SIZE = 4;
 export const MAX_VOICE_QUEUE_SIZE = 32;
+export const DEFAULT_VOICE_SEGMENT_CHARS = 220;
+
+/**
+ * Split a visible reply into short synthesis jobs without changing its words.
+ * The queue can start the first sentence while later sentences wait, which
+ * avoids one long F5 render blocking the entire spoken reply.
+ */
+export function splitVoiceSpeechSegments(
+  text: string,
+  maxChars = DEFAULT_VOICE_SEGMENT_CHARS,
+): string[] {
+  if (!Number.isInteger(maxChars) || maxChars < 80 || maxChars > 600) {
+    throw new RangeError("maxChars must be an integer from 80 to 600.");
+  }
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (!clean) return [];
+  const sentences = clean.match(/[^.!?]+(?:[.!?]+|$)/g)?.map((part) => part.trim()).filter(Boolean)
+    ?? [clean];
+  const pieces: string[] = [];
+  for (const sentence of sentences) {
+    if (sentence.length <= maxChars) {
+      pieces.push(sentence);
+      continue;
+    }
+    let current = "";
+    for (const word of sentence.split(" ")) {
+      if (!current) {
+        current = word;
+      } else if (current.length + word.length + 1 <= maxChars) {
+        current += ` ${word}`;
+      } else {
+        pieces.push(current);
+        current = word;
+      }
+    }
+    if (current) pieces.push(current);
+  }
+  const packed: string[] = [];
+  for (const piece of pieces) {
+    const previous = packed[packed.length - 1];
+    if (previous && previous.length + piece.length + 1 <= maxChars) {
+      packed[packed.length - 1] = `${previous} ${piece}`;
+    } else {
+      packed.push(piece);
+    }
+  }
+  return packed;
+}
 
 export interface VoicePlaybackPreparation {
   readonly requestId: number;

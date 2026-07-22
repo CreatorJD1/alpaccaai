@@ -50,6 +50,20 @@ def test_cloud_core_requires_explicit_enable_switch():
     assert cloud.cloud_core_enabled({"ALPECCA_CLOUD_CORE_ENABLED": "true"}) is True
 
 
+def test_promotion_health_grace_marker_is_atomic_and_removable(
+    tmp_path, monkeypatch
+):
+    marker = tmp_path / "promotion-health-grace"
+    monkeypatch.setattr(cloud, "PROMOTION_HEALTH_MARKER", marker)
+
+    cloud.begin_promotion_health_grace(now=123.5)
+
+    assert marker.read_text(encoding="ascii") == "123.500000"
+    assert not marker.with_suffix(".tmp").exists()
+    cloud.end_promotion_health_grace()
+    assert not marker.exists()
+
+
 def test_standby_promotes_only_after_positive_empty_authority_state():
     assert cloud.promotion_eligible({}) is False
     assert cloud.promotion_eligible({"ok": False}) is False
@@ -147,10 +161,13 @@ def test_vrm_install_rejects_a_body_that_does_not_match_locked_hash(tmp_path):
     assert not (tmp_path / "avatar" / "vrm" / "alpecca.vrm").exists()
 
 
-def test_cloud_space_build_is_pinned_to_current_branch_and_no_old_qwen():
+def test_cloud_space_build_is_pinned_to_exact_main_commit_and_no_old_qwen():
     dockerfile = (PATH.parent / "Dockerfile").read_text(encoding="utf-8")
     readme = (PATH.parent / "README.md").read_text(encoding="utf-8")
-    assert "codex/voice-session-audio-normalization" in dockerfile
+    assert "ARG ALPECCA_GIT_REF=main" in dockerfile
+    assert "ARG ALPECCA_GIT_SHA" in dockerfile
+    assert 'rev-parse HEAD)" = "${ALPECCA_GIT_SHA}"' in dockerfile
+    assert "codex/voice-session-audio-normalization" not in dockerfile
     assert "npm run build" in dockerfile
     assert "COPY --from=source /opt/runtime /opt/alpecca" in dockerfile
     assert "COPY --from=source /opt/alpecca /opt/alpecca" not in dockerfile

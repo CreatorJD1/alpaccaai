@@ -163,14 +163,16 @@ VOICE_SYNTH_TIMEOUT = max(
     min(180.0, float(os.environ.get("ALPECCA_DISCORD_VOICE_TIMEOUT", "105"))),
 )
 DISCORD_VOICE_ENGINE = os.environ.get(
-    "ALPECCA_DISCORD_TTS_ENGINE", "f5"
+    "ALPECCA_DISCORD_TTS_ENGINE", "auto"
 ).strip().lower()
-if DISCORD_VOICE_ENGINE not in {"auto", "kokoro", "f5", "f5-tts"}:
-    DISCORD_VOICE_ENGINE = "f5"
+if DISCORD_VOICE_ENGINE not in {"auto", "cloud", "kokoro", "f5", "f5-tts"}:
+    DISCORD_VOICE_ENGINE = "auto"
 MAX_DISCORD_CHARS = 2000
 MAX_BACKEND_RESPONSE_BYTES = 1024 * 1024
 MAX_BACKEND_ERROR_BYTES = 16 * 1024
 MAX_VOICE_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_VOICE_REPLY_CHARS = 600
+MAX_VOICE_SEGMENT_CHARS = 240
 # Public-room presence is opt-in per room. The creator claims a room with
 # ``@Alpecca room on``; no environment flag can make her read or speak in an
 # arbitrary server channel.
@@ -1296,6 +1298,7 @@ def _ffmpeg_exe() -> str:
 def voice_readiness() -> dict[str, object]:
     """Return content-free readiness for Discord voice output and receive."""
     receive = discord_voice.receive_readiness(enabled=VOICE_RECEIVE_ENABLED)
+    tts = _local_discord_tts_readiness()
     if VOICE_MEMORY_ENABLED:
         try:
             store = _voice_memory_store()
@@ -1314,6 +1317,7 @@ def voice_readiness() -> dict[str, object]:
             "enabled": False,
             "mode": "output-only",
             "status": "disabled",
+            "tts": tts,
             "receive": receive,
         }
     opus_ready = False
@@ -1340,12 +1344,13 @@ def voice_readiness() -> dict[str, object]:
         "ffmpeg": ffmpeg_ready,
         "pynacl": pynacl_ready,
         "dave": dave_ready,
+        "tts": tts,
         "receive": receive,
     }
 
 
 def _local_discord_tts_readiness() -> dict[str, str]:
-    """Return content-free local TTS/F5 posture without synthesizing speech."""
+    """Return content-free TTS posture without probing a configured endpoint."""
 
     f5_worker_status = "unavailable"
     f5_local_ready = False
@@ -1365,8 +1370,31 @@ def _local_discord_tts_readiness() -> dict[str, str]:
     except Exception:
         pass
 
+    try:
+        import config as config_mod
+
+        cloud_endpoint = str(
+            getattr(config_mod, "CLOUD_TTS_ENDPOINT", "")
+            or os.environ.get("ALPECCA_CLOUD_TTS_ENDPOINT", "")
+        ).strip()
+        cloud_authorization = str(
+            getattr(config_mod, "CLOUD_TTS_AUTHORIZATION", "")
+            or os.environ.get("ALPECCA_CLOUD_TTS_AUTHORIZATION", "")
+        ).strip()
+    except Exception:
+        cloud_endpoint = os.environ.get("ALPECCA_CLOUD_TTS_ENDPOINT", "").strip()
+        cloud_authorization = os.environ.get(
+            "ALPECCA_CLOUD_TTS_AUTHORIZATION", ""
+        ).strip()
+    cloud_configured = bool(cloud_endpoint and cloud_authorization)
+    cloud_status = "configured" if cloud_configured else "unavailable"
+
     if not VOICE_ENABLED:
         tts_status = "disabled"
+    elif DISCORD_VOICE_ENGINE == "cloud":
+        # The bridge maps this compatibility name to server auto so a failed
+        # cloud call can still use the canonical local Alpecca voice fallback.
+        tts_status = "unverified" if cloud_configured else "unavailable"
     elif DISCORD_VOICE_ENGINE in {"f5", "f5-tts"}:
         tts_status = "ready" if f5_local_ready else "unavailable"
     elif DISCORD_VOICE_ENGINE == "kokoro":
@@ -1384,12 +1412,13 @@ def _local_discord_tts_readiness() -> dict[str, str]:
             "ready"
             if f5_local_ready
             else "unverified"
-            if kokoro_installed
+            if cloud_configured or kokoro_installed
             else "unavailable"
         )
     return {
         "engine": DISCORD_VOICE_ENGINE,
         "status": tts_status,
+        "cloud_status": cloud_status,
         "f5_worker_status": f5_worker_status,
     }
 
@@ -1401,6 +1430,57 @@ def _remove_voice_file(path: str) -> None:
         pass
 
 
+def _voice_sentence_segments(text: str) -> tuple[str, ...]:
+    """Return bounded TTS segments without changing word or punctuation order."""
+
+    remaining = " ".join(str(text or "")[:MAX_VOICE_REPLY_CHARS].split())
+    if not remaining:
+        return ()
+
+    sentences: list[str] = []
+    start = 0
+    index = 0
+    closers = "\"')]}"
+    while index < len(remaining):
+        if remaining[index] not in ".!?":
+            index += 1
+            continue
+        end = index + 1
+        while end < len(remaining) and remaining[end] in closers:
+            end += 1
+        if end == len(remaining) or remaining[end].isspace():
+            sentence = remaining[start:end].strip()
+            if sentence:
+                sentences.append(sentence)
+            while end < len(remaining) and remaining[end].isspace():
+                end += 1
+            start = end
+            index = end
+            continue
+        index += 1
+    tail = remaining[start:].strip()
+    if tail:
+        sentences.append(tail)
+
+    segments: list[str] = []
+    for sentence in sentences:
+        words = sentence.split()
+        current: list[str] = []
+        current_length = 0
+        for word in words:
+            added_length = len(word) if not current else len(word) + 1
+            if current and current_length + added_length > MAX_VOICE_SEGMENT_CHARS:
+                segments.append(" ".join(current))
+                current = [word]
+                current_length = len(word)
+            else:
+                current.append(word)
+                current_length += added_length
+        if current:
+            segments.append(" ".join(current))
+    return tuple(segments)
+
+
 def _synth_voice_wav(text: str) -> "bytes | None":
     """Ask the backend /tts to synthesize her voice; return audio bytes or None.
 
@@ -1408,7 +1488,8 @@ def _synth_voice_wav(text: str) -> "bytes | None":
     """
     if not VOICE_ENABLED:
         return None
-    body = json.dumps({"text": text, "engine": DISCORD_VOICE_ENGINE}).encode("utf-8")
+    server_engine = "auto" if DISCORD_VOICE_ENGINE == "cloud" else DISCORD_VOICE_ENGINE
+    body = json.dumps({"text": text, "engine": server_engine}).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
         BRIDGE_AUTHORIZATION_HEADER: _BRIDGE_AUTHORIZATION_SECRET,
@@ -1436,6 +1517,7 @@ def build_client() -> discord.Client:
     # reconnect, or room revocation happened before it can be delivered.
     room_generation: dict[int, int] = {}
     voice_generation: dict[int, int] = {}
+    voice_playback_epoch: dict[int, int] = {}
 
     def _advance_room_generation(channel_id: int) -> int:
         next_generation = room_generation.get(channel_id, 0) + 1
@@ -1445,13 +1527,25 @@ def build_client() -> discord.Client:
     def _room_generation_is_current(channel_id: int, generation: int) -> bool:
         return room_generation.get(channel_id, 0) == generation
 
-    def _interrupt_voice_playback(guild: object, *, reason: str) -> None:
-        """Give new human input priority over active or queued voice output."""
+    def _advance_voice_generation(guild_id: int) -> int:
+        next_generation = voice_generation.get(guild_id, 0) + 1
+        voice_generation[guild_id] = next_generation
+        return next_generation
+
+    def _interrupt_voice_playback(
+        guild: object,
+        *,
+        reason: str,
+        invalidate_generation: bool = True,
+    ) -> None:
+        """Stop active output, optionally invalidating an older committed turn."""
 
         guild_id = int(getattr(guild, "id", 0) or 0)
         if guild_id <= 0:
             return
-        voice_generation[guild_id] = voice_generation.get(guild_id, 0) + 1
+        voice_playback_epoch[guild_id] = voice_playback_epoch.get(guild_id, 0) + 1
+        if invalidate_generation:
+            _advance_voice_generation(guild_id)
         current_client = getattr(guild, "voice_client", None)
         try:
             if current_client and current_client.is_playing():
@@ -1950,50 +2044,102 @@ def build_client() -> discord.Client:
             if expected_generation is None
             else int(expected_generation)
         )
+        playback_epoch = voice_playback_epoch.get(guild_id, 0)
+        segments = _voice_sentence_segments(text)
+        if not segments:
+            return
         if _voice_human_count(guild) == 0:
             _diagnostic("voice_playback_skipped", status="no_human_audience")
             return
+
+        def _playback_is_current() -> bool:
+            return (
+                voice_generation.get(guild_id, 0) == generation
+                and voice_playback_epoch.get(guild_id, 0) == playback_epoch
+            )
+
         lock = voice_locks.setdefault(guild_id, asyncio.Lock())
         async with lock:
             vc = guild.voice_client
-            if not (vc and vc.is_connected()):
+            if not (vc and vc.is_connected() and _playback_is_current()):
                 return
-            wav = await asyncio.to_thread(_synth_voice_wav, text[:600])
-            if (
-                not wav
-                or not vc.is_connected()
-                or voice_generation.get(guild_id, 0) != generation
-            ):
-                if wav:
+            for segment in segments:
+                if not _playback_is_current():
                     _diagnostic("voice_playback_skipped", status="superseded")
-                return
-            fd, path = tempfile.mkstemp(suffix=".wav")
-            with os.fdopen(fd, "wb") as f:
-                f.write(wav)
-            for _ in range(80):                   # wait out any current utterance
-                if not vc.is_playing():
-                    break
-                await asyncio.sleep(0.25)
-            if vc.is_playing() or not vc.is_connected():
-                _remove_voice_file(path)
-                _diagnostic("voice_playback_skipped", status="busy")
-                return
-            try:
-                if not discord.opus.is_loaded():
-                    discord.opus._load_default()
-                source = discord.FFmpegPCMAudio(path, executable=_ffmpeg_exe())
-                def _playback_finished(error: object) -> None:
+                    return
+                wav = await asyncio.to_thread(_synth_voice_wav, segment)
+                if not wav:
+                    return
+                if not vc.is_connected() or not _playback_is_current():
+                    _diagnostic("voice_playback_skipped", status="superseded")
+                    return
+
+                fd, path = tempfile.mkstemp(suffix=".wav")
+                with os.fdopen(fd, "wb") as f:
+                    f.write(wav)
+                for _ in range(80):
+                    if not vc.is_playing():
+                        break
+                    if not _playback_is_current():
+                        _remove_voice_file(path)
+                        _diagnostic("voice_playback_skipped", status="superseded")
+                        return
+                    await asyncio.sleep(0.25)
+                if vc.is_playing() or not vc.is_connected():
                     _remove_voice_file(path)
+                    _diagnostic("voice_playback_skipped", status="busy")
+                    return
+                if not _playback_is_current():
+                    _remove_voice_file(path)
+                    _diagnostic("voice_playback_skipped", status="superseded")
+                    return
+
+                completion = asyncio.get_running_loop().create_future()
+
+                def _resolve_playback(error: object) -> None:
+                    if not completion.done():
+                        completion.set_result(error)
+
+                def _playback_finished(error: object, voice_path: str = path) -> None:
+                    _remove_voice_file(voice_path)
                     _diagnostic(
                         "voice_playback_failed" if error else "voice_playback_completed",
                         status="ffmpeg" if error else "played",
                     )
+                    try:
+                        completion.get_loop().call_soon_threadsafe(
+                            _resolve_playback,
+                            error,
+                        )
+                    except RuntimeError:
+                        pass
 
-                vc.play(source, after=_playback_finished)
-                _diagnostic("voice_playback_started", status=DISCORD_VOICE_ENGINE)
-            except Exception:
-                _diagnostic("voice_playback_failed")
-                _remove_voice_file(path)
+                started = False
+                try:
+                    if not discord.opus.is_loaded():
+                        discord.opus._load_default()
+                    source = discord.FFmpegPCMAudio(path, executable=_ffmpeg_exe())
+                    vc.play(source, after=_playback_finished)
+                    started = True
+                    _diagnostic("voice_playback_started", status=DISCORD_VOICE_ENGINE)
+                    playback_error = await completion
+                except asyncio.CancelledError:
+                    if started:
+                        try:
+                            if vc.is_playing():
+                                vc.stop_playing()
+                        except Exception:
+                            pass
+                    _remove_voice_file(path)
+                    raise
+                except Exception:
+                    _diagnostic("voice_playback_failed")
+                    _remove_voice_file(path)
+                    return
+                if playback_error or not _playback_is_current():
+                    if not playback_error:
+                        _diagnostic("voice_playback_skipped", status="superseded")
+                    return
 
     async def _stop_voice_receive(guild) -> None:
         """Stop and erase one guild's in-memory creator receive session."""
@@ -2050,13 +2196,14 @@ def build_client() -> discord.Client:
 
         await _stop_voice_receive(guild)
         loop = asyncio.get_running_loop()
-        utterance_queue: asyncio.Queue[discord_voice.SpeakerVoiceUtterance] = asyncio.Queue(
-            maxsize=VOICE_RECEIVE_QUEUE_LIMIT
-        )
+        utterance_queue: asyncio.Queue[
+            tuple[int, discord_voice.SpeakerVoiceUtterance]
+        ] = asyncio.Queue(maxsize=VOICE_RECEIVE_QUEUE_LIMIT)
         session: dict[str, object] = {
             "channel_id": channel_id,
             "creator_id": creator_id,
             "queue": utterance_queue,
+            "last_committed_fingerprints": {},
         }
 
         def _record_drop(
@@ -2076,18 +2223,28 @@ def build_client() -> discord.Client:
         def _enqueue(utterance: discord_voice.SpeakerVoiceUtterance) -> None:
             if voice_receive_sessions.get(guild_id) is not session:
                 return
+            fingerprints = session["last_committed_fingerprints"]
+            if not isinstance(fingerprints, dict):
+                return
+            fingerprint = hashlib.sha256(utterance.wav_bytes).hexdigest()
+            if fingerprints.get(utterance.user_id) == fingerprint:
+                _record_drop(utterance, "duplicate-completed-utterance")
+                _diagnostic("voice_receive_dropped", status="duplicate_utterance")
+                return
+            fingerprints[utterance.user_id] = fingerprint
+            committed_generation = _advance_voice_generation(guild_id)
             if utterance_queue.full():
                 # Retain the newest completed speech while one slow model turn
                 # is in flight. Answering stale fragments after the speaker has
                 # continued is worse than dropping the oldest unprocessed item.
                 try:
-                    stale = utterance_queue.get_nowait()
+                    _stale_generation, stale = utterance_queue.get_nowait()
                     utterance_queue.task_done()
                     _record_drop(stale, "queue-replaced-by-newer-speech")
                 except asyncio.QueueEmpty:
                     pass
                 _diagnostic("voice_receive_dropped", status="queue_replaced")
-            utterance_queue.put_nowait(utterance)
+            utterance_queue.put_nowait((committed_generation, utterance))
             _diagnostic("voice_utterance_queued", status="ready_for_transcription")
 
         def _on_utterance(utterance: discord_voice.SpeakerVoiceUtterance) -> None:
@@ -2096,7 +2253,11 @@ def build_client() -> discord.Client:
         def _on_speech_start() -> None:
             _diagnostic("voice_speech_started", status="human_audio")
             loop.call_soon_threadsafe(
-                lambda: _interrupt_voice_playback(guild, reason="voice_input"),
+                lambda: _interrupt_voice_playback(
+                    guild,
+                    reason="voice_input",
+                    invalidate_generation=False,
+                ),
             )
 
         vad_factory = await asyncio.to_thread(discord_voice.silero_vad_factory)
@@ -2119,7 +2280,7 @@ def build_client() -> discord.Client:
 
         async def _process_utterances() -> None:
             while voice_receive_sessions.get(guild_id) is session:
-                utterance = await utterance_queue.get()
+                committed_generation, utterance = await utterance_queue.get()
                 inspected = None
                 transcript = None
                 duration_seconds = utterance.duration_seconds
@@ -2241,7 +2402,10 @@ def build_client() -> discord.Client:
                         continue
 
                     now = time.monotonic()
-                    voice_generation_snapshot = voice_generation.get(guild_id, 0)
+                    voice_generation_snapshot = committed_generation
+                    if voice_generation.get(guild_id, 0) != voice_generation_snapshot:
+                        _diagnostic("voice_receive_reply_dropped", status="newer_speech")
+                        continue
                     history_buf.setdefault(channel_id, []).append((speaker_name, transcript))
                     del history_buf[channel_id][:-max(CONTEXT_MESSAGES, 1)]
                     last_human_ts[channel_id] = now
@@ -3597,6 +3761,8 @@ def build_client() -> discord.Client:
     setattr(client, "_alpecca_stop_voice_receive", _stop_voice_receive)
     setattr(client, "_alpecca_restore_voice_sessions", _restore_voice_sessions)
     setattr(client, "_alpecca_voice_receive_sessions", voice_receive_sessions)
+    setattr(client, "_alpecca_voice_generation", voice_generation)
+    setattr(client, "_alpecca_voice_playback_epoch", voice_playback_epoch)
     setattr(client, "_alpecca_interrupt_voice_playback", _interrupt_voice_playback)
     setattr(client, "_alpecca_voice_presence_context", _voice_presence_context)
     setattr(client, "_alpecca_voice_human_count", _voice_human_count)
