@@ -57,6 +57,8 @@ RUN apt-get update \
 
 COPY requirements.txt /tmp/cloud-core-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/cloud-core-requirements.txt
+RUN pip install --no-cache-dir \
+    https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 COPY --from=source /opt/runtime /opt/alpecca
 COPY --chown=1000:1000 app.py cloud_entrypoint.py cloud_healthcheck.py \
     cloud_process_supervisor.py cloud_voice.py start.sh /opt/hf-cloud-core/

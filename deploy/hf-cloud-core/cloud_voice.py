@@ -221,9 +221,14 @@ def create_app(*, secret: str, synthesizer: Synthesizer | None = None) -> FastAP
         text = _bounded_text(payload)
         try:
             audio = await asyncio.to_thread(engine.synthesize, text)
-        except VoiceServiceError:
+        except VoiceServiceError as exc:
+            print(f"Cloud voice synthesis unavailable: {exc}", flush=True)
             raise HTTPException(status_code=503, detail="synthesis_unavailable") from None
-        except Exception:
+        except Exception as exc:
+            print(
+                f"Cloud voice synthesis unavailable: {type(exc).__name__}",
+                flush=True,
+            )
             raise HTTPException(status_code=503, detail="synthesis_unavailable") from None
         if not isinstance(audio, bytes) or not audio or len(audio) > MAX_AUDIO_BYTES:
             raise HTTPException(status_code=503, detail="invalid_synthesis_result")
