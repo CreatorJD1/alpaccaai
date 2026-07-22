@@ -6,5 +6,10 @@ compatibility_date = "2026-06-01"
 binding = "MINDSCAPE_VAULT_ARCHIVE"
 bucket_name = "alpecca-mindscape-vault"
 
+[[durable_objects.bindings]]
+name = "CONTINUITY_AUTHORITY"
+class_name = "ContinuityLeaseAuthority"
+script_name = "alpecca-continuity-lease"
+
 # Set this as a secret, never in source control:
 #   npx wrangler secret put MINDSCAPE_VAULT_TOKEN

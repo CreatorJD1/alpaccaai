@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "now": "2030-01-02T12:02:00Z",
+  "cloudNodeId": "ubuntu-standby-example",
+  "localOwnerHeartbeat": {
+    "ownerNodeId": "local-authoritative-host",
+    "observedAt": "2030-01-02T12:00:00Z",
+    "validUntil": "2030-01-02T12:00:35Z",
+    "integrityVerified": true
+  },
+  "localOwnershipLease": {
+    "schemaVersion": 1,
+    "leaseId": "local-lease-041",
+    "holderNodeId": "local-authoritative-host",
+    "fencingEpoch": 41,
+    "issuedAt": "2030-01-02T11:59:50Z",
+    "expiresAt": "2030-01-02T12:00:25Z",
+    "integrityVerified": true
+  },
+  "creatorActivation": {
+    "activationId": "creator-cloud-activation-042",
+    "markerPath": "/etc/alpecca/enable-cloud-core",
+    "markerPresent": true,
+    "markerIntegrityVerified": true,
+    "creatorApprovalVerified": true,
+    "issuedAt": "2030-01-02T12:00:35Z",
+    "expiresAt": "2030-01-02T12:05:35Z"
+  },
+  "supervisorObservation": {
+    "schemaVersion": 1,
+    "nodeId": "ubuntu-standby-example",
+    "now": "2030-01-02T12:02:00Z",
+    "stateIntegrityVerified": true,
+    "authority": {
+      "available": true,
+      "linearizable": true,
+      "grantAuthenticated": true,
+      "primaryGraceElapsed": true
+    },
+    "vault": {
+      "ready": true,
+      "latestSnapshotVerified": true,
+      "restoreCompleted": true,
+      "snapshotId": "snapshot-041",
+      "snapshotFencingEpoch": 41,
+      "verifiedAt": "2030-01-02T12:01:40Z"
+    },
+    "lease": {
+      "schemaVersion": 1,
+      "leaseId": "cloud-lease-042",
+      "holderNodeId": "ubuntu-standby-example",
+      "fencingEpoch": 42,
+      "issuedAt": "2030-01-02T12:01:50Z",
+      "expiresAt": "2030-01-02T12:02:25Z"
+    },
+    "state": {
+      "schemaVersion": 1,
+      "status": "standby",
+      "highestFencingEpoch": 41,
+      "activeLease": null,
+      "lastEvaluatedAt": null,
+      "vaultSnapshotId": null,
+      "lastDecisionId": null
+    }
+  }
+}

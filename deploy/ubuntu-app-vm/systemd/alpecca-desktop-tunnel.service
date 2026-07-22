@@ -1,0 +1,20 @@
+[Unit]
+Description=Private creator-authenticated tunnel for Alpecca desktop
+ConditionPathExists=/etc/alpecca/enable-desktop-tunnel
+Requires=alpecca-desktop-gateway.service
+After=network-online.target alpecca-desktop-gateway.service
+
+[Service]
+Type=simple
+User=cloudflared
+Group=cloudflared
+ExecStart=/usr/bin/cloudflared --no-autoupdate --config /etc/alpecca/cloudflared-desktop.yml tunnel run
+Restart=on-failure
+RestartSec=10s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

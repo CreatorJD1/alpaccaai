@@ -424,6 +424,27 @@ def test_attachment_metadata_classification_never_claims_file_or_audio_support(
     assert discord_media.attachment_media_kind(filename, content_type) == expected
 
 
+def test_generic_discord_mime_defers_to_authoritative_image_bytes():
+    prepared = discord_media.prepare_inbound_image(
+        _png(2, 1),
+        declared_mime_type="application/octet-stream",
+    )
+
+    assert prepared.mime_type == "image/png"
+    assert prepared.width == 2
+    assert prepared.height == 1
+
+
+def test_specific_discord_mime_still_rejects_byte_mismatch():
+    with pytest.raises(discord_media.DiscordImageRejected) as caught:
+        discord_media.prepare_inbound_image(
+            _png(2, 1),
+            declared_mime_type="image/jpeg",
+        )
+
+    assert caught.value.reason == "mime-mismatch"
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     (

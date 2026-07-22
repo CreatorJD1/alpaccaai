@@ -93,6 +93,13 @@ HISTORY_MESSAGES = int(os.environ.get("ALPECCA_HISTORY_MESSAGES", "24"))
 # 100% local. Note: with this set, chat text leaves the machine; senses
 # stay out of prompts per the existing privacy line.
 CHAT_CLOUD_MODEL = os.environ.get("ALPECCA_CHAT_CLOUD_MODEL", "")
+# A recalled Mindpage can contain personal continuity. Keep it local unless the
+# launch surface explicitly permits those summaries on its configured hosted
+# chat model. Files, images, source inspection, and private sensors remain
+# independently local-only in mind.py.
+CHAT_CLOUD_PAGED_MEMORY = os.environ.get(
+    "ALPECCA_CHAT_CLOUD_PAGED_MEMORY", "0"
+) not in ("", "0", "false", "False")
 # Context window for cloud chat calls -- hosted models take big windows
 # without eating local RAM, so her conversational memory can run deep.
 CLOUD_NUM_CTX = int(os.environ.get("ALPECCA_CLOUD_NUM_CTX", "32768"))
@@ -273,6 +280,30 @@ VISION_BACKEND = os.environ.get("ALPECCA_VISION_BACKEND", "local").lower()
 # bind an attestable provider, deployment, processing location, destination,
 # HTTPS route, exact payload, and one interactive creator decision.
 VISION_CLOUD_MODEL = os.environ.get("ALPECCA_VISION_CLOUD_MODEL", "")
+# Exact private-perception routes. These values describe a destination only;
+# they never authorize egress. The authenticated creator consent broker in
+# server.py must still approve and consume one byte-bound use.
+VISION_CLOUD_TRANSPORT_ROUTE = os.environ.get(
+    "ALPECCA_VISION_CLOUD_TRANSPORT_ROUTE", ""
+).strip()
+VISION_CLOUD_DEPLOYMENT = os.environ.get(
+    "ALPECCA_VISION_CLOUD_DEPLOYMENT", ""
+).strip()
+VISION_CLOUD_PROCESSING_LOCATION = os.environ.get(
+    "ALPECCA_VISION_CLOUD_PROCESSING_LOCATION", ""
+).strip()
+ZEROGPU_VISION_TRANSPORT_ROUTE = os.environ.get(
+    "ALPECCA_ZEROGPU_VISION_TRANSPORT_ROUTE", ""
+).strip()
+ZEROGPU_VISION_DEPLOYMENT = os.environ.get(
+    "ALPECCA_ZEROGPU_VISION_DEPLOYMENT", ""
+).strip()
+ZEROGPU_VISION_MODEL = os.environ.get(
+    "ALPECCA_ZEROGPU_VISION_MODEL", ""
+).strip()
+ZEROGPU_VISION_PROCESSING_LOCATION = os.environ.get(
+    "ALPECCA_ZEROGPU_VISION_PROCESSING_LOCATION", ""
+).strip()
 
 # --- Mindscape continuity -----------------------------------------------------
 # Mindscape is Alpecca's mobile/cloud continuity shell: a compact, encrypted-by-
@@ -368,7 +399,10 @@ VOICE_WARMUP_TIMEOUT = float(os.environ.get("ALPECCA_VOICE_WARMUP_TIMEOUT", "90"
 F5_WORKER_ENABLED = os.environ.get("ALPECCA_F5_WORKER", "1") not in ("", "0", "false", "False")
 F5_WORKER_HOST = os.environ.get("ALPECCA_F5_WORKER_HOST", "127.0.0.1")
 F5_WORKER_PORT = int(os.environ.get("ALPECCA_F5_WORKER_PORT", "8776"))
-F5_WORKER_TIMEOUT = float(os.environ.get("ALPECCA_F5_WORKER_TIMEOUT", "18"))
+# A short emotional sentence takes about 12s on the RTX 3050; full replies can
+# legitimately exceed the old 18s deadline. Keep this below the browser request
+# bound so the server can still return a clean fallback before the UI gives up.
+F5_WORKER_TIMEOUT = float(os.environ.get("ALPECCA_F5_WORKER_TIMEOUT", "40"))
 OPEN_TTS_LOCAL_MODEL_DIR = os.environ.get(
     "ALPECCA_OPEN_TTS_LOCAL_MODEL_DIR",
     str(Path(__file__).parent / "data" / "models" / "f5-tts" / "F5TTS_v1_Base"),

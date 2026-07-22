@@ -1,5 +1,10 @@
 # Runtime state -- her mood DB, memories, and telemetry. Telemetry can contain
-# window titles (sensitive); none of this belongs in version control.
+# window titles (sensitive); none belongs in version control. Mindscape Vault
+# mirrors encrypted continuity records to R2 instead of committing this state.
+# Character-design binaries under data/ are no longer manual-only ignored
+# inputs: docs/manifests/alpecca_remote_design_v5.json versions their exact
+# private Hugging Face locations, sizes, and hashes, and
+# scripts/sync_remote_design_assets.py restores them on approved workstations.
 data/
 
 # Extracted third-party handoff material (ComfyClaw / OpenClaw zips).
@@ -13,6 +18,7 @@ __pycache__/
 node_modules/
 apps/*/node_modules/
 apps/*/dist/
+apps/*/build/
 output/
 *.log
 .wrangler/

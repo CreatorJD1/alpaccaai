@@ -27,6 +27,7 @@ from tkinter import messagebox
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+DISCORD_BRIDGE_LOCK_PORT = 8779
 
 
 def find_repo_root() -> Path | None:
@@ -90,7 +91,7 @@ def launch_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
     env = dict(os.environ if base is None else base)
     env.setdefault("ALPECCA_LLM_BACKEND", "ollama")
     env.setdefault("ALPECCA_MODEL", "qwen3.5:9b")
-    env.setdefault("ALPECCA_FAST_MODEL", "qwen3.5:4b")
+    env.setdefault("ALPECCA_FAST_MODEL", "qwen3.5:9b")
     env.setdefault("ALPECCA_NUM_CTX", "8192")
     env.setdefault("ALPECCA_TTS_BACKEND", "auto")
     return env
@@ -105,6 +106,18 @@ def _launcher_python() -> str:
 
 def _boot_log_path(repo_root: Path) -> Path:
     return repo_root / "data" / "logs" / "launcher_stack.log"
+
+
+def _phone_relay_log_path(repo_root: Path) -> Path:
+    return repo_root / "data" / "logs" / "launcher_phone_relay.log"
+
+
+def _discord_log_path(repo_root: Path) -> Path:
+    return repo_root / "data" / "logs" / "launcher_discord_bridge.log"
+
+
+def _cloud_standby_log_path(repo_root: Path) -> Path:
+    return repo_root / "data" / "logs" / "launcher_cloud_standby.log"
 
 
 def _start_stack(repo_root: Path, *, environment: Mapping[str, str] | None = None):
@@ -122,6 +135,72 @@ def _start_stack(repo_root: Path, *, environment: Mapping[str, str] | None = Non
             stderr=subprocess.STDOUT,
             creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
         )
+
+
+def _start_phone_relay(repo_root: Path):
+    """Publish the healthy singleton through the mobile discovery record."""
+    log_path = _phone_relay_log_path(repo_root)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write("\n\n=== Alpecca phone relay %s ===\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+        log.flush()
+        return subprocess.Popen(
+            [_launcher_python(), "scripts\\share.py", "--tunnel"],
+            cwd=str(repo_root),
+            env=launch_environment(),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
+        )
+
+
+def _start_discord_bridge(repo_root: Path):
+    """Start the single fenced Discord bridge with the normal full-stack defaults."""
+    log_path = _discord_log_path(repo_root)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    environment = launch_environment()
+    environment.setdefault("ALPECCA_DISCORD_MEDIA", "1")
+    environment.setdefault("ALPECCA_DISCORD_VOICE", "1")
+    environment.setdefault("ALPECCA_DISCORD_VOICE_RECEIVE", "1")
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write("\n\n=== Alpecca Discord bridge check %s ===\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+        log.flush()
+        return subprocess.Popen(
+            [_launcher_python(), "scripts\\run_discord_bridge.py"],
+            cwd=str(repo_root),
+            env=environment,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
+        )
+
+
+def _wake_cloud_standby(repo_root: Path):
+    """Request the health-only cloud standby without promoting a second mind."""
+    log_path = _cloud_standby_log_path(repo_root)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write("\n\n=== Alpecca cloud standby wake %s ===\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+        log.flush()
+        return subprocess.Popen(
+            [_launcher_python(), "scripts\\wake_cloud_standby.py"],
+            cwd=str(repo_root),
+            env=launch_environment(),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
+        )
+
+
+def _loopback_port_open(port: int, timeout: float = 0.25) -> bool:
+    """Check a sidecar without relying on elevated process inspection."""
+    import socket
+
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def _ollama_available(timeout: float = 0.75) -> bool:
@@ -181,6 +260,12 @@ class Launcher:
         self._flash_until = 0.0
         self._auto_open_pending = False
         self._stack_process = None
+        self._phone_relay_process = None
+        self._phone_relay_started_for_wake = False
+        self._discord_bridge_process = None
+        self._discord_bridge_started_for_wake = False
+        self._cloud_standby_process = None
+        self._cloud_standby_started_for_wake = False
         self._build_ui()
 
         threading.Thread(target=self._poll_forever, daemon=True, name="AlpeccaLauncherHealth").start()
@@ -357,6 +442,32 @@ class Launcher:
 
     def _refresh_status(self) -> None:
         try:
+            if self._awake and not self._phone_relay_started_for_wake and REPO_ROOT is not None:
+                self._phone_relay_started_for_wake = True
+                threading.Thread(
+                    target=self._launch_phone_relay,
+                    daemon=True,
+                    name="AlpeccaLauncherPhoneRelay",
+                ).start()
+            if self._awake and not self._cloud_standby_started_for_wake and REPO_ROOT is not None:
+                self._cloud_standby_started_for_wake = True
+                threading.Thread(
+                    target=self._launch_cloud_standby,
+                    daemon=True,
+                    name="AlpeccaLauncherCloudStandby",
+                ).start()
+            if (
+                self._awake
+                and not self._discord_bridge_started_for_wake
+                and REPO_ROOT is not None
+                and not _loopback_port_open(DISCORD_BRIDGE_LOCK_PORT)
+            ):
+                self._discord_bridge_started_for_wake = True
+                threading.Thread(
+                    target=self._launch_discord_bridge,
+                    daemon=True,
+                    name="AlpeccaLauncherDiscordBridge",
+                ).start()
             if self._awake and self._booting:
                 self._booting = False
                 self._set_boot_state(4, "Alpecca is awake locally. House HQ is ready.")
@@ -394,6 +505,27 @@ class Launcher:
             pass
         self.root.after(350, self._refresh_status)
 
+    def _launch_phone_relay(self) -> None:
+        try:
+            self._phone_relay_process = _start_phone_relay(REPO_ROOT)
+            self.say("Alpecca is awake. Publishing the current phone endpoint.")
+        except Exception as exc:
+            self.say(f"Phone endpoint publication failed: {type(exc).__name__}")
+
+    def _launch_discord_bridge(self) -> None:
+        try:
+            self._discord_bridge_process = _start_discord_bridge(REPO_ROOT)
+            self.say("Alpecca is awake. Checking her Discord presence.")
+        except Exception as exc:
+            self.say(f"Discord bridge launch failed: {type(exc).__name__}")
+
+    def _launch_cloud_standby(self) -> None:
+        try:
+            self._cloud_standby_process = _wake_cloud_standby(REPO_ROOT)
+            self.say("Alpecca is awake. Waking the cloud continuity standby.")
+        except Exception as exc:
+            self.say(f"Cloud standby wake failed: {type(exc).__name__}")
+
     def _flash(self) -> None:
         self._flash_until = time.time() + 1.2
 
@@ -411,6 +543,9 @@ class Launcher:
             self.say("Cannot wake Alpecca because the project root was not found.")
             return
         self._booting = True
+        self._phone_relay_started_for_wake = False
+        self._discord_bridge_started_for_wake = False
+        self._cloud_standby_started_for_wake = False
         self._auto_open_pending = True
         self._set_boot_state(1, "Checking the local language runtime.")
         self.say("Waking Alpecca without opening a terminal window.")
@@ -513,6 +648,9 @@ class Launcher:
             else:
                 self._awake = False
                 self._booting = False
+                self._phone_relay_started_for_wake = False
+                self._discord_bridge_started_for_wake = False
+                self._cloud_standby_started_for_wake = False
                 self._set_boot_state(0, "Alpecca is resting locally.")
                 self.say("Alpecca is asleep now.")
         except Exception as exc:
@@ -541,4 +679,7 @@ class Launcher:
 
 
 if __name__ == "__main__":
-    Launcher().run()
+    launcher = Launcher()
+    if os.environ.get("ALPECCA_AUTOWAKE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        launcher.root.after(250, launcher.wake_her)
+    launcher.run()

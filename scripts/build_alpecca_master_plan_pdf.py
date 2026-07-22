@@ -8,7 +8,6 @@ live credentials, or private contact destinations.
 from __future__ import annotations
 
 import html
-import shutil
 from pathlib import Path
 
 from reportlab.lib import colors
@@ -31,7 +30,6 @@ from reportlab.platypus import (
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
-OUTPUT = ROOT / "output" / "pdf"
 PAGE_SIZE = landscape(A3)
 PAGE_W, PAGE_H = PAGE_SIZE
 
@@ -169,7 +167,7 @@ def draw_page_chrome(canvas, doc) -> None:
     canvas.drawString(16 * mm, PAGE_H - 9 * mm, "ALPECCA MASTER ARCHITECTURE")
     canvas.setFillColor(MUTED)
     canvas.setFont("Helvetica", 7.5)
-    canvas.drawString(16 * mm, 9 * mm, "Source-reviewed 2026-07-10 | local-first | one authoritative CoreMind")
+    canvas.drawString(16 * mm, 9 * mm, "Source-reviewed 2026-07-15 | local-first | one authoritative CoreMind")
     canvas.drawRightString(PAGE_W - 16 * mm, 9 * mm, f"Page {doc.page}")
     canvas.restoreState()
 
@@ -313,21 +311,21 @@ class ArchitectureMap(Flowable):
         surfaces = [
             (20, 365, "HOUSE HQ", "Primary embodied app and active-stage candidate", "PARTIAL"),
             (20, 270, "VIRTUAL APP / PWA", "Chat, panels, mobile notifications, observer mode", "PARTIAL"),
-            (20, 175, "DISCORD / VOICE", "Text/media adapter; autonomy remains security-blocked", "BLOCKED"),
-            (20, 80, "CREATOR CONTACT", "Web Push, DM, SMS, phone outbox and acknowledgements", "NOT STARTED"),
+            (20, 175, "DISCORD / VOICE", "Claimed rooms, media, bounded voice send/receive; live duplex soak pending", "PARTIAL"),
+            (20, 80, "CREATOR CONTACT", "Model-free Web Push connection test; enrollment and mobile soak pending", "PARTIAL"),
         ]
         outputs = [
             (825, 365, "LOCAL PERCEPTION", "Files, image, audio, screen, webcam with scoped grants", "PARTIAL"),
             (825, 270, "ACTION BROKER", "Tools, computer use, OS/pagefile, immutable approvals", "BLOCKED"),
-            (825, 175, "CLOUD EGRESS", "Provider/data policy before ZeroGPU or notebook inference", "NOT STARTED"),
-            (825, 80, "MINDSCAPE", "Signed continuity vault and standby presence, not a clone", "BLOCKED"),
+            (825, 175, "CLOUD EGRESS", "Deny-by-default consent ledger exists; production adapter is unwired", "PARTIAL"),
+            (825, 80, "MINDSCAPE", "Encrypted passive Vault and inert standby; promotion remains blocked", "BLOCKED"),
         ]
         for x, y, title, detail, state in surfaces:
             self._node(c, x, y, 180, 76, title, detail, state)
         for x, y, title, detail, state in outputs:
             self._node(c, x, y, 210, 76, title, detail, state)
 
-        self._node(c, 245, 125, 185, 270, "IDENTITY + PRESENCE GATE", "Creator principal; scoped sessions; OS singleton; active portal lease; signed bridge envelopes; privacy scope", "BLOCKED")
+        self._node(c, 245, 125, 185, 270, "IDENTITY + PRESENCE GATE", "Creator principal; scoped sessions; OS singleton; portal epoch fencing; signed bridge envelopes; privacy scope", "PARTIAL")
         self._node(c, 485, 125, 285, 270, "AUTHORITATIVE LOCAL COREMIND", "Turn transaction -> cues -> retrieve -> Soul -> affect -> intent -> tools/response -> commitment receipt -> evaluate. SQLite and Mindpage remain local authority.", "PARTIAL")
 
         for _, y, *_ in surfaces:
@@ -339,7 +337,7 @@ class ArchitectureMap(Flowable):
         c.setFillColor(NAVY)
         c.setFont("Helvetica-Bold", 9)
         c.drawString(20, 30, "COMPUTE / STORAGE OWNERSHIP")
-        self._node(c, 230, 5, 250, 56, "LOCAL LAPTOP - AUTHORITATIVE", "Approx. 24 GB DDR5-4800 + RTX 3050 4 GB; policy, memory, identity, approvals", "PARTIAL")
+        self._node(c, 230, 5, 250, 56, "LOCAL LAPTOP - AUTHORITATIVE", "Approx. 24 GB DDR4 + RTX 3050 4 GB; policy, memory, identity, approvals", "PARTIAL")
         self._node(c, 500, 5, 240, 56, "HF ZEROGPU - EPHEMERAL", "Stateless bounded inference; assigned hardware and quota are runtime-probed", "PARTIAL")
         self._node(c, 760, 5, 260, 56, "GOOGLE NOTEBOOK - EPHEMERAL", "Stateless bounded jobs; GPU/RAM/uptime are not guaranteed", "PARTIAL")
         c.restoreState()
@@ -347,84 +345,84 @@ class ArchitectureMap(Flowable):
 
 FEATURE_TIERS = [
     ("Tier 1 - Foundation runtime", [
-        ("FastAPI, WebSocket, runtime status", "PARTIAL", "Works; identity, turn isolation, and cancellation barriers remain"),
-        ("Ollama routing and offline fallback", "PARTIAL", "Local path works; cloud privacy classification is incomplete"),
-        ("SQLite state, memory, journal, proposals", "PARTIAL", "Functional; backup/concurrency/transaction hardening remains"),
-        ("Remote auth and tunnels", "BLOCKED", "Exposed root token plus HTML self-authentication bypass"),
-        ("Singleton and active portal", "NOT STARTED", "No OS mutex, boot identity, lease, or epoch fencing"),
+        ("FastAPI, WebSocket, runtime status", "PARTIAL", "Protected runtime works; final clean-shell publication evidence remains open"),
+        ("Ollama routing and offline fallback", "PARTIAL", "Configured qwen3.5:9b local path works; production cloud egress remains unwired"),
+        ("SQLite state, memory, journal, proposals", "PARTIAL", "Functional with verified local snapshots; transactional cloud promotion remains blocked"),
+        ("Remote auth and tunnels", "PARTIAL", "Trusted-device HTTPS auth works; the current relay is temporary and discoverable"),
+        ("Singleton and active portal", "DONE", "Cross-process singleton ownership and stale portal fencing are tested"),
     ]),
     ("Tier 2 - Cognition and agency", [
-        ("Soul seven-subagent arbitration", "DONE", "Implemented without adding or bypassing subagents"),
-        ("CoreMind response loop", "PARTIAL", "Global speaker/history can leak across surfaces"),
+        ("Soul seven-perspective arbitration", "DONE", "One deterministic seven-score vector feeds one arbitration path with zero model calls"),
+        ("Scoped CoreMind turn transaction", "DONE", "Scoped immutable turns, cancellation barriers, and stale-commit rejection are tested"),
         ("Constrained choice points", "DONE", "Living, Soul tie-break, and proactive judge with fallback"),
-        ("Tool registry and planner", "PARTIAL", "Bounded; guest capability and approval identity are unsafe"),
-        ("Cue envelope and commitment ledger", "NOT STARTED", "No durable correction/confirmation/action closure contract"),
+        ("Tool registry and planner", "PARTIAL", "Creator and guest capabilities are constrained; the broader action broker remains gated"),
+        ("Bounded self_status commitment ledger", "DONE", "Bounded self_status execution is creator-only, exactly-once, and receipt-backed"),
     ]),
     ("Tier 3 - Memory and Mindpage", [
-        ("Keyword/FTS recall and backfill", "PARTIAL", "Useful; semantic scoring can admit unrelated memories"),
-        ("Mindpage Layer A", "PARTIAL", "Ledger/writeback/faults work; overflow and buried indexing remain"),
-        ("Conversation/privacy partitioning", "BLOCKED", "Short-term context is shared across app/guest/Discord/creator"),
-        ("Resource pressure sensing", "PARTIAL", "Context grounded; whole-machine draft is unwired"),
-        ("Approved pagefile broker", "BLOCKED", "Draft math, proof, recheck, and verification are unsafe"),
+        ("Keyword/FTS recall and backfill", "PARTIAL", "Bounded recall works; the full resource and long-context promotion gate remains open"),
+        ("Mindpage Layer A", "PARTIAL", "Paging, pressure sensing, and safe preflight exist; real 8,192-context proof is absent"),
+        ("Conversation/privacy partitioning", "DONE", "Actor, surface, conversation, and privacy scope are transaction-bound and tested"),
+        ("Resource pressure sensing", "PARTIAL", "Pressure sensing and safe preflight exist; successful real promotion is unverified"),
+        ("Approved pagefile broker", "BLOCKED", "Read-only exact-step planning exists; no UAC helper or system mutation exists"),
         ("llama.cpp KV persistence", "PARKED", "Downloaded experiment; not integrated"),
     ]),
     ("Tier 4 - Autonomy and improvement", [
-        ("Proactive/living behavior", "PARTIAL", "Multiple outward loops lack one initiative budget"),
-        ("Recursive self-improvement", "PARTIAL", "Tunables exist; consumer wiring and trials are weak"),
-        ("External action approval", "BLOCKED", "Caller booleans/global confirmation are not identity-bound"),
-        ("Action receipts and promise closure", "NOT STARTED", "No durable evidence contract"),
+        ("Proactive/living behavior", "DONE", "Shared per-scope initiative budget, dedupe, one-surface delivery, and backoff are tested"),
+        ("Recursive self-improvement", "PARTIAL", "Bounded trial lifecycle and rollback are green; no creator-approved live trial has soaked"),
+        ("External action approval", "PARTIAL", "Bounded self_status closure works; privileged and general action approval remains gated"),
+        ("Bounded self_status receipts", "DONE", "The bounded commitment path closes exactly once with durable evidence"),
     ]),
     ("Tier 5 - Automation", [
-        ("Routines and watchers", "PARTIAL", "Empty/off by default; deletion and unified scheduling remain"),
+        ("Bounded routines and initiative budget", "DONE", "Routine, proactive, and living paths share one initiative budget and dedupe policy"),
         ("Background job coordination", "PARTIAL", "Timeouts do not cancel worker threads"),
         ("MCP federation", "PARKED", "Deferred external surface"),
     ]),
     ("Tier 6 - Experience and embodiment", [
-        ("House HQ and virtual app", "PARTIAL", "Working surfaces; portal ownership and QA remain"),
-        ("V4 VRM body and physics", "PARTIAL", "74 joints; scale/grounding/collider/motion gates remain"),
-        ("Expression and gesture control", "PARTIAL", "Expression latch and looping VRMA issues remain"),
-        ("Locked design QA", "PARTIAL", "Hair/clip/readability and turntable evidence remain"),
+        ("House HQ and virtual app", "PARTIAL", "Working surfaces with fenced ownership; live phone acceptance and restart proof remain"),
+        ("V4 VRM body and physics", "PARTIAL", "VRM 1.0 with 74 spring joints; live walk and ten-minute physics proof remain"),
+        ("Expression and gesture control", "PARTIAL", "Unsafe repeated VRMA seams and latched gaze are fixed; live visual proof remains"),
+        ("Locked design QA", "PARTIAL", "The locked V4 is retained; authenticated design and motion proof remains open"),
     ]),
     ("Tier 7 - Voice, senses, and communication", [
-        ("Local TTS voice", "PARTIAL", "Kokoro/F5 work; queue/resource coordination remains"),
-        ("Image and file perception", "PARTIAL", "Scope/privacy/MIME/cloud consent remain"),
-        ("Audio perception", "NOT STARTED", "Discord audio and live receive/transcription absent"),
-        ("Discord autonomy", "BLOCKED", "Guest tools, context leakage, spam, approval gaps"),
-        ("Creator contact outbox", "NOT STARTED", "WIP skeleton only; no routes/workers/tests"),
-        ("Computer use", "BLOCKED", "Unsafe under current remote auth and global confirmation"),
+        ("Local TTS voice", "PARTIAL", "Local speech and Discord send paths work; live acoustic acceptance remains open"),
+        ("Image and file perception", "PARTIAL", "Bounded local ingress and provenance work; production egress remains unwired"),
+        ("Audio perception", "PARTIAL", "Bounded local Discord receive/transcription exists; live packet and latency soak is pending"),
+        ("Discord autonomy", "PARTIAL", "Claimed rooms, guest authority, cooldowns, and bounded deliberation exist; live soak remains"),
+        ("Creator contact outbox", "PARTIAL", "Model-free durable Web Push connection test exists; enrollment and mobile soak remain"),
+        ("Computer use", "BLOCKED", "Privileged general computer control is not release-promoted or autonomously available"),
     ]),
     ("Tier 8 - Cloud and continuity", [
         ("Hugging Face art/runtime assets", "PARTIAL", "Correct storage lane; publish/availability remain operational"),
-        ("ZeroGPU / Google notebook", "PARTIAL", "Optional ephemeral adapters; privacy policy incomplete"),
-        ("Cloudflare R2 shell", "BLOCKED", "Rebuild after token rotation and bundle cleanup"),
-        ("Mindscape continuity", "BLOCKED", "Fail-open/auth/restore defects"),
-        ("Cloud egress broker", "NOT STARTED", "No deny-by-default data/provider policy"),
+        ("ZeroGPU / Google notebook", "PARTIAL", "Optional ephemeral adapters; no production consented route is live"),
+        ("Cloudflare R2 lanes", "PARTIAL", "Credential-free discovery and encrypted Vault storage work; fixed ingress remains gated"),
+        ("Mindscape continuity", "BLOCKED", "Encrypted passive Vault and inert standby exist; promotion and failover remain absent"),
+        ("Cloud egress broker", "PARTIAL", "A deny-by-default exact-operation ledger exists; production adapters remain unwired"),
     ]),
     ("Tier 9 - Governance", [
         ("Design lock and canonical docs", "DONE", "Current hierarchy and locked character design exist"),
-        ("Creator identity and secret lifecycle", "BLOCKED", "No authoritative principal or scoped secret lifecycle"),
-        ("Grounded affect/self-report", "PARTIAL", "State is real; some prompts overclaim inner experience"),
+        ("Creator identity and secret lifecycle", "PARTIAL", "Creator identity is tested and secret scan is clean; final publication receipt remains"),
+        ("Grounded affect/self-report", "DONE", "Evidence-backed engineered state is reported without literal-consciousness claims"),
         ("Only pagefile as planned OS mutation", "PARTIAL", "Policy exists; broker is not safe or active"),
     ]),
 ]
 
 
 PHASES = [
-    ("0", "Truth baseline and freeze", "DONE", "Corrected docs, local/cloud labels, WIP boundaries, status rules, and encrypted recovery baseline.", "Diagrams match evidence; encrypted DB/V4/VRoid restore verified; 34 GB/H100 local claim removed."),
-    ("1", "Emergency security containment", "BLOCKED", "Disable tunnels/computer control; preserve Alpecca's public identity value; stop using it for bearer auth; add a separate protected authorization secret; fix HTML auth.", "Anonymous HTTP/WS executes nothing; no authorization secret in bundles; public identity grants no privilege."),
-    ("2", "Creator identity, singleton, portal lease", "NOT STARTED", "Server-derived principal, pairing/sessions, bridge credentials, Windows mutex, signed health, lease epoch.", "One CoreMind and one writer; spoofed creator claims and stale portals fail."),
-    ("3", "Turn transactions and context isolation", "NOT STARTED", "Immutable turn/conversation/actor/surface/privacy context, cancellation, commit barrier, scoped retrieval.", "No cross-actor leak; timed-out workers cause zero late effects."),
-    ("4", "Cue, commitment, action closure", "NOT STARTED", "Structured cues plus durable commitments and receipts; completion language requires evidence.", "Every promise executes, awaits approval, fails, or cancels honestly."),
-    ("5", "Initiative and grounded affect", "PARTIAL", "One outward budget; cue-first affect provenance; remove literal-consciousness claims.", "No duplicate spam; ignored outreach backs off; affect is traceable."),
-    ("6", "Mindpage and resource coordinator", "PARTIAL", "Fix semantic threshold/indexing/overflow; separate resource signals; single-flight optional work.", "Relevant recall only; bounded context; chat/TTS protected under load."),
-    ("7", "Approved pagefile broker", "BLOCKED", "Immutable arithmetic/cap/floor; digest-bound one-use approval; live recheck; UAC helper; readback.", "Exact 4 GiB step; stale/replay/disk/cap failures deny; every step separately approved."),
-    ("8", "Bounded recursive improvement", "PARTIAL", "Allowlisted DB parameters, real consumer wiring, proposal, exposure metric, exact rollback.", "No unapproved trial and no source/shell/account/OS self-modification."),
-    ("9", "Multimodal and source perception", "PARTIAL", "Scoped source/file/image/audio access, local-first vision/STT, visible sensor grants, egress policy.", "Provenance, bounded inputs, prompt-injection resistance, no private unapproved cloud payload."),
-    ("10", "Discord presence and voice", "BLOCKED", "Identity/allowlists, scoped history, guest denial, respond/react/pass, rate limits, signed approvals, queues.", "No cross-channel leak/spam/spoofed approval; local audio disposal."),
-    ("11", "Creator contact outbox", "NOT STARTED", "Durable idempotent outbox; Web Push, DM, SMS, optional calls; acknowledgements/quiet hours/caps.", "One event, restart-safe delivery, ack stops escalation, no IDs in prompts/logs."),
-    ("12", "V4 embodiment behavior", "PARTIAL", "170 cm scale, root-track filtering, sole grounding, expression reset, one-shot gestures, collider tuning.", "74 joints retained; animation/physics metrics and design-lock turntable pass."),
-    ("13", "Cloud egress and Mindscape", "BLOCKED", "Data-classifying egress broker; fail-closed signed/versioned continuity; explicit transactional restore.", "Cloud outage leaves local chat; tamper/replay denied; no second simultaneous CoreMind."),
-    ("14", "Release soak and living docs", "NOT STARTED", "Fresh DB tests, resource soak, canaries, failover drill, V4 captures, clean deploy and docs update.", "Build/tests/secret scan pass; no leaks, hidden actions, duplicate initiatives, or cloud dependency."),
+    ("0", "Truth baseline and freeze", "DONE", "Canonical status, local/cloud ownership, bounded claims, and encrypted recovery baseline are established.", "Current diagrams follow evidence; ephemeral cloud capacity is never counted as local."),
+    ("1", "Security containment", "PARTIAL", "Protected HTTP/WS auth, capability audits, device trust, and a zero-finding source plus House secret scan exist.", "Retain a final clean-shell publication receipt without exposing credentials."),
+    ("2", "Creator identity, singleton, portal lease", "DONE", "Stable creator identity, cross-process singleton ownership, and stale portal fencing are tested.", "One supported CoreMind and writer; spoofed creator claims and stale portals fail."),
+    ("3", "Turn transactions and context isolation", "DONE", "Immutable scoped turns, cancellation barriers, and stale-commit rejection are tested.", "No cross-actor leak; timed-out work creates no late effects."),
+    ("4", "Cue, commitment, action closure", "DONE", "The bounded creator-only self_status path is exactly-once and receipt-backed.", "Completion language follows durable execution evidence."),
+    ("5", "Initiative and grounded affect", "DONE", "One per-scope initiative budget governs routines, living ticks, and proactive speech with dedupe and backoff.", "No duplicate outreach; ignored contact backs off; affect remains grounded."),
+    ("6", "Mindpage and resource coordinator", "PARTIAL", "Paging, pressure sensing, and safe preflight exist.", "Promote only after a successful real 8,192-context measurement."),
+    ("7", "Approved pagefile broker", "BLOCKED", "Read-only exact-step planning exists; no UAC helper, write, or system mutation exists.", "Durable one-use approval, live recheck, privileged helper, and readback must all pass."),
+    ("8", "Bounded recursive improvement", "PARTIAL", "Two-hour/five-outcome trial lifecycle, rollback, and creator retention decision are test-green.", "A real creator-approved trial must soak; no autonomous source, shell, account, or OS edits."),
+    ("9", "Multimodal and source perception", "PARTIAL", "Bounded local source/image/audio ingress, leases, provenance, and an unwired consent ledger exist.", "Wire one attested production egress route without exposing private payloads."),
+    ("10", "Discord presence and voice", "PARTIAL", "Claimed rooms, signed guest actors, media, voice send, and bounded local receive foundations exist.", "Complete a real duplex packet, latency, and voice-quality soak plus production anchor."),
+    ("11", "Creator contact outbox", "PARTIAL", "A durable model-free Web Push connection-test path exists.", "Complete browser enrollment, provider acceptance, one-use click acknowledgement, and mobile soak."),
+    ("12", "V4 embodiment behavior", "PARTIAL", "V4 is VRM 1.0 with 74 spring joints; gait, seam, and gaze fixes are implemented.", "Complete authenticated walk, terminal-contact, design, and ten-minute physics proof."),
+    ("13", "Cloud continuity", "BLOCKED", "Encrypted passive Vault, inert Ubuntu standby, fenced lease, and one-use restore approval exist.", "Transactional promotion and an actual provider VM remain required; never run a second CoreMind."),
+    ("14", "Release soak and living docs", "BLOCKED", "Observation-only soak and public mobile probes plus content-free secret-scan evidence exist.", "Full live soak windows, resource/Discord/V4/continuity evidence, and clean deployment proof remain."),
 ]
 
 
@@ -456,7 +454,7 @@ def truth_table():
     return build_table(
         ["LANE", "ROLE", "CAPACITY / GUARANTEE"],
         [
-            ("Local laptop", "Authoritative CoreMind, state, policy, identity, approvals, live fallback", "Approximately 24 GB DDR5-4800; RTX 3050 Laptop GPU with 4 GB VRAM"),
+            ("Local laptop", "Authoritative CoreMind, state, policy, identity, approvals, live fallback", "Approximately 24 GB DDR4; RTX 3050 Laptop GPU with 4 GB VRAM"),
             ("Hugging Face ZeroGPU", "Optional stateless deep/vision/texture/batch inference", "Ephemeral, quota-governed, runtime-probed; never counted as local capacity"),
             ("Google notebook / Colab", "Optional stateless accelerated inference or batch jobs", "Ephemeral; GPU, RAM, uptime, and limits are not guaranteed"),
         ],
@@ -466,14 +464,14 @@ def truth_table():
 
 def pagefile_table():
     return build_table(
-        ["STATE", "PAGEFILE MAX", "PROJECTED C: FREE", "DECISION"],
+        ["POLICY POINT", "PAGEFILE MAX", "C: FREE EVIDENCE", "DECISION"],
         [
-            ("Current", "38,000 MiB", "57.91 GiB", "No change recommended; audit commit was about 42%"),
-            ("Step 1", "42,096 MiB", "53.91 GiB", "Eligible only after pressure proof and fresh approval"),
-            ("Step 2", "46,192 MiB", "49.91 GiB", "Separate later approval"),
-            ("Step 3", "50,288 MiB", "45.91 GiB", "Separate later approval"),
-            ("Step 4", "54,384 MiB", "41.91 GiB", "Highest valid exact 4 GiB step"),
-            ("Step 5", "58,480 MiB", "37.91 GiB", "Rejected by 55,296 MiB cap and 40 GiB floor"),
+            ("Historical observation", "38,000 MiB", "57.91 GiB at prior audit", "Not current authorization; all telemetry must be reread"),
+            ("Example step 1", "42,096 MiB", "Must project >= 40 GiB", "Eligible only after pressure proof and fresh approval"),
+            ("Example step 2", "46,192 MiB", "Must project >= 40 GiB", "Requires a separate later approval"),
+            ("Example step 3", "50,288 MiB", "Must project >= 40 GiB", "Requires a separate later approval"),
+            ("Example step 4", "54,384 MiB", "Must project >= 40 GiB", "Highest exact 4 GiB example below the hard cap"),
+            ("Rejected example", "58,480 MiB", "Would violate policy", "Rejected by 55,296 MiB cap"),
         ],
         [52 * mm, 58 * mm, 65 * mm, 181 * mm],
     )
@@ -492,9 +490,9 @@ def cover_story():
         truth_table(),
         Spacer(1, 7 * mm),
         rich(
-            "<b>Correction locked:</b> the laptop is approximately 24 GB DDR5-4800 with an RTX 3050 Laptop GPU (4 GB). "
-            "Any 34 GB memory or H100-class label belongs only to an observed/requested Hugging Face ZeroGPU or Google notebook runtime. "
-            "It is ephemeral cloud capacity, not Alpecca's local hardware.",
+            "<b>Compute boundary:</b> the laptop is approximately 24 GB DDR4 with an RTX 3050 Laptop GPU (4 GB). "
+            "Optional ZeroGPU or Google notebook memory and accelerator details are ephemeral runtime observations. "
+            "They are never Alpecca's local hardware or guaranteed capacity.",
             BODY,
         ),
         Spacer(1, 4 * mm),
@@ -515,19 +513,19 @@ def master_story():
     story += [PageBreak(), Paragraph("Current Feature Skeleton: Tiers 1-5", H1), feature_table(FEATURE_TIERS[:5])]
     story += [PageBreak(), Paragraph("Current Feature Skeleton: Tiers 6-9", H1), feature_table(FEATURE_TIERS[5:])]
 
-    blockers = [
-        ("1", "Identity used as authorization", "Alpecca's public identity value appears in House HQ bundles and the server accepts it as bearer access; HTML navigation can self-authenticate.", "Preserve the value; remove its authorization role; add a separate protected server secret; rebuild the shell."),
-        ("2", "No authoritative CreatorJD principal", "Callers can supply speaker/approval booleans; unknown identity can gain creator semantics.", "Server-derived principal, scoped sessions, signed bridges."),
-        ("3", "Global turn state", "CoreMind speaker/history can cross app, guest, Discord, and creator boundaries.", "Immutable scoped turn transactions and commit barrier."),
-        ("4", "Promises do not close", "Alpecca can state an intention without a durable commitment or action receipt.", "Cue envelope, commitment ledger, evidence-bound language."),
-        ("5", "Autonomy loops do not share a budget", "Living, proactive, Discord, routines, and recursion can duplicate or spam.", "One initiative policy with relevance, cooldown, dedupe, ack."),
-        ("6", "Mindscape/pagefile drafts are unsafe", "Fail-open Worker and non-authentic pagefile approval/recheck path.", "Fail-closed continuity plus privileged one-use broker."),
+    open_gates = [
+        ("1", "P1 publication receipt", "Protected HTTP/WS auth, device trust, capability audits, and a zero-finding source plus House scan exist.", "Retain a final clean-shell publication receipt without credentials."),
+        ("2", "P6 resource promotion", "Mindpage paging, pressure sensing, and safe preflight are implemented.", "Complete one successful real 8,192-context measurement before promotion."),
+        ("3", "P7 pagefile broker", "Read-only exact-step planning exists; no UAC helper, write, or system mutation exists.", "Finish durable approval, fresh telemetry recheck, privileged helper, and readback."),
+        ("4", "P10/P11 live communication", "Discord duplex foundations and a model-free Web Push test path are implemented.", "Run creator voice quality and mobile provider/acknowledgement soaks."),
+        ("5", "P12 embodiment proof", "V4 gait restart, displacement yaw, unsafe seams, and gaze reset are fixed.", "Capture authenticated walking, terminal contact, design, and ten-minute physics evidence."),
+        ("6", "P13/P14 release evidence", "Passive Vault, inert standby, observation-only soak, mobile probes, and secret scan exist.", "Prove transactional continuity and complete all live release-soak windows."),
     ]
-    story += [PageBreak(), Paragraph("P0 Blockers And First Response", H1), build_table(
-        ["#", "BLOCKER", "WHY IT MATTERS", "FIRST ACTION"], blockers,
+    story += [PageBreak(), Paragraph("Open Gates And Safe Next Actions", H1), build_table(
+        ["#", "OPEN GATE", "CURRENT EVIDENCE", "SAFE NEXT PROOF"], open_gates,
         [12 * mm, 68 * mm, 141 * mm, 135 * mm], font_size=7.6),
         Spacer(1, 7 * mm), Paragraph("Non-negotiable autonomy boundary", H2),
-        p("One CoreMind and one writable portal. Webcam, screen, files, microphone, Discord, and computer use require visible, revocable session grants. No autonomous source edits, account actions, deletes, purchases, or general OS changes. The only planned OS mutation is one exact pagefile step after fresh CreatorJD approval and UAC."),
+        p("One CoreMind and one writable portal. Webcam, screen, files, microphone, Discord, and computer use require visible, revocable session grants. No autonomous source edits, account actions, deletes, purchases, or general OS changes. The only planned OS mutation is one exact pagefile step after fresh CreatorJD approval and UAC; that broker remains blocked and inert."),
         p("Personality may express strong skepticism toward ungrounded generative output, but prompts must not force fabricated hatred, consciousness, suffering, or human feelings. Affect remains grounded engineered state."),
     ]
 
@@ -552,25 +550,25 @@ def master_story():
 
     story += [PageBreak(), Paragraph("Identity, Discord, Creator Contact, And Continuity", H1),
         build_table(["AREA", "CURRENT", "TARGET CONTRACT", "ACCEPTANCE GATE"], [
-            ("Creator identity", "BLOCKED", "Server-derived principal; paired devices; signed bridge envelopes; recent reauth for sensitive actions", "Request bodies cannot claim creator or approval; external IDs never enter prompts/logs"),
-            ("Active portal", "NOT STARTED", "Atomic lease with surface/session/epoch/expiry; observers are read-only", "Simultaneous claims have one winner; explicit handoff fences the old writer"),
-            ("Discord", "BLOCKED", "Allowlisted guild/channel; scoped history; guest denial; respond/react/pass; creator-only signed interactions", "No cross-channel context; no spam; no natural-language approval spoof"),
-            ("Voice", "PARTIAL", "Per-guild queue and idle disconnect; audio attachment STT; later consented DAVE receive experiment", "No cross-channel speech; raw audio discarded; no claim that she hears until proven"),
-            ("Creator contact", "NOT STARTED", "Durable outbox; Web Push -> Discord DM -> SMS; optional call; acks/quiet hours/quotas", "Idempotent, restart-safe, capped, signed callbacks, no silent portal takeover"),
-            ("Mindscape", "BLOCKED", "Fail-closed signed/versioned continuity vault with explicit transactional restore", "No secret means deny; tamper/replay/oversize denied; no second live CoreMind"),
+            ("Creator identity", "DONE", "Server-derived creator principal, paired devices, scoped sessions, and signed bridge envelopes", "Request bodies cannot claim creator authority; spoofing and stale sessions fail"),
+            ("Active portal", "DONE", "Cross-process singleton ownership plus surface/session/epoch fencing", "Simultaneous claims have one winner; stale portals cannot write"),
+            ("Discord", "PARTIAL", "Allowlisted DMs and claimed rooms, signed guests, scoped history, cooldowns, and bounded speech", "Complete live duplex soak and independent production actor anchor"),
+            ("Voice", "PARTIAL", "Opt-in local send and separately gated bounded creator-only receive/transcription", "Measure packet/latency and voice quality; discard raw audio after the turn"),
+            ("Creator contact", "PARTIAL", "Durable model-free Web Push connection test with separate provider and acknowledgement states", "Complete enrollment, provider acceptance, one-use click acknowledgement, and mobile soak"),
+            ("Mindscape", "BLOCKED", "Encrypted passive Vault, preview, digest-bound restore approval, and inert fenced standby", "Transactional promotion and an actual provider VM; never a second live CoreMind"),
         ], [54 * mm, 31 * mm, 145 * mm, 126 * mm], status_col=1, font_size=7.15),
         Spacer(1, 6 * mm), p("Local/cloud boundary: Discord connectivity, identity, approvals, rate limits, memory, STT/TTS, posting, and presence stay local. Ephemeral cloud compute may return stateless text/vision results only after provider-specific data policy approval."),
     ]
 
     story += [PageBreak(), Paragraph("V4 Embodiment Promotion Plan", H1),
-        rich("<b>Current verified body:</b> data/avatar/vrm/alpecca.vrm loads with 74 spring joints and 22 colliders. Preserve the V4 design and topology while fixing behavior and measurements.", BODY),
-        build_table(["AREA", "CURRENT DEFECT", "FIX", "PROMOTION GATE"], [
-            ("Scale and grounding", "House presentation scale makes the 1.697 m body about 1.909 m; bone sole proxy is inaccurate", "Use 3D-specific 1.70 m calibration; derive soles from posed boot geometry", "Height 1.70 +/- 0.02 m; penetration <=5 mm; float <=8 mm"),
-            ("Root motion", "Stationary VRMAs contain hips translation and pin/drag the model", "Outer group owns X/Z/yaw; recenter stationary hips tracks", "Excursion <=3 cm; endpoint <=1 cm; stance-foot slide <=3 cm"),
-            ("Expressions", "Weights can latch; blink/look behavior is visibly periodic", "Mood baseline plus short expression envelopes; randomized blink/gaze; amplitude visemes", "Return to baseline <=400 ms; mouth closes <=150 ms after speech"),
-            ("Gestures", "VRMAs default to infinite loops; scheduler declarations are unused", "Implement once/twice/loop mixer completion and cooldown scheduler", "No immediate repeats; clean return to procedural idle"),
-            ("Physics", "Hem chains have no collider groups; structural validation does not prove visual quality", "Attach six hem chains to appropriate existing colliders and retune only after final export", "Exactly 74 joints/22 colliders; 10-minute no-NaN soak; 1-4 cm visible hem travel"),
-            ("Design lock", "Hair/clip/readability/footwear remain visually incomplete", "Correct long layered tipped hair, left X/bow clip, badge, stockings, right strap, chunky cream/blue boots", "Fixed-camera front/3/4/side/back turntable passes"),
+        rich("<b>Current verified body:</b> V4 remains VRM 1.0 with the locked design and 74 spring joints. Implemented fixes are evidence, not a substitute for the still-open authenticated visual soak.", BODY),
+        build_table(["AREA", "CURRENT EVIDENCE", "REMAINING WORK", "PROMOTION GATE"], [
+            ("Grounding", "Transformed raw-skeleton heel/toe contacts drive collision-resolved grounding", "Inspect the full authenticated walk and terminal contact", "No visible float, penetration, or planted-foot instability"),
+            ("Locomotion", "Walking resets at lift-off, follows actual movement, and uses displacement-derived yaw", "Exercise starts, stops, reroutes, and blocked movement live", "Motion follows displacement without sliding or stale gait state"),
+            ("Expressions and gaze", "Latched gaze reset is fixed and speech timing follows actual playback", "Run authenticated face, blink, gaze, and speech transitions", "Return to a stable neutral state without stuck expression or gaze"),
+            ("VRMA seams", "Unsafe repeated clip seams are rejected", "Exercise all allowed one-shot and repeated animation transitions", "No snap, loop seam, or unexplained idle flourish"),
+            ("Physics", "V4 retains 74 spring joints and collision-aware walking fixes", "Run the required ten-minute live physics soak", "No NaN, runaway spring motion, or terminal contact regression"),
+            ("Design lock", "The locked V4 design and topology are retained", "Capture fixed-view authenticated design evidence", "Current locked design passes without regeneration or topology drift"),
         ], [45 * mm, 97 * mm, 108 * mm, 106 * mm], font_size=7.0),
     ]
 
@@ -620,10 +618,10 @@ def skeleton_story():
 def architecture_story():
     matrix = [
         ("Authoritative local core", "PARTIAL", "CoreMind, Soul, SQLite, Mindpage, affect, TTS", "Must own identity, policy, memory, approvals, and presence"),
-        ("Identity/presence gateway", "BLOCKED", "Creator principal, sessions, bridge signing, singleton, portal lease", "Required before remote autonomy or multiple surfaces"),
+        ("Identity/presence gateway", "DONE", "Creator principal, sessions, bridge signing, singleton, portal fencing", "Cross-process ownership and stale portal rejection are tested"),
         ("Perception/action broker", "PARTIAL", "Files, image, audio, screen, webcam, tools, pagefile", "Scoped grants and immutable approval receipts"),
-        ("Cloud egress", "NOT STARTED", "Provider/data classifier for ZeroGPU, notebook, cloud models", "Deny by default; local fallback remains viable"),
-        ("Mindscape", "BLOCKED", "Signed versioned snapshots and standby continuity", "Never a simultaneous clone or unapproved restore"),
+        ("Cloud egress", "PARTIAL", "Exact-operation consent ledger for provider, deployment, model, and payload", "Production adapters remain unwired; deny by default"),
+        ("Mindscape", "BLOCKED", "Encrypted passive Vault, approved restore path, inert fenced standby", "No transactional promotion, provider VM, or simultaneous clone"),
         ("Embodied surfaces", "PARTIAL", "House HQ, virtual app, PWA, Discord, V4 VRM", "One writable portal; other surfaces observe or request handoff"),
     ]
     return [
@@ -638,7 +636,7 @@ def architecture_story():
         Paragraph("Compute truth", H2),
         truth_table(),
         Spacer(1, 7 * mm),
-        rich("<b>Superseded claim:</b> 34 GB DDR5 and H100 are not local-host specifications. They are cloud runtime annotations only when a ZeroGPU or Google notebook session actually reports them.", BODY),
+        rich("<b>Compute boundary:</b> cloud-reported RAM and accelerator details are ephemeral runtime facts. They are never local-host specifications or guaranteed capacity.", BODY),
         Spacer(1, 5 * mm),
         Paragraph("Dependency spine", H2),
         phases_table(PHASES[:5]),
@@ -651,17 +649,12 @@ def write_pdf(path: Path, story) -> None:
 
 
 def main() -> None:
-    OUTPUT.mkdir(parents=True, exist_ok=True)
     DOCS.mkdir(parents=True, exist_ok=True)
 
-    master_output = OUTPUT / "ALPECCA_MASTER_PLAN.pdf"
-    write_pdf(master_output, master_story())
-    shutil.copy2(master_output, DOCS / "ALPECCA_MASTER_PLAN.pdf")
-
+    write_pdf(DOCS / "ALPECCA_MASTER_PLAN.pdf", master_story())
     write_pdf(DOCS / "ALPECCA_FEATURE_SKELETON_INFRASTRUCTURE.pdf", skeleton_story())
     write_pdf(DOCS / "ALPECCA_PROJECT_ARCHITECTURE_MAP.pdf", architecture_story())
 
-    print(master_output)
     print(DOCS / "ALPECCA_MASTER_PLAN.pdf")
     print(DOCS / "ALPECCA_FEATURE_SKELETON_INFRASTRUCTURE.pdf")
     print(DOCS / "ALPECCA_PROJECT_ARCHITECTURE_MAP.pdf")

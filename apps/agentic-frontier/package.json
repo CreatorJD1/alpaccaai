@@ -1,0 +1,17 @@
+{
+  "name": "agentic-frontier-client",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build-client.mjs"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.19.3",
+    "@pixiv/three-vrm": "^3.4.2",
+    "lucide": "^0.545.0",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.10"
+  }
+}

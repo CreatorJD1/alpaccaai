@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "templateId": "alpecca-ubuntu-xfce-novnc-v1",
+  "target": {
+    "distribution": "ubuntu",
+    "release": "24.04",
+    "desktop": "xfce",
+    "displayServer": "tigervnc",
+    "webGateway": "novnc-websockify"
+  },
+  "packagePolicy": {
+    "manager": "apt",
+    "updatePackageIndex": true,
+    "upgradePackages": false,
+    "packages": [
+      {
+        "name": "ca-certificates",
+        "purpose": "TLS trust for a future externally configured private ingress"
+      },
+      {
+        "name": "dbus-x11",
+        "purpose": "Xfce session D-Bus support"
+      },
+      {
+        "name": "flatpak",
+        "purpose": "Reviewed app-manager prerequisite without any configured remote"
+      },
+      {
+        "name": "novnc",
+        "purpose": "Browser client assets for the loopback web gateway"
+      },
+      {
+        "name": "tigervnc-standalone-server",
+        "purpose": "Loopback-only persistent virtual display"
+      },
+      {
+        "name": "tigervnc-tools",
+        "purpose": "TigerVNC password-file tooling for an external secret injector"
+      },
+      {
+        "name": "websockify",
+        "purpose": "Loopback-only WebSocket bridge from noVNC to TigerVNC"
+      },
+      {
+        "name": "xauth",
+        "purpose": "X display authorization support"
+      },
+      {
+        "name": "xfce4",
+        "purpose": "Persistent lightweight Ubuntu desktop session"
+      }
+    ]
+  },
+  "serviceUsers": [
+    {
+      "name": "alpecca-workspace",
+      "home": "/var/lib/alpecca-workspace",
+      "shell": "/usr/sbin/nologin"
+    },
+    {
+      "name": "alpecca-core",
+      "home": "/var/lib/alpecca",
+      "shell": "/usr/sbin/nologin"
+    }
+  ],
+  "serviceTemplates": [
+    {
+      "source": "systemd/alpecca-desktop-display.service",
+      "destination": "/etc/systemd/system/alpecca-desktop-display.service"
+    },
+    {
+      "source": "systemd/alpecca-desktop-session.service",
+      "destination": "/etc/systemd/system/alpecca-desktop-session.service"
+    },
+    {
+      "source": "systemd/alpecca-desktop-gateway.service",
+      "destination": "/etc/systemd/system/alpecca-desktop-gateway.service"
+    }
+  ],
+  "requiredExternalSecrets": [
+    {
+      "id": "vnc-password-file",
+      "targetPath": "/run/secrets/alpecca-vnc-password",
+      "owner": "alpecca-workspace:alpecca-workspace",
+      "mode": "0600",
+      "injection": "external-host-secret-store"
+    }
+  ],
+  "requiredEnableMarkers": [
+    "/etc/alpecca/enable-desktop"
+  ],
+  "phoneIngress": {
+    "loopbackUpstream": "http://127.0.0.1:6080",
+    "privateIngress": "external-required",
+    "creatorAuthentication": "external-required",
+    "ingressCredentialInjection": "external-required"
+  },
+  "excludedServiceTemplates": [
+    "alpecca-cloud-core.service",
+    "alpecca-app-operation@.service",
+    "alpecca-desktop-tunnel.service"
+  ],
+  "outputSafety": {
+    "provisionInfrastructure": false,
+    "contactExternalApis": false,
+    "injectSecrets": false,
+    "createEnableMarkers": false,
+    "enableServices": false,
+    "startServices": false
+  }
+}

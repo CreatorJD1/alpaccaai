@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "defaultPolicy": "deny",
+  "apt": {
+    "allowedRepositories": [],
+    "allowedPackages": []
+  },
+  "flatpak": {
+    "allowedRemotes": [],
+    "allowedApplications": []
+  }
+}

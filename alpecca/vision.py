@@ -92,7 +92,10 @@ def _describe_local(image_bytes: bytes, prompt: str) -> Optional[str]:
                 # live 2026-07-04: one un-capped vision call wedged her app.
                 "num_ctx": OLLAMA_NUM_CTX,
             },
-            "keep_alive": 0,
+            # The same local model handles the grounded reply after perception.
+            # Keeping it warm briefly avoids immediately unloading and loading
+            # several GB again, which previously made image turns time out.
+            "keep_alive": os.environ.get("ALPECCA_VISION_KEEP_ALIVE", "2m"),
         }
         # Qwen 3.5 may put all output in a reasoning field unless thinking is
         # disabled. Older Ollama Python clients do not accept this argument, so

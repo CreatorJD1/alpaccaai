@@ -23,7 +23,7 @@ DEFAULT_KEY = "mobile/alpecca-endpoint.json"
 def wait_for_endpoint(
     url: str,
     *,
-    attempts: int = 5,
+    attempts: int = 10,
     delay_seconds: float = 2.0,
     probe: Callable[[str], bool] = probe_alpecca_endpoint,
     sleeper: Callable[[float], None] = time.sleep,

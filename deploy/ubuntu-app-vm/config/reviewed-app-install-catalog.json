@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "defaultPolicy": "deny",
+  "apt": {
+    "allowedRepositories": [
+      {
+        "id": "ubuntu-noble-main",
+        "source": "ubuntu:noble:main"
+      }
+    ],
+    "allowedPackages": [
+      {
+        "package": "file-roller",
+        "repository": "ubuntu-noble-main",
+        "versions": ["ubuntu-noble"],
+        "actions": ["install"],
+        "maxEstimatedDiskBytes": 150000000,
+        "allowedPermissions": []
+      },
+      {
+        "package": "xterm",
+        "repository": "ubuntu-noble-main",
+        "versions": ["ubuntu-noble"],
+        "actions": ["install"],
+        "maxEstimatedDiskBytes": 50000000,
+        "allowedPermissions": []
+      }
+    ]
+  },
+  "flatpak": {
+    "allowedRemotes": [
+      {
+        "name": "flathub",
+        "source": "https://dl.flathub.org/repo/flathub.flatpakrepo"
+      }
+    ],
+    "allowedApplications": [
+      {
+        "applicationId": "org.libreoffice.LibreOffice",
+        "remote": "flathub",
+        "versions": ["stable"],
+        "actions": ["install"],
+        "maxEstimatedDiskBytes": 3000000000,
+        "allowedPermissions": []
+      },
+      {
+        "applicationId": "org.mozilla.firefox",
+        "remote": "flathub",
+        "versions": ["stable"],
+        "actions": ["install"],
+        "maxEstimatedDiskBytes": 1500000000,
+        "allowedPermissions": []
+      }
+    ]
+  }
+}

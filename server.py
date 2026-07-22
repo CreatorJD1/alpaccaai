@@ -22,10 +22,12 @@ import json
 import math
 import os
 import re
+import secrets
 import sqlite3
 import socket
 import sys
 import threading
+import time
 import uuid
 import zipfile
 from collections.abc import Mapping
@@ -69,7 +71,10 @@ from config import (HOME, HOST, PORT, DEEP_BACKEND, OLLAMA_HOST,
                      PUBLIC_URL, EMBED_BACKFILL,
                     CORE_MEMORY_LEARN_ONLY, DISCORD_CLIENT_ID,
                     CLOUDFLARE_HOSTNAME, OLLAMA_TIMEOUT_SECONDS, STREAM_CHAT,
-                    DB_PATH)
+                    DB_PATH, VISION_CLOUD_MODEL, VISION_CLOUD_TRANSPORT_ROUTE,
+                    VISION_CLOUD_DEPLOYMENT, VISION_CLOUD_PROCESSING_LOCATION,
+                    ZEROGPU_VISION_TRANSPORT_ROUTE, ZEROGPU_VISION_DEPLOYMENT,
+                    ZEROGPU_VISION_MODEL, ZEROGPU_VISION_PROCESSING_LOCATION)
 from config import Automation as AutomationCfg
 from alpecca.mind import (
     CoreMind,
@@ -88,6 +93,7 @@ from alpecca import computer as computer_mod
 from alpecca import runtime_status as runtime_status_mod
 from alpecca import mindscape as mindscape_mod
 from alpecca import mindscape_vault as mindscape_vault_mod
+from alpecca import continuity_journal as continuity_journal_mod
 from alpecca import memory as memory_store
 from alpecca import mindpage as mindpage_mod
 from alpecca import journal as journal_mod
@@ -108,9 +114,12 @@ from alpecca import behavior_trial_profile as behavior_trial_profile_mod
 from alpecca import behavior_trial_review_decisions as behavior_trial_review_decisions_mod
 from alpecca import behavior_trial_settlement as behavior_trial_settlement_mod
 from alpecca import attachment_ingress as attachment_ingress_mod
+from alpecca import egress_consent as egress_consent_mod
+from alpecca import interactive_egress as interactive_egress_mod
 from alpecca import audio_ingress as audio_ingress_mod
 from alpecca import bridge_actor_identity as bridge_actor_identity_mod
 from alpecca import bridge_actor_transport as bridge_actor_transport_mod
+from alpecca import discord_creator_identity as discord_creator_identity_mod
 from alpecca import discord_autonomy as discord_autonomy_mod
 from alpecca import file_ingress as file_ingress_mod
 from alpecca import notification_anchor as notification_anchor_mod
@@ -120,6 +129,7 @@ from alpecca import web_push_runtime as web_push_runtime_mod
 from alpecca import knowledge_blocks as knowledge_blocks_mod
 from alpecca import preferences as preferences_mod
 from alpecca import overload as overload_mod
+from alpecca import incident_learning as incident_learning_mod
 from alpecca import brain_graph as brain_graph_mod
 from alpecca import pagefile_approval as pagefile_approval_mod
 from alpecca import pagefile_telemetry as pagefile_telemetry_mod
@@ -431,7 +441,24 @@ voice_sensor = VoiceSensor()
 import time as _time
 
 def _conversation_quiet() -> bool:
-    return _time.time() - mind._last_user_ts > 120
+    """Allow an ambient screenshot only when chat and host pressure permit it."""
+    if _time.time() - mind._last_user_ts <= 120:
+        return False
+    # Screen sight invokes the local vision model and can compete with the
+    # chat model on the 4 GB GPU.  It is useful self-observation during a calm
+    # moment, not work to force through a measured high/critical condition.
+    sampler = globals().get("_host_resource_sampler")
+    if sampler is None:
+        return True
+    try:
+        snapshot = sampler.snapshot(force=False)
+        advisory = snapshot.get("advisory") if isinstance(snapshot, Mapping) else None
+        if isinstance(advisory, Mapping) and advisory.get("defer_optional_work") is True:
+            return False
+    except Exception:
+        # An unavailable advisory cannot be replaced with invented pressure.
+        pass
+    return True
 
 screen_sight = vision.ScreenSight(gate=_conversation_quiet)
 face_sense = vision.FaceSense(gate=_conversation_quiet)
@@ -1335,6 +1362,30 @@ def _ws_chat_timeout_result(user_text: str,
     }
 
 
+def _record_chat_stall_learning(*, safe: bool) -> None:
+    """Connect verified chat completion state to the incident learner."""
+    try:
+        cue = "chat-reply-stall"
+        if safe:
+            signal = incident_learning_mod.assess_cues([cue])
+            if signal.incident_id is None:
+                return
+            incident_learning_mod.record_outcome(signal.incident_id, safe=True)
+        else:
+            incident_learning_mod.record_incident(
+                source="chat_runtime",
+                cue=cue,
+                summary="A live chat turn exceeded its bounded reply deadline.",
+                severity=0.62,
+                controllability=0.55,
+                prediction_error=0.85,
+            )
+        mind._active_incident_signal = incident_learning_mod.assess_cues([cue])
+    except Exception:
+        # Chat delivery and its fallback must survive learning-ledger failure.
+        pass
+
+
 def _compact_reply_compare(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
 
@@ -1399,9 +1450,12 @@ async def _locked_ws_chat_turn(turn: turn_context_mod.TurnContext,
                                situation_hint: str = "",
                                reply_tier: str = "reason",
                                on_token=None,
-                               activity_recorded: bool = False,
-                               private_context: bool = False,
-                               _trusted_perception: object | None = None) -> dict:
+                                activity_recorded: bool = False,
+                                private_context: bool = False,
+                                _trusted_perception: object | None = None,
+                                _persist_verified_discord_memory: bool = False,
+                                _persist_verified_discord_history: bool = False,
+                                _verified_discord_memory_text: str = "") -> dict:
     # Keep sensor state coherent, but never hold this state lock across a model
     # call. A synchronous worker is serialized below until it finishes even if
     # its caller has already timed out.
@@ -1439,6 +1493,12 @@ async def _locked_ws_chat_turn(turn: turn_context_mod.TurnContext,
         kwargs = {}
         if _trusted_perception is not None:
             kwargs["_trusted_perception"] = _trusted_perception
+        if _persist_verified_discord_memory:
+            kwargs["_persist_verified_discord_memory"] = True
+            kwargs["_persist_verified_discord_history"] = bool(
+                _persist_verified_discord_history
+            )
+            kwargs["_verified_discord_memory_text"] = _verified_discord_memory_text
     result = await asyncio.to_thread(
         mind.chat,
         user_text,
@@ -1474,9 +1534,12 @@ async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = No
                                      reply_tier: str = "reason",
                                      on_token=None,
                                      activity_recorded: bool = False,
-                                     turn: turn_context_mod.TurnContext | None = None,
-                                     private_context: bool = False,
-                                     _trusted_perception: object | None = None) -> dict:
+                                      turn: turn_context_mod.TurnContext | None = None,
+                                      private_context: bool = False,
+                                      _trusted_perception: object | None = None,
+                                      _persist_verified_discord_memory: bool = False,
+                                      _persist_verified_discord_history: bool = False,
+                                      _verified_discord_memory_text: str = "") -> dict:
     global active_chat_turns, last_chat_turn_started
     turn = turn or turn_context_mod.TurnContext.create(
         _server_conversation_id("creator", "direct"),
@@ -1501,18 +1564,25 @@ async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = No
             on_token=on_token,
             activity_recorded=activity_recorded,
             _trusted_perception=_trusted_perception,
+            _persist_verified_discord_memory=_persist_verified_discord_memory,
+            _persist_verified_discord_history=_persist_verified_discord_history,
+            _verified_discord_memory_text=_verified_discord_memory_text,
             **attachment_kwargs,
         )
     )
     release_priority_on_exit = True
     try:
-        return await asyncio.wait_for(
+        result = await asyncio.wait_for(
             asyncio.shield(worker), timeout=WS_CHAT_REPLY_TIMEOUT_SECONDS,
         )
+        if not result.get("cancelled") and str(result.get("reply") or "").strip():
+            _record_chat_stall_learning(safe=True)
+        return result
     except asyncio.TimeoutError:
         turn.cancel("timeout")
         release_priority_on_exit = False
         worker.add_done_callback(_finish_late_ws_chat_turn)
+        _record_chat_stall_learning(safe=False)
         return _ws_chat_timeout_result(user_text, turn=turn)
     except asyncio.CancelledError:
         turn.cancel("cancelled")
@@ -1955,6 +2025,37 @@ def _mindscape_vault_transport_token() -> str:
 
 def _mindscape_vault_configured() -> bool:
     return bool(MINDSCAPE_VAULT_ENABLED and MINDSCAPE_VAULT_URL and _mindscape_vault_transport_token())
+
+
+def _continuity_journal_flush() -> dict:
+    """Flush append-only continuity only while this process owns the fence."""
+    cloud_url = str(MINDSCAPE_VAULT_URL or os.environ.get(
+        "ALPECCA_MINDSCAPE_VAULT_URL", ""
+    )).strip()
+    token = str(MINDSCAPE_VAULT_TOKEN or os.environ.get(
+        "ALPECCA_MINDSCAPE_VAULT_TOKEN", ""
+    )).strip()
+    lease = {
+        "lease_id": os.environ.get("ALPECCA_CONTINUITY_LEASE_ID", "").strip(),
+        "fencing_epoch": os.environ.get("ALPECCA_CONTINUITY_FENCING_EPOCH", "").strip(),
+        "holder": os.environ.get("ALPECCA_CONTINUITY_LEASE_HOLDER", "").strip(),
+    }
+    if not cloud_url:
+        return {"ok": False, "status": "not_configured"}
+    try:
+        recovery_key, _source = mindscape_vault_mod.load_or_create_encryption_key()
+        if not token:
+            token, _token_source = mindscape_vault_mod.load_or_create_transport_token()
+    except mindscape_vault_mod.VaultError:
+        return {"ok": False, "status": "credentials_unavailable"}
+    return continuity_journal_mod.flush_pending(
+        cloud_url,
+        token,
+        recovery_key,
+        lease=lease,
+        db_path=DB_PATH,
+        timeout=min(10.0, max(2.0, float(MINDSCAPE_VAULT_SYNC_TIMEOUT))),
+    )
 
 
 def _legacy_mindscape_sync_configured() -> bool:
@@ -2832,6 +2933,19 @@ async def lifespan(app: FastAPI):
                     _mindscape_sync_status["last_status"] = "auto_sync_error"
                     _mindscape_sync_status["last_error"] = f"{type(exc).__name__}: {exc}"
 
+    async def continuity_journal_loop() -> None:
+        while True:
+            await asyncio.sleep(10.0)
+            if _player_chat_priority_active():
+                continue
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(_continuity_journal_flush), timeout=12.0
+                )
+            except Exception:
+                # The durable local outbox remains pending for the next tick.
+                pass
+
     async def automation_loop() -> None:
         routines_mod.init_db()
         watcher = watchers_mod.DirectoryWatcher(
@@ -2871,6 +2985,7 @@ async def lifespan(app: FastAPI):
 
     task = asyncio.create_task(loop())
     mindscape_task = asyncio.create_task(mindscape_loop())
+    continuity_journal_task = asyncio.create_task(continuity_journal_loop())
     automation_task = asyncio.create_task(automation_loop())
     from config import VOICE_WARMUP
     voice_warmup_task = (asyncio.create_task(_warm_alpecca_voice())
@@ -2881,6 +2996,7 @@ async def lifespan(app: FastAPI):
         global _mindscape_event_sync_task
         task.cancel()
         mindscape_task.cancel()
+        continuity_journal_task.cancel()
         automation_task.cancel()
         deferred_mindscape_task = _mindscape_event_sync_task
         _mindscape_event_sync_task = None
@@ -2898,6 +3014,9 @@ async def lifespan(app: FastAPI):
         # and off the hot path -- a failure here must never block a clean shutdown.
         try:
             await _state_thread("session_recap", mind.write_session_recap)
+            await asyncio.wait_for(
+                asyncio.to_thread(_continuity_journal_flush), timeout=12.0
+            )
         except Exception:
             pass
         try:
@@ -2942,6 +3061,109 @@ from starlette.responses import JSONResponse as _JSON
 
 _AUTH_SECRET = auth_mod.load_or_create_authorization_secret(HOME)
 _DISCORD_BRIDGE_SECRET = auth_mod.load_or_create_bridge_authorization_secret(HOME)
+
+
+class _SystemEgressClock:
+    def now(self) -> float:
+        return time.time()
+
+
+_PERCEPTION_EGRESS_RUNTIME: dict[str, object] | None = None
+_PERCEPTION_EGRESS_LOCK = threading.Lock()
+
+
+def _configured_perception_egress_policy() -> egress_consent_mod.EgressPolicy:
+    routes: list[egress_consent_mod.AllowedEgressRoute] = []
+    if all(
+        (
+            VISION_CLOUD_MODEL,
+            VISION_CLOUD_TRANSPORT_ROUTE,
+            VISION_CLOUD_DEPLOYMENT,
+            VISION_CLOUD_PROCESSING_LOCATION,
+        )
+    ):
+        routes.append(
+            egress_consent_mod.AllowedEgressRoute(
+                route_id="vision-ollama-cloud",
+                provider="ollama-cloud",
+                deployment=VISION_CLOUD_DEPLOYMENT,
+                model=VISION_CLOUD_MODEL,
+                capability="private-image-description",
+                purpose="describe-private-image",
+                processing_location=VISION_CLOUD_PROCESSING_LOCATION,
+                destination_class="managed-model-api",
+                transport_route=VISION_CLOUD_TRANSPORT_ROUTE,
+                ttl_seconds=60,
+                max_uses=1,
+                max_bytes_per_use=attachment_ingress_mod.DEFAULT_MAX_IMAGE_BYTES,
+            )
+        )
+    if all(
+        (
+            ZEROGPU_VISION_TRANSPORT_ROUTE,
+            ZEROGPU_VISION_DEPLOYMENT,
+            ZEROGPU_VISION_MODEL,
+            ZEROGPU_VISION_PROCESSING_LOCATION,
+        )
+    ):
+        routes.append(
+            egress_consent_mod.AllowedEgressRoute(
+                route_id="vision-zerogpu",
+                provider="zerogpu",
+                deployment=ZEROGPU_VISION_DEPLOYMENT,
+                model=ZEROGPU_VISION_MODEL,
+                capability="private-image-description",
+                purpose="describe-private-image",
+                processing_location=ZEROGPU_VISION_PROCESSING_LOCATION,
+                destination_class="hosted-space-gpu",
+                transport_route=ZEROGPU_VISION_TRANSPORT_ROUTE,
+                ttl_seconds=60,
+                max_uses=1,
+                max_bytes_per_use=attachment_ingress_mod.DEFAULT_MAX_IMAGE_BYTES,
+            )
+        )
+    if not routes:
+        raise RuntimeError("no exact private-perception egress route is configured")
+    return egress_consent_mod.EgressPolicy(
+        policy_id="private-perception-egress",
+        version=1,
+        routes=tuple(routes),
+    )
+
+
+def _perception_egress_runtime() -> dict[str, object]:
+    global _PERCEPTION_EGRESS_RUNTIME
+    with _PERCEPTION_EGRESS_LOCK:
+        if _PERCEPTION_EGRESS_RUNTIME is None:
+            authority = interactive_egress_mod.InteractiveCreatorAuthority(
+                HOME / "perception_egress_requests.sqlite3"
+            )
+            seal_key = hashlib.sha256(
+                _AUTH_SECRET + b"\x00perception-egress-ledger"
+            ).digest()
+            anchor_key = hashlib.sha256(
+                _AUTH_SECRET + b"\x00perception-egress-anchor"
+            ).digest()
+            anchor = egress_consent_mod.SQLiteMonotonicAnchor(
+                HOME / "perception_egress_anchor.sqlite3",
+                anchor_key=anchor_key,
+                anchor_key_version="auth-derived-v1",
+            )
+            ledger = egress_consent_mod.EgressConsentLedger(
+                HOME / "perception_egress_ledger.sqlite3",
+                seal_key=seal_key,
+                seal_key_version="auth-derived-v1",
+                authority=authority,
+                policy=_configured_perception_egress_policy(),
+                clock=_SystemEgressClock(),
+                anchor=anchor,
+            )
+            _PERCEPTION_EGRESS_RUNTIME = {
+                "authority": authority,
+                "ledger": ledger,
+                "gate": egress_consent_mod.PerceptionEgressGate(ledger),
+            }
+        return _PERCEPTION_EGRESS_RUNTIME
 _DISCORD_ACTOR_STORE_LOCK = threading.Lock()
 _DISCORD_ACTOR_STORE: (
     bridge_actor_identity_mod.BridgeActorIdentityStore | None
@@ -4153,6 +4375,60 @@ def mindpage_stats() -> dict:
     )
 
 
+@app.get("/affect/incidents")
+def affect_incidents(req: Request, limit: int = 30) -> JSONResponse:
+    """Creator-only evidence and recovery state for affective incident learning."""
+    _require_creator_request(req)
+    return JSONResponse(
+        {
+            "schema": incident_learning_mod.SCHEMA,
+            "current": mind._active_incident_signal.as_dict(),
+            "incidents": incident_learning_mod.recent(limit=limit),
+            "literal_human_trauma_claim": False,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/affect/incidents")
+async def affect_incident_record(req: Request) -> JSONResponse:
+    """Record creator-verified evidence; model output cannot call this route."""
+    _require_creator_request(req)
+    try:
+        body = await req.json()
+        if not isinstance(body, dict):
+            raise ValueError
+        async with mind_lock:
+            incident = mind.note_incident(
+                source=str(body.get("source") or "creator_verified"),
+                cue=str(body.get("cue") or ""),
+                summary=str(body.get("summary") or ""),
+                severity=float(body.get("severity", 0.0)),
+                controllability=float(body.get("controllability", 0.5)),
+                prediction_error=float(body.get("prediction_error", 0.0)),
+            )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="invalid incident evidence") from exc
+    return JSONResponse(incident, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/affect/incidents/{incident_id}/outcome")
+async def affect_incident_outcome(incident_id: int, req: Request) -> JSONResponse:
+    """Record a verified safe retry or recurrence for recovery learning."""
+    _require_creator_request(req)
+    try:
+        body = await req.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="body must be JSON") from exc
+    if not isinstance(body, dict) or not isinstance(body.get("safe"), bool):
+        raise HTTPException(status_code=400, detail="safe must be a boolean")
+    async with mind_lock:
+        incident = mind.note_incident_outcome(incident_id, safe=body["safe"])
+    if incident is None:
+        raise HTTPException(status_code=404, detail="incident not found")
+    return JSONResponse(incident, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/app/download/alpecca-android.apk")
 def app_download_android_launcher() -> FileResponse:
     """Serve the reviewed personal Android launcher from the protected app page."""
@@ -4470,6 +4746,181 @@ def _require_creator_request(req: Request) -> auth_mod.AuthDecision:
             headers={"Cache-Control": "no-store"},
         )
     return decision
+
+
+def _perception_egress_components() -> tuple[
+    interactive_egress_mod.InteractiveCreatorAuthority,
+    egress_consent_mod.PerceptionEgressGate,
+]:
+    runtime = _perception_egress_runtime()
+    authority = runtime.get("authority")
+    gate = runtime.get("gate")
+    if not isinstance(authority, interactive_egress_mod.InteractiveCreatorAuthority):
+        raise RuntimeError("private-perception authority unavailable")
+    if not isinstance(gate, egress_consent_mod.PerceptionEgressGate):
+        raise RuntimeError("private-perception gate unavailable")
+    return authority, gate
+
+
+def _ingest_egress_image(value: object, operation_id: str) -> attachment_ingress_mod.ImageIngress:
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail="image required")
+    scope = f"private-egress:{operation_id}"
+    try:
+        return attachment_ingress_mod.ingest_image(
+            value,
+            scope=scope,
+            authorized_scopes={scope},
+            source="creator:private-perception-egress",
+        )
+    except attachment_ingress_mod.ImageIngressRejected as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "attachment_rejected", "reason": exc.reason},
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+
+
+@app.get("/perception/egress/consents")
+def perception_egress_consents(req: Request) -> JSONResponse:
+    """List content-free pending creator decisions and exact configured routes."""
+    _require_creator_request(req)
+    try:
+        authority, gate = _perception_egress_components()
+    except Exception as exc:
+        return JSONResponse(
+            {"available": False, "reason": str(exc), "requests": [], "routes": []},
+            headers={"Cache-Control": "no-store"},
+        )
+    routes = [route.material() for route in gate.ledger.policy.routes]
+    return JSONResponse(
+        {
+            "available": True,
+            "requests": authority.list_requests(),
+            "routes": routes,
+            "payload_retained": False,
+            "uses_per_approval": 1,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/perception/egress/stage")
+async def perception_egress_stage(req: Request) -> JSONResponse:
+    """Stage one exact image decision without retaining pixels or making egress."""
+    _require_creator_request(req)
+    body = await _read_bounded_json_object(req, max_bytes=3 * 1024 * 1024)
+    route_id = body.get("route_id")
+    if not isinstance(route_id, str) or not route_id:
+        raise HTTPException(status_code=400, detail="route_id required")
+    operation_id = "op_" + secrets.token_urlsafe(24)
+    inspected = _ingest_egress_image(body.get("image"), operation_id)
+    try:
+        authority, gate = _perception_egress_components()
+        before = {item["request_id"] for item in authority.list_requests()}
+        gate.authorize_attempt(
+            operation_id=operation_id,
+            route_id=route_id,
+            payload=inspected.image_bytes,
+        )
+    except egress_consent_mod.EgressConsentDenied:
+        pending = [
+            item
+            for item in authority.list_requests()
+            if item["request_id"] not in before
+            and item["route_id"] == route_id
+            and item["byte_count"] == len(inspected.image_bytes)
+        ]
+        if not pending:
+            raise HTTPException(status_code=503, detail="consent request unavailable")
+        return JSONResponse(
+            {
+                "staged": True,
+                "operation_id": operation_id,
+                "request": pending[0],
+                "image": inspected.as_dict(),
+                "payload_retained": False,
+            },
+            status_code=202,
+            headers={"Cache-Control": "no-store"},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    raise HTTPException(status_code=409, detail="unexpected pre-authorized operation")
+
+
+@app.post("/perception/egress/consents/{request_id}")
+async def perception_egress_decide(
+    request_id: str, req: Request
+) -> JSONResponse:
+    """Resolve one pending exact request; only the authenticated creator may call."""
+    _require_creator_request(req)
+    body = await _read_bounded_json_object(req, max_bytes=1024)
+    if set(body) != {"allowed"} or not isinstance(body.get("allowed"), bool):
+        raise HTTPException(status_code=400, detail="allowed boolean required")
+    try:
+        authority, _gate = _perception_egress_components()
+        resolved = authority.resolve(request_id, allowed=body["allowed"] is True)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if resolved is None:
+        raise HTTPException(status_code=409, detail="request is absent or no longer pending")
+    return JSONResponse(
+        {"resolved": True, "request": resolved},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/perception/egress/execute")
+async def perception_egress_execute(req: Request) -> JSONResponse:
+    """Consume one approval for the same operation and exact image bytes."""
+    _require_creator_request(req)
+    body = await _read_bounded_json_object(req, max_bytes=3 * 1024 * 1024)
+    request_id = body.get("request_id")
+    operation_id = body.get("operation_id")
+    route_id = body.get("route_id")
+    if not all(isinstance(value, str) and value for value in (request_id, operation_id, route_id)):
+        raise HTTPException(status_code=400, detail="request_id, operation_id, and route_id required")
+    inspected = _ingest_egress_image(body.get("image"), operation_id)
+    try:
+        authority, gate = _perception_egress_components()
+        staged = authority.get(request_id)
+        if staged is None or staged.get("state") != "approved":
+            raise HTTPException(status_code=403, detail="fresh creator approval required")
+        if staged.get("route_id") != route_id:
+            raise HTTPException(status_code=409, detail="approved route mismatch")
+        result = await asyncio.to_thread(
+            vision.describe_image_via_consent,
+            inspected.image_bytes,
+            gate=gate,
+            route_id=route_id,
+            operation_id=operation_id,
+            provider=str(staged["provider"]),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(
+            status_code=409,
+            detail="exact approval mismatch or provider attempt failed",
+            headers={"Cache-Control": "no-store"},
+        )
+    return JSONResponse(
+        {
+            "described": True,
+            "description": result.text,
+            "vision_processing": {
+                "backend": result.backend,
+                "processing_location": result.processing_location,
+                "cloud_egress": result.cloud_egress,
+            },
+            "image": inspected.as_dict(),
+            "payload_retained": False,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _notification_json(
@@ -4829,7 +5280,11 @@ _DISCORD_ACTOR_UNAVAILABLE_ERRORS = (
 
 async def _verified_discord_actor_request(
     req: Request,
-) -> tuple[dict[str, object], bridge_actor_identity_mod.VerifiedGuestActor]:
+) -> tuple[
+    dict[str, object],
+    bridge_actor_identity_mod.VerifiedGuestActor,
+    bridge_actor_transport_mod.DiscordActorBindings,
+]:
     """Authenticate exact request bytes before any Discord turn side effect."""
     _require_discord_bridge_request(req)
     try:
@@ -4857,7 +5312,7 @@ async def _verified_discord_actor_request(
     actor = verification.actor
     if not verification.accepted or actor is None:
         _raise_discord_actor_denied()
-    return payload, actor
+    return payload, actor, bindings
 
 
 def _capability_lease_http_status(reason: str) -> int:
@@ -8602,9 +9057,9 @@ def people_state() -> dict:
 @app.post("/tts")
 async def tts(req: Request):
     """Speak her reply in a real voice. Body {text}. Returns the synthesized
-    audio (wav/mp3) from the best installed engine, or 204 if none is available
-    so the page falls back to the browser voice. Synthesis runs off the event
-    loop so it never stalls chat."""
+    audio (wav/mp3) from the best installed engine, or 204 if Alpecca's voice
+    is unavailable. House HQ deliberately stays silent instead of substituting
+    an unrelated browser/system speaker. Synthesis runs off the event loop."""
     from fastapi import Response
     from config import TTS_ROUTE_TIMEOUT
     from alpecca import tts as tts_mod
@@ -8729,6 +9184,7 @@ def introspect() -> dict:
         "reason": report.reason,
         "memory_count": report.memory_count,
         "senses_active": report.senses_active,
+        "host_pressure": report.host_pressure,
         "soul_perspective_vector": mind.soul_perspective_evidence(),
         # Her ethic is part of her self-model -- the same directives that ride
         # in every prompt, shown with their reasoning.
@@ -8932,8 +9388,15 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     verified_discord_actor: (
         bridge_actor_identity_mod.VerifiedGuestActor | None
     ) = None
+    verified_discord_bindings: (
+        bridge_actor_transport_mod.DiscordActorBindings | None
+    ) = None
     if req.url.path == "/channel/discord":
-        payload, verified_discord_actor = await _verified_discord_actor_request(req)
+        (
+            payload,
+            verified_discord_actor,
+            verified_discord_bindings,
+        ) = await _verified_discord_actor_request(req)
     else:
         payload = await _read_bounded_json_object(req, max_bytes=6 * 1024 * 1024)
     from alpecca import openclaw_bridge   # local import keeps import order safe
@@ -8951,6 +9414,9 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     reply_target = field("reply_target")
     situation_hint = field("situation", "context")
     room = field("room", "location")
+    discord_interaction = field("interaction", default="reply").lower()
+    discord_delivery = field("delivery", default="text").lower()
+    discord_memory_text = field("memory_text")
     image_data = field("image")
     private_perception = field("private_perception")
     source_ref_value = payload.get("source_ref")
@@ -8959,7 +9425,20 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         "/channel/house-hq": "house-hq",
         "/channel/discord": "discord",
     }.get(req.url.path, "channel")
+    if route_surface == "discord" and discord_interaction not in {"reply", "participate"}:
+        raise HTTPException(
+            status_code=400,
+            detail="invalid Discord interaction mode",
+            headers={"Cache-Control": "no-store"},
+        )
+    if route_surface == "discord" and discord_delivery not in {"text", "voice"}:
+        raise HTTPException(
+            status_code=400,
+            detail="invalid Discord delivery mode",
+            headers={"Cache-Control": "no-store"},
+        )
     trusted_discord_live_context = ""
+    verified_discord_contact_context = ""
     if (
         route_surface == "discord"
         and situation_hint.startswith(
@@ -8969,6 +9448,11 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         trusted_discord_live_context = situation_hint[
             len(bridge_actor_transport_mod.TRUSTED_CONTEXT_PREFIX):
         ]
+    persist_verified_discord_memory = bool(
+        route_surface == "discord"
+        and verified_discord_actor is not None
+        and trusted_discord_live_context
+    )
     if has_legacy_file_payload:
         raise HTTPException(
             status_code=400,
@@ -9013,7 +9497,16 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     if route_surface == "discord":
         if verified_discord_actor is None:
             _raise_discord_actor_denied()
-        principal = "guest"
+        requested_speaker = field("speaker", default="guest").lower()
+        principal = (
+            "creator"
+            if requested_speaker == "creator"
+            and verified_discord_bindings is not None
+            and discord_creator_identity_mod.is_creator_actor_id(
+                verified_discord_bindings.actor_id
+            )
+            else "guest"
+        )
     else:
         principal = getattr(decision, "principal", "guest") or "guest"
     request_connection = req.headers.get(
@@ -9025,18 +9518,76 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         and _capability_connection_surface(request_connection) == "house-hq"
         else f"local-{route_surface}"
     )
-    if verified_discord_actor is not None:
+    if verified_discord_actor is not None and principal != "creator":
         try:
             conversation_id, privacy_scope = bridge_actor_transport_mod.guest_scope(
                 verified_discord_actor
             )
+            privacy_scope = bridge_actor_transport_mod.participant_memory_scope(
+                verified_discord_actor
+            )
+            contact_scope = bridge_actor_transport_mod.guest_contact_scope(
+                verified_discord_actor
+            )
         except bridge_actor_identity_mod.BridgeActorIntegrityError:
             _raise_discord_actor_store_unavailable()
+        current_contact_surface = (
+            "direct message" if channel == "discord-dm" else "guild room"
+        )
+        try:
+            prior_contacts = memory_store.recall(
+                "verified Discord participant contacted Alpecca",
+                top_k=8,
+                embed_fn=None,
+                scope=contact_scope,
+                include_shared=False,
+            )
+            prior_contents = [str(item.get("content") or "").lower() for item in prior_contacts]
+            saw_other_surface = any(
+                ("direct message" in content) != (current_contact_surface == "direct message")
+                for content in prior_contents
+            )
+            memory_store.remember_with_id(
+                f"A verified Discord participant contacted Alpecca through a {current_contact_surface}.",
+                kind="episodic",
+                salience=0.42,
+                source="discord_presence",
+                embed_fn=None,
+                scope=contact_scope,
+            )
+            if not prior_contents:
+                # The local app can recall this factual presence event, but it
+                # never receives the participant's identity or private text.
+                memory_store.remember_with_id(
+                    "A verified Discord participant contacted Alpecca.",
+                    kind="episodic",
+                    salience=0.35,
+                    source="discord_presence",
+                    embed_fn=None,
+                    scope="shared",
+                )
+            if saw_other_surface:
+                verified_discord_contact_context = (
+                    "The same verified Discord participant has contacted you through "
+                    "another Discord surface. You may acknowledge continuity, but must "
+                    "not disclose prior message content or identify the other surface."
+                )
+        except Exception:
+            # Presence awareness must not make a live signed message fail.
+            pass
         turn = turn_context_mod.TurnContext.create(
             conversation_id,
             principal="guest",
             surface="discord",
             privacy_scope=privacy_scope,
+            portal_epoch=turn_portal_epoch,
+        )
+    elif verified_discord_actor is not None:
+        turn = turn_context_mod.TurnContext.create(
+            "creator-cross-surface",
+            principal="creator",
+            surface="discord",
+            privacy_scope="creator-personal",
             portal_epoch=turn_portal_epoch,
         )
     else:
@@ -9129,7 +9680,6 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     if image_data:
         if route_surface == "discord":
             _require_discord_bridge_request(req)
-            principal = "guest"
             if not DISCORD_MEDIA_ENABLED:
                 raise HTTPException(
                     status_code=403,
@@ -9220,10 +9770,12 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         if not text:
             text = "(they sent an image without any words)"
 
-    if route_surface == "discord":
+    if route_surface == "discord" and principal != "creator":
         trusted_context_parts = []
         if trusted_discord_live_context:
             trusted_context_parts.append(trusted_discord_live_context)
+        if verified_discord_contact_context:
+            trusted_context_parts.append(verified_discord_contact_context)
         if image_desc:
             trusted_context_parts.append(f"Validated image description: {image_desc}")
         trusted_perception = _server_validated_discord_perception(
@@ -9253,10 +9805,19 @@ async def channel_inbound(req: Request, response: Response) -> dict:
             )
         ),
         situation_hint=situation_hint,
-        reply_tier=_house_chat_reply_tier(text),
+        reply_tier=(
+            "fast"
+            if route_surface == "discord" and discord_delivery == "voice"
+            else _house_chat_reply_tier(text)
+        ),
         activity_recorded=True,
         turn=turn,
         _trusted_perception=trusted_perception,
+        _persist_verified_discord_memory=persist_verified_discord_memory,
+        _persist_verified_discord_history=(
+            persist_verified_discord_memory and discord_interaction == "reply"
+        ),
+        _verified_discord_memory_text=discord_memory_text or text,
     )
     reply = result.get("reply", "")
     # A local file attachment cannot authorize an outbound bridge delivery.

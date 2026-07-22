@@ -7,10 +7,14 @@
 const VAULT_SCHEMA = "alpecca.mindscape.vault.v1";
 const SNAPSHOT_KIND = "snapshot";
 const ARCHIVE_KIND = "sqlite";
+const EVENT_SCHEMA = "alpecca.continuity.events.v1";
+const EVENT_KIND = "events";
 const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES = 96 * 1024 * 1024;
 const SNAPSHOT_RETENTION = 48;
 const ARCHIVE_RETENTION = 8;
+const MAX_EVENT_BYTES = 4 * 1024 * 1024;
+const MAX_EVENT_SEGMENTS = 256;
 const ID_RE = /^[a-f0-9]{32}$/;
 const HEX_64_RE = /^[a-f0-9]{64}$/;
 const KEY_ID_RE = /^[a-f0-9]{24}$/;
@@ -80,6 +84,35 @@ function validateSnapshotEnvelope(value) {
       typeof value.ciphertext !== "string" || value.ciphertext.length < 24 ||
       byteLength(value.ciphertext) > MAX_SNAPSHOT_BYTES * 2) {
     return { ok: false, error: "invalid encrypted payload" };
+  }
+  return { ok: true, metadata: value };
+}
+
+function validateEventEnvelope(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, error: "event envelope must be an object" };
+  }
+  const expected = [
+    "schema", "kind", "algorithm", "scope", "key_id", "segment_id",
+    "created_at", "event_count", "compression", "nonce", "ciphertext",
+    "ciphertext_sha256", "plaintext_sha256",
+  ].sort();
+  const actual = Object.keys(value).sort();
+  if (actual.length !== expected.length || actual.some((name, index) => name !== expected[index])) {
+    return { ok: false, error: "invalid event envelope fields" };
+  }
+  if (value.schema !== EVENT_SCHEMA || value.kind !== EVENT_KIND ||
+      value.algorithm !== "AES-256-GCM" || value.compression !== "zlib") {
+    return { ok: false, error: "invalid event envelope schema" };
+  }
+  if (!isOpaqueId(value.scope) || !isOpaqueId(value.key_id, 24) ||
+      !isOpaqueId(value.segment_id) || !validTimestamp(value.created_at) ||
+      !Number.isSafeInteger(value.event_count) || value.event_count < 1 || value.event_count > 128 ||
+      !isSha256(value.ciphertext_sha256) || !isSha256(value.plaintext_sha256) ||
+      typeof value.nonce !== "string" || value.nonce.length < 16 || value.nonce.length > 32 ||
+      typeof value.ciphertext !== "string" || value.ciphertext.length < 24 ||
+      byteLength(value.ciphertext) > MAX_EVENT_BYTES * 2) {
+    return { ok: false, error: "invalid event envelope metadata" };
   }
   return { ok: true, metadata: value };
 }
@@ -196,6 +229,102 @@ async function retainNewest(env, kind, scope, keep) {
   const objects = await listObjects(env, kind, scope);
   const stale = objects.slice(keep).map((object) => object.key);
   if (stale.length) await env.MINDSCAPE_VAULT_ARCHIVE.delete(stale);
+}
+
+async function exactActiveFence(request, env) {
+  if (!env.CONTINUITY_AUTHORITY) return false;
+  const leaseId = request.headers.get("x-alpecca-lease-id") || "";
+  const holderNodeId = request.headers.get("x-alpecca-lease-holder") || "";
+  const epochText = request.headers.get("x-alpecca-fencing-epoch") || "";
+  if (!leaseId || !holderNodeId || !/^[1-9][0-9]*$/.test(epochText)) return false;
+  try {
+    const authority = env.CONTINUITY_AUTHORITY.getByName("identity");
+    const reply = await authority.handle("status", "{}", 0);
+    if (reply.status !== 200) return false;
+    const status = JSON.parse(reply.bodyJson);
+    const active = status?.activeLease;
+    return active?.leaseId === leaseId &&
+      active?.holderNodeId === holderNodeId &&
+      active?.fencingEpoch === Number(epochText) &&
+      status?.highestFencingEpoch === Number(epochText);
+  } catch (_error) {
+    return false;
+  }
+}
+
+function eventObjectKey(metadata) {
+  const timestamp = String(Math.floor(metadata.created_at * 1000)).padStart(16, "0");
+  return `v1/${metadata.scope}/${EVENT_KIND}/${timestamp}-${metadata.segment_id}.json`;
+}
+
+function eventObjectMetadata(metadata, request) {
+  return {
+    schema: EVENT_SCHEMA,
+    kind: EVENT_KIND,
+    scope: metadata.scope,
+    key_id: metadata.key_id,
+    segment_id: metadata.segment_id,
+    created_at: String(metadata.created_at),
+    event_count: String(metadata.event_count),
+    ciphertext_sha256: metadata.ciphertext_sha256,
+    lease_id: request.headers.get("x-alpecca-lease-id") || "",
+    holder_node_id: request.headers.get("x-alpecca-lease-holder") || "",
+    fencing_epoch: request.headers.get("x-alpecca-fencing-epoch") || "",
+  };
+}
+
+async function uploadEvents(request, env) {
+  const advertised = Number(request.headers.get("content-length") || "0");
+  if (advertised && (!Number.isSafeInteger(advertised) || advertised > MAX_EVENT_BYTES)) {
+    return json({ ok: false, error: "event segment exceeds size limit" }, 413);
+  }
+  if (!(await exactActiveFence(request, env))) {
+    return json({ ok: false, status: "stale-fence", error: "active continuity lease required" }, 409);
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch (_error) {
+    return json({ ok: false, error: "body must be JSON" }, 400);
+  }
+  const validation = validateEventEnvelope(body?.envelope);
+  if (!validation.ok) return json({ ok: false, error: validation.error }, 400);
+  const requested = requestedScope(request);
+  if (!requested || requested !== validation.metadata.scope) {
+    return json({ ok: false, error: "event scope mismatch" }, 400);
+  }
+  const serialized = JSON.stringify(validation.metadata);
+  if (byteLength(serialized) > MAX_EVENT_BYTES) {
+    return json({ ok: false, error: "event segment exceeds size limit" }, 413);
+  }
+  const key = eventObjectKey(validation.metadata);
+  const result = await immutablePut(
+    env, key, serialized, eventObjectMetadata(validation.metadata, request), "application/json",
+  );
+  if (result.status === "conflict") return json({ ok: false, status: result.status }, 409);
+  return json({ ok: true, status: result.status, segment_id: validation.metadata.segment_id },
+    result.status === "stored" ? 201 : 200);
+}
+
+async function downloadEvents(request, env) {
+  const scope = requestedScope(request);
+  if (!scope) return json({ ok: false, error: "valid vault scope is required" }, 400);
+  const objects = await listObjects(env, EVENT_KIND, scope);
+  const selected = objects.slice(0, MAX_EVENT_SEGMENTS).reverse();
+  const envelopes = [];
+  for (const object of selected) {
+    const stored = await env.MINDSCAPE_VAULT_ARCHIVE.get(object.key);
+    if (!stored) continue;
+    try {
+      const envelope = await stored.json();
+      if (validateEventEnvelope(envelope).ok) envelopes.push(envelope);
+    } catch (_error) {
+      // Corrupt or partial objects are omitted; client-side authentication is
+      // still authoritative and will reject any malformed returned envelope.
+    }
+  }
+  if (!envelopes.length) return json({ ok: false, error: "no event segments stored" }, 404);
+  return json({ ok: true, status: "fetched", envelopes });
 }
 
 function requestedScope(request) {
@@ -354,6 +483,8 @@ export default {
     if (request.method === "GET" && path === "/v1/snapshot/latest") return downloadSnapshot(request, env);
     if (request.method === "POST" && path === "/v1/archive") return uploadArchive(request, env);
     if (request.method === "GET" && path === "/v1/archive/latest") return downloadArchive(request, env);
+    if (request.method === "POST" && path === "/v1/events") return uploadEvents(request, env);
+    if (request.method === "GET" && path === "/v1/events/latest") return downloadEvents(request, env);
     if (request.method === "GET" && path === "/v1/status") return status(request, env);
     return json({ ok: false, error: "not found" }, 404);
   },

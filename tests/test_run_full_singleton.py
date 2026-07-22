@@ -19,6 +19,9 @@ def _load_launcher(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> ModuleTyp
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # Singleton lifecycle tests exercise the local process lock in isolation.
+    # Production still discovers and acquires the cross-host continuity lease.
+    monkeypatch.setattr(module, "client_from_env", lambda **_kwargs: None)
     return module
 
 
@@ -28,8 +31,14 @@ def test_full_launcher_acquires_and_releases_the_home_instance_lock() -> None:
 
     assert '"alpecca.instance"' in source
     assert "LocalInstanceLock(_instance_lock_path())" in main
-    assert main.index("lock.acquire()") < main.index("return _run()")
-    assert "finally:\n        lock.release()" in main
+    acquire = main.index("lock.acquire()")
+    lease = main.index("_start_continuity_guard()")
+    run = main.index("return _run()")
+    cleanup = main.index("finally:", run)
+    stop_lease = main.index("continuity_guard.stop()", cleanup)
+    release = main.index("lock.release()", stop_lease)
+
+    assert acquire < lease < run < cleanup < stop_lease < release
 
 
 def test_full_launcher_uses_validated_sqlite_snapshots_not_raw_file_copies() -> None:

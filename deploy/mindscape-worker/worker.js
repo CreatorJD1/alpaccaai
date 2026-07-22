@@ -1,4 +1,6 @@
 const SNAPSHOT_KEY = "mindscape:latest";
+const PHONE_PREFIX = "phone:approval:";
+const PHONE_TTL_SECONDS = 300;
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data, null, 2), {
@@ -10,6 +12,34 @@ function json(data, status = 200, extraHeaders = {}) {
       ...extraHeaders,
     },
   });
+}
+
+function htmlResponse(body, status = 200) {
+  return new Response(body, {
+    status,
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+  });
+}
+
+function escapeHtml(value) {
+  return String(value || "").replace(/[&<>\"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
+  }[char]));
+}
+
+function phoneKey(challenge) {
+  return `${PHONE_PREFIX}${challenge}`;
+}
+
+function validChallenge(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{32,128}$/.test(value);
+}
+
+function phonePage(title, message, form = "") {
+  return htmlResponse(`<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>
+<style>body{margin:0;background:#07101c;color:#edf7ff;font:16px system-ui;padding:24px}main{max-width:520px;margin:10vh auto;background:#0d1828;border:1px solid #29415e;border-radius:14px;padding:24px}h1{font-size:24px}p{color:#b8c9dc;line-height:1.5}button{background:#7fd9ff;border:0;border-radius:8px;padding:12px 18px;font-weight:800;color:#07101c}</style></head>
+<body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>${form}</main></body></html>`);
 }
 
 function corsHeaders() {
@@ -96,6 +126,37 @@ async function writeSnapshot(env, snapshot) {
   return { ok: true };
 }
 
+async function issuePhoneApproval(request, env) {
+  let body;
+  try { body = await request.json(); } catch (_err) { return json({ ok: false, error: "body must be JSON" }, 400); }
+  const challenge = body?.challenge;
+  if (!validChallenge(challenge)) return json({ ok: false, error: "invalid challenge" }, 400);
+  const requestedTtl = Number(body?.expires_in || PHONE_TTL_SECONDS);
+  const ttl = Math.max(60, Math.min(PHONE_TTL_SECONDS, Number.isFinite(requestedTtl) ? requestedTtl : PHONE_TTL_SECONDS));
+  const record = { status: "pending", created_at: Date.now(), expires_at: Date.now() + ttl * 1000 };
+  await env.MINDSCAPE_KV.put(phoneKey(challenge), JSON.stringify(record), { expirationTtl: ttl });
+  return json({ ok: true, status: record.status, expires_at: record.expires_at });
+}
+
+async function approvePhone(request, env) {
+  const form = await request.formData();
+  const challenge = form.get("challenge");
+  if (!validChallenge(challenge)) return phonePage("Invalid approval", "This approval link is not valid.", "");
+  const key = phoneKey(challenge);
+  const record = await env.MINDSCAPE_KV.get(key, "json");
+  if (!record || record.expires_at <= Date.now()) {
+    return phonePage("Approval expired", "Request a new one-time approval link.", "");
+  }
+  if (record.status !== "pending") {
+    return phonePage("Approval already used", "This one-time approval cannot be reused.", "");
+  }
+  record.status = "approved";
+  record.approved_at = Date.now();
+  record.phone_ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  await env.MINDSCAPE_KV.put(key, JSON.stringify(record), { expirationTtl: 60 });
+  return phonePage("Phone approved", "This one-time Creator approval was accepted. You may close this page.", "");
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
@@ -110,8 +171,31 @@ export default {
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
       });
     }
+
+    if (request.method === "GET" && url.pathname === "/phone/approve") {
+      const challenge = url.searchParams.get("challenge");
+      if (!validChallenge(challenge)) return phonePage("Invalid approval", "This approval link is not valid.", "");
+      const record = await env.MINDSCAPE_KV.get(phoneKey(challenge), "json");
+      if (!record || record.expires_at <= Date.now()) return phonePage("Approval expired", "Request a new one-time approval link.", "");
+      if (record.status !== "pending") return phonePage("Approval already used", "This one-time approval cannot be reused.", "");
+      return phonePage("Approve Alpecca phone access", "Tap once to approve this phone. The link expires in five minutes and can only be used once.", `<form method="post" action="/phone/approve"><input type="hidden" name="challenge" value="${escapeHtml(challenge)}"><button type="submit">Approve this phone</button></form>`);
+    }
+
+    if (request.method === "POST" && url.pathname === "/phone/approve") {
+      return approvePhone(request, env);
+    }
     if (!authorized(request, env)) {
       return json({ ok: false, error: "unauthorized" }, 401);
+    }
+    if (request.method === "POST" && url.pathname === "/phone/challenge") {
+      return issuePhoneApproval(request, env);
+    }
+    if (request.method === "GET" && url.pathname === "/phone/status") {
+      const challenge = url.searchParams.get("challenge");
+      if (!validChallenge(challenge)) return json({ ok: false, error: "invalid challenge" }, 400);
+      const record = await env.MINDSCAPE_KV.get(phoneKey(challenge), "json");
+      if (!record || record.expires_at <= Date.now()) return json({ ok: false, status: "expired" }, 404);
+      return json({ ok: true, status: record.status, created_at: record.created_at, approved_at: record.approved_at || 0 });
     }
     if (request.method === "GET" && url.pathname === "/snapshot") {
       const snap = await readSnapshot(env);

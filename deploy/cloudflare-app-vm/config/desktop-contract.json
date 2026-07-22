@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "desktopId": "alpecca-private-cloud-desktop",
+  "sandboxId": "alpecca-private-cloud-desktop-v1",
+  "maximumDesktopInstances": 1,
+  "continuity": {
+    "coordinator": "single-named-sqlite-durable-object",
+    "leaseMaximumSeconds": 60,
+    "newAcquisitionRequiresStrictlyNewerFence": true,
+    "renewalRequiresExactHolderAndFence": true,
+    "r2CannotAuthorizeLeadership": true
+  },
+  "ingress": {
+    "httpsRequired": true,
+    "cloudflareAccessRequired": true,
+    "originJwtValidationRequired": [
+      "signature",
+      "issuer",
+      "audience",
+      "expiry",
+      "exact-creator-identity"
+    ],
+    "directPreviewUrlAllowed": false,
+    "vncBindAddress": "127.0.0.1",
+    "novncDirectPublicBindAllowed": false
+  },
+  "persistence": {
+    "provider": "r2-standard",
+    "mountPath": "/persistent",
+    "prefix": "/alpecca-cloud-desktop/v1",
+    "workspaceBackupRequiredBeforeRelease": true,
+    "backupCommitRequiresExactFence": true,
+    "containerFilesystemAuthoritative": false
+  },
+  "processPolicy": {
+    "desktopOnly": true,
+    "allowedProcessRoles": [
+      "dbus-session",
+      "novnc-proxy",
+      "vnc-loopback",
+      "websockify",
+      "xfce-session"
+    ],
+    "prohibitedProcessRoles": [
+      "autonomous-game",
+      "coremind",
+      "discord-bridge",
+      "model-server",
+      "ollama",
+      "server.py"
+    ]
+  },
+  "healthEvidenceRequired": [
+    "https-ingress",
+    "unauthenticated-denial",
+    "creator-authenticated-success",
+    "access-jwt-origin-validation",
+    "novnc-websocket",
+    "r2-write-read-delete-round-trip",
+    "exact-current-fence",
+    "one-desktop-instance",
+    "zero-prohibited-processes"
+  ]
+}

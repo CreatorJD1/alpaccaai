@@ -357,6 +357,36 @@ def restore_latest_verified_archive(
     )
 
 
+def merge_latest_continuity_events(
+    environ: Mapping[str, str],
+    destination: Path,
+    *,
+    vault_module: Any,
+    journal_module: Any,
+) -> dict[str, object]:
+    """Merge authenticated post-archive events before cloud CoreMind starts."""
+    try:
+        recovery_key, _key_source = vault_module.load_or_create_encryption_key(environ)
+        transport_token, _token_source = vault_module.load_or_create_transport_token(environ)
+        result = journal_module.fetch_and_merge(
+            str(environ["ALPECCA_MINDSCAPE_VAULT_URL"]),
+            transport_token,
+            recovery_key,
+            db_path=destination,
+            timeout=max(5.0, min(30.0, float(
+                environ.get("ALPECCA_CONTINUITY_MERGE_TIMEOUT", "12")
+            ))),
+        )
+    except Exception as exc:
+        raise CloudCoreStartupError("continuity_event_merge_failed") from exc
+    if not isinstance(result, Mapping) or result.get("ok") is not True:
+        status = result.get("status") if isinstance(result, Mapping) else "invalid_result"
+        raise CloudCoreStartupError(
+            f"continuity_event_merge_failed:{_clean_status(status)}"
+        )
+    return dict(result)
+
+
 def server_command() -> list[str]:
     return [
         sys.executable,
@@ -379,6 +409,7 @@ class CloudCoreSupervisor:
         *,
         environ: MutableMapping[str, str] | None = None,
         vault_module: Any | None = None,
+        journal_module: Any | None = None,
         lease_client_factory: Callable[..., Any] = client_from_env,
         lease_guard_factory: Callable[..., Any] = ContinuityLeaseGuard,
         process_factory: Callable[..., Any] = subprocess.Popen,
@@ -388,6 +419,7 @@ class CloudCoreSupervisor:
     ) -> None:
         self.environ = os.environ if environ is None else environ
         self.vault_module = vault_module
+        self.journal_module = journal_module
         self.lease_client_factory = lease_client_factory
         self.lease_guard_factory = lease_guard_factory
         self.process_factory = process_factory
@@ -473,9 +505,22 @@ class CloudCoreSupervisor:
                 runtime_home,
                 vault_module=self.vault_module,
             )
+            vault_module = self.vault_module
+            if vault_module is None:
+                from alpecca import mindscape_vault as vault_module
+            journal_module = self.journal_module
+            if journal_module is None:
+                from alpecca import continuity_journal as journal_module
+            event_merge = merge_latest_continuity_events(
+                self.environ,
+                receipt.path,
+                vault_module=vault_module,
+                journal_module=journal_module,
+            )
             print(
                 "[hf-cloud-core] verified Vault restore "
-                f"sequence={receipt.sequence} sha256={receipt.sha256}"
+                f"sequence={receipt.sequence} sha256={receipt.sha256} "
+                f"events_merged={event_merge.get('merged', 0)}"
             )
             approval: RestoreApproval | None
             if str(self.environ.get("ALPECCA_CLOUD_RESTORE_APPROVAL") or "").strip():

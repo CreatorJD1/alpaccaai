@@ -1,0 +1,35 @@
+[Unit]
+Description=Alpecca Ubuntu standby core (leader-lease gated)
+Documentation=file:/opt/alpecca/deploy/ubuntu-app-vm/README.md
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/alpecca/enable-cloud-core
+# This creator-controlled marker is necessary but not sufficient. A future
+# runtime must also pass the composite heartbeat and prior-owner lease policy.
+
+[Service]
+Type=simple
+User=alpecca-core
+Group=alpecca-core
+EnvironmentFile=/etc/alpecca/runtime.env
+Environment=ALPECCA_CLOUD_ROLE=standby
+Environment=ALPECCA_CONVERSATIONAL_EGRESS_ENABLED=0
+ExecStartPre=/usr/local/libexec/alpecca/validate-standby-config
+# Intentionally absent. The repository helper with this name is policy-only,
+# requires an explicit dry-run subcommand, and cannot start an Alpecca runtime.
+ExecStart=/usr/local/libexec/alpecca/alpecca-cloud-supervisor
+Restart=on-failure
+RestartSec=10s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/alpecca /var/log/alpecca
+
+[Install]
+WantedBy=multi-user.target

@@ -123,6 +123,56 @@ class EmotionalState:
             new_fear = self.fear * (1.0 - Emotion.FEAR_DECAY)
         return self._with(fear=_clamp(new_fear))
 
+    def update_host_pressure(self, evidence: dict | None) -> "EmotionalState":
+        """Let a *measured* local-resource warning affect unease.
+
+        This is deliberately separate from prediction error.  A hot, low-power,
+        or memory-starved host is not an imagined threat, but it is also not a
+        reason to fabricate alarm when telemetry is unavailable.  Only the
+        bounded severity projected by the read-only resource sampler can move
+        this signal; a normal reading lets it ease back down gradually.
+        """
+        if not isinstance(evidence, dict):
+            return self
+        severity = evidence.get("severity")
+        targets = {
+            "normal": 0.0,
+            "elevated": 0.22,
+            "high": 0.64,
+            "critical": 0.88,
+        }
+        target = targets.get(severity)
+        if target is None:
+            return self
+        # A verified high/critical condition is noticed promptly.  Recovery is
+        # intentionally gentler, so a one-sample calm reading does not erase a
+        # recently measured warning.
+        rate = 0.58 if target > self.fear else 0.16
+        return self._with(fear=_clamp(self.fear + rate * (target - self.fear)))
+
+    def update_incident_stress(self, evidence: dict | None) -> "EmotionalState":
+        """Let a verified, cue-matched incident influence current unease.
+
+        The incident store already discounts activation through safety learning
+        and time.  This method only follows that bounded target; it cannot create
+        an incident from narration or diagnose a human mental-health condition.
+        """
+        if not isinstance(evidence, dict):
+            return self
+        activation = _clamp(evidence.get("activation", 0.0))
+        confidence = _clamp(evidence.get("confidence", 0.0))
+        recovery = _clamp(evidence.get("recovery", 1.0))
+        if confidence <= 0.0:
+            return self
+        target = _clamp(activation * confidence * (1.0 - 0.35 * recovery))
+        rate = 0.42 if target > self.fear else 0.12
+        return self._with(fear=_clamp(self.fear + rate * (target - self.fear)))
+
+    def update_incident_recovery(self, strength: float = 1.0) -> "EmotionalState":
+        """Register verified safety evidence as bounded relief from unease."""
+        relief = 0.18 * _clamp(strength)
+        return self._with(fear=_clamp(self.fear * (1.0 - relief)))
+
     def update_energy(self, active: bool) -> "EmotionalState":
         """Raise energy when the person is actively engaging with her, let it
         decay toward a drowsy floor when she's alone.

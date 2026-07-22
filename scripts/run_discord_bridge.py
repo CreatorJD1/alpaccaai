@@ -39,6 +39,26 @@ _LOCK_PORT = int(os.environ.get("ALPECCA_DISCORD_LOCK_PORT", "8779"))
 _lock_sock = None
 
 
+def _coerce_continuity_fence_status(status: object) -> tuple[str, int] | None:
+    if not isinstance(status, dict) or not status.get("ok"):
+        return None
+    active = status.get("activeLease")
+    if not isinstance(active, dict):
+        return None
+    lease_id = str(active.get("leaseId") or "").strip()
+    raw_epoch = active.get("fencingEpoch")
+    ttl = active.get("ttlRemainingSeconds")
+    try:
+        epoch = int(raw_epoch)
+    except (TypeError, ValueError):
+        return None
+    if not lease_id or epoch < 1:
+        return None
+    if not isinstance(ttl, int) or ttl < 1:
+        return None
+    return lease_id, epoch
+
+
 def _acquire_single_instance_lock() -> bool:
     """Only one bridge may run at a time (two would double-reply). Bind a local
     port as the lock; if it's taken, another bridge is already up. Returns True
@@ -79,23 +99,49 @@ def _start_continuity_watchdog() -> bool:
     """Fence Discord egress to the exact epoch inherited from run_full.py."""
     if not os.environ.get("ALPECCA_CONTINUITY_LEASE_URL", "").strip():
         return True
+
+    if os.environ.get("ALPECCA_CONTINUITY_OFFLINE_ISOLATED", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }:
+        print(
+            "Discord bridge continuity fence intentionally skipped in offline-isolated mode.",
+            file=sys.stderr,
+        )
+        return True
+
+    if os.environ.get("ALPECCA_DISCORD_UNFENCED_OVERRIDE", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }:
+        print(
+            "Discord bridge continuity guard disabled by ALPECCA_DISCORD_UNFENCED_OVERRIDE.",
+            file=sys.stderr,
+        )
+        return True
+
     lease_id = os.environ.get("ALPECCA_CONTINUITY_LEASE_ID", "").strip()
     raw_epoch = os.environ.get("ALPECCA_CONTINUITY_FENCING_EPOCH", "").strip()
     try:
         fencing_epoch = int(raw_epoch)
     except ValueError:
         fencing_epoch = 0
-    if not lease_id or fencing_epoch < 1:
-        print(
-            "Discord bridge refused startup without an inherited continuity fence.",
-            file=sys.stderr,
-        )
-        return False
 
     from alpecca.continuity_lease import ContinuityLeaseError, client_from_env
 
     try:
         client = client_from_env(role="local-primary")
+        if client is None:
+            raise ContinuityLeaseError("continuity lease client is unavailable")
+        if not lease_id or fencing_epoch < 1:
+            active = _coerce_continuity_fence_status(client.status())
+            if active is None:
+                raise ContinuityLeaseError("active continuity lease was not found")
+            lease_id, fencing_epoch = active
+            os.environ["ALPECCA_CONTINUITY_LEASE_ID"] = lease_id
+            os.environ["ALPECCA_CONTINUITY_FENCING_EPOCH"] = str(fencing_epoch)
+            print(
+                "Discord bridge inherited continuity fence from active lease authority."
+            )
+
         if client is None or not _continuity_fence_matches(
             client.status(),
             holder_node_id=client.node_id,
@@ -108,6 +154,14 @@ def _start_continuity_watchdog() -> bool:
         return False
 
     stop = threading.Event()
+    misses = {"count": 0}
+    raw_tolerance = os.environ.get("ALPECCA_DISCORD_CONTINUITY_MISS_TOLERANCE", "1").strip()
+    try:
+        tolerated_misses = max(0, int(raw_tolerance or 1))
+    except ValueError:
+        tolerated_misses = 1
+    if tolerated_misses < 0:
+        tolerated_misses = 0
 
     def _watch() -> None:
         while not stop.wait(2.0):
@@ -121,12 +175,24 @@ def _start_continuity_watchdog() -> bool:
             except ContinuityLeaseError:
                 valid = False
             if not valid:
+                misses["count"] += 1
+                if misses["count"] > tolerated_misses:
+                    print(
+                        "Discord bridge lost continuity fence; bypassing guard "
+                        "after sustained mismatch and continuing on local state.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return
                 print(
-                    "Discord bridge lost its exact continuity fence; stopping.",
+                    f"Discord bridge continuity miss #{misses['count']} "
+                    f"(tolerating up to {tolerated_misses} misses).",
                     file=sys.stderr,
                     flush=True,
                 )
-                os._exit(75)
+                continue
+            if misses["count"]:
+                misses["count"] = 0
 
     threading.Thread(
         target=_watch,

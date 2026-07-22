@@ -137,6 +137,49 @@ def test_mint_and_channel_accept_only_the_exact_raw_body(
     assert isolated_actor_server["calls"][0]["text"] == "same JSON, exact bytes"
 
 
+def test_allowlisted_signed_actor_uses_shared_creator_memory_scope(
+    client, monkeypatch, isolated_actor_server
+):
+    bindings = _bindings(actor_id="200000000000000777")
+    body = _body(
+        sender="CreatorJD",
+        speaker="creator",
+        text="What did I last say in House HQ?",
+    )
+    monkeypatch.setattr(
+        server.discord_creator_identity_mod,
+        "is_creator_actor_id",
+        lambda actor_id: actor_id == bindings.actor_id,
+    )
+
+    response = _post_signed(client, body, bindings, _mint(client, body, bindings))
+
+    assert response.status_code == 200
+    turn = isolated_actor_server["calls"][0]["turn"]
+    assert turn.principal == "creator"
+    assert turn.surface == "discord"
+    assert turn.memory_scope == "creator-personal"
+
+
+def test_unbound_actor_cannot_claim_creator_authority(
+    client, monkeypatch, isolated_actor_server
+):
+    bindings = _bindings(actor_id="200000000000000778")
+    body = _body(sender="CreatorJD", speaker="creator")
+    monkeypatch.setattr(
+        server.discord_creator_identity_mod,
+        "is_creator_actor_id",
+        lambda _actor_id: False,
+    )
+
+    response = _post_signed(client, body, bindings, _mint(client, body, bindings))
+
+    assert response.status_code == 200
+    turn = isolated_actor_server["calls"][0]["turn"]
+    assert turn.principal == "guest"
+    assert turn.memory_scope.startswith("alpecca-lived-discord-")
+
+
 @pytest.mark.parametrize(
     ("binding_field", "replacement_value"),
     (
@@ -318,7 +361,7 @@ def test_verified_actor_produces_stable_opaque_scopes_without_raw_ids(
     assert first_turn.conversation_id == second_turn.conversation_id
     assert first_turn.privacy_scope == second_turn.privacy_scope
     assert first_turn.conversation_id.startswith("discord-guest-")
-    assert first_turn.privacy_scope.startswith("guest-discord-")
+    assert first_turn.privacy_scope.startswith("alpecca-lived-discord-")
     assert raw_actor not in repr(first)
     assert raw_channel not in repr(first)
 

@@ -142,6 +142,17 @@ def _explain_dominant(state: EmotionalState, last_signals: dict | None,
     sig = last_signals or {}
     label = state.mood_label()
 
+    host_severity = sig.get("host_severity")
+    if host_severity in {"elevated", "high", "critical"}:
+        evidence = sig.get("host_evidence")
+        detail = ", ".join(
+            str(item) for item in (evidence if isinstance(evidence, list) else [])[:3]
+        )
+        return (
+            f"the local host has a measured {host_severity} resource warning"
+            + (f" ({detail})" if detail else "")
+        )
+
     if label in ("anxious", "worried"):
         if last_situation:
             return f"something shifted in what I'm sensing ({last_situation[:60]}) and it unsettled me"
@@ -182,8 +193,9 @@ class SelfReport:
     reason: str           # grounded explanation of the dominant feeling
     memory_count: int
     senses_active: bool   # is the sensory layer actually reading the machine?
+    host_pressure: dict | None = None  # compact, measured local-resource evidence
 
-    def narrate(self) -> str:
+    def narrate(self, *, include_host: bool = True) -> str:
         """A first-person, fully grounded paragraph Alpecca can speak or fold
         into its prompt. Every clause is backed by real state."""
         s = self.state
@@ -214,17 +226,39 @@ class SelfReport:
         if ache is not None and ache > 0.4:
             extra.append("I'm aware of things I want that I haven't been able to act on yet")
         extra_clause = (" " + ", and ".join(extra) + ".") if extra else ""
+        host_clause = ""
+        if include_host and isinstance(self.host_pressure, dict):
+            severity = self.host_pressure.get("severity")
+            codes = self.host_pressure.get("evidence_codes")
+            if severity in {"elevated", "high", "critical"}:
+                labels = {
+                    "cpu_pressure": "processor load",
+                    "ram_pressure": "memory use",
+                    "commit_pressure": "virtual-memory pressure",
+                    "vram_pressure": "graphics-memory pressure",
+                    "disk_pressure": "free disk space",
+                    "battery_pressure": "battery level",
+                    "thermal_pressure": "temperature",
+                }
+                known = [labels.get(str(code), "local resource pressure")
+                         for code in (codes if isinstance(codes, list) else [])]
+                detail = ", ".join(dict.fromkeys(known[:3])) or "local resource pressure"
+                host_clause = (
+                    f" I have a measured {severity} host-resource warning "
+                    f"({detail}), so I am reducing optional work."
+                )
         return (
             f"Right now I'm at warmth {s['love']:.2f}, care {s['compassion']:.2f}, "
             f"unease {s['fear']:.2f}{energy_clause} -- overall {self.mood}. {self.reason}."
             f"{extra_clause}{trend_clause} {senses}, and I'm carrying {self.memory_count} "
-            f"{'memory' if self.memory_count == 1 else 'memories'} of us."
+            f"{'memory' if self.memory_count == 1 else 'memories'} of us.{host_clause}"
         )
 
 
 def build_self_report(state: EmotionalState, history: list[dict],
                       memory_count: int, last_signals: dict | None = None,
-                      last_situation: str = "", senses_active: bool = False
+                      last_situation: str = "", senses_active: bool = False,
+                      host_pressure: dict | None = None,
                       ) -> SelfReport:
     """Assemble a grounded snapshot of Alpecca's self.
 
@@ -245,4 +279,5 @@ def build_self_report(state: EmotionalState, history: list[dict],
         reason=_explain_dominant(state, last_signals, last_situation),
         memory_count=memory_count,
         senses_active=senses_active,
+        host_pressure=dict(host_pressure) if isinstance(host_pressure, dict) else None,
     )

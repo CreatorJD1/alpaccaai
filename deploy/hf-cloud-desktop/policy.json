@@ -1,0 +1,14 @@
+{
+  "schema": "alpecca.cloud-desktop-policy.v1",
+  "provider": "huggingface-space",
+  "visibility_required": "private",
+  "desktop_only": true,
+  "coremind_enabled": false,
+  "conversation_egress_enabled": false,
+  "public_port": 7860,
+  "vnc_bind": "127.0.0.1:5901",
+  "persistent_mount": "/data",
+  "runtime_user_id": 1000,
+  "package_execution": "image-build-only",
+  "leadership_activation": "absent"
+}

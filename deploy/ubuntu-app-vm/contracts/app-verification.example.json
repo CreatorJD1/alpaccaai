@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "now": "2030-01-02T12:00:00Z",
+  "operation": {
+    "schemaVersion": 1,
+    "operationId": "op-example-001",
+    "creatorPrincipal": "CreatorJD",
+    "approvalLease": "approval-example-001",
+    "expiresAt": "2030-01-02T12:10:00Z",
+    "manager": "flatpak",
+    "action": "install",
+    "source": "https://example.invalid/reviewed.flatpakrepo",
+    "package": "org.example.ReviewedApp",
+    "version": "1.0.0",
+    "estimatedDiskBytes": 1000,
+    "requestedPermissions": []
+  },
+  "approval": {
+    "schemaVersion": 1,
+    "approvalId": "approval-example-001",
+    "operationId": "op-example-001",
+    "creatorPrincipal": "CreatorJD",
+    "operationDigest": "sha256:9915996210b0ad8dc2f44cc68e1e68fd2d2c8bad67853c35d052648ecf51eb61",
+    "issuedAt": "2030-01-02T11:59:00Z",
+    "expiresAt": "2030-01-02T12:05:00Z",
+    "oneUse": true,
+    "verification": {
+      "status": "verified",
+      "verifier": "external-creator-verifier",
+      "evidenceId": "example-evidence-001"
+    }
+  },
+  "catalog": {
+    "schemaVersion": 1,
+    "defaultPolicy": "deny",
+    "apt": {
+      "allowedRepositories": [],
+      "allowedPackages": []
+    },
+    "flatpak": {
+      "allowedRemotes": [
+        {
+          "name": "reviewed-example",
+          "source": "https://example.invalid/reviewed.flatpakrepo"
+        }
+      ],
+      "allowedApplications": [
+        {
+          "applicationId": "org.example.ReviewedApp",
+          "remote": "reviewed-example",
+          "versions": ["1.0.0"],
+          "actions": ["install"],
+          "maxEstimatedDiskBytes": 1000,
+          "allowedPermissions": []
+        }
+      ]
+    }
+  },
+  "ledger": {
+    "schemaVersion": 1,
+    "operations": {},
+    "consumedApprovals": {}
+  },
+  "ledgerIntegrityVerified": true
+}

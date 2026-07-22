@@ -129,6 +129,29 @@ def test_memory_and_host_pressure_are_evidence_without_changing_scores_source() 
     assert memory_vector["source"] == host_vector["source"] == "deterministic"
 
 
+def test_host_pressure_with_projected_evidence_changes_only_self_care_urgency() -> None:
+    baseline = soul.soul.deliberate(
+        soul.snapshot(EmotionalState(curiosity=0.7), solitude_s=600)
+    )
+    pressured = soul.soul.deliberate(
+        soul.snapshot(
+            EmotionalState(curiosity=0.7),
+            solitude_s=600,
+            host_pressure={
+                "severity": "high",
+                "evidence_codes": ["commit_pressure"],
+            },
+        )
+    )
+    before = {item["subagent"]: item for item in baseline["slate"]}
+    after = {item["subagent"]: item for item in pressured["slate"]}
+
+    assert pressured["perspective_vector"]["pressure"] == "high"
+    assert after["Reflector"]["urgency"] > before["Reflector"]["urgency"]
+    assert after["Improver"]["urgency"] < before["Improver"]["urgency"]
+    assert after["Wanderer"] == before["Wanderer"]
+
+
 def test_vector_evidence_cannot_bypass_existing_arbitration(monkeypatch) -> None:
     snap = _tension_snapshot()
     baseline = soul.MasterAgent().deliberate(snap)

@@ -59,6 +59,59 @@ class _DiscardWriter:
 _discard_writer = _DiscardWriter()
 
 
+def _normalize_waveform(wave, requested_gain: float = 1.0):
+    """Scale an F5 waveform before PCM encoding so WAV output cannot clip."""
+
+    import numpy as np
+
+    if hasattr(wave, "detach"):
+        wave = wave.detach().float().cpu().numpy()
+    samples = np.asarray(wave, dtype=np.float32)
+    if samples.size == 0 or not np.isfinite(samples).all():
+        raise RuntimeError("F5 produced an invalid waveform")
+    input_peak = float(np.max(np.abs(samples)))
+    requested_gain = max(0.55, min(1.2, float(requested_gain)))
+    samples = samples * requested_gain
+    gained_peak = float(np.max(np.abs(samples)))
+    limiter_gain = 1.0
+    if gained_peak > 0.92:
+        limiter_gain = 0.92 / gained_peak
+        samples = samples * limiter_gain
+    applied_gain = requested_gain * limiter_gain
+    output_peak = float(np.max(np.abs(samples)))
+    return samples, input_peak, applied_gain, limiter_gain, output_peak
+
+
+def _controls(speed: float = 1.0, gain: float = 1.0, style: str = "present") -> dict:
+    """Validate remote controls and map style to supported F5 parameters."""
+    speed = max(0.8, min(1.2, float(speed)))
+    gain = max(0.55, min(1.2, float(gain)))
+    style = str(style or "present").strip().lower()[:24]
+    profiles = {
+        "bright": (2.1, -0.8),
+        "spark": (2.1, -0.75),
+        "curious": (2.05, -0.85),
+        "close": (1.85, -0.95),
+        "soft": (1.75, -1.0),
+        "hushed": (1.7, -1.0),
+        "small": (1.7, -1.0),
+        "reserved": (1.8, -1.0),
+        "careful": (2.1, -0.85),
+        "tight": (2.2, -0.75),
+        "drowsy": (1.7, -1.0),
+        "searching": (2.0, -0.9),
+        "present": (2.0, -1.0),
+    }
+    cfg_strength, sway_sampling_coef = profiles.get(style, profiles["present"])
+    return {
+        "speed": round(speed, 3),
+        "gain": round(gain, 3),
+        "style": style if style in profiles else "present",
+        "cfg_strength": cfg_strength,
+        "sway_sampling_coef": sway_sampling_coef,
+    }
+
+
 def load_once() -> None:
     global _ready, _load_error, _model, _vocoder, _load_seconds
     if _ready:
@@ -86,12 +139,22 @@ def load_once() -> None:
         _load_seconds = round(time.perf_counter() - started, 3)
 
 
-def synth(text: str, ref_audio: str, ref_text: str, nfe_step: int) -> tuple[bytes, dict]:
+def synth(
+    text: str,
+    ref_audio: str,
+    ref_text: str,
+    nfe_step: int,
+    *,
+    speed: float = 1.0,
+    gain: float = 1.0,
+    style: str = "present",
+) -> tuple[bytes, dict]:
     load_once()
     started = time.perf_counter()
     from f5_tts.infer.utils_infer import infer_process, preprocess_ref_audio_text
     import soundfile as sf
 
+    applied = _controls(speed, gain, style)
     with _lock:
         # F5's helpers print ref_text/gen_text even when show_info is disabled.
         # Those strings can contain private conversation, so suppress only the
@@ -113,10 +176,16 @@ def synth(text: str, ref_audio: str, ref_text: str, nfe_step: int) -> tuple[byte
                 show_info=_noop,
                 progress=_progress,
                 nfe_step=max(4, int(nfe_step or OPEN_TTS_NFE_STEP)),
+                speed=applied["speed"],
+                cfg_strength=applied["cfg_strength"],
+                sway_sampling_coef=applied["sway_sampling_coef"],
                 device=OPEN_TTS_DEVICE,
             )
     if wave is None:
         raise RuntimeError("F5 produced no waveform")
+    wave, input_peak, applied_gain, limiter_gain, output_peak = _normalize_waveform(
+        wave, applied["gain"]
+    )
     buf = io.BytesIO()
     sf.write(buf, wave, sr, format="WAV")
     return buf.getvalue(), {
@@ -125,6 +194,14 @@ def synth(text: str, ref_audio: str, ref_text: str, nfe_step: int) -> tuple[byte
         "load_seconds": _load_seconds,
         "sample_rate": sr,
         "bytes": buf.tell(),
+        "input_peak": round(input_peak, 4),
+        "normalization_gain": round(limiter_gain, 4),
+        "output_peak": round(output_peak, 4),
+        "applied": {
+            **applied,
+            "gain": round(applied_gain, 4),
+            "requested_gain": applied["gain"],
+        },
     }
 
 
@@ -171,6 +248,9 @@ class Handler(BaseHTTPRequestHandler):
                 str(body.get("ref_audio") or ""),
                 str(body.get("ref_text") or ""),
                 int(body.get("nfe_step") or OPEN_TTS_NFE_STEP),
+                speed=float(body.get("speed") or 1.0),
+                gain=float(body.get("gain") or 1.0),
+                style=str(body.get("style") or "present"),
             )
         except Exception as exc:
             tb = traceback.format_exc()

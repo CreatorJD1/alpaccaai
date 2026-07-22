@@ -1,0 +1,9 @@
+{
+  "schema": "alventius.android-release.v1",
+  "versionCode": 1,
+  "versionName": "1.0.0",
+  "apkUrl": "https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlventiusExperimentusLauncher-v1.0.0.apk",
+  "sha256": "replace-with-the-build-sha256",
+  "packageName": "games.alventius.experimentus.launcher",
+  "gameUrl": "https://your-public-agentic-frontier-endpoint.example"
+}

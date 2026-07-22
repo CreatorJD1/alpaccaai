@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "assessmentDate": "2026-07-15",
+  "deploymentMode": "preflight-only",
+  "costPolicy": {
+    "maximumApprovedMonthlyUsd": 0,
+    "containersFreePlanAvailable": false,
+    "workersPaidPlanMinimumMonthlyUsd": 5,
+    "meteredOveragesPossible": true,
+    "r2FreeTierIsNotBillingGuarantee": true
+  },
+  "buildPolicy": {
+    "localDockerAllowed": false,
+    "sandboxWranglerDeployRequiresDocker": true,
+    "remoteBuildEvidenceAccepted": false
+  },
+  "deploymentCommandsAllowed": false,
+  "officialSources": [
+    "https://developers.cloudflare.com/sandbox/get-started/",
+    "https://developers.cloudflare.com/sandbox/platform/pricing/",
+    "https://developers.cloudflare.com/containers/pricing/",
+    "https://developers.cloudflare.com/containers/platform-details/limits/",
+    "https://developers.cloudflare.com/sandbox/concepts/sandboxes/",
+    "https://developers.cloudflare.com/sandbox/guides/mount-buckets/",
+    "https://developers.cloudflare.com/sandbox/guides/backup-restore/",
+    "https://developers.cloudflare.com/r2/pricing/",
+    "https://developers.cloudflare.com/durable-objects/concepts/what-are-durable-objects/",
+    "https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/",
+    "https://developers.cloudflare.com/workers/configuration/routing/custom-domains/"
+  ]
+}

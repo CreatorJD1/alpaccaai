@@ -539,11 +539,28 @@ def _python_env_defaults(path: Path) -> dict[str, str]:
 
 def _bat_env_defaults(path: Path) -> dict[str, str]:
     defaults: dict[str, str] = {}
+    lines = path.read_text(encoding="utf-8").splitlines()
+    start_label = next(
+        (index for index, line in enumerate(lines) if line.strip().lower() == ":set_start_defaults"),
+        None,
+    )
+    if start_label is not None:
+        lines = lines[start_label + 1:]
+        end_label = next(
+            (index for index, line in enumerate(lines) if line.strip().startswith(":")),
+            len(lines),
+        )
+        lines = lines[:end_label]
+    conditional = re.compile(
+        r'^\s*if\s+not\s+defined\s+(ALPECCA_[A-Za-z0-9_]+)\s+'
+        r'set\s+"?\1=(.*?)"?\s*$',
+        re.I,
+    )
     assignment = re.compile(
         r'^\s*set\s+"?(ALPECCA_[A-Za-z0-9_]+)=(.*?)"?\s*$', re.I
     )
-    for line in path.read_text(encoding="utf-8").splitlines():
-        match = assignment.match(line)
+    for line in lines:
+        match = conditional.match(line) or assignment.match(line)
         if match:
             defaults[match.group(1).upper()] = match.group(2).strip().strip('"')
     return defaults
@@ -551,7 +568,7 @@ def _bat_env_defaults(path: Path) -> dict[str, str]:
 
 @pytest.mark.parametrize(
     "relative_path",
-    ("START_HERE.bat", "scripts/run_full.py", "app.py"),
+    ("ALPECCA_LAUNCHER.bat", "scripts/run_full.py", "app.py"),
 )
 def test_launchers_do_not_enable_risky_capabilities_by_default(relative_path: str):
     path = ROOT / relative_path

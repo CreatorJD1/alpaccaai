@@ -340,3 +340,38 @@ def test_host_pressure_leaves_mindpage_payload_unchanged(monkeypatch):
     assert host_snapshot.memory_pressure == baseline_snapshot.memory_pressure
     assert with_host._phase6_pressure_bundle() == baseline._phase6_pressure_bundle()
     assert "host_pressure" not in host_snapshot.memory_pressure
+
+
+def test_perception_records_one_measured_host_warning_and_recovery(monkeypatch):
+    from alpecca.sensory import Observation
+
+    current = _host_snapshot({
+        "pressure": 0.93,
+        "severity": "high",
+        "reasons": [{"code": "commit_pressure"}],
+    })
+    mind, mind_mod = _core_mind(monkeypatch, lambda *_args, **_kwargs: "unused")
+    mind.set_host_resource_supplier(lambda: current)
+    observations = []
+    monkeypatch.setattr(
+        mind_mod.cognition_mod,
+        "record_observation",
+        lambda item: observations.append(item),
+    )
+
+    mind.perceive(Observation())
+    first_fear = mind.state.fear
+    mind.perceive(Observation())
+
+    assert first_fear > 0.4
+    host_events = [item for item in observations if item.source == "host_resources"]
+    assert len(host_events) == 1
+    assert host_events[0].metadata["automatic_response"] == "optional_work_deferred"
+
+    current["assessment"] = {"pressure": 0.1, "severity": "normal", "reasons": []}
+    mind.perceive(Observation())
+
+    host_events = [item for item in observations if item.source == "host_resources"]
+    assert len(host_events) == 2
+    assert "recovered" in host_events[-1].content
+    assert mind.state.fear < first_fear

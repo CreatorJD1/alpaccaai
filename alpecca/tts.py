@@ -400,7 +400,9 @@ def engine_status() -> dict:
         "kokoro": kokoro["installed"],
         "kokoro_status": kokoro,
         "edge": bool(importlib.util.find_spec("edge_tts")),
-        "browser_fallback": True,
+        # House HQ intentionally does not use an unrelated browser/system
+        # speaker when Alpecca's installed voice is unavailable.
+        "browser_fallback": False,
     }
 
 
@@ -636,10 +638,11 @@ def synth(text: str, state=None, *, backend_override: str = ""):
     if not text:
         return None
     backend = (backend_override or TTS_BACKEND or "auto").strip().lower()
-    # The Discord bridge is the only current caller that pins an engine. Its
-    # explicit Kokoro request is also a request for the locked af_heart profile.
+    # Kokoro is always Alpecca's af_heart identity, including House auto mode.
+    # Emotion may vary native speed and gain, but must not pitch-resample her
+    # into a different perceived speaker.
     identity_token = _force_kokoro_identity_profile.set(
-        (backend_override or "").strip().lower() == "kokoro"
+        backend in {"auto", "kokoro"}
     )
     print(f"[tts] synth: backend={backend!r} "
           f"(env ALPECCA_TTS_BACKEND={os.environ.get('ALPECCA_TTS_BACKEND')!r})",

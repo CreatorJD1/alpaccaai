@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#08090c">
+  <meta name="application-name" content="Alventius Experimentus">
+  <title>Alventius Experimentus // Tartarus Prime</title>
+  <style>/* APP_CSS */</style>
+</head>
+<body>
+  <main id="app" data-mode="explore" data-terminal="closed" data-deployed="false">
+    <section id="viewport" aria-label="Tartarus Prime game viewport">
+      <canvas id="game-canvas" tabindex="0" aria-label="Interactive 3D frontier"></canvas>
+      <div class="screen-noise" aria-hidden="true"></div>
+      <div class="damage-vignette" id="damage-vignette" aria-hidden="true"></div>
+
+      <header class="top-hud">
+        <div class="game-id" aria-label="Alventius Experimentus">
+          <span class="game-mark">AE</span>
+          <span class="game-name">ALVENTIUS EXPERIMENTUS</span>
+          <span class="planet-name">TARTARUS PRIME</span>
+        </div>
+
+        <div class="mode-switch" role="group" aria-label="Camera mode">
+          <button class="mode-button is-active" id="explore-mode" type="button" aria-pressed="true" title="First-person exploration">
+            <i data-lucide="crosshair"></i><span>EXPLORE</span>
+          </button>
+          <button class="mode-button" id="command-mode" type="button" aria-pressed="false" title="Orthographic command grid">
+            <i data-lucide="map"></i><span>COMMAND</span>
+          </button>
+        </div>
+
+        <div class="vitals" aria-label="Suit vitals">
+          <div class="vital vital-health">
+            <i data-lucide="heart-pulse"></i>
+            <span class="vital-label">HEALTH</span>
+            <span class="meter"><span id="health-meter"></span></span>
+            <output id="health-value">100</output>
+          </div>
+          <div class="vital vital-oxygen">
+            <i data-lucide="wind"></i>
+            <span class="vital-label">OXYGEN</span>
+            <span class="meter"><span id="oxygen-meter"></span></span>
+            <output id="oxygen-value">100</output>
+          </div>
+          <div class="vital vital-sanity">
+            <i data-lucide="brain"></i>
+            <span class="vital-label">SANITY</span>
+            <span class="meter"><span id="sanity-meter"></span></span>
+            <output id="sanity-value">100</output>
+          </div>
+        </div>
+
+        <button class="icon-button terminal-toggle" id="terminal-toggle" type="button" title="Open command terminal" aria-label="Open command terminal">
+          <i data-lucide="terminal"></i>
+          <span class="connection-dot" id="connection-dot" aria-hidden="true"></span>
+        </button>
+      </header>
+
+      <div class="mission-strip" id="mission-strip">
+        <span class="mission-kicker">PRIMARY</span>
+        <span class="mission-title" id="mission-title">RESTORE FRONTIER RELAY</span>
+        <span class="mission-progress" id="mission-progress">0 / 2 COMPONENTS</span>
+      </div>
+
+      <div class="sector-readout" aria-label="Sector coordinates">
+        <span id="sector-coordinate">SECTOR 00.00</span>
+        <span id="cycle-readout">SOL 01 // 06:20</span>
+        <span id="weather-readout">VESPER DOME // SEALED</span>
+      </div>
+
+      <div class="reticle" id="reticle" aria-hidden="true"><span></span></div>
+      <div class="interaction-prompt" id="interaction-prompt" hidden>
+        <i data-lucide="scan-line"></i><span id="interaction-label">SCAN</span>
+      </div>
+
+      <div class="threat-indicator" id="threat-indicator" data-level="clear">
+        <i data-lucide="radar"></i>
+        <span id="threat-label">NO CONTACT</span>
+      </div>
+
+      <div class="resource-readout">
+        <i data-lucide="component"></i>
+        <span>ALLOY</span><output id="alloy-value">2</output>
+        <span>LUMEN</span><output id="lumen-value">1</output>
+      </div>
+
+      <div class="minimap-wrap">
+        <canvas id="minimap" width="216" height="216" aria-label="Sector minimap"></canvas>
+        <span class="minimap-label">TP-05</span>
+      </div>
+
+      <div class="build-palette" id="build-palette" aria-label="Construction palette" hidden>
+        <button type="button" class="build-tool" data-build="dome" aria-pressed="false" title="Place oxygen dome">
+          <i data-lucide="shield"></i>
+          <span class="build-name">O₂ DOME</span>
+          <span class="build-cost">4A / 1L</span>
+        </button>
+        <button type="button" class="build-tool" data-build="turret" aria-pressed="false" title="Place defense turret">
+          <i data-lucide="crosshair"></i>
+          <span class="build-name">TURRET</span>
+          <span class="build-cost">2A / 2L</span>
+        </button>
+        <button type="button" class="build-tool build-cancel" data-build="cancel" title="Cancel construction" aria-label="Cancel construction">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+
+      <div class="touch-controls" id="touch-controls" aria-hidden="true">
+        <div class="touch-pad movement-pad" id="movement-pad"><span class="joystick" id="movement-stick"></span></div>
+        <div class="touch-pad look-pad" id="look-pad"></div>
+        <button class="touch-action" id="touch-action" type="button" aria-label="Interact" title="Interact"><i data-lucide="hand"></i></button>
+        <button class="touch-sprint" id="touch-sprint" type="button" aria-label="Sprint" title="Sprint"><i data-lucide="chevrons-up"></i></button>
+        <button class="touch-jump" id="touch-jump" type="button" aria-label="Jump" title="Jump"><i data-lucide="arrow-up"></i></button>
+        <button class="touch-crawl" id="touch-crawl" type="button" aria-label="Crawl"><i data-lucide="chevrons-down"></i></button>
+      </div>
+
+      <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="true"></div>
+      <div class="frame-status" id="frame-status" aria-live="polite">RENDER CORE // INITIALIZING</div>
+    </section>
+
+    <aside class="terminal-panel" id="terminal-panel" aria-label="Command terminal" aria-hidden="true">
+      <header class="terminal-header">
+        <div>
+          <span class="terminal-kicker">AE FIELD OS</span>
+          <h2>COMMAND TERMINAL</h2>
+        </div>
+        <button class="icon-button" id="terminal-close" type="button" title="Close command terminal" aria-label="Close command terminal"><i data-lucide="x"></i></button>
+      </header>
+
+      <nav class="terminal-tabs" role="tablist" aria-label="Terminal views">
+        <button type="button" role="tab" aria-selected="true" aria-controls="mission-panel" id="mission-tab" data-tab="mission">MISSION</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="systems-panel" id="systems-tab" data-tab="systems">SYSTEMS</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="avatar-panel" id="avatar-tab" data-tab="avatar">AVATAR</button>
+      </nav>
+
+      <div class="terminal-scroll">
+        <section class="terminal-view is-active" id="mission-panel" role="tabpanel" aria-labelledby="mission-tab">
+          <div class="terminal-line terminal-status-line">
+            <span>UPLINK</span><output id="uplink-status" data-state="pending">CHECKING</output>
+          </div>
+          <form id="session-form" class="session-form">
+            <div class="account-strip">
+              <span>PLAYER</span><strong id="account-display">NOT SIGNED IN</strong>
+            </div>
+            <button class="command-button" id="session-connect" type="submit"><i data-lucide="radio-tower"></i><span>SYNC EXPEDITION</span></button>
+          </form>
+
+          <div class="terminal-heading">AUTHORITY</div>
+          <dl class="readout-grid">
+            <div><dt>OPERATOR</dt><dd id="operator-value">PLAYER</dd></div>
+            <div><dt>REVISION</dt><dd id="revision-value">0</dd></div>
+            <div><dt>ENERGY</dt><dd id="energy-value">6 / 6</dd></div>
+            <div><dt>POSITION</dt><dd id="position-value">0, 0</dd></div>
+            <div><dt>ALPECCA LINK</dt><dd id="coop-value">SEARCHING</dd></div>
+            <div><dt>LOCAL STRUCTURES</dt><dd id="structure-value">0</dd></div>
+          </dl>
+
+          <div class="terminal-actions">
+            <button class="command-button" id="sync-action" type="button"><i data-lucide="refresh-cw"></i><span>SYNC</span></button>
+            <button class="command-button" id="rest-action" type="button"><i data-lucide="battery-charging"></i><span>REST</span></button>
+            <button class="command-button" id="scan-action" type="button"><i data-lucide="scan-line"></i><span>SCAN</span></button>
+            <button class="command-button command-primary" id="grid-action" type="button"><i data-lucide="map"></i><span>TACTICAL GRID</span></button>
+          </div>
+
+          <div class="terminal-heading">MISSION FEED</div>
+          <ol class="event-log" id="event-log">
+            <li><time>BOOT</time><span>Awaiting expedition authority.</span></li>
+          </ol>
+        </section>
+
+        <section class="terminal-view" id="systems-panel" role="tabpanel" aria-labelledby="systems-tab" hidden>
+          <div class="terminal-heading">RENDER PROFILE</div>
+          <div class="segmented-control" role="group" aria-label="Render quality">
+            <button type="button" data-quality="low">LOW</button>
+            <button type="button" class="is-active" data-quality="auto">AUTO</button>
+            <button type="button" data-quality="high">HIGH</button>
+          </div>
+
+          <label class="range-control" for="look-sensitivity">
+            <span>LOOK SENSITIVITY</span>
+            <input id="look-sensitivity" type="range" min="20" max="100" value="58">
+          </label>
+
+          <label class="toggle-row" for="rain-toggle">
+            <span><strong>DOME CLIMATE</strong><small>SEALED HABITAT</small></span>
+            <input id="rain-toggle" type="checkbox">
+            <span class="toggle-track" aria-hidden="true"><span></span></span>
+          </label>
+
+          <label class="toggle-row" for="shake-toggle">
+            <span><strong>IMPACT RESPONSE</strong><small>CAMERA RECOIL</small></span>
+            <input id="shake-toggle" type="checkbox" checked>
+            <span class="toggle-track" aria-hidden="true"><span></span></span>
+          </label>
+
+          <div class="terminal-heading">LOCAL SIMULATION</div>
+          <button class="command-button danger-command" id="reset-sim" type="button"><i data-lucide="rotate-ccw"></i><span>RESET VIEW STATE</span></button>
+        </section>
+
+        <section class="terminal-view" id="avatar-panel" role="tabpanel" aria-labelledby="avatar-tab" hidden>
+          <div class="terminal-heading">PLAYER CHARACTER</div>
+          <div class="avatar-selector" id="avatar-selector" role="listbox" aria-label="Player character">
+            <button class="avatar-option" type="button" data-avatar-id="silhouette" role="option" aria-selected="true">
+              <span class="avatar-glyph" aria-hidden="true">FS</span>
+              <span><strong>FIELD SCOUT</strong><small>BUILT-IN CEL-SHADED EXPLORER</small></span>
+            </button>
+            <button class="avatar-option" type="button" data-avatar-id="custom" role="option" aria-selected="false" disabled>
+              <span class="avatar-glyph avatar-glyph-custom" aria-hidden="true">VRM</span>
+              <span><strong>MY VRM 1.0</strong><small id="custom-avatar-note">UPLOAD REQUIRED</small></span>
+            </button>
+          </div>
+          <input id="avatar-file" type="file" accept=".vrm,model/gltf-binary" hidden>
+          <button class="command-button command-primary avatar-upload avatar-import-trigger" id="avatar-upload" type="button"><i data-lucide="upload"></i><span>IMPORT VRM 1.0</span></button>
+          <div class="terminal-line avatar-status-line">
+            <span>PLAYER MODEL</span><output id="avatar-status" data-state="idle">FIELD SCOUT ACTIVE</output>
+          </div>
+          <div class="terminal-note">PRIVATE TO THIS ACCOUNT // NATIVE VRM 1.0 // 32 MIB MAX</div>
+        </section>
+      </div>
+    </aside>
+
+    <section class="deployment-screen" id="deployment-screen" aria-label="Expedition deployment">
+      <div class="deployment-console">
+        <span class="deployment-kicker">VESPER DOME // TARTARUS PRIME // HABITAT 01</span>
+        <h1>ALVENTIUS EXPERIMENTUS</h1>
+        <div class="deployment-mission">
+          <span>MISSION 01</span>
+          <strong>RESTORE FRONTIER RELAY</strong>
+        </div>
+        <div class="boot-sequence" id="boot-sequence">
+          <span>RENDER CORE</span><output id="boot-render">LOADING</output>
+          <span>GAME AUTHORITY</span><output id="boot-authority">CHECKING</output>
+          <span>HABITAT</span><output>STABLE</output>
+        </div>
+        <section class="account-gate" id="account-gate" aria-label="Player account">
+          <div class="auth-tabs" role="tablist" aria-label="Account action">
+            <button type="button" role="tab" aria-selected="true" data-auth-mode="login">LOGIN</button>
+            <button type="button" role="tab" aria-selected="false" data-auth-mode="register">REGISTER</button>
+          </div>
+          <form class="auth-form" id="auth-form">
+            <label for="auth-username">USERNAME</label>
+            <input id="auth-username" name="username" required minlength="3" maxlength="24" pattern="[A-Za-z0-9_]+" autocomplete="username">
+            <label class="register-only" for="auth-display-name" hidden>DISPLAY NAME</label>
+            <input class="register-only" id="auth-display-name" name="displayName" required maxlength="32" autocomplete="nickname" hidden>
+            <label for="auth-password">PASSWORD</label>
+            <input id="auth-password" name="password" type="password" required minlength="10" maxlength="128" autocomplete="current-password">
+            <button class="command-button command-primary" id="auth-submit" type="submit"><i data-lucide="log-in"></i><span>LOGIN</span></button>
+          </form>
+        </section>
+        <section class="account-ready" id="account-ready" hidden>
+          <div class="account-ready-header">
+            <div class="account-ready-copy"><span>PLAYER ACCOUNT</span><strong id="ready-display-name">PLAYER</strong></div>
+            <button class="icon-button" id="logout-button" type="button" title="Sign out" aria-label="Sign out"><i data-lucide="log-out"></i></button>
+          </div>
+          <div class="deployment-character-label">PLAYER CHARACTER</div>
+          <div class="avatar-selector deployment-avatar-selector" role="listbox" aria-label="Deployment player character">
+            <button class="avatar-option" type="button" data-avatar-id="silhouette" role="option" aria-selected="true">
+              <span class="avatar-glyph" aria-hidden="true">FS</span>
+              <span><strong>FIELD SCOUT</strong><small>BUILT-IN EXPLORER</small></span>
+            </button>
+            <button class="avatar-option" type="button" data-avatar-id="custom" role="option" aria-selected="false" disabled>
+              <span class="avatar-glyph avatar-glyph-custom" aria-hidden="true">VRM</span>
+              <span><strong>MY VRM 1.0</strong><small data-custom-avatar-note>UPLOAD REQUIRED</small></span>
+            </button>
+          </div>
+          <button class="command-button avatar-upload avatar-import-trigger" type="button"><i data-lucide="upload"></i><span>IMPORT VRM 1.0</span></button>
+        </section>
+        <button class="deploy-button" id="deploy-button" type="button" disabled>
+          <i data-lucide="play"></i><span>DEPLOY</span>
+        </button>
+        <div class="deployment-status" id="deployment-status">Constructing sector...</div>
+      </div>
+    </section>
+
+    <noscript>Alventius Experimentus requires JavaScript and WebGL.</noscript>
+  </main>
+  <script>/* APP_JAVASCRIPT */</script>
+</body>
+</html>

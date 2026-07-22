@@ -1,6 +1,6 @@
 # Mindpage
 
-Last updated: 2026-07-09
+Last updated: 2026-07-21
 
 Mindpage is Alpecca's bounded local working-memory paging experiment. It treats
 the configured model context as working memory and compressed SQLite pages as
@@ -101,3 +101,16 @@ Optional llama.cpp binaries already present in the workspace are tracked in
 - No conversation deletion before durable page commit.
 - No new Soul subagent and no bypass of Soul arbitration.
 - No claim of literal consciousness or human memory sensation.
+
+## Laptop Runtime Profile
+
+The unified launcher keeps live local context at 8K and uses an 8 GB Mindpage
+budget for compressed, indexed conversational pages. Under pressure, history is
+paged toward 55% working-context occupancy before optional background work is
+allowed to compete with chat.
+
+Ollama is launched or recovered with one loaded model and one parallel request.
+Flash Attention and q8 KV cache are requested to reduce committed memory where
+the active model and GPU support them. Windows may back cold pageable model and
+KV allocations with the existing pagefile automatically; Alpecca does not force
+hot pages out of RAM and does not describe the pagefile as VRAM.

@@ -1,0 +1,44 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "games.alventius.experimentus.launcher"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "games.alventius.experimentus.launcher"
+        minSdk 26
+        targetSdk 35
+        versionCode 3
+        versionName "1.0.2"
+        buildConfigField "String", "RELEASE_MANIFEST_URL", '"https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/alventius-experimentus-launcher.json"'
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix ".debug"
+            versionNameSuffix "-debug"
+        }
+        release {
+            signingConfig signingConfigs.debug
+            minifyEnabled false
+            shrinkResources false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation("androidx.core:core:1.15.0") {
+        exclude group: "androidx.profileinstaller", module: "profileinstaller"
+    }
+}

@@ -148,8 +148,9 @@ def test_signed_guest_posts_one_byte_exact_body_with_bound_headers(monkeypatch):
 
     expected_body = (
         b'{"channel":"discord-dm","context":"alpecca-bridge-live-context-v1:guest '
-        b'conversation","room":"discord","sender":"Discord guest","situation":"alpecca-'
-        b'bridge-live-context-v1:guest conversation","speaker":"guest",'
+        b'conversation","interaction":"reply","memory_text":"h\\u00e9llo",'
+        b'"room":"discord","sender":"CreatorJD","situation":"alpecca-'
+        b'bridge-live-context-v1:guest conversation","speaker":"creator",'
         b'"text":"h\\u00e9llo"}'
     )
     assert reply == "bounded reply"

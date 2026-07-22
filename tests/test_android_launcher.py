@@ -1,7 +1,9 @@
 """Static contracts for the installable Android launcher."""
 import hashlib
 import json
+import os
 import re
+import subprocess
 from pathlib import Path
 
 
@@ -9,16 +11,39 @@ ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "apps" / "android-launcher"
 
 
-def test_android_release_manifest_matches_the_current_signed_build():
+def _candidate_release(gradle: str) -> tuple[int, str]:
+    code = re.search(r"\bversionCode\s+(\d+)", gradle)
+    name = re.search(r'\bversionName\s+"([^"]+)"', gradle)
+    assert code is not None and name is not None
+    return int(code.group(1)), name.group(1)
+
+
+def _android_aapt() -> Path | None:
+    sdk_root = os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME")
+    if not sdk_root and os.environ.get("LOCALAPPDATA"):
+        sdk_root = str(Path(os.environ["LOCALAPPDATA"]) / "Android" / "Sdk")
+    if not sdk_root:
+        return None
+    candidates = sorted((Path(sdk_root) / "build-tools").glob("*/aapt.exe"), reverse=True)
+    return candidates[0] if candidates else None
+
+
+def test_android_published_manifest_is_valid_and_candidate_output_agrees():
     release = json.loads(
         (ROOT / "deploy" / "mobile" / "alpecca-launcher-update.json").read_text(
             encoding="utf-8"
         )
     )
     gradle = (APP / "app" / "build.gradle").read_text(encoding="utf-8")
+    readme = (APP / "README.md").read_text(encoding="utf-8")
+    candidate_code, candidate_name = _candidate_release(gradle)
+    documented_size = re.search(r"review candidate is `([0-9,]+)` bytes", readme)
+    documented_digest = re.search(r"\n([0-9a-f]{64})\n", readme)
+    assert documented_size is not None and documented_digest is not None
 
-    assert f'versionCode {release["versionCode"]}' in gradle
-    assert f'versionName "{release["versionName"]}"' in gradle
+    assert release["versionCode"] <= candidate_code
+    if release["versionCode"] == candidate_code:
+        assert release["versionName"] == candidate_name
     assert release["packageName"] == "ai.alpecca.launcher"
     assert release["apkUrl"].endswith(
         f'/mobile/AlpeccaLauncher-v{release["versionName"]}.apk'
@@ -28,7 +53,24 @@ def test_android_release_manifest_matches_the_current_signed_build():
 
     built_apk = ROOT / "output" / "alpecca-launcher" / "AlpeccaLauncher.apk"
     if built_apk.is_file():
-        assert hashlib.sha256(built_apk.read_bytes()).hexdigest() == release["sha256"]
+        aapt = _android_aapt()
+        assert aapt is not None, "Android aapt is required to verify an existing release APK"
+        result = subprocess.run(
+            [str(aapt), "dump", "badging", str(built_apk)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        package_line = result.stdout.splitlines()[0]
+        assert "name='ai.alpecca.launcher'" in package_line
+        assert f"versionCode='{candidate_code}'" in package_line
+        assert f"versionName='{candidate_name}'" in package_line
+        digest = hashlib.sha256(built_apk.read_bytes()).hexdigest()
+        assert built_apk.stat().st_size == int(documented_size.group(1).replace(",", ""))
+        assert digest == documented_digest.group(1)
+        assert re.fullmatch(r"[0-9a-f]{64}", digest)
+        if release["versionCode"] < candidate_code:
+            assert digest != release["sha256"]
 
 
 def test_android_launcher_has_installable_application_contract():
@@ -41,6 +83,23 @@ def test_android_launcher_has_installable_application_contract():
     assert 'android.intent.category.LAUNCHER' in manifest
     assert 'android:usesCleartextTraffic="false"' in manifest
     assert 'android:allowBackup="false"' in manifest
+
+
+def test_android_companion_candidate_is_2_2_6_and_excludes_other_release_lanes():
+    gradle = (APP / "app" / "build.gradle").read_text(encoding="utf-8")
+    manifest = (APP / "app" / "src" / "main" / "AndroidManifest.xml").read_text(encoding="utf-8")
+    source = (APP / "app" / "src" / "main" / "java" / "ai" / "alpecca" / "launcher" / "MainActivity.java").read_text(encoding="utf-8")
+    readme = (APP / "README.md").read_text(encoding="utf-8")
+
+    assert _candidate_release(gradle) == (12, "2.2.6")
+    assert "Version 2.2.6 (code 12)" in readme
+    assert "Android companion launcher only" in readme
+    assert "does not package Agentic Frontier" in readme
+    assert "agentic-frontier" not in gradle.lower()
+    assert "agentic-frontier" not in manifest.lower()
+    assert "agentic-frontier" not in source.lower()
+    assert ".exe" not in gradle.lower()
+    assert ".exe" not in manifest.lower()
 
 
 def test_android_launcher_permissions_are_bounded_and_user_visible():
@@ -114,9 +173,13 @@ def test_android_launcher_discovers_live_endpoint_and_has_no_baked_quick_tunnel(
         "BuildConfig.ALPECCA_DISCOVERY_URL"
     )
     assert 'payload.optJSONObject("endpoint")' in source
-    assert "addDiscoveryCandidate(result, BuildConfig.ALPECCA_CLOUD_STANDBY_URL);" in source
+    assert 'endpoint.optString("holderNodeId")' in source
+    assert 'holderNodeId.startsWith("local-primary:")' in source
+    assert 'holderNodeId.startsWith("cloud-standby:")' in source
+    assert "BuildConfig.ALPECCA_CLOUD_STANDBY_URL," in source
+    assert "RuntimeLocation.CLOUD," in source
     assert source.index("fetchContinuityCandidate(result);") < source.index(
-        "addDiscoveryCandidate(result, BuildConfig.ALPECCA_CLOUD_STANDBY_URL);"
+        "BuildConfig.ALPECCA_CLOUD_STANDBY_URL,"
     )
     assert "R.drawable.alpecca_portrait" in source
     assert 'appendQueryParameter("view", "orthographic")' in source
@@ -126,12 +189,35 @@ def test_android_launcher_discovers_live_endpoint_and_has_no_baked_quick_tunnel(
     assert "Collections.singletonMap(RELAY_BYPASS_HEADER, RELAY_BYPASS_VALUE)" in source
 
 
+def test_android_reconnect_preempts_stale_discovery_and_separates_runtime_status():
+    source = (APP / "app" / "src" / "main" / "java" / "ai" / "alpecca" / "launcher" / "MainActivity.java").read_text(encoding="utf-8")
+
+    assert "Executors.newFixedThreadPool(2)" in source
+    assert 'primaryButton("Reconnect endpoint")' in source
+    assert 'secondaryButton("Reconnect current endpoint")' in source
+    assert "rediscoverCurrentEndpoint()" in source
+    assert "restartDiscovery(DiscoveryMode.RECONNECT);" in source
+    restart = source[
+        source.index("private void restartDiscovery"):
+        source.index("private void cancelActiveDiscoveryTask")
+    ]
+    assert restart.index("connectionAttempt++;") < restart.index("cancelActiveDiscoveryTask();")
+    assert restart.index("cancelActiveDiscoveryTask();") < restart.index("startDiscovery(mode);")
+    assert "previous.cancel(true);" in source
+    assert "activeDiscoveryTask = discoveryNetwork.submit" in source
+    assert 'endpointLabel.setText("Endpoint reconnect:' in source
+    assert 'runtimeLabel.setText("Runtime availability:' in source
+    assert "runtimeCheckingMessage(candidate.runtimeLocation)" in source
+    assert "runtimeReadyMessage(candidate.runtimeLocation)" in source
+    assert "The laptop must already be powered on and running Alpecca for local access." in source
+
+
 def test_android_device_trust_validates_transcript_and_fences_clear_races():
     source = (APP / "app" / "src" / "main" / "java" / "ai" / "alpecca" / "launcher" / "MainActivity.java").read_text(encoding="utf-8")
     gradle = (APP / "app" / "build.gradle").read_text(encoding="utf-8")
 
-    assert 'versionCode 11' in gradle
-    assert 'versionName "2.2.5"' in gradle
+    assert 'versionCode 12' in gradle
+    assert 'versionName "2.2.6"' in gradle
     assert 'APP_USER_AGENT = "AlpeccaAndroid/" + BuildConfig.VERSION_NAME' in source
     assert "validateDeviceChallenge(" in source
     assert '"alpecca-device-auth-v2".equals(lines[0])' in source
@@ -185,6 +271,7 @@ def test_android_launcher_update_flow_is_https_verified_and_user_confirmed():
     assert "listener.onProgress(100);" in source
     assert 'appendQueryParameter(\n                "source_refresh"' in source
     assert "webView.clearCache(true)" in source
+    assert "startDiscovery(DiscoveryMode.SOURCE_REFRESH);" in source
 
     assert "android.permission.REQUEST_INSTALL_PACKAGES" in manifest
     assert 'android.permission.INSTALL_PACKAGES"' not in manifest
@@ -209,3 +296,4 @@ def test_android_launcher_update_flow_is_https_verified_and_user_confirmed():
     assert "APK SHA-256" in build_script
     assert "cannot silently install" in readme
     assert "Publish an update in this order" in readme
+    assert "Version 2.2.6 (code 12)" in readme

@@ -1,10 +1,10 @@
 ﻿# Docs Index
 
-**Last updated:** 2026-07-12
+**Last updated:** 2026-07-22
 
-Stage 0 is complete. Phone and communication-channel security is intentionally
-deferred until the post-stage hardening pass; no phone identifier or channel is
-changed by the current rollout.
+Stage 0 is complete. Native phone trust and communication-channel boundaries
+now have implemented security gates; live phone, Discord voice, and release
+soaks remain open and must not be described as complete.
 
 ## Active Phase 9 Checkpoint
 
@@ -23,9 +23,11 @@ microphone, voice-enrollment, and exact file-reference use. Their fixed caps,
 disconnect/restart revocation, and sealed content-free transition evidence are
 implemented for House HQ and the secondary classic app. Provider/model-specific
 egress consent is not yet wired into perception, and signed Discord guest
-identity is wired for allowlisted DMs. Retained guest context, guilds, rates,
-approvals, voice, and production actor anchoring remain unfinished. Do not mark
-Phase 9 or Phase 10 complete.
+identity is wired for allowlisted DMs. Claimed guild-room participation and
+duplex Discord voice paths are implemented with bounded state, but live
+microphone/playback quality, retained guest context, production rates and
+approvals, and actor anchoring still lack release evidence. Do not mark Phase 9
+or Phase 10 complete.
 
 Phase 11 is partial with one explicit app Web Push connection-test path
 implemented. House Devices controls enroll/revoke a browser and request the fixed test;
@@ -44,11 +46,16 @@ For implementation and behavior decisions, use:
 - `HANDOFF.md`
 - `docs/AGENTIC_ASSESSMENT.md`
 - `docs/ALPECCA_CURRENT_PROGRESS.md`
+- `docs/ALPECCA_BRAIN_PLUGINS.md`
+- `docs/UBUNTU_FALLBACK_CORE_PLAN.md` (inert scaffold implemented; deployment and leader supervisor pending)
+- `docs/SOURCE_QUALITY_AUDIT_PLAN.md` (prepared; execute after a green stage checkpoint)
+- `docs/RELEASE_SECRET_SCAN.md` (implemented P1 content-free source/bundle gate)
+- `docs/RELEASE_SOAK.md` (observation-only P14 harness; no completion claim)
 - `docs/SOUL_FALLBACK_ARCHITECTURE.md`
 
 ## Freshness Rule
 
-Docs older than 5 days should be archived under `docs/archive/YYYY-MM-DD/` unless marked
+Docs older than 4 days should be archived under `docs/archive/YYYY-MM-DD/` unless marked
 as required passdown or reference logs.
 
 ## Document Status (This Cycle)
@@ -60,24 +67,46 @@ as required passdown or reference logs.
 - `docs/ALPECCA_FEATURE_SKELETON_INFRASTRUCTURE.md`
 - `docs/AGENTIC_ASSESSMENT.md`
 - `docs/MINDPAGE.md`
+- `docs/AFFECTIVE_INCIDENT_LEARNING.md`
+- `docs/EXPERIENCE_SHAPED_PERSONALITY.md`
+- `docs/OPEN_SOURCE_RESEARCH_REVIEW.md` (2026-07-22 source-reviewed integration decisions and local acceptance gates)
+- `docs/REPOSITORY_CLEANUP_MANIFEST.md`
 - `docs/DOWNLOADED_SYSTEMS.md`
 - `docs/ALPECCA_CURRENT_PROGRESS.md`
+- `docs/ALPECCA_BRAIN_PLUGINS.md`
+- `docs/RELEASE_SECRET_SCAN.md`
+- `docs/RELEASE_SOAK.md`
+- `docs/UBUNTU_FALLBACK_CORE_PLAN.md`
 - `PROJECT_CONTEXT.md`
 - `HANDOFF.md`
 
-### VISUAL BASELINE (2026-07-10)
+### CURRENT VISUALS (regenerated 2026-07-15)
 - `docs/ALPECCA_MASTER_PLAN.pdf`
 - `docs/ALPECCA_FEATURE_SKELETON_INFRASTRUCTURE.pdf`
 - `docs/ALPECCA_PROJECT_ARCHITECTURE_MAP.pdf`
 
-These PDFs remain useful architecture visuals, but their feature-status labels
-predate the 2026-07-12 Phase 9 checkpoint. Use the current Markdown and canonical
-sources above for implementation status until the visual set is regenerated.
+These PDFs are generated from the 2026-07-15 source-reviewed status model. They
+are visual summaries, not sources of truth; use `PROJECT_CONTEXT.md` and
+`docs/ALPECCA_CURRENT_PROGRESS.md` when a later status conflicts.
+
+### SUPERSEDED / ARCHIVED (2026-07-15)
+- `docs/archive/2026-07-15/ALPECCA_STAGE0_2_GATE_AUDIT.md`: historical gate
+  audit superseded by `PROJECT_CONTEXT.md` and the current phase matrix.
+- `docs/archive/2026-07-15/ALPECCA_STAGE4_RECALL_DESIGN.md`: pre-implementation
+  recall design superseded by the bounded P3/P4 implementation evidence.
+- `docs/archive/2026-07-15/ALPECCA_ENTIRE_PROJECT_DETAILED_DIAGRAM.pdf`:
+  superseded project visual retained for traceability.
+- `docs/archive/2026-07-15/ALPECCA_MASTER_PLAN.pdf`
+- `docs/archive/2026-07-15/ALPECCA_FEATURE_SKELETON_INFRASTRUCTURE.pdf`
+- `docs/archive/2026-07-15/ALPECCA_PROJECT_ARCHITECTURE_MAP.pdf`
+
+The last three paths are the prior generated visual snapshot. Their regenerated
+current counterparts remain at the root paths listed above.
 
 ### HISTORICAL / PASSDOWN
-- `docs/ALPECCA_V11_*.md`
-- `docs/ALPECCA_VROID_*.md`
-- `docs/ALPECCA_V11_REFERENCE_CONTACT_SHEET.jpg`
+
+The V11/older VRoid passdowns are archive candidates listed by exact path in
+`docs/REPOSITORY_CLEANUP_MANIFEST.md`. They are not current behavior sources.
 
 ### SUPERSEDED / ARCHIVED (2026-07-10)
 - `docs/archive/2026-07-10/PASSDOWN_remote_computer_access.md`:
@@ -117,7 +146,8 @@ this session's assessed state, including:
 `docs/ALPECCA_CURRENT_PROGRESS.md` is a short, active pointer and is intentionally
 small.
 
-The July 9 architecture PDFs supersede the downloaded June 14 systems graph.
-That graph assigned 34 GB DDR5 and H100 capacity to the local rig. Current docs
-separate the 24 GB DDR4 / RTX 3050 4 GB laptop from optional, ephemeral Hugging
-Face ZeroGPU and Google notebook compute.
+The archived July 9/10 architecture visuals supersede the downloaded June 14
+systems graph. Historical visuals assigned cloud-reported memory and accelerator
+capacity to the local rig. Current docs separate the approximately 24 GB DDR4 /
+RTX 3050 4 GB laptop from optional, ephemeral Hugging Face ZeroGPU and Google
+notebook compute.

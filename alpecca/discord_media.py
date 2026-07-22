@@ -285,6 +285,12 @@ def prepare_inbound_image(
     """Validate one Discord image and return a canonical bounded data URL."""
 
     declared = str(declared_mime_type or "").split(";", 1)[0].strip().lower() or None
+    # Discord commonly labels phone uploads and CDN-transcoded attachments as
+    # generic binary data. That metadata is not evidence of a conflicting file
+    # type, so let the existing byte sniffer establish the concrete image MIME.
+    # Specific declarations still have to match the bytes exactly.
+    if declared in {"application/octet-stream", "binary/octet-stream"}:
+        declared = None
     try:
         inspected = inspect_image_bytes(
             image_bytes,

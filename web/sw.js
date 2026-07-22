@@ -6,7 +6,7 @@
  *
  * Served from "/sw.js" (root) so its scope covers the whole app.
  */
-const CACHE = "alpecca-v4";
+const CACHE = "alpecca-v6";
 const SHELL_ASSETS = ["/web/app.css", "/web/glow.js"];
 const SHELL_NAVIGATION_PATHS = new Set(["/", "/house-hq"]);
 const ACK_DB = "alpecca-notification-acks-v1";
@@ -313,6 +313,23 @@ self.addEventListener("fetch", (e) => {
   if (LIVE.test(url.pathname)) return;                   // her live self -> network only
   if (req.mode === "navigate") e.waitUntil(retryPendingAcknowledgementsBounded());
 
+  // Fixed-name VRMA files are replaced in place during embodiment work. Fetch
+  // them from the current server first so an older phone cache cannot retain an
+  // obsolete pose or face track after the House bundle has been rebuilt.
+  if (url.pathname.startsWith("/assets/vrma/")) {
+    e.respondWith(fetch(req)
+      .then((response) => {
+        if (response.ok) caches.open(CACHE).then((cache) => cache.put(req, response.clone())).catch(() => {});
+        return response;
+      })
+      .catch(async (error) => {
+        const cached = await caches.match(req);
+        if (cached) return cached;
+        throw error;
+      }));
+    return;
+  }
+
   // Exact app-shell routes: network-first, with route-specific offline fallback.
   if (req.mode === "navigate") {
     const routePath = exactShellNavigationPath(url);
@@ -340,7 +357,7 @@ self.addEventListener("fetch", (e) => {
   if (url.pathname.startsWith("/web/") || url.pathname.startsWith("/assets/")) {
     e.respondWith(caches.match(req).then((hit) =>
       hit || fetch(req).then((r) => {
-        caches.open(CACHE).then((c) => c.put(req, r.clone())).catch(() => {});
+        if (r.ok) caches.open(CACHE).then((c) => c.put(req, r.clone())).catch(() => {});
         return r;
       })));
   }

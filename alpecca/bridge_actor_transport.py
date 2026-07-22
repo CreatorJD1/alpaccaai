@@ -268,6 +268,39 @@ def guest_scope(
     )
 
 
+def guest_contact_scope(actor: actor_identity.VerifiedGuestActor) -> str:
+    """Return an opaque actor-only scope for content-free contact awareness.
+
+    Conversation content remains bound to ``guest_scope`` and therefore to one
+    room/thread.  This separate scope lets Alpecca know that the same verified
+    person contacted her elsewhere without carrying private message text across
+    a Discord surface.
+    """
+    if type(actor) is not actor_identity.VerifiedGuestActor or actor.authority != "guest":
+        raise TypeError("actor must be a verifier-created VerifiedGuestActor")
+    material = b"".join((
+        b"alpecca:discord-contact-scope:v1\x00",
+        _verified_hmac(actor, "actor_subject_hmac"),
+    ))
+    return "guest-discord-contact-" + hashlib.sha256(material).hexdigest()
+
+
+def participant_memory_scope(actor: actor_identity.VerifiedGuestActor) -> str:
+    """Return one stable autobiographical scope for this verified participant.
+
+    Unlike a room/thread conversation id, this follows the same person across
+    Discord DMs, guild rooms, reconnects, and voice. It is opaque and cannot be
+    forged from a display-name claim.
+    """
+    if type(actor) is not actor_identity.VerifiedGuestActor or actor.authority != "guest":
+        raise TypeError("actor must be a verifier-created VerifiedGuestActor")
+    material = b"".join((
+        b"alpecca:discord-participant-memory:v1\x00",
+        _verified_hmac(actor, "actor_subject_hmac"),
+    ))
+    return "alpecca-lived-discord-" + hashlib.sha256(material).hexdigest()
+
+
 __all__ = [
     "ACTOR_BOUNDARY",
     "ACTOR_DB_FILENAME",
@@ -283,6 +316,8 @@ __all__ = [
     "GUILD_ID_HEADER",
     "KEY_VERSION",
     "MAX_DISCORD_BODY_BYTES",
+    "guest_contact_scope",
+    "participant_memory_scope",
     "MAX_ENVELOPE_BYTES",
     "POLICY_VERSION",
     "SQLITE_ANCHOR_LIMITATION",

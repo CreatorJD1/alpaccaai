@@ -37,11 +37,11 @@ Requires the same Python 3 the repo already uses (3.12). No extra packages.
 
 | Button | Action |
 | --- | --- |
-| Wake Alpecca | Starts the existing `scripts/run_full.py` stack in the background without opening a terminal window; the GUI shows local runtime, CoreMind, House HQ, and ready stages |
+| Wake Alpecca | Starts the existing `scripts/run_full.py` stack in the background without opening a terminal window; once healthy, it also starts the attach-only phone relay and publishes the current mobile endpoint |
 | Put her to sleep | Finds the PID listening on her port via `netstat -ano` and `taskkill /F /T`s it, after a yes/no confirm |
 | Open House HQ | Opens `/house-hq` through a one-use local bootstrap |
 | Open Alpecca App | Opens `/app` through a one-use local bootstrap |
-| Phone access | Runs `python scripts\share.py` in a new console (tunnel + QR) |
+| Phone access | Opens the already-supported relay console for the current tunnel and QR code; normal launcher startup now publishes phone access automatically |
 | Invite to Discord | Opens `/app/discord/invite` through a local bootstrap |
 | Boot log | Opens `data/logs/launcher_stack.log`, which receives full-stack startup output |
 

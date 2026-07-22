@@ -506,6 +506,32 @@ def test_self_report_narration_is_grounded_in_real_numbers():
     assert "0.62" in text and "0.31" in text
     assert "2 memories" in text
 
+
+def test_self_report_exposes_only_measured_host_pressure_when_requested():
+    state = EmotionalState(love=0.62, compassion=0.31, fear=0.58)
+    report = introspection.build_self_report(
+        state,
+        [],
+        memory_count=2,
+        last_signals={"host_severity": "high", "host_evidence": ["commit_pressure"]},
+        host_pressure={"severity": "high", "evidence_codes": ["commit_pressure"]},
+    )
+
+    assert "measured high host-resource warning" in report.narrate()
+    assert "virtual-memory pressure" in report.narrate()
+    assert "host-resource warning" not in report.narrate(include_host=False)
+    assert "measured high resource warning" in report.reason
+
+
+def test_measured_host_pressure_can_raise_and_then_ease_unease():
+    state = EmotionalState(fear=0.1)
+    pressured = state.update_host_pressure({"severity": "high"})
+    recovered = pressured.update_host_pressure({"severity": "normal"})
+
+    assert pressured.fear > 0.4
+    assert recovered.fear < pressured.fear
+    assert state.update_host_pressure({"severity": "unknown"}) is state
+
 def test_identity_card_is_truthful_about_being_a_program():
     card = introspection.identity_card()
     assert "Alpecca" in card and "program" in card
@@ -921,7 +947,7 @@ def test_open_tts_reference_manifest_selects_emotional_clip():
 
     assert anxious["id"] in {"urgent_jason", "lost_help"}
     assert "Jason" in anxious["text"]
-    assert tender["id"] == "present_soft"
+    assert tender["id"] == "here_now"
     assert Path(tender["audio"]).suffix == ".wav"
 
 
@@ -939,6 +965,7 @@ def test_tts_auto_mixes_f5_clone_and_kokoro_by_emotion(monkeypatch):
         }
 
     def fake_kokoro(text, state=None):
+        assert tts._force_kokoro_identity_profile.get() is True
         calls.append("kokoro")
         return "audio/wav", b"RIFF-kokoro"
 
@@ -4884,6 +4911,11 @@ def test_tts_route_has_timeout_fallback_for_slow_voice_engine():
     assert '@app.post("/tts/warmup")' in text
     assert "_warm_alpecca_voice" in text
     assert "edge-timeout-fallback" not in route
+    house = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    assert "const ALPECCA_TTS_REQUEST_TIMEOUT_MS = 60_000" in house
+    open_tts = (root / "alpecca" / "open_tts.py").read_text(encoding="utf-8")
+    assert 'process_kwargs["creationflags"]' in open_tts
+    assert 'subprocess, "CREATE_NO_WINDOW"' in open_tts
 
 
 def test_tts_auto_does_not_substitute_edge_for_af_heart():
@@ -4963,16 +4995,15 @@ def test_house_hq_exposes_improvement_queue_hot_tab():
 def test_house_hq_room_features_read_real_alpecca_app_tools():
     root = Path(__file__).resolve().parent.parent
     main_ts = (root / "apps" / "house-hq" / "src" / "main.ts").read_text(encoding="utf-8")
+    connectivity_ts = (
+        root / "apps" / "house-hq" / "src" / "toolConnectivity.ts"
+    ).read_text(encoding="utf-8")
     assert "toolPath?: string" in main_ts
-    for endpoint in [
-        'toolPath: "/introspect"',
-        'toolPath: "/memories/search"',
-        'toolPath: "/journal"',
-        'toolPath: "/growth"',
-        'toolPath: "/home/state"',
-        'toolPath: "/soul"',
-    ]:
-        assert endpoint in main_ts
+    for endpoint in ["/introspect", "/memories/search", "/journal", "/growth", "/home/state"]:
+        assert f'endpoint: "{endpoint}"' in connectivity_ts
+    for tool_id in ["self", "memory", "journal", "studio", "home"]:
+        assert f'houseReadTool("{tool_id}")!.endpoint' in main_ts
+    assert 'toolPath: "/soul"' in main_ts
     bridge_block = main_ts[main_ts.index("function alpeccaFeatureToolUrl"):main_ts.index("function addSourceTerminal")]
     assert "function summarizeAlpeccaToolResult" in bridge_block
     assert "function runAlpeccaFeatureToolBridge" in bridge_block
@@ -4980,8 +5011,11 @@ def test_house_hq_room_features_read_real_alpecca_app_tools():
     assert "/cognition/observe" in bridge_block
     assert "toolPath: feature.toolPath" in bridge_block
     assert "showAlpeccaProfileLine(summary" in bridge_block
-    manual_block = main_ts[main_ts.index("function runAlpeccaFeature"):main_ts.index("function addSourceTerminal")]
-    assert "void runAlpeccaFeatureToolBridge(feature.id, featureRoom, true)" in manual_block
+    manual_block = main_ts[
+        main_ts.index("async function runAlpeccaFeature(featureId"):
+        main_ts.index("function addSourceTerminal")
+    ]
+    assert "await runAlpeccaFeatureToolBridge(feature.id, featureRoom, true)" in manual_block
     autonomous_block = main_ts[main_ts.index("function runAlpeccaAutonomousFeature"):main_ts.index("function completeAlpeccaMovementDirective")]
     assert "void runAlpeccaFeatureToolBridge(feature.id, room, false)" in autonomous_block
 
@@ -5415,6 +5449,32 @@ def test_hybrid_ollama_cloud_call_is_reported_as_cloud(monkeypatch):
     assert cloud.calls[0]["model"] == "gemma4:cloud"
     assert llm.last_call()["backend"] == "ollama-cloud"
     assert llm.last_call()["model"] == "gemma4:cloud"
+
+
+def test_local_chat_does_not_retry_a_model_timeout(monkeypatch):
+    """A slow background call must not monopolize Ollama with timeout retries."""
+    from alpecca import mind as mind_mod
+    from alpecca.mind import _LLM
+
+    class SlowClient:
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, **_kwargs):
+            self.calls += 1
+            raise TimeoutError("model request timed out")
+
+    monkeypatch.setattr(mind_mod, "CHAT_CLOUD_MODEL", "")
+    client = SlowClient()
+    llm = _LLM()
+    llm._backend = "ollama"
+    llm._client = client
+
+    result = llm.generate("system", "hello", tier="fast")
+
+    assert client.calls == 1
+    assert result == "Hi. I'm here with you. What should we focus on next?"
+    assert llm.last_call()["fallback"] is True
 
 
 def test_fast_workload_stays_on_local_qwen_when_model_names_match(monkeypatch):

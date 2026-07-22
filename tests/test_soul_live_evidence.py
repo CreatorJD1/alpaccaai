@@ -205,6 +205,7 @@ def test_server_brain_graph_and_introspection_publish_same_advisory_vector(
         reason="measured",
         memory_count=0,
         senses_active=False,
+        host_pressure=None,
     )
     monkeypatch.setattr(server_mod.mind, "introspect", lambda: report)
     payload = server_mod.introspect()

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "operationId": "REPLACE_WITH_ONE_USE_ID",
+  "creatorPrincipal": "CreatorJD",
+  "approvalLease": "SUPPLIED_AT_RUNTIME_NOT_STORED_HERE",
+  "expiresAt": "REPLACE_WITH_RFC3339_TIMESTAMP",
+  "manager": "flatpak",
+  "action": "install",
+  "source": "REPLACE_WITH_ALLOWLISTED_REMOTE",
+  "package": "REPLACE_WITH_ALLOWLISTED_APPLICATION_ID",
+  "version": "REPLACE_WITH_EXACT_VERSION",
+  "estimatedDiskBytes": 0,
+  "requestedPermissions": []
+}

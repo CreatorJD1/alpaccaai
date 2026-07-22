@@ -1,0 +1,9 @@
+# Placeholder only. Keep Cloudflare Access/creator authentication configured at
+# the edge. Never expose the VNC port or place tunnel credentials in this file.
+tunnel: REPLACE_WITH_NAMED_TUNNEL_ID
+credentials-file: /run/secrets/alpecca-desktop-tunnel-credentials.json
+
+ingress:
+  - hostname: REPLACE_WITH_CREATOR_AUTHENTICATED_HOSTNAME
+    service: http://127.0.0.1:6080
+  - service: http_status:404

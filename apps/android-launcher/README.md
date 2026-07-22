@@ -8,6 +8,9 @@ device-local session, and a non-exportable Android Keystore signing key. It does
 not contain creator passwords, API tokens, memories, or a second Alpecca
 runtime.
 
+This release lane is the Android companion launcher only. It does not build the
+Windows launcher and does not package Agentic Frontier into the companion.
+
 ## Phone capabilities
 
 - Keeps the creator trusted-device cookie between launches.
@@ -34,9 +37,15 @@ runtime.
   cache-busting source revision, and rediscover the active fenced endpoint
   without deleting the trusted-device cookie.
 - Rechecks the active Alpecca health identity while the app is in the foreground.
+- **Reconnect endpoint** immediately fences any stale discovery attempt and
+  re-queries the continuity authority and mobile record. Endpoint status is
+  shown separately from local/cloud runtime availability, and reconnect does
+  not clear WebView cookies or the trusted-device session.
 - Rediscovers and reloads House HQ after a tunnel failure, a main-frame WebView
   network error, or Android network recovery. Retries back off while Alpecca is
-  unavailable and do not clear WebView cookies or the trusted-device session.
+  unavailable. The local laptop must already be powered on and running Alpecca;
+  the phone cannot power on a shut-down laptop. Cloud continuity is used only
+  when its fenced runtime is available and reports the exact active identity.
 - After the first creator password sign-in, registers a P-256 public key whose
   private key remains non-exportable in Android Keystore. A rotating tunnel can
   then issue a short-lived challenge whose transcript is validated locally and
@@ -53,7 +62,7 @@ privileges.
 
 ## Launcher updates
 
-Version 2.2.5 (code 11) reads the update manifest from:
+Version 2.2.6 (code 12) reads the update manifest from:
 
 ```text
 https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/alpecca-launcher-update.json
@@ -63,9 +72,9 @@ The response must be HTTPS JSON with these required fields:
 
 ```json
 {
-  "versionCode": 10,
-  "versionName": "2.2.5",
-  "apkUrl": "https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.2.5.apk",
+  "versionCode": 12,
+  "versionName": "2.2.6",
+  "apkUrl": "https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.2.6.apk",
   "sha256": "<64 lowercase hexadecimal characters>",
   "packageName": "ai.alpecca.launcher"
 }
@@ -105,21 +114,32 @@ The installable, non-debuggable personal APK is copied to:
 output\alpecca-launcher\AlpeccaLauncher.apk
 ```
 
-The previously reviewed 2.1.2 build is available from the credential-free mobile
-distribution lane at
-`https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.1.2.apk`.
-The APK contains no creator password, runtime token, memory, or tunnel hostname.
+The local 2.2.6/code 12 review candidate is `2,851,380` bytes with SHA-256:
 
-Version 2.2.5 keeps the bounded, user-confirmed update flow and the
-credential-free continuity-authority lookup. It also probes the stable cloud
-standby URL to wake a sleeping Space when no active endpoint answers. The app
-still requires the exact `alpecca` health identity, so the health-only standby
-cannot be mistaken for an active companion before fencing succeeds. Its Update
-Center keeps the download bar visible through package verification and exposes
-the verified install action until Android's installer is opened. Native device
-session restoration waits for Android WebView to finish persisting the new
-origin-scoped cookie before House HQ loads, preventing a successful key exchange
-from racing the first authenticated page and WebSocket requests.
+```text
+9752940bfd5ad4c508f1d24d5e690fdb88e06f21dedc8ffc27139615221c26b5
+```
+
+This candidate has not been uploaded or published.
+
+The reviewed predecessor remains available from the credential-free mobile
+distribution lane at
+`https://pub-5c5620dd93c7472b8ae65bb0e0a6f5be.r2.dev/mobile/AlpeccaLauncher-v2.2.5.apk`.
+Version 2.2.6 is published through the credential-free mobile release channel.
+The APK contains no creator password, runtime token, memory, tunnel hostname,
+Windows executable, or Agentic Frontier package.
+
+Version 2.2.6 keeps the bounded, user-confirmed update flow, source refresh, and
+credential-free continuity-authority lookup. A user-requested reconnect now
+starts a fresh endpoint lookup immediately even when an older automatic probe is
+still timing out. The portal reports endpoint discovery independently from
+local/cloud runtime availability and uses the continuity holder type when that
+evidence exists. It still probes the stable cloud standby URL to wake a sleeping
+Space when no active endpoint answers, but requires the exact `alpecca` health
+identity before opening it. The health-only standby therefore cannot be mistaken
+for an active companion before fencing succeeds. Native device session
+restoration still waits for Android WebView to persist the new origin-scoped
+cookie before House HQ loads.
 
 With USB debugging enabled and the phone connected, build and install with:
 

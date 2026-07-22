@@ -24,6 +24,19 @@ import {
 } from "./desktopPanel";
 import { attachInternalsSnapshot, mountInternalsMap, renderInternalsMap, type InternalsSnapshot } from "./internalsMap";
 import { recoverAlpeccaEndpoint } from "./endpointRecovery";
+import {
+  canExecutePerceptionEgress,
+  normalizePerceptionEgressStatus,
+  stagedPerceptionEgress,
+  type PerceptionEgressStatus,
+  type StagedPerceptionEgress,
+} from "./perceptionEgress";
+import {
+  HOUSE_READ_TOOLS,
+  buildToolLibrarySnapshot,
+  houseReadTool,
+  houseReadToolControl,
+} from "./toolConnectivity";
 
 window.addEventListener("vite:preloadError", (event) => {
   event.preventDefault();
@@ -486,6 +499,14 @@ type AlpeccaAiMessage = {
   llm_online?: boolean;
   model_use?: AlpeccaModelUse;
   memory_evidence?: AlpeccaMemoryEvidence[];
+  communication_stance?: {
+    mode?: "direct" | "withholding" | "playful_bluff";
+    label?: string;
+    reason?: string;
+    protected_domain?: string;
+    blocked?: boolean;
+    visible_to_creator?: boolean;
+  };
   mindpage?: AlpeccaMindpageState;
   cognition?: {
     models?: { last_call?: AlpeccaModelUse };
@@ -953,6 +974,7 @@ type AlpeccaSystemId =
   | "self"
   | "devices"
   | "senses"
+  | "privacy"
   | "voice"
   | "studio"
   | "observatory"
@@ -960,6 +982,7 @@ type AlpeccaSystemId =
   | "journal"
   | "soul"
   | "growth"
+  | "tools"
   | "files"
   | "games"
   | "mindscape"
@@ -1024,11 +1047,11 @@ hud.innerHTML = `
     </div>
     <div id="alpeccaMoodBars" class="mood-bars"></div>
     <div class="source-actions">
-      <button type="button" data-feature="self">Self</button>
-      <button type="button" data-feature="memory">Memory</button>
-      <button type="button" data-feature="journal">Journal</button>
-      <button type="button" data-feature="studio">Studio</button>
-      <button type="button" data-feature="home">Home</button>
+      <button type="button" data-feature="self" disabled>Self</button>
+      <button type="button" data-feature="memory" disabled>Memory</button>
+      <button type="button" data-feature="journal" disabled>Journal</button>
+      <button type="button" data-feature="studio" disabled>Growth</button>
+      <button type="button" data-feature="home" disabled>Home</button>
     </div>
     <div class="source-actions source-nav">
       <button type="button" data-nav="mindscape">Mindscape</button>
@@ -1056,6 +1079,10 @@ hud.innerHTML = `
       <span id="alpeccaProfileMode">Listening</span>
       <small id="alpeccaProfileSeen">Watching the room...</small>
     </div>
+    <div id="alpeccaDisclosure" class="communication-disclosure" data-mode="direct" title="The communication policy selected for Alpecca's latest reply">
+      <span id="alpeccaDisclosureLabel">Direct</span>
+      <small id="alpeccaDisclosureReason">No detail is intentionally hidden.</small>
+    </div>
     <div class="voice-strip">
       <div>
         <span id="alpeccaVoiceIdentity">Alpecca's voice</span>
@@ -1064,11 +1091,11 @@ hud.innerHTML = `
       <button type="button" data-hear-voice>Hear voice</button>
     </div>
     <nav class="hot-tabs" aria-label="Alpecca hot tabs">
-      <button type="button" data-feature="self">Self</button>
-      <button type="button" data-feature="memory">Memory</button>
-      <button type="button" data-feature="journal">Journal</button>
-      <button type="button" data-feature="studio">Studio</button>
-      <button type="button" data-feature="home">Home</button>
+      <button type="button" data-feature="self" disabled>Self</button>
+      <button type="button" data-feature="memory" disabled>Memory</button>
+      <button type="button" data-feature="journal" disabled>Journal</button>
+      <button type="button" data-feature="studio" disabled>Growth</button>
+      <button type="button" data-feature="home" disabled>Home</button>
       <button type="button" data-ask-room>Ask This Room</button>
       <button type="button" data-doctor>Doctor</button>
       <button type="button" data-self-review>Self Review</button>
@@ -1156,6 +1183,7 @@ hud.innerHTML = `
           </div>
           <div class="systems-nav-group"><span>Experience</span>
             <button type="button" data-system-id="senses">Senses</button>
+            <button type="button" data-system-id="privacy">Privacy</button>
             <button type="button" data-system-id="voice">Voice</button>
             <button type="button" data-system-id="observatory">Observatory</button>
           </div>
@@ -1268,6 +1296,9 @@ const alpeccaProfileState = hud.querySelector<HTMLElement>("#alpeccaProfileState
 const alpeccaProfileConnection = hud.querySelector<HTMLElement>("#alpeccaProfileConnection")!;
 const alpeccaProfileModeEl = hud.querySelector<HTMLSpanElement>("#alpeccaProfileMode")!;
 const alpeccaProfileSeenEl = hud.querySelector<HTMLElement>("#alpeccaProfileSeen")!;
+const alpeccaDisclosureEl = hud.querySelector<HTMLDivElement>("#alpeccaDisclosure")!;
+const alpeccaDisclosureLabelEl = hud.querySelector<HTMLSpanElement>("#alpeccaDisclosureLabel")!;
+const alpeccaDisclosureReasonEl = hud.querySelector<HTMLElement>("#alpeccaDisclosureReason")!;
 const alpeccaVoiceIdentityEl = hud.querySelector<HTMLSpanElement>("#alpeccaVoiceIdentity")!;
 const alpeccaVoiceModulationEl = hud.querySelector<HTMLElement>("#alpeccaVoiceModulation")!;
 const alpeccaVoiceButtons = Array.from(hud.querySelectorAll<HTMLButtonElement>("[data-voice-preview]"));
@@ -1641,8 +1672,8 @@ window.__ALPECCA_RUNTIME__ = {
   cylinderVerticalTier: "eye",
   cylinderMovementClamped: false,
   cylinderQaVisible: false,
-  billboardMode: "volume-soft-billboard",
-  billboardClampDeg: 24,
+  billboardMode: "directional-360-impostor",
+  billboardClampDeg: 180,
   stageRoom: "entry",
   stagePad: "Entry orientation stage",
   stageQaIssues: [],
@@ -1708,7 +1739,9 @@ let alpeccaVoiceSessionState: VoiceSessionState = "idle";
 const alpeccaSpokenRepliesStorageKey = "alpeccaHouseSpokenReplies";
 let alpeccaSpokenRepliesEnabled = localStorage.getItem(alpeccaSpokenRepliesStorageKey) !== "off";
 const ALPECCA_PUSH_TO_TALK_MAX_MS = 60_000;
-const ALPECCA_TTS_REQUEST_TIMEOUT_MS = 45_000;
+// The local F5 worker may need more than 45s for a full emotional reply. This
+// must outlast F5_WORKER_TIMEOUT while remaining below the server's route cap.
+const ALPECCA_TTS_REQUEST_TIMEOUT_MS = 60_000;
 const ALPECCA_DRIVE_REQUEST_TIMEOUT_MS = 12_000;
 let alpeccaPushToTalkRecorder: MediaRecorder | null = null;
 let alpeccaPushToTalkStream: MediaStream | null = null;
@@ -1804,6 +1837,7 @@ let alpeccaSystemLoadSequence = 0;
 let alpeccaDriveMode: DesktopPanelMode = "virtual-drive";
 let alpeccaDrivePanel: DesktopPanelController | null = null;
 let alpeccaDriveRequestController: AbortController | null = null;
+let alpeccaStagedPerceptionEgress: StagedPerceptionEgress | null = null;
 let alpeccaVoiceLivePoll: ReturnType<typeof setInterval> | null = null;
 let alpeccaServiceWorkerRegistrationPromise: Promise<ServiceWorkerRegistration | null> | null = null;
 let alpeccaPushActionPending = false;
@@ -2269,47 +2303,47 @@ setAlpeccaSourcePlate("master");
 const alpeccaSourceFeatures: Record<string, AlpeccaSourceFeature> = {
   self: {
     id: "self",
-    label: "Ask self-report",
+    label: "Read self state",
     room: "Self Design",
-    prompt: "Give me a short grounded self-report from your current Alpecca internals: mood, why it moved, and what you want next.",
+    prompt: "Read Alpecca's current grounded mood, movement reason, and next want.",
     page: "/introspect",
-    toolPath: "/introspect",
+    toolPath: houseReadTool("self")!.endpoint,
     color: "#d86a8d",
   },
   memory: {
     id: "memory",
-    label: "Ask memory scan",
+    label: "Search room memory",
     room: "Library",
-    prompt: "Briefly summarize what you remember that matters most for this AI Office HQ project right now.",
+    prompt: "Search stored memory using the current room context.",
     page: "/memories",
-    toolPath: "/memories/search",
+    toolPath: houseReadTool("memory")!.endpoint,
     color: "#f0bd59",
   },
   journal: {
     id: "journal",
-    label: "Ask journal reflection",
+    label: "Read journal",
     room: "Library",
-    prompt: "Write a short project journal reflection about this house becoming your office HQ.",
+    prompt: "Read the current journal and open questions.",
     page: "/journal",
-    toolPath: "/journal",
+    toolPath: houseReadTool("journal")!.endpoint,
     color: "#b9d7dc",
   },
   studio: {
     id: "studio",
-    label: "Ask studio direction",
+    label: "Read growth queue",
     room: "Workshop",
-    prompt: "From your design studio perspective, suggest one visual or avatar improvement for this house game.",
+    prompt: "Read current desires, proposals, and executable commitment tools.",
     page: "/studio",
-    toolPath: "/growth",
+    toolPath: houseReadTool("studio")!.endpoint,
     color: "#9f8cff",
   },
   home: {
     id: "home",
-    label: "Ask home state",
+    label: "Read home state",
     room: "HQ Control",
-    prompt: "Report your current home state and which room is calling you, in one concise in-world update.",
+    prompt: "Read Alpecca's internal home room, reason, and room pulls.",
     page: "/home",
-    toolPath: "/home/state",
+    toolPath: houseReadTool("home")!.endpoint,
     color: "#4be4ff",
   },
   soul: {
@@ -2481,7 +2515,7 @@ let alpeccaLastViewMatrix: AlpeccaViewMatrixState = {
   volumeProbe: "torso",
   volumeDepth: 0,
   sampleY: 0.96,
-  billboardClampDeg: 24,
+  billboardClampDeg: 180,
   key: "eye_front",
 };
 
@@ -2610,9 +2644,9 @@ function computeAlpeccaViewMatrix(): AlpeccaViewMatrixState {
   const volumeZone = cylinderZone;
   const vertical = alpeccaVerticalTierForView(cameraPitchDeg, viewCamera.position.y - torsoY, alpeccaLastViewMatrix.vertical);
   const flipX = relativeYawDeg < -22.5 && relativeYawDeg > -157.5;
-  const sectorCenterDeg = normalizeAngleDeg(sector16 * 22.5);
-  const sectorDeltaDeg = Math.abs(normalizeAngleDeg(relativeYawDeg - sectorCenterDeg));
-  const billboardClampDeg = Math.max(4, Math.min(18, sectorDeltaDeg + (volumeZone === "near-body" ? 2 : volumeZone === "interaction-shell" ? 4 : 6)));
+  // The directional atlas supplies the body angle; the plane itself must face
+  // the camera through the full orbit or it becomes visibly paper-thin.
+  const billboardClampDeg = 180;
   return {
     vertical,
     horizontal,
@@ -4575,6 +4609,7 @@ const alpeccaSystemEndpoints: Record<AlpeccaSystemId, string> = {
   self: "/introspect",
   devices: "/auth/status",
   senses: "/sight",
+  privacy: "/perception/egress/consents",
   voice: "/voice",
   studio: "/character",
   observatory: "/observatory",
@@ -4582,6 +4617,7 @@ const alpeccaSystemEndpoints: Record<AlpeccaSystemId, string> = {
   journal: "/journal",
   soul: "/soul",
   growth: "/growth",
+  tools: "/growth",
   files: "/desktop",
   games: "/games",
   mindscape: "/mindscape/state",
@@ -4594,6 +4630,7 @@ const alpeccaSystemLabels: Record<AlpeccaSystemId, string> = {
   self: "Self",
   devices: "Devices",
   senses: "Senses",
+  privacy: "Privacy",
   voice: "Voice",
   studio: "Studio",
   observatory: "Observatory",
@@ -4601,6 +4638,7 @@ const alpeccaSystemLabels: Record<AlpeccaSystemId, string> = {
   journal: "Journal",
   soul: "Soul",
   growth: "Growth",
+  tools: "Tools",
   files: "Files",
   games: "Games",
   mindscape: "Mindscape",
@@ -4615,10 +4653,12 @@ function alpeccaSystemFromPath(path: string): AlpeccaSystemId {
   if (normalized.includes("memor")) return "memory";
   if (normalized.includes("journal")) return "journal";
   if (normalized.includes("soul")) return "soul";
+  if (normalized.includes("tool")) return "tools";
   if (normalized.includes("growth") || normalized.includes("workshop")) return "growth";
   if (normalized.includes("desktop") || normalized.includes("file")) return "files";
   if (normalized.includes("game")) return "games";
   if (normalized.includes("voice")) return "voice";
+  if (normalized.includes("privacy") || normalized.includes("egress") || normalized.includes("consent")) return "privacy";
   if (normalized.includes("sight") || normalized.includes("sense")) return "senses";
   if (normalized.includes("studio")) return "studio";
   if (normalized.includes("system") || normalized.includes("doctor")) return "runtime";
@@ -4806,6 +4846,40 @@ function renderAlpeccaSystem(systemId: AlpeccaSystemId, data: Record<string, unk
       <section><h3>Live channels</h3>${flags.map(([name, active, detail]) => systemRow(name, detail, active ? "ON" : "OFF")).join("")}</section>
       <div class="systems-actions"><button type="button" data-system-action="screen-start">Share screen</button><button type="button" data-system-action="screen-stop">Stop sharing</button><button type="button" data-system-action="enroll-voice">Teach creator voice</button></div>`;
   }
+  if (systemId === "privacy") {
+    const status = normalizePerceptionEgressStatus(data) as PerceptionEgressStatus;
+    if (!status.available) {
+      return `${systemIntro("PRIVACY", "Private perception", "Remote perception is unavailable until an exact provider route is configured.")}
+        ${systemRow("Consent broker", status.reason || "No exact provider, deployment, model, location, and HTTPS route are configured.", "OFF")}`;
+    }
+    const routeOptions = status.routes.map((route) => (
+      `<option value="${escapeHudText(route.routeId)}">${escapeHudText(`${route.provider} / ${route.model}`)}</option>`
+    )).join("");
+    const stagedLabel = alpeccaStagedPerceptionEgress
+      ? `Image held in this browser for ${alpeccaStagedPerceptionEgress.requestId}.`
+      : "No image is staged in this browser.";
+    const requestRows = status.requests.map((request) => {
+      const detail = `${request.provider} / ${request.model}; ${request.processingLocation}; ${Math.max(0, request.byteCount).toLocaleString()} bytes`;
+      const encodedId = escapeHudText(encodeURIComponent(request.requestId));
+      const controls = request.state === "pending"
+        ? `<div class="systems-row-actions"><button type="button" data-egress-decision="approve" data-egress-request="${encodedId}">Approve</button><button type="button" data-egress-decision="deny" data-egress-request="${encodedId}">Deny</button></div>`
+        : canExecutePerceptionEgress(request, alpeccaStagedPerceptionEgress)
+          ? `<div class="systems-row-actions"><button type="button" data-egress-execute data-egress-request="${encodedId}">Describe once</button></div>`
+          : "";
+      return `<div class="systems-row systems-egress-request"><span class="systems-badge">${escapeHudText(request.state.toUpperCase())}</span><div><strong>${escapeHudText(request.deployment || request.routeId)}</strong><p>${escapeHudText(detail)}</p></div>${controls}</div>`;
+    }).join("");
+    return `${systemIntro("PRIVACY", "Private perception", "Every remote image description requires one exact creator decision. Raw pixels are not retained by Alpecca's server.")}
+      <div class="systems-metrics"><div><span>Configured routes</span><strong>${status.routes.length}</strong></div><div><span>Pending decisions</span><strong>${status.requests.filter((request) => request.state === "pending").length}</strong></div></div>
+      <section><h3>Stage one image</h3>
+        <div class="systems-egress-stage">
+          <select id="alpeccaEgressRoute" aria-label="Private perception provider">${routeOptions}</select>
+          <input id="alpeccaEgressImage" type="file" accept="image/png,image/jpeg,image/gif" aria-label="Image for private perception">
+          <button type="button" data-system-action="egress-stage"${status.routes.length ? "" : " disabled"}>Stage</button>
+        </div>
+        <p class="systems-privacy-note">${escapeHudText(stagedLabel)}</p>
+      </section>
+      <section><h3>Consent queue</h3>${requestRows || systemEmpty("No private perception decisions are waiting.")}</section>`;
+  }
   if (systemId === "voice") {
     return renderAlpeccaVoiceViewer(data);
   }
@@ -4886,6 +4960,27 @@ function renderAlpeccaSystem(systemId: AlpeccaSystemId, data: Record<string, unk
     return `${systemIntro("SOUL", systemString(focus.action || focus.name, "No focus selected"), systemString(focus.reason, "Seven bounded subagents feed one explainable focus."))}
       <section><h3>Seven-subagent slate</h3>${slate.slice(0, 10).map((item) => systemRow(systemString(item.subagent, "subagent"), `${systemString(item.action)} - ${systemString(item.reason)}`, systemString(item.category, ""))).join("") || systemEmpty("No current intentions.")}</section>`;
   }
+  if (systemId === "tools") {
+    const tools = buildToolLibrarySnapshot(data);
+    const roomLabel = tools.currentRoom === "unknown"
+      ? "Unknown"
+      : tools.currentRoom.replace(/(^|[-_ ])([a-z])/g, (_match, gap: string, letter: string) => `${gap}${letter.toUpperCase()}`);
+    const parlorDetail = !tools.parlorKnown
+      ? "The backend did not report Parlor in its internal-home room registry."
+      : tools.parlorCurrent
+        ? "Alpecca currently reports Parlor as her internal-home location. It is state, not a second physical room rendered in this HQ."
+        : `Parlor is registered and available; her current internal-home location is ${roomLabel}.`;
+    return `${systemIntro("TOOLS", "Connected tool library", "Only backend-confirmed read surfaces and executable commitment tools are listed here. Entries without an execution route are status rows, not pretend controls.")}
+      <div class="systems-metrics">
+        <div><span>Read surfaces</span><strong>${HOUSE_READ_TOOLS.length} connected</strong></div>
+        <div><span>Actuator</span><strong>${tools.actuatorEnabled ? "Enabled" : "Disabled"}</strong></div>
+        <div><span>Executable</span><strong>${tools.executableTools.length}</strong></div>
+        <div><span>Internal room</span><strong>${escapeHudText(roomLabel)}</strong></div>
+      </div>
+      <section><h3>Parlor</h3>${systemRow("Internal-home state", parlorDetail, tools.parlorCurrent ? "CURRENT" : tools.parlorKnown ? "KNOWN" : "UNAVAILABLE")}</section>
+      <section><h3>Bounded read surfaces</h3>${HOUSE_READ_TOOLS.map((tool) => systemRow(tool.label, `${tool.method} ${tool.endpoint}`, "CONNECTED")).join("")}</section>
+      <section><h3>Approved commitment executor</h3>${tools.executableTools.map((tool) => systemRow(tool, "Backend reports this tool as executable only through the commitment approval path.", "AVAILABLE")).join("") || systemEmpty("The backend reports no executable commitment tools.")}</section>`;
+  }
   if (systemId === "growth") {
     const desires = systemArray(data.desires);
     const lessons = systemArray(data.lessons);
@@ -4950,6 +5045,14 @@ async function fetchAlpeccaSystemData(systemId: AlpeccaSystemId) {
   }
   if (systemId === "internals") {
     return await fetchJson("/brain/graph");
+  }
+  if (systemId === "tools") {
+    const [growth, home, runtime] = await Promise.all([
+      fetchJson("/growth"),
+      fetchJson("/home/state"),
+      fetchJson("/system/status"),
+    ]);
+    return { growth, home, runtime };
   }
   if (systemId === "devices") {
     const auth = await fetchJson("/auth/status");
@@ -5188,6 +5291,7 @@ function closeAlpeccaSystems() {
   alpeccaDrivePanel = null;
   alpeccaDriveRequestController?.abort();
   alpeccaDriveRequestController = null;
+  alpeccaStagedPerceptionEgress = null;
   stopAlpeccaVoiceLivePoll();
   recordAlpeccaSystemsReturn();
 }
@@ -5277,6 +5381,15 @@ function setAlpeccaSourcePlate(id: string) {
   pulseAlpeccaSourceGallery(plate.id, 2.2);
 }
 
+function updateAlpeccaSourceControlAvailability() {
+  hud.querySelectorAll<HTMLButtonElement>("button[data-feature]").forEach((button) => {
+    const control = houseReadToolControl(button.dataset.feature || "", alpeccaAiStatus);
+    button.disabled = control.disabled;
+    button.title = control.title;
+    button.setAttribute("aria-disabled", String(control.disabled));
+  });
+}
+
 function setAlpeccaAiStatus(status: AlpeccaAiStatus, mood = alpeccaAiMood) {
   alpeccaAiStatus = status;
   alpeccaAiMood = mood || status;
@@ -5291,6 +5404,7 @@ function setAlpeccaAiStatus(status: AlpeccaAiStatus, mood = alpeccaAiMood) {
   alpeccaAiStatusEl.textContent = `Alpecca AI: ${label}`;
   alpeccaAiStatusEl.dataset.status = status;
   updateAlpeccaMoodPanel();
+  updateAlpeccaSourceControlAvailability();
   updateCoreStatusLabels();
   if (status === "live" || status === "connecting") {
     for (const terminal of alpeccaSourceTerminals.keys()) pulseAlpeccaSourceTerminal(terminal, status === "live" ? 1.8 : 0.9);
@@ -5433,6 +5547,15 @@ function handleAlpeccaAiMessage(raw: string) {
     return;
   }
   const responseText = (message.reply || message.text || message.message || message.content || "").trim();
+
+  if (message.communication_stance) {
+    const stance = message.communication_stance;
+    const mode = stance.mode || "direct";
+    alpeccaDisclosureEl.dataset.mode = mode;
+    alpeccaDisclosureLabelEl.textContent = stance.label || (mode === "withholding" ? "Hiding details" : mode === "playful_bluff" ? "Playful bluff" : "Direct");
+    alpeccaDisclosureReasonEl.textContent = stance.reason || "Communication stance recorded by the live core.";
+    alpeccaDisclosureEl.title = `${alpeccaDisclosureLabelEl.textContent}: ${alpeccaDisclosureReasonEl.textContent}${stance.blocked ? " A non-direct stance was blocked for this protected topic." : ""}`;
+  }
 
   if (message.type === "state") setAlpeccaCapabilityConnection(message.capability_connection);
 
@@ -5800,7 +5923,18 @@ async function toggleAlpeccaPushToTalk() {
       return;
     }
     alpeccaPushToTalkStream = stream;
-    const recorder = new MediaRecorder(stream);
+    const supportedMime = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/ogg;codecs=opus",
+      "audio/ogg",
+    ].find((mime) => MediaRecorder.isTypeSupported(mime));
+    if (!supportedMime) {
+      stream.getTracks().forEach((track) => track.stop());
+      alpeccaPushToTalkStream = null;
+      throw new Error("Microphone recording format is not supported by this browser.");
+    }
+    const recorder = new MediaRecorder(stream, { mimeType: supportedMime });
     alpeccaPushToTalkRecorder = recorder;
     alpeccaPushToTalkChunks = [];
     recorder.ondataavailable = (event) => {
@@ -7498,20 +7632,38 @@ async function runAlpeccaFeatureToolBridge(featureId: string, room: OfficeRoom, 
   }
 }
 
-function runAlpeccaFeature(featureId: string) {
+async function runAlpeccaFeature(featureId: string) {
   const feature = alpeccaSourceFeatures[featureId];
   if (!feature) return;
 
+  if (alpeccaAiStatus !== "live") {
+    const message = alpeccaAiStatus === "token"
+      ? "This read tool needs an authorized backend session. Reconnect, then try again."
+      : "This read tool is unavailable while the Alpecca backend is offline.";
+    appendAlpeccaLog("System", message);
+    showMessage(message, 5);
+    return;
+  }
+
   alpeccaActiveProfileFeature = feature.id;
   alpeccaChat.classList.remove("hidden");
-  showAlpeccaProfileLine(`${feature.room}: ${feature.prompt}`, "thinking", feature.id);
+  showAlpeccaProfileLine(`${feature.room}: contacting ${feature.toolPath}.`, "thinking", feature.id);
   appendAlpeccaLog("System", `${feature.room}: ${feature.label}`);
-  setAlpeccaActivity(`Alpecca is checking ${feature.room}.`, "think");
+  setAlpeccaActivity(`Reading ${feature.room} from the live backend.`, "think");
   pulseAlpeccaSourceTerminal(feature.id, 3.4, false);
   pulseAlpeccaSourceDashboard(feature.id, 3.2);
   const featureRoom = officeRooms.find((room) => room.name === feature.room) ?? currentOfficeRoom();
+  const result = await runAlpeccaFeatureToolBridge(feature.id, featureRoom, true);
+  if (!result) {
+    const message = `${feature.room} did not return a backend result.`;
+    showAlpeccaProfileLine(message, "thinking", feature.id);
+    showMessage(message, 5);
+    setAlpeccaActivity(`${feature.room} read unavailable.`, "idle");
+    return;
+  }
+
   const ideaKind = alpeccaIdeaKindForFeature(feature.id);
-  createAlpeccaIdeaObject(featureRoom, `${feature.label}: ${feature.prompt}`, ideaKind);
+  createAlpeccaIdeaObject(featureRoom, `${feature.label}: ${result.summary}`, ideaKind);
   const featureAnimation: AlpeccaAnimationName =
     feature.id === "studio"
       ? directionalAlpeccaJump(alpeccaToPlayer.copy(camera.position).sub(alpecca.group.position))
@@ -7523,39 +7675,7 @@ function runAlpeccaFeature(featureId: string) {
   const featureAnimationReady = alpecca.animations.has(featureAnimation);
   focusAlpecca(2.8, featureAnimation);
   alpecca.expressiveTimer = featureAnimationReady ? 2 : 7;
-  void runAlpeccaFeatureToolBridge(feature.id, featureRoom, true);
-
-  if (alpeccaAiStatus === "live" && alpeccaSocket?.readyState === WebSocket.OPEN) {
-    showMessage(`${feature.room}: recording ${feature.label.toLowerCase()} as house context.`, 3.2);
-    void alpeccaBackendFetch(alpeccaUrlWithParams(`${alpeccaAiBaseUrl}/cognition/observe`), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        source: "room-terminal",
-        room: feature.room,
-        content: `Room terminal request: ${feature.prompt}`,
-        confidence: 0.78,
-        novelty: 0.45,
-        metadata: {
-          feature: feature.id,
-          label: feature.label,
-          context: alpeccaContextPrefix(),
-        },
-      }),
-    }).catch(() => undefined);
-    return;
-  }
-
-  if (alpeccaAiStatus === "token") {
-    showMessage("Alpecca source needs an authorized backend session. Sign in, then try this terminal again.", 5);
-    return;
-  }
-
-  const fallback = `${feature.room}: ${feature.label}. ${feature.page ? "Source app may answer when live." : "Using local game mode."}`;
-  appendAlpeccaLog("Alpecca", fallback);
-  showAlpeccaProfileLine(fallback, "talking", feature.id);
-  startAlpeccaSpeech(fallback);
-  showMessage(`${feature.room} source bridge is offline. ${feature.page ? "Opening the source page may still work if Alpecca is running." : "Using local game mode."}`, 5);
+  setAlpeccaActivity(`${feature.room} returned a live result.`, "idle");
 }
 
 const alpeccaTerminalReachDistance = 0.58;
@@ -7691,7 +7811,7 @@ function addSourceTerminal(featureId: string, pos: THREE.Vector3Tuple, yaw: numb
     range: 1.9,
     type: "momentary",
     onUse: () => {
-      runAlpeccaFeature(feature.id);
+      void runAlpeccaFeature(feature.id);
       return "";
     },
     update: () => {},
@@ -8784,7 +8904,7 @@ function createPrototypeVoid() {
     range: 2.6,
     type: "momentary",
     onUse: () => {
-      runAlpeccaFeature("home");
+      void runAlpeccaFeature("home");
       return "The floating monitor routes into Alpecca's shared core app.";
     },
   });
@@ -8840,7 +8960,7 @@ function addPrototypeTerminal(featureId: string, pos: THREE.Vector3Tuple, yaw: n
     range: 2.2,
     type: "momentary",
     onUse: () => {
-      runAlpeccaFeature(featureId);
+      void runAlpeccaFeature(featureId);
       return `${feature.room} linked through the prototype terminal.`;
     },
   });
@@ -11761,12 +11881,8 @@ function applyAlpeccaBillboardYaw(dt = 0, snap = false) {
 
   const cameraYaw = Math.atan2(toCameraX, toCameraZ);
   const fullLocalYaw = shortestAngleDelta(alpecca.group.rotation.y, cameraYaw);
-  const clampRad = THREE.MathUtils.degToRad(alpeccaLastViewMatrix.billboardClampDeg || 16);
-  const clampedLocalYaw = THREE.MathUtils.clamp(fullLocalYaw, -clampRad, clampRad);
-  const volumetricYawStrength =
-    alpeccaLastViewMatrix.volumeZone === "near-body" ? 0.18 : alpeccaLastViewMatrix.volumeZone === "interaction-shell" ? 0.28 : 0.38;
-  const localYaw = clampedLocalYaw * volumetricYawStrength;
-  alpecca.billboardYaw = snap ? localYaw : dampAngle(alpecca.billboardYaw, localYaw, 8, dt);
+  const localYaw = fullLocalYaw;
+  alpecca.billboardYaw = snap ? localYaw : dampAngle(alpecca.billboardYaw, localYaw, 12, dt);
 
   const visualObjects = [
     alpecca.depthProxy,
@@ -12894,7 +13010,7 @@ function publishAlpeccaRuntimeProbe() {
     cylinderVerticalTier: alpeccaLastViewMatrix.vertical,
     cylinderMovementClamped: alpeccaCylinderMovementClamped,
     cylinderQaVisible: !!alpeccaCylinderQaGroup?.visible,
-    billboardMode: "volume-soft-billboard",
+    billboardMode: "directional-360-impostor",
     billboardClampDeg: alpeccaLastViewMatrix.billboardClampDeg,
     stageRoom: stageSpec.roomId,
     stagePad,
@@ -13849,7 +13965,7 @@ function updateAlpecca(dt: number) {
     window.__HOUSE_DEBUG__.alpecca.cylinderVerticalTier = window.__ALPECCA_RUNTIME__?.cylinderVerticalTier ?? alpeccaLastViewMatrix.vertical;
     window.__HOUSE_DEBUG__.alpecca.cylinderMovementClamped = window.__ALPECCA_RUNTIME__?.cylinderMovementClamped ?? alpeccaCylinderMovementClamped;
     window.__HOUSE_DEBUG__.alpecca.cylinderQaVisible = window.__ALPECCA_RUNTIME__?.cylinderQaVisible ?? !!alpeccaCylinderQaGroup?.visible;
-    window.__HOUSE_DEBUG__.alpecca.billboardMode = window.__ALPECCA_RUNTIME__?.billboardMode ?? "volume-soft-billboard";
+    window.__HOUSE_DEBUG__.alpecca.billboardMode = window.__ALPECCA_RUNTIME__?.billboardMode ?? "directional-360-impostor";
     window.__HOUSE_DEBUG__.alpecca.billboardClampDeg = window.__ALPECCA_RUNTIME__?.billboardClampDeg ?? alpeccaLastViewMatrix.billboardClampDeg;
     window.__HOUSE_DEBUG__.alpecca.stageRoom = window.__ALPECCA_RUNTIME__?.stageRoom ?? "";
     window.__HOUSE_DEBUG__.alpecca.stagePad = window.__ALPECCA_RUNTIME__?.stagePad ?? "";
@@ -13982,7 +14098,7 @@ async function createAlpecca() {
     cylinderVerticalTier: alpeccaLastViewMatrix.vertical,
     cylinderMovementClamped: false,
     cylinderQaVisible: false,
-    billboardMode: "volume-soft-billboard",
+    billboardMode: "directional-360-impostor",
     billboardClampDeg: alpeccaLastViewMatrix.billboardClampDeg,
     stageRoom: "entry",
     stagePad: alpeccaStagePadLabelForPosition(alpecca.group.position.x, alpecca.group.position.z),
@@ -15044,7 +15160,7 @@ alpeccaChat.addEventListener("click", (event) => {
   }
   const featureButton = target.closest<HTMLButtonElement>("button[data-feature]");
   if (featureButton?.dataset.feature) {
-    runAlpeccaFeature(featureButton.dataset.feature);
+    void runAlpeccaFeature(featureButton.dataset.feature);
     return;
   }
   const systemButton = target.closest<HTMLButtonElement>("button[data-system-open]");
@@ -15148,6 +15264,67 @@ async function postAlpeccaSystem(
   });
   if (!response.ok) throw new Error(`${path} returned ${response.status}`);
   return await response.json() as Record<string, unknown>;
+}
+
+async function alpeccaImageFileDataUrl(file: File): Promise<string> {
+  if (!/^image\/(png|jpeg|gif)$/i.test(file.type)) {
+    throw new Error("Choose a PNG, JPEG, or GIF image.");
+  }
+  if (file.size <= 0 || file.size > 2 * 1024 * 1024) {
+    throw new Error("The selected image must be between 1 byte and 2 MiB.");
+  }
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("The selected image could not be read."));
+    reader.onload = () => {
+      const value = typeof reader.result === "string" ? reader.result : "";
+      if (!value.startsWith("data:image/")) reject(new Error("The selected image could not be read."));
+      else resolve(value);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function stageAlpeccaPerceptionEgress() {
+  const route = alpeccaSystemsBody.querySelector<HTMLSelectElement>("#alpeccaEgressRoute")?.value.trim() || "";
+  const file = alpeccaSystemsBody.querySelector<HTMLInputElement>("#alpeccaEgressImage")?.files?.[0];
+  if (!route) throw new Error("No exact private perception route is available.");
+  if (!file) throw new Error("Choose one image to stage.");
+  const imageDataUrl = await alpeccaImageFileDataUrl(file);
+  const response = await postAlpeccaSystem("/perception/egress/stage", {
+    route_id: route,
+    image: imageDataUrl,
+  });
+  const staged = stagedPerceptionEgress(response, imageDataUrl);
+  if (!staged) throw new Error("The backend did not return a valid consent request.");
+  alpeccaStagedPerceptionEgress = staged;
+  await loadAlpeccaSystem("privacy");
+  setAlpeccaSystemsNotice("Exact image request staged. Approve or deny it below.");
+}
+
+async function decideAlpeccaPerceptionEgress(requestId: string, allowed: boolean) {
+  await postAlpeccaSystem(`/perception/egress/consents/${encodeURIComponent(requestId)}`, { allowed });
+  if (!allowed && alpeccaStagedPerceptionEgress?.requestId === requestId) {
+    alpeccaStagedPerceptionEgress = null;
+  }
+  await loadAlpeccaSystem("privacy");
+  setAlpeccaSystemsNotice(allowed ? "One exact provider use approved." : "Private perception request denied.");
+}
+
+async function executeAlpeccaPerceptionEgress(requestId: string) {
+  const staged = alpeccaStagedPerceptionEgress;
+  if (!staged || staged.requestId !== requestId) {
+    throw new Error("The exact staged image is no longer held in this browser.");
+  }
+  const result = await postAlpeccaSystem("/perception/egress/execute", {
+    request_id: staged.requestId,
+    operation_id: staged.operationId,
+    route_id: staged.routeId,
+    image: staged.imageDataUrl,
+  });
+  alpeccaStagedPerceptionEgress = null;
+  await loadAlpeccaSystem("privacy");
+  setAlpeccaSystemsNotice(systemString(result.description, "The provider returned no description."));
 }
 
 async function revokeAlpeccaPushEndpoint(endpoint: string) {
@@ -15568,6 +15745,10 @@ async function enrollAlpeccaCreatorVoice() {
 async function handleAlpeccaSystemAction(action: string) {
   setAlpeccaSystemsNotice("");
   try {
+    if (action === "egress-stage") {
+      await stageAlpeccaPerceptionEgress();
+      return;
+    }
     if (action === "memory-search") return void searchAlpeccaSystem("memory");
     if (action === "file-search") return void searchAlpeccaSystem("files");
     if (action === "screen-start") return void startAlpeccaScreenShare();
@@ -15676,6 +15857,34 @@ alpeccaSystems.addEventListener("click", (event) => {
     void handleAlpeccaSystemAction(actionButton.dataset.systemAction);
     return;
   }
+  const egressDecisionButton = target.closest<HTMLButtonElement>("button[data-egress-decision]");
+  if (egressDecisionButton?.dataset.egressDecision) {
+    let requestId = "";
+    try {
+      requestId = decodeURIComponent(egressDecisionButton.dataset.egressRequest || "");
+    } catch {
+      setAlpeccaSystemsNotice("That consent request could not be read.");
+      return;
+    }
+    if (!requestId) return;
+    void decideAlpeccaPerceptionEgress(requestId, egressDecisionButton.dataset.egressDecision === "approve")
+      .catch((error) => setAlpeccaSystemsNotice(error instanceof Error ? error.message : "Consent decision failed."));
+    return;
+  }
+  const egressExecuteButton = target.closest<HTMLButtonElement>("button[data-egress-execute]");
+  if (egressExecuteButton) {
+    let requestId = "";
+    try {
+      requestId = decodeURIComponent(egressExecuteButton.dataset.egressRequest || "");
+    } catch {
+      setAlpeccaSystemsNotice("That consent request could not be read.");
+      return;
+    }
+    if (!requestId) return;
+    void executeAlpeccaPerceptionEgress(requestId)
+      .catch((error) => setAlpeccaSystemsNotice(error instanceof Error ? error.message : "Private perception failed."));
+    return;
+  }
   const fileAttachButton = target.closest<HTMLButtonElement>("button[data-file-attach]");
   if (fileAttachButton) {
     let root = "";
@@ -15752,18 +15961,18 @@ alpeccaSourcePanel.addEventListener("click", (event) => {
   }
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-feature]");
   if (!button?.dataset.feature) return;
-  runAlpeccaFeature(button.dataset.feature);
+  void runAlpeccaFeature(button.dataset.feature);
 });
 
 // Every source-panel destination opens IN her own systems overlay (same app,
 // no new window): each id maps to a section that fetches its backend endpoint
-// and renders in-place. "tools" maps to her Soul deliberation surface.
+// and renders in-place. Tools has its own backend-confirmed connectivity view.
 function runAlpeccaSourceNav(nav: string) {
   const section: AlpeccaSystemId =
     nav === "mindscape" ? "mindscape"
     : nav === "voice" ? "voice"
     : nav === "journal" ? "journal"
-    : nav === "tools" ? "soul"
+    : nav === "tools" ? "tools"
     : "overview";
   openAlpeccaSystems(section, true);
 }

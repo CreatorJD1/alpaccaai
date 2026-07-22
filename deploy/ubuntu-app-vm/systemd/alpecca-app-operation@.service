@@ -1,0 +1,24 @@
+[Unit]
+Description=Apply one creator-approved Alpecca app operation %i
+ConditionPathExists=/etc/alpecca/enable-app-operations
+ConditionPathExists=/run/alpecca/app-operations/%i.json
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+Environment=ALPECCA_APP_CATALOG=/etc/alpecca/app-catalog.json
+Environment=ALPECCA_APP_APPROVAL_VERIFIER=/usr/local/libexec/alpecca/verify-app-approval
+# The apply helper remains absent. The repository verifier is dry-run-only and
+# cannot authenticate a creator verdict, persist a reservation, or run packages.
+ExecStart=/usr/local/libexec/alpecca/apply-approved-app-operation /run/alpecca/app-operations/%i.json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+# This unit is intentionally not installable as a boot target.

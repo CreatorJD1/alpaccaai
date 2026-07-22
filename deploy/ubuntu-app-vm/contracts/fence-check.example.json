@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "now": "2030-01-02T12:00:01Z",
+  "stateIntegrityVerified": true,
+  "state": {
+    "schemaVersion": 1,
+    "status": "leader-ready",
+    "highestFencingEpoch": 42,
+    "activeLease": {
+      "leaseId": "lease-042",
+      "holderNodeId": "ubuntu-standby-example",
+      "fencingEpoch": 42,
+      "issuedAt": "2030-01-02T11:59:50Z",
+      "expiresAt": "2030-01-02T12:00:25Z"
+    },
+    "lastEvaluatedAt": "2030-01-02T12:00:00Z",
+    "vaultSnapshotId": "snapshot-041",
+    "lastDecisionId": "sha256:848851b86783dda4b6a9a63697982b86ef834526a4b058fa7ba1c005729ed59e"
+  },
+  "leaseId": "lease-042",
+  "fencingEpoch": 42
+}

@@ -127,7 +127,7 @@
            stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
         <rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>
       </svg>
-      private &mdash; her password protects every page
+      private &mdash; creator trust protects every page
     </span>
   </header>
 
@@ -166,6 +166,14 @@
       <h2><span class="ico">&#9635;</span> Android</h2>
       <p class="sub">Install her as a real app &mdash; icon on the home screen,
         full-screen, no browser chrome.</p>
+      <div id="android-apk" hidden>
+        <a class="btn" href="/app/download/alpecca-android.apk" download>
+          &#8681;&nbsp; Download Alpecca for Android
+        </a>
+        <p class="note">The native launcher follows secure address changes and
+          keeps its device key in Android Keystore.</p>
+      </div>
+      <p class="sub" style="margin-top:14px">Browser install fallback:</p>
       <ol>
         <li>Scan the QR below (or open her address in Chrome).</li>
         <li>Tap Chrome&rsquo;s <strong>&#8942;</strong> menu.</li>
@@ -286,6 +294,9 @@
       if (meta.exe_built) {
         document.getElementById("win-exe").hidden = false;
         document.getElementById("win-zip").hidden = true;
+      }
+      if (meta.android_apk_built) {
+        document.getElementById("android-apk").hidden = false;
       }
       var pill = document.getElementById("discord-pill");
       var btn = document.getElementById("discord-btn");

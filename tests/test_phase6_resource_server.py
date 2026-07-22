@@ -180,6 +180,24 @@ def test_chat_turn_does_not_sample_host_resources(monkeypatch):
     assert sampler.calls == []
 
 
+def test_ambient_screen_sight_waits_for_quiet_and_respects_host_deferral(monkeypatch):
+    monkeypatch.setattr(server.mind, "_last_user_ts", 0.0)
+    monkeypatch.setattr(server._time, "time", lambda: 600.0)
+
+    calm = _StaticHostResourceSampler({"defer_optional_work": False})
+    monkeypatch.setattr(server, "_host_resource_sampler", calm)
+    assert server._conversation_quiet() is True
+    assert calm.force_values == [False]
+
+    pressured = _StaticHostResourceSampler({"defer_optional_work": True})
+    monkeypatch.setattr(server, "_host_resource_sampler", pressured)
+    assert server._conversation_quiet() is False
+    assert pressured.force_values == [False]
+
+    monkeypatch.setattr(server.mind, "_last_user_ts", 590.0)
+    assert server._conversation_quiet() is False
+
+
 def test_host_resource_reads_leave_optional_work_coordination_unchanged(
     monkeypatch, optional_work
 ):

@@ -139,6 +139,9 @@ def test_validated_discord_image_reaches_model_but_http_cannot_forge(
     tmp_path,
 ):
     prompts = []
+    history_reads = []
+    history_writes = []
+    memory_writes = []
 
     class FakeLLM:
         def generate(self, system_prompt, user_msg, history, **kwargs):
@@ -174,11 +177,25 @@ def test_validated_discord_image_reaches_model_but_http_cannot_forge(
     monkeypatch.setattr(server, "DISCORD_MEDIA_ENABLED", True)
     monkeypatch.setattr(server, "_record_capability_use", allow_audit)
     monkeypatch.setattr(server.vision, "describe_and_recognize_result", describe)
+
+    def load_scoped_history(turn):
+        history_reads.append(turn)
+        return []
+
+    def save_scoped_history(turn, history):
+        history_writes.append((turn, list(history)))
+
     monkeypatch.setattr(
-        mind_mod.turn_context_mod, "load_history", _forbidden("durable history read"),
+        mind_mod.turn_context_mod, "load_history", load_scoped_history,
     )
     monkeypatch.setattr(
-        mind_mod.turn_context_mod, "save_history", _forbidden("durable history write"),
+        mind_mod.turn_context_mod, "save_history", save_scoped_history,
+    )
+    monkeypatch.setattr(mind_mod.memory_store, "recall", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        mind_mod.memory_store,
+        "remember_with_id",
+        lambda content, **kwargs: memory_writes.append((content, kwargs)) or len(memory_writes),
     )
     monkeypatch.setattr(
         server,
@@ -261,7 +278,22 @@ def test_validated_discord_image_reaches_model_but_http_cannot_forge(
     assert prompts[0]["history"] == []
     assert prompts[1]["history"] == []
     assert prompts[2]["history"] == []
-    assert history_keys_after_requests == history_keys_before
+    assert history_keys_before <= history_keys_after_requests
+    assert all(turn.principal == "guest" and turn.surface == "discord" for turn in history_reads)
+    assert all(
+        turn.principal == "guest" and turn.surface == "discord"
+        for turn, _history in history_writes
+    )
+    discord_memory_writes = [
+        (content, kwargs)
+        for content, kwargs in memory_writes
+        if content.startswith(("Discord participant said:", "Alpecca replied in Discord:"))
+    ]
+    assert discord_memory_writes
+    assert all(
+        kwargs.get("scope") not in {"", "shared", "creator"}
+        for _content, kwargs in discord_memory_writes
+    )
     all_prompt_material = json.dumps(prompts, sort_keys=True)
     all_history_material = repr(history_keys_after_requests)
     for raw_discord_id in (

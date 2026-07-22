@@ -74,6 +74,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public final class MainActivity extends Activity {
     private static final String PREFS = "alpecca_launcher";
@@ -104,9 +105,10 @@ public final class MainActivity extends Activity {
     private static final int GOLD = Color.rgb(240, 189, 89);
 
     private final ExecutorService network = Executors.newSingleThreadExecutor();
+    private final ExecutorService discoveryNetwork = Executors.newFixedThreadPool(2);
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Runnable healthCheckTask = this::runForegroundHealthCheck;
-    private final Runnable recoveryTask = () -> startDiscovery(true);
+    private final Runnable recoveryTask = () -> startDiscovery(DiscoveryMode.RECOVERY);
     private SharedPreferences preferences;
     private FrameLayout root;
     private WebView webView;
@@ -117,8 +119,10 @@ public final class MainActivity extends Activity {
     private TextView phaseTitle;
     private TextView phaseDetail;
     private TextView endpointLabel;
+    private TextView runtimeLabel;
     private ProgressBar progress;
     private EditText serverField;
+    private Button reconnectButton;
     private Button updateButton;
     private Button installUpdateButton;
     private TextView updateStatus;
@@ -145,6 +149,7 @@ public final class MainActivity extends Activity {
     private String activeServerUrl = "";
     private UpdateInfo pendingAvailableUpdate;
     private VerifiedUpdate pendingInstallUpdate;
+    private Future<?> activeDiscoveryTask;
     private ConnectivityManager connectivityManager;
     private final ConnectivityManager.NetworkCallback networkCallback = new ConnectivityManager.NetworkCallback() {
         @Override
@@ -152,7 +157,7 @@ public final class MainActivity extends Activity {
             runOnUiThread(() -> {
                 if (activityResumed && recoveryPending && !discoveryRunning) {
                     mainHandler.removeCallbacks(recoveryTask);
-                    startDiscovery(true);
+                    startDiscovery(DiscoveryMode.RECOVERY);
                 }
             });
         }
@@ -259,13 +264,22 @@ public final class MainActivity extends Activity {
         progress.getProgressDrawable().setTint(CYAN);
         recovery.addView(progress, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3)));
 
-        endpointLabel = text("Discovery: secure mobile record", 11, MUTED, false);
-        endpointLabel.setPadding(0, dp(12), 0, dp(12));
+        endpointLabel = text("Endpoint reconnect: secure discovery not checked yet", 11, MUTED, false);
+        endpointLabel.setPadding(0, dp(12), 0, dp(4));
         recovery.addView(endpointLabel);
 
-        Button retry = primaryButton("Reconnect");
-        retry.setOnClickListener(view -> discoverAndConnect());
-        recovery.addView(retry, fullButtonParams());
+        runtimeLabel = text(
+            "Runtime availability: checking local primary and fenced cloud continuity.",
+            11,
+            MUTED,
+            false
+        );
+        runtimeLabel.setPadding(0, 0, 0, dp(12));
+        recovery.addView(runtimeLabel);
+
+        reconnectButton = primaryButton("Reconnect endpoint");
+        reconnectButton.setOnClickListener(view -> rediscoverCurrentEndpoint());
+        recovery.addView(reconnectButton, fullButtonParams());
 
         Button settings = secondaryButton("Connection settings");
         settings.setOnClickListener(view -> showSettings());
@@ -298,7 +312,7 @@ public final class MainActivity extends Activity {
         TextView title = text("Connection and updates", 24, TEXT, true);
         sheet.addView(title);
         TextView help = text(
-            "The app normally discovers Alpecca automatically. Use a manual HTTPS address only when needed.",
+            "Reconnect rediscovers Alpecca's current endpoint. A local or fenced cloud runtime must already be available. Use a manual HTTPS address only when needed.",
             13,
             MUTED,
             false
@@ -325,6 +339,12 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams connectParams = fullButtonParams();
         connectParams.topMargin = dp(12);
         sheet.addView(connect, connectParams);
+
+        Button reconnect = secondaryButton("Reconnect current endpoint");
+        reconnect.setOnClickListener(view -> rediscoverCurrentEndpoint());
+        LinearLayout.LayoutParams reconnectParams = fullButtonParams();
+        reconnectParams.topMargin = dp(8);
+        sheet.addView(reconnect, reconnectParams);
 
         Button permissions = secondaryButton("Android camera and microphone settings");
         permissions.setOnClickListener(view -> openAndroidSettings());
@@ -546,12 +566,36 @@ public final class MainActivity extends Activity {
     }
 
     private void discoverAndConnect() {
-        automaticRetryCount = 0;
-        recoveryPending = false;
-        startDiscovery(false);
+        restartDiscovery(DiscoveryMode.STARTUP);
     }
 
-    private void startDiscovery(boolean automatic) {
+    private void rediscoverCurrentEndpoint() {
+        hideSettings();
+        restartDiscovery(DiscoveryMode.RECONNECT);
+    }
+
+    private void restartDiscovery(DiscoveryMode mode) {
+        automaticRetryCount = 0;
+        recoveryPending = false;
+        pageFailed = false;
+        mainHandler.removeCallbacks(recoveryTask);
+        cancelHealthCheck();
+        connectionAttempt++;
+        discoveryRunning = false;
+        cancelActiveDiscoveryTask();
+        webView.stopLoading();
+        startDiscovery(mode);
+    }
+
+    private void cancelActiveDiscoveryTask() {
+        Future<?> previous = activeDiscoveryTask;
+        activeDiscoveryTask = null;
+        if (previous != null) {
+            previous.cancel(true);
+        }
+    }
+
+    private void startDiscovery(DiscoveryMode mode) {
         if (discoveryRunning) {
             return;
         }
@@ -559,33 +603,72 @@ public final class MainActivity extends Activity {
         cancelHealthCheck();
         discoveryRunning = true;
         final int attempt = ++connectionAttempt;
-        showPortal(
-            automatic ? "RECOVERING" : "FINDING",
-            automatic ? "Restoring House HQ" : "Opening House HQ",
-            automatic
-                ? "The previous connection stopped responding. Finding Alpecca's current secure connection."
-                : "Finding Alpecca's current secure connection.",
-            true
-        );
-        endpointLabel.setText("Discovery: secure mobile record");
-        network.execute(() -> {
-            List<String> discovered = fetchDiscoveryCandidates();
-            Set<String> candidates = new LinkedHashSet<>(discovered);
+        if (mode == DiscoveryMode.RECONNECT) {
+            showPortal(
+                "RECONNECTING",
+                "Rediscovering endpoint",
+                "Refreshing Alpecca's secure endpoint records. Runtime availability is checked separately.",
+                true
+            );
+        } else if (mode == DiscoveryMode.SOURCE_REFRESH) {
+            showPortal(
+                "UPDATING",
+                "Refreshing House source",
+                "Clearing stale web assets and finding Alpecca's current fenced endpoint.",
+                true
+            );
+        } else if (mode == DiscoveryMode.RECOVERY) {
+            showPortal(
+                "RECOVERING",
+                "Restoring House HQ",
+                "The previous connection stopped responding. Finding Alpecca's current secure endpoint.",
+                true
+            );
+        } else {
+            showPortal(
+                "FINDING",
+                "Opening House HQ",
+                "Finding Alpecca's current secure endpoint.",
+                true
+            );
+        }
+        endpointLabel.setText("Endpoint reconnect: querying continuity authority and mobile record.");
+        runtimeLabel.setText("Runtime availability: checking local primary and fenced cloud continuity.");
+        activeDiscoveryTask = discoveryNetwork.submit(() -> {
+            List<DiscoveryCandidate> candidates = fetchDiscoveryCandidates();
             String saved = normalizeServerUrl(preferences.getString(PREF_SERVER_URL, ""));
             if (saved != null) {
-                candidates.add(saved);
+                addDiscoveryCandidate(
+                    candidates,
+                    saved,
+                    RuntimeLocation.UNKNOWN,
+                    "last verified address"
+                );
             }
-            for (String candidate : candidates) {
+            for (DiscoveryCandidate candidate : candidates) {
                 if (attempt != connectionAttempt) {
                     return;
                 }
-                String origin = serverOrigin(candidate);
-                runOnUiThread(() -> endpointLabel.setText("Checking " + displayHost(origin)));
+                String origin = serverOrigin(candidate.serverUrl);
+                runOnUiThread(() -> {
+                    if (attempt != connectionAttempt) {
+                        return;
+                    }
+                    endpointLabel.setText(
+                        "Endpoint reconnect: checking " + displayHost(origin) + " from " + candidate.source + "."
+                    );
+                    runtimeLabel.setText(runtimeCheckingMessage(candidate.runtimeLocation));
+                });
                 if (probeExactAlpecca(origin)) {
                     runOnUiThread(() -> {
                         if (attempt == connectionAttempt) {
+                            activeDiscoveryTask = null;
                             discoveryRunning = false;
-                            openServer(candidate);
+                            endpointLabel.setText(
+                                "Endpoint: " + displayHost(origin) + " via " + candidate.source + "."
+                            );
+                            runtimeLabel.setText(runtimeReadyMessage(candidate.runtimeLocation));
+                            openServer(candidate.serverUrl, candidate.runtimeLocation, candidate.source);
                         }
                     });
                     return;
@@ -593,6 +676,7 @@ public final class MainActivity extends Activity {
             }
             runOnUiThread(() -> {
                 if (attempt == connectionAttempt) {
+                    activeDiscoveryTask = null;
                     discoveryRunning = false;
                     recoveryPending = true;
                     showPortal(
@@ -601,7 +685,15 @@ public final class MainActivity extends Activity {
                         "Waiting for the local runtime or fenced cloud continuity core. This app will reconnect automatically.",
                         false
                     );
-                    endpointLabel.setText(saved == null ? "No live endpoint discovered" : "Last server: " + displayHost(saved));
+                    endpointLabel.setText(
+                        saved == null
+                            ? "Endpoint reconnect: no live endpoint discovered."
+                            : "Endpoint reconnect: no live endpoint; last verified address was " + displayHost(saved) + "."
+                    );
+                    runtimeLabel.setText(
+                        "Runtime availability: no local or fenced cloud runtime answered. "
+                            + "The laptop must already be powered on and running Alpecca for local access."
+                    );
                     scheduleAutomaticRediscovery();
                 }
             });
@@ -616,12 +708,14 @@ public final class MainActivity extends Activity {
             return;
         }
         final int attempt = ++connectionAttempt;
+        cancelActiveDiscoveryTask();
         mainHandler.removeCallbacks(recoveryTask);
         cancelHealthCheck();
         discoveryRunning = true;
         recoveryPending = false;
         showPortal("CHECKING", "Checking the server", "Verifying that this address is Alpecca.", true);
-        endpointLabel.setText(displayHost(normalized));
+        endpointLabel.setText("Endpoint: checking " + displayHost(normalized) + " from manual settings.");
+        runtimeLabel.setText(runtimeCheckingMessage(RuntimeLocation.UNKNOWN));
         network.execute(() -> {
             boolean valid = probeExactAlpecca(serverOrigin(normalized));
             runOnUiThread(() -> {
@@ -630,17 +724,20 @@ public final class MainActivity extends Activity {
                 }
                 discoveryRunning = false;
                 if (valid) {
-                    openServer(normalized);
+                    endpointLabel.setText("Endpoint: " + displayHost(normalized) + " via manual settings.");
+                    runtimeLabel.setText(runtimeReadyMessage(RuntimeLocation.UNKNOWN));
+                    openServer(normalized, RuntimeLocation.UNKNOWN, "manual settings");
                 } else {
                     showPortal("OFFLINE", "That server did not answer", "The address did not return Alpecca's verified health identity.", false);
-                    endpointLabel.setText(displayHost(normalized));
+                    endpointLabel.setText("Endpoint: " + displayHost(normalized) + " did not answer.");
+                    runtimeLabel.setText("Runtime availability: no verified Alpecca runtime answered at this address.");
                 }
             });
         });
     }
 
-    private List<String> fetchDiscoveryCandidates() {
-        List<String> result = new ArrayList<>();
+    private List<DiscoveryCandidate> fetchDiscoveryCandidates() {
+        List<DiscoveryCandidate> result = new ArrayList<>();
         fetchContinuityCandidate(result);
         HttpURLConnection connection = null;
         try {
@@ -676,7 +773,12 @@ public final class MainActivity extends Activity {
                         if (!"named".equals(kind) && (!"quick".equals(kind) || expiresAt <= now)) {
                             continue;
                         }
-                        addDiscoveryCandidate(result, row.optString("url"));
+                        addDiscoveryCandidate(
+                            result,
+                            row.optString("url"),
+                            RuntimeLocation.UNKNOWN,
+                            "mobile discovery record"
+                        );
                     }
                 }
             }
@@ -690,18 +792,40 @@ public final class MainActivity extends Activity {
         // A request wakes a sleeping free Space. Its standby identity still
         // fails probeExactAlpecca until it acquires and publishes the singleton
         // lease, so the launcher cannot open an unfenced cloud runtime.
-        addDiscoveryCandidate(result, BuildConfig.ALPECCA_CLOUD_STANDBY_URL);
+        addDiscoveryCandidate(
+            result,
+            BuildConfig.ALPECCA_CLOUD_STANDBY_URL,
+            RuntimeLocation.CLOUD,
+            "fenced cloud wake address"
+        );
         return result;
     }
 
-    private void addDiscoveryCandidate(List<String> result, String value) {
+    private void addDiscoveryCandidate(
+        List<DiscoveryCandidate> result,
+        String value,
+        RuntimeLocation runtimeLocation,
+        String source
+    ) {
         String normalized = normalizeServerUrl(value);
-        if (normalized != null && !result.contains(normalized)) {
-            result.add(normalized);
+        if (normalized == null) {
+            return;
         }
+        for (int index = 0; index < result.size(); index++) {
+            DiscoveryCandidate existing = result.get(index);
+            if (!existing.serverUrl.equals(normalized)) {
+                continue;
+            }
+            if (existing.runtimeLocation == RuntimeLocation.UNKNOWN
+                && runtimeLocation != RuntimeLocation.UNKNOWN) {
+                result.set(index, new DiscoveryCandidate(normalized, runtimeLocation, source));
+            }
+            return;
+        }
+        result.add(new DiscoveryCandidate(normalized, runtimeLocation, source));
     }
 
-    private void fetchContinuityCandidate(List<String> result) {
+    private void fetchContinuityCandidate(List<DiscoveryCandidate> result) {
         HttpURLConnection connection = null;
         try {
             URL url = requireHttpsUrl(
@@ -727,9 +851,12 @@ public final class MainActivity extends Activity {
                 return;
             }
             String normalized = normalizeServerUrl(endpoint.optString("url"));
-            if (normalized != null && !result.contains(normalized)) {
-                result.add(normalized);
-            }
+            addDiscoveryCandidate(
+                result,
+                normalized,
+                runtimeLocationForHolder(endpoint.optString("holderNodeId")),
+                "continuity authority"
+            );
         } catch (Exception ignored) {
             // The R2, saved, and manual endpoint paths remain available.
         } finally {
@@ -737,6 +864,36 @@ public final class MainActivity extends Activity {
                 connection.disconnect();
             }
         }
+    }
+
+    private RuntimeLocation runtimeLocationForHolder(String holderNodeId) {
+        if (holderNodeId.startsWith("local-primary:")) {
+            return RuntimeLocation.LOCAL;
+        }
+        if (holderNodeId.startsWith("cloud-standby:")) {
+            return RuntimeLocation.CLOUD;
+        }
+        return RuntimeLocation.UNKNOWN;
+    }
+
+    private String runtimeCheckingMessage(RuntimeLocation runtimeLocation) {
+        if (runtimeLocation == RuntimeLocation.LOCAL) {
+            return "Runtime availability: local laptop runtime advertised; verifying it is online.";
+        }
+        if (runtimeLocation == RuntimeLocation.CLOUD) {
+            return "Runtime availability: fenced cloud continuity runtime advertised; verifying it is active.";
+        }
+        return "Runtime availability: verifying an advertised Alpecca runtime.";
+    }
+
+    private String runtimeReadyMessage(RuntimeLocation runtimeLocation) {
+        if (runtimeLocation == RuntimeLocation.LOCAL) {
+            return "Runtime availability: local laptop runtime is online.";
+        }
+        if (runtimeLocation == RuntimeLocation.CLOUD) {
+            return "Runtime availability: fenced cloud continuity runtime is active.";
+        }
+        return "Runtime availability: verified Alpecca runtime is online.";
     }
 
     private boolean probeExactAlpecca(String origin) {
@@ -1268,6 +1425,31 @@ public final class MainActivity extends Activity {
         void onProgress(int percent);
     }
 
+    private enum DiscoveryMode {
+        STARTUP,
+        RECOVERY,
+        RECONNECT,
+        SOURCE_REFRESH
+    }
+
+    private enum RuntimeLocation {
+        LOCAL,
+        CLOUD,
+        UNKNOWN
+    }
+
+    private static final class DiscoveryCandidate {
+        final String serverUrl;
+        final RuntimeLocation runtimeLocation;
+        final String source;
+
+        DiscoveryCandidate(String serverUrl, RuntimeLocation runtimeLocation, String source) {
+            this.serverUrl = serverUrl;
+            this.runtimeLocation = runtimeLocation;
+            this.source = source;
+        }
+    }
+
     private static final class UpdateInfo {
         final int versionCode;
         final String versionName;
@@ -1294,12 +1476,14 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void openServer(String value) {
+    private void openServer(String value, RuntimeLocation runtimeLocation, String source) {
         String normalized = normalizeServerUrl(value);
         if (normalized == null) {
             showConnectionFailure("The discovered server address was invalid.");
             return;
         }
+        endpointLabel.setText("Endpoint: " + displayHost(normalized) + " via " + source + ".");
+        runtimeLabel.setText(runtimeReadyMessage(runtimeLocation));
         String previous = normalizeServerUrl(preferences.getString(PREF_SERVER_URL, ""));
         preferences.edit().putString(PREF_SERVER_URL, normalized).apply();
         serverField.setText(normalized);
@@ -1775,9 +1959,21 @@ public final class MainActivity extends Activity {
 
     private void showConnectionFailure(String message) {
         pageFailed = true;
-        showPortal("OFFLINE", "Connection lost", message + " Reconnect after Alpecca is running.", false);
+        showPortal(
+            "OFFLINE",
+            "Connection lost",
+            message + " Reconnect will rediscover the endpoint after a runtime is available.",
+            false
+        );
         String saved = preferences.getString(PREF_SERVER_URL, "");
-        endpointLabel.setText(saved.isEmpty() ? "No server saved" : "Last server: " + displayHost(saved));
+        endpointLabel.setText(
+            saved.isEmpty()
+                ? "Endpoint reconnect: no verified address is saved."
+                : "Endpoint reconnect: last verified address was " + displayHost(saved) + "."
+        );
+        runtimeLabel.setText(
+            "Runtime availability: unavailable. The laptop must already be powered on and running Alpecca for local access."
+        );
     }
 
     private void beginAutomaticRecovery(String message) {
@@ -1788,7 +1984,7 @@ public final class MainActivity extends Activity {
         recoveryPending = true;
         webView.stopLoading();
         showPortal("RECOVERING", "Restoring House HQ", message + " Looking for Alpecca's latest secure phone link.", true);
-        startDiscovery(true);
+        startDiscovery(DiscoveryMode.RECOVERY);
     }
 
     private void scheduleAutomaticRediscovery() {
@@ -1870,15 +2066,10 @@ public final class MainActivity extends Activity {
         recoveryPending = false;
         connectionAttempt++;
         discoveryRunning = false;
+        cancelActiveDiscoveryTask();
         webView.stopLoading();
         webView.clearCache(true);
-        showPortal(
-            "UPDATING",
-            "Refreshing House source",
-            "Clearing stale web assets and finding Alpecca's current fenced endpoint.",
-            true
-        );
-        startDiscovery(true);
+        startDiscovery(DiscoveryMode.SOURCE_REFRESH);
     }
 
     private void openAndroidSettings() {
@@ -1901,6 +2092,7 @@ public final class MainActivity extends Activity {
         connectionAttempt++;
         deviceEnrollmentRunning = false;
         discoveryRunning = false;
+        cancelActiveDiscoveryTask();
         mainHandler.removeCallbacks(recoveryTask);
         cancelHealthCheck();
         webView.stopLoading();
@@ -2122,6 +2314,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         connectionAttempt++;
+        cancelActiveDiscoveryTask();
         mainHandler.removeCallbacksAndMessages(null);
         if (networkCallbackRegistered && connectivityManager != null) {
             try {
@@ -2131,6 +2324,7 @@ public final class MainActivity extends Activity {
             }
         }
         network.shutdownNow();
+        discoveryNetwork.shutdownNow();
         if (fileCallback != null) {
             fileCallback.onReceiveValue(null);
             fileCallback = null;

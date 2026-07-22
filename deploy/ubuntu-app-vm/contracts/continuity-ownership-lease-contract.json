@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "localPolicyMode": "dry-run-only",
+  "defaultDecision": "standby",
+  "preferredOwner": "local-authoritative-host",
+  "creatorActivationMarkerPath": "/etc/alpecca/enable-cloud-core",
+  "localHeartbeat": {
+    "maximumTtlSeconds": 35,
+    "freshWhen": "evaluated-at-before-valid-until",
+    "freshHeartbeatDecision": "standby",
+    "requires": [
+      "integrity-verified",
+      "observed-at-not-in-future",
+      "owner-node-id-matches-local-ownership-lease"
+    ]
+  },
+  "localOwnershipLease": {
+    "maximumDurationSeconds": 35,
+    "expiredWhen": "evaluated-at-at-or-after-expires-at",
+    "activeLeaseDecision": "standby",
+    "requires": [
+      "integrity-verified",
+      "holder-node-id-matches-local-heartbeat-owner",
+      "holder-node-id-differs-from-cloud-candidate"
+    ]
+  },
+  "creatorActivation": {
+    "maximumDurationSeconds": 300,
+    "requires": [
+      "exact-marker-path",
+      "marker-present",
+      "marker-integrity-verified",
+      "creator-approval-verified",
+      "issued-at-or-after-local-heartbeat-expiry",
+      "issued-at-or-after-local-ownership-lease-expiry",
+      "not-expired"
+    ]
+  },
+  "candidateCloudLeaseRequires": [
+    "existing-supervisor-policy-leader-ready",
+    "same-explicit-evaluation-time",
+    "same-cloud-node-id",
+    "issued-at-or-after-creator-activation",
+    "issued-at-or-after-local-ownership-lease-expiry",
+    "fencing-epoch-strictly-newer-than-local-owner",
+    "supervisor-state-at-or-ahead-of-local-owner-epoch"
+  ],
+  "takeoverRequiresAll": [
+    "local-owner-heartbeat-stale",
+    "local-ownership-lease-expired",
+    "creator-activation-ready",
+    "candidate-cloud-lease-ready"
+  ],
+  "dryRunOutputGuarantees": [
+    "never-starts-alpecca",
+    "never-starts-or-enables-a-service",
+    "never-creates-an-activation-marker",
+    "never-reads-or-writes-a-credential",
+    "never-contacts-a-network-or-provider",
+    "never-performs-a-system-change"
+  ]
+}

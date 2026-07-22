@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import math
+import os
 import threading
 import time
 import wave
@@ -17,6 +19,7 @@ from collections.abc import Mapping
 from typing import Callable, Literal
 
 from alpecca import cognition as cognition_mod
+from alpecca import silero_vad as silero_vad_mod
 
 
 PCM_SAMPLE_RATE = 48_000
@@ -29,6 +32,20 @@ MAX_UTTERANCE_PCM_BYTES = int(PCM_BYTES_PER_SECOND * MAX_UTTERANCE_SECONDS)
 MAX_PCM_PACKET_BYTES = int(PCM_BYTES_PER_SECOND * 0.2)
 SILENCE_FLUSH_SECONDS = 0.7
 MAX_ROOM_SPEAKERS = 8
+VAD_PRE_ROLL_SECONDS = max(
+    0.0,
+    min(1.5, float(os.environ.get("ALPECCA_DISCORD_VAD_PRE_ROLL_SECONDS", "0.8"))),
+)
+VAD_PRE_ROLL_BYTES = int(PCM_BYTES_PER_SECOND * VAD_PRE_ROLL_SECONDS)
+VAD_THRESHOLD = max(
+    0.05,
+    min(0.95, float(os.environ.get("ALPECCA_DISCORD_VAD_THRESHOLD", "0.5"))),
+)
+VAD_START_FRAMES = max(
+    1,
+    min(5, int(os.environ.get("ALPECCA_DISCORD_VAD_START_FRAMES", "2"))),
+)
+VAD_END_FRAMES = max(1, math.ceil(SILENCE_FLUSH_SECONDS / silero_vad_mod.FRAME_SECONDS))
 
 _dave_compat_lock = threading.Lock()
 _dave_stats_lock = threading.Lock()
@@ -211,7 +228,13 @@ def receive_readiness(*, enabled: bool) -> dict[str, object]:
         "faster_whisper": whisper,
         "davey": davey,
         "dave_receive": dave_receive_status(),
+        "vad": silero_vad_mod.readiness(),
     }
+
+
+def silero_vad_factory():
+    """Return a per-speaker detector factory or ``None`` for packet fallback."""
+    return silero_vad_mod.detector_factory()
 
 
 def _voice_client_flag(voice_client: object | None, method_name: str) -> bool:
@@ -301,6 +324,7 @@ class CreatorPcmCollector:
         on_utterance: Callable[[VoiceUtterance], None],
         *,
         on_speech_start: Callable[[], None] | None = None,
+        vad: object | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if type(allowed_user_id) is not int or allowed_user_id <= 0:
@@ -311,10 +335,35 @@ class CreatorPcmCollector:
         self._on_utterance = on_utterance
         self._on_speech_start = on_speech_start
         self._clock = clock
+        self._vad = vad
         self._lock = threading.Lock()
         self._buffer = bytearray()
+        self._pre_roll = bytearray()
         self._last_packet_at = 0.0
         self._muted_until_stop = False
+        self._speech_active = False
+        self._positive_frames = 0
+        self._negative_frames = 0
+
+    def _reset_vad_locked(self) -> None:
+        self._speech_active = False
+        self._positive_frames = 0
+        self._negative_frames = 0
+        self._pre_roll.clear()
+        reset = getattr(self._vad, "reset", None)
+        if callable(reset):
+            try:
+                reset()
+            except Exception:
+                self._vad = None
+
+    def _append_pre_roll_locked(self, pcm: bytes) -> None:
+        if VAD_PRE_ROLL_BYTES <= 0:
+            return
+        self._pre_roll.extend(pcm)
+        overflow = len(self._pre_roll) - VAD_PRE_ROLL_BYTES
+        if overflow > 0:
+            del self._pre_roll[:overflow]
 
     def push(self, user_id: object, pcm: object) -> str:
         """Accept one decoded PCM packet and return a content-free disposition."""
@@ -333,11 +382,51 @@ class CreatorPcmCollector:
         with self._lock:
             if self._muted_until_stop:
                 return "capped"
-            if not self._buffer:
+            probabilities: tuple[float, ...] = ()
+            if self._vad is not None:
+                self._append_pre_roll_locked(pcm)
+                try:
+                    probabilities = tuple(self._vad.accept_pcm(pcm))
+                except Exception:
+                    self._vad = None
+                    self._pre_roll.clear()
+
+            if self._vad is not None and not self._speech_active:
+                for probability in probabilities:
+                    if probability >= VAD_THRESHOLD:
+                        self._positive_frames += 1
+                    else:
+                        self._positive_frames = 0
+                    if self._positive_frames >= VAD_START_FRAMES:
+                        self._speech_active = True
+                        self._negative_frames = 0
+                        started = True
+                        self._buffer.extend(self._pre_roll)
+                        self._pre_roll.clear()
+                        break
+                self._last_packet_at = self._clock()
+                if not self._speech_active:
+                    return "vad-waiting"
+            elif self._vad is None and not self._buffer:
                 started = True
+
             remaining = MAX_UTTERANCE_PCM_BYTES - len(self._buffer)
-            self._buffer.extend(pcm[:remaining])
+            # The activation packet is already present in pre-roll.
+            if not (started and self._vad is not None):
+                self._buffer.extend(pcm[:remaining])
             self._last_packet_at = self._clock()
+
+            if self._vad is not None and self._speech_active:
+                for probability in probabilities:
+                    if probability < VAD_THRESHOLD:
+                        self._negative_frames += 1
+                    else:
+                        self._negative_frames = 0
+                if self._negative_frames >= VAD_END_FRAMES:
+                    completed = bytes(self._buffer)
+                    self._buffer.clear()
+                    self._reset_vad_locked()
+
             if len(self._buffer) >= MAX_UTTERANCE_PCM_BYTES:
                 completed = bytes(self._buffer)
                 self._buffer.clear()
@@ -350,7 +439,7 @@ class CreatorPcmCollector:
                 pass
         if completed is not None:
             self._emit(completed)
-            return "emitted-cap"
+            return "emitted-cap" if self._muted_until_stop else "emitted-vad"
         return "buffered"
 
     def finish(self, user_id: object) -> bool:
@@ -361,10 +450,12 @@ class CreatorPcmCollector:
             if self._muted_until_stop:
                 self._muted_until_stop = False
                 self._last_packet_at = 0.0
+                self._reset_vad_locked()
                 return False
             completed = bytes(self._buffer)
             self._buffer.clear()
             self._last_packet_at = 0.0
+            self._reset_vad_locked()
         return self._emit(completed)
 
     def flush_stale(self, *, now: float | None = None) -> bool:
@@ -372,7 +463,7 @@ class CreatorPcmCollector:
         observed = self._clock() if now is None else float(now)
         with self._lock:
             if (
-                not self._buffer
+                not self._buffer and not self._pre_roll
                 or self._last_packet_at <= 0.0
                 or observed - self._last_packet_at < SILENCE_FLUSH_SECONDS
             ):
@@ -380,14 +471,17 @@ class CreatorPcmCollector:
             completed = bytes(self._buffer)
             self._buffer.clear()
             self._last_packet_at = 0.0
+            self._reset_vad_locked()
         return self._emit(completed)
 
     def cleanup(self) -> None:
         """Discard all in-memory PCM without emitting a partial utterance."""
         with self._lock:
             self._buffer.clear()
+            self._pre_roll.clear()
             self._last_packet_at = 0.0
             self._muted_until_stop = False
+            self._reset_vad_locked()
 
     def _emit(self, pcm: bytes) -> bool:
         duration = len(pcm) / PCM_BYTES_PER_SECOND
@@ -413,6 +507,7 @@ class RoomPcmCollector:
         on_utterance: Callable[[SpeakerVoiceUtterance], None],
         *,
         on_speech_start: Callable[[], None] | None = None,
+        vad_factory: Callable[[], object] | None = None,
         max_speakers: int = MAX_ROOM_SPEAKERS,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -420,6 +515,7 @@ class RoomPcmCollector:
             raise TypeError("on_utterance must be callable")
         self._on_utterance = on_utterance
         self._on_speech_start = on_speech_start
+        self._vad_factory = vad_factory
         self._clock = clock
         self._max_speakers = max(1, min(MAX_ROOM_SPEAKERS, int(max_speakers)))
         self._lock = threading.Lock()
@@ -467,6 +563,7 @@ class RoomPcmCollector:
                     user_id,
                     lambda utterance, uid=user_id: self._emit(uid, utterance),
                     on_speech_start=self._on_speech_start,
+                    vad=self._vad_factory() if self._vad_factory is not None else None,
                     clock=self._clock,
                 )
                 self._collectors[user_id] = collector
@@ -616,6 +713,10 @@ __all__ = [
     "PCM_BYTES_PER_SECOND",
     "RoomPcmCollector",
     "SILENCE_FLUSH_SECONDS",
+    "VAD_END_FRAMES",
+    "VAD_PRE_ROLL_BYTES",
+    "VAD_START_FRAMES",
+    "VAD_THRESHOLD",
     "SpeakerVoiceUtterance",
     "VoiceUtterance",
     "build_sink",
@@ -623,6 +724,7 @@ __all__ = [
     "install_dave_receive_compat",
     "next_voice_event_id",
     "receive_readiness",
+    "silero_vad_factory",
     "record_voice_event",
     "voice_runtime_state",
     "voice_client_class",

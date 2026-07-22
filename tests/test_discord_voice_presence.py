@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -8,8 +9,14 @@ from alpecca import discord_bridge
 
 
 class _VoiceClient:
-    def __init__(self, *, playing: bool = False) -> None:
-        self.channel = SimpleNamespace(name="General")
+    def __init__(self, *, playing: bool = False, human_count: int = 1) -> None:
+        self.channel = SimpleNamespace(
+            name="General",
+            members=[
+                SimpleNamespace(id=100 + index, bot=False)
+                for index in range(human_count)
+            ],
+        )
         self.playing = playing
 
     def is_connected(self) -> bool:
@@ -23,6 +30,9 @@ class _VoiceClient:
 
     def play(self, _source: object, *, after: object) -> None:
         del after
+
+    def stop_playing(self) -> None:
+        self.playing = False
 
 
 def _ready_voice_posture(*, output_ready: bool = True) -> dict[str, object]:
@@ -63,6 +73,59 @@ def test_presence_omits_transcription_until_the_local_model_is_loaded(monkeypatc
     assert "hear short utterances after local transcription" not in context
     assert "I can speak here." in corrected
     assert "Voice receive is available, but my listener is not active." in corrected
+
+
+def test_new_human_input_interrupts_active_discord_voice_playback(monkeypatch):
+    client = _build_voice_client(monkeypatch)
+    voice_client = _VoiceClient(playing=True)
+    guild = SimpleNamespace(id=77, voice_client=voice_client)
+
+    getattr(client, "_alpecca_interrupt_voice_playback")(guild, reason="text_input")
+
+    assert voice_client.playing is False
+
+
+def test_same_channel_voice_state_change_does_not_restart_listener(monkeypatch):
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", {"42"})
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())
+    client = _build_voice_client(monkeypatch)
+    voice_client = _VoiceClient()
+    voice_client.channel.id = 4001
+    guild = SimpleNamespace(id=77, voice_client=voice_client)
+    member = SimpleNamespace(
+        id=42,
+        name="realcreatorjd",
+        display_name="CreatorJD",
+        bot=False,
+        guild=guild,
+    )
+    session = {"listener_active": True}
+    getattr(client, "_alpecca_voice_receive_sessions")[77] = session
+    before = SimpleNamespace(channel=voice_client.channel, self_mute=False)
+    after = SimpleNamespace(channel=voice_client.channel, self_mute=True)
+
+    asyncio.run(client.on_voice_state_update(member, before, after))
+
+    assert getattr(client, "_alpecca_voice_receive_sessions")[77] is session
+
+
+def test_presence_distinguishes_connected_from_having_a_human_audience(monkeypatch):
+    client = _build_voice_client(monkeypatch)
+    guild = SimpleNamespace(
+        id=77,
+        voice_client=_VoiceClient(human_count=0),
+    )
+
+    context = getattr(client, "_alpecca_voice_presence_context")(guild)
+    corrected = getattr(client, "_alpecca_ground_voice_presence_reply")(
+        "Try saying hello in the voice channel again.",
+        guild,
+    )
+
+    assert "no human is currently in that voice channel" in context
+    assert "alone there" in context
+    assert "no human is currently in that voice channel with me" in corrected
+    assert "with you now" not in corrected
 
 
 def test_presence_and_correction_use_active_listener_and_loaded_transcriber(monkeypatch):

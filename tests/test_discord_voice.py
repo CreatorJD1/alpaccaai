@@ -5,14 +5,38 @@ import io
 from types import SimpleNamespace
 import wave
 
+import pytest
+
 from alpecca import discord_bridge, discord_voice
 from alpecca.bridge_actor_transport import DiscordActorBindings
+
+
+@pytest.fixture(autouse=True)
+def _keep_bridge_tests_on_packet_fallback(monkeypatch):
+    """Synthetic zero PCM in this module exercises the legacy bridge path.
+
+    Silero onset/noise behavior is covered with explicit probabilities in
+    test_silero_vad.py; loading a real model here would correctly reject these
+    all-zero packets and obscure the bridge behavior under test.
+    """
+    monkeypatch.setattr(discord_voice, "silero_vad_factory", lambda: None)
 
 
 def _packet(seconds: float = 0.02) -> bytes:
     size = int(discord_voice.PCM_BYTES_PER_SECOND * seconds)
     size -= size % 4
     return b"\x00" * size
+
+
+def test_discord_deadline_outlives_launcher_model_timeout() -> None:
+    timeout = discord_bridge._configured_inbound_timeout(
+        {
+            "ALPECCA_OLLAMA_TIMEOUT": "105",
+            "ALPECCA_DISCORD_INBOUND_TIMEOUT": "60",
+        }
+    )
+
+    assert timeout == 130.0
 
 
 def _reset_dave_stats(monkeypatch) -> None:
@@ -656,7 +680,7 @@ def test_creator_voice_session_transcribes_replies_and_discards_audio(monkeypatc
     )]
     assert len(calls) == 1
     args, kwargs = calls[0]
-    assert args[1:4] == ("Discord guest", "discord", "guest")
+    assert args[1:4] == ("CreatorJD", "discord", "creator")
     assert "Can you tell me what changed today?" in str(args[0])
     assert kwargs["room"] == "discord"
     assert kwargs["actor_bindings"] == DiscordActorBindings(
@@ -792,6 +816,12 @@ def test_voice_memory_failure_prevents_transcript_model_request(monkeypatch):
 def test_creator_join_command_uses_receive_client_and_starts_listener(monkeypatch):
     room = {"guild_id": "777", "channel_id": "3001"}
     monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    saved_rooms: list[dict[str, dict[str, str]]] = []
+    monkeypatch.setattr(
+        discord_bridge,
+        "_save_social_rooms",
+        lambda rooms: saved_rooms.append({key: dict(value) for key, value in rooms.items()}),
+    )
     monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
     monkeypatch.setattr(discord_bridge, "VOICE_RECEIVE_ENABLED", True)
     monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", {"42"})
@@ -830,6 +860,7 @@ def test_creator_join_command_uses_receive_client_and_starts_listener(monkeypatc
     )
 
     class VoiceChannel:
+        id = 4001
         name = "General"
 
         def __init__(self) -> None:
@@ -883,3 +914,72 @@ def test_creator_join_command_uses_receive_client_and_starts_listener(monkeypatc
     assert voice_channel.client_class is receive_client_class
     assert voice_client.sink is not None
     assert any("I can hear human participants here" in item for item in replies)
+    assert saved_rooms[-1]["777:3001"]["voice_channel_id"] == "4001"
+    assert saved_rooms[-1]["777:3001"]["voice_creator_id"] == "42"
+
+
+@pytest.mark.parametrize("persisted_binding", [True, False])
+def test_creator_approved_voice_binding_restores_listener_after_restart(
+    monkeypatch,
+    persisted_binding: bool,
+):
+    room = {"guild_id": "777", "channel_id": "3001"}
+    if persisted_binding:
+        room.update({"voice_channel_id": "4001", "voice_creator_id": "42"})
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
+    monkeypatch.setattr(discord_bridge, "_save_social_rooms", lambda _rooms: None)
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "VOICE_RECEIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", {"42"})
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())
+    monkeypatch.setattr(
+        discord_bridge,
+        "voice_readiness",
+        lambda: {
+            "enabled": True,
+            "mode": "duplex",
+            "status": "ready",
+            "receive": {"enabled": True, "status": "ready"},
+        },
+    )
+    monkeypatch.setattr(discord_bridge.discord_voice, "voice_client_class", lambda: object())
+    client = discord_bridge.build_client()
+    voice_client = _ReceiveVoiceClient()
+    voice_client.playing = False
+    creator = SimpleNamespace(id=42, name="realcreatorjd", display_name="CreatorJD")
+    text_channel = _ReceiveTextChannel()
+
+    class Guild:
+        id = 777
+        voice_client = None
+
+        def get_member(self, member_id: int):
+            return creator if member_id == 42 else None
+
+    guild = Guild()
+
+    class VoiceChannel:
+        id = 4001
+
+        async def connect(self, *, cls=None):
+            del cls
+            guild.voice_client = voice_client
+            return voice_client
+
+    voice_channel = VoiceChannel()
+    creator.voice = SimpleNamespace(channel=voice_channel)
+    monkeypatch.setattr(client, "get_guild", lambda guild_id: guild if guild_id == 777 else None)
+    monkeypatch.setattr(
+        client,
+        "get_channel",
+        lambda channel_id: {3001: text_channel, 4001: voice_channel}.get(channel_id),
+    )
+
+    async def scenario() -> None:
+        await getattr(client, "_alpecca_restore_voice_sessions")()
+        assert getattr(client, "_alpecca_voice_receive_sessions")[777]["listener_active"] is True
+        assert room["voice_channel_id"] == "4001"
+        assert room["voice_creator_id"] == "42"
+        await getattr(client, "_alpecca_stop_voice_receive")(guild)
+
+    asyncio.run(scenario())

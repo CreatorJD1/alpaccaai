@@ -3,13 +3,37 @@
 This is the canonical project context for coding agents working on Alpecca.
 Read this before `AGENTS.md`, `CLAUDE.md`, `HANDOFF.md`, or implementation files.
 
-## Current Implementation Checkpoint (2026-07-15)
+## Current Implementation Checkpoint (2026-07-16)
 
 This checkpoint supersedes older route, access, model, and phase-status text.
 
+### 2026-07-22 behavior and connectivity update
+
+- Alpecca now has a persistent, deterministic six-trait behavior profile:
+  curiosity, directness, initiative, playfulness, guardedness, and repair
+  drive. Only committed, identified runtime evidence can move it; replayed
+  evidence IDs are idempotent and model prose cannot rewrite traits.
+- Bluntness, skepticism, teasing, mild rudeness, privacy, and refusal are valid
+  expression choices. Factual deception is not: Alpecca must not fabricate
+  actions, memory, system state, safety, evidence, identity, authority, access,
+  or promises. Remorse is tied to a verified correction or failure.
+- Creator-scoped chat now executes every internal tool its schema advertises.
+  Guest and service turns remain conversation-only. Shared audit observations
+  retain tool name/status/latency only, never private arguments or results.
+- House HQ has a distinct live Tools view. It reads protected endpoints,
+  reports Parlor as internal-home state rather than a rendered House room, and
+  disables source controls while disconnected instead of simulating success.
+- F5/TTS5 receives bounded affect-derived speed, gain, and style controls. The
+  worker reports requested versus applied modulation; fallbacks remain.
+- `ALPECCA_LAUNCHER.bat` is the only supported user-facing BAT.
+- Cleanup is gated by `docs/REPOSITORY_CLEANUP_MANIFEST.md`. Active memory,
+  pending Vault files, V4/V13 assets, voice models, and release artifacts stay.
+
 - The verified P0-P14 matrix is: **complete bounded gates** P0, P2, P3, P4,
   and P5; **operationally partial** P1, P6, P8, P9, P10, P11, and P12;
-  **blocked gates** P7, P13, and P14. Baseline completion never means
+  **blocked gates** P7 and P14. P13 is source-complete for fenced append-only
+  event reconciliation but remains operationally partial pending deployment
+  and live failback proof. Baseline completion never means
   unrestricted autonomy, AGI, or literal consciousness.
 - House HQ's Void Prototype contains the live collapsible **Brain Garden**.
   `GET /brain/graph` is its protected evidence source. It distinguishes
@@ -26,6 +50,12 @@ This checkpoint supersedes older route, access, model, and phase-status text.
   arbitration path, not seven independent transformer instances. The Soul now
   emits a bounded seven-score perspective vector and contradiction/pressure
   escalation evidence with zero model calls; this does not bypass `deliberate`.
+- A bounded affective-incident baseline is implemented. Verified failures use
+  appraisal inputs (severity, controllability, and prediction error), exact cue
+  families, and persisted recovery/safety evidence. The resulting signal can
+  alter measured unease and the seven-role Soul arbitration. It is a functional
+  learning model, not a claim that Alpecca has human trauma, PTSD, or biological
+  feelings; generated prose cannot create incidents.
 - Native phone trust uses a non-exportable Android Keystore P-256 key. Version
   2.2.5 (code 11) validates the complete challenge transcript locally, binds
   resulting cookies to the exact device and HTTPS origin, fences stale
@@ -61,6 +91,15 @@ This checkpoint supersedes older route, access, model, and phase-status text.
   are dry-run-only; no permanent Ubuntu desktop VM or downloadable-app host has
   been provisioned. Do not confuse that unfinished desktop goal with the
   working headless Hugging Face survival core.
+- The July 16 source adds AES-256-GCM append-only continuity events for committed
+  memories, chat turns, and validated game episodes. Local and HF startup merge
+  these idempotently around the archive checkpoint; Vault event writes require
+  the exact active lease tuple through the continuity Durable Object. This is
+  not a production claim until redeployment and controlled failback proof.
+- `apps/agentic-frontier/` is a separate game environment Alpecca can play in,
+  not Alpecca and not part of CoreMind. Its initial backend slice is
+  server-authoritative and co-op; only meaningful shared episodes can cross the
+  validated memory adapter. The intended client uses anime cel shading.
 - P14 has an observation-only release-soak harness and a content-free source +
   House bundle secret-scan receipt. This is real progress, not a completed
   release soak. Continuity takeover evidence now exists, but live resource,
@@ -135,14 +174,18 @@ retained elsewhere for historical context.
   with actual request-byte/event/scope bindings, an external monotonic-anchor contract,
   exact schema identity, and structurally guest-only results. The bridge now
   obtains a server-minted exact-body envelope and `/channel/discord` consumes it
-  once before side effects, deriving a stable opaque guest scope. Every current
-  non-creator CoreMind turn is now conversation-only: no tools, commitments,
-  private continuity, runtime telemetry, state mutation, or initiative writes.
-  Server-validated Discord image descriptions can enter only through an
-  in-process exact-turn envelope and remain ephemeral. Phase 10 remains partial
-  for retained cross-session guest context, persistent cross-process rates,
-  nonce-bound approvals, a completed live Discord receive soak, and a production
-  external anchor.
+  once before side effects, deriving a stable opaque guest scope. Non-creator
+  CoreMind turns remain conversation-only by default: no tools, commitments,
+  runtime telemetry, state mutation, or initiative writes. The narrow verified
+  Discord exception records every signed inbound event in its stable
+  actor-and-room memory scope; direct replies also retain a bounded scoped
+  transcript and Alpecca's reply. Those scopes never read shared/creator memory
+  or one another, preserving one Alpecca continuity without leaking guest
+  conversations. Server-validated Discord image descriptions can enter only
+  through an in-process exact-turn envelope and remain ephemeral. Phase 10
+  remains partial for a live retained-Discord continuity soak, persistent
+  cross-process rates, nonce-bound approvals, a completed live Discord receive
+  soak, and a production external anchor.
 - The live Discord bridge accepts creator-allowlisted DMs and explicitly
   creator-claimed guild rooms. A room is added or removed only by CreatorJD's
   raw bot-mention `room on` / `room off` command line. Identical duplicate lines

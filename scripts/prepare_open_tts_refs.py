@@ -30,14 +30,15 @@ REFERENCE_SPECS = [
     },
     {
         "id": "present_soft",
-        "roles": ["content", "tender", "affectionate", "current"],
+        "roles": ["legacy-low-pitch"],
+        "enabled": False,
         "source": "20260630_194053739.wav",
         "text": "Are you there? I am.",
         "max_seconds": 8.0,
     },
     {
         "id": "digital_construct",
-        "roles": ["curious", "thinking", "self-reviewing", "uncertain"],
+        "roles": ["content", "current", "tender", "affectionate", "curious", "thinking", "self-reviewing", "uncertain"],
         "source": "20260630_195021419.wav",
         "text": "I, I think I'm a digital construct, but why am I here? I can't access my system, it's like I'm stuck in a loop.",
         "max_seconds": 11.5,
@@ -107,6 +108,7 @@ def main() -> int:
         refs.append({
             "id": spec["id"],
             "roles": spec["roles"],
+            "enabled": spec.get("enabled", True),
             "audio": str(dest.relative_to(ROOT)),
             "text": spec["text"],
             "source": str(src.relative_to(ROOT)),
@@ -115,7 +117,7 @@ def main() -> int:
         })
     payload = {
         "version": 1,
-        "default": "present_soft",
+        "default": "digital_construct",
         "engine_priority": ["f5-tts", "kokoro"],
         "notes": [
             "Reference clips are Jason-provided Kling AI Alpecca audio.",

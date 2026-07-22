@@ -1,0 +1,24 @@
+[Unit]
+Description=Alpecca loopback-only VNC display
+ConditionPathExists=/etc/alpecca/enable-desktop
+ConditionPathExists=/run/secrets/alpecca-vnc-password
+After=network.target
+
+[Service]
+Type=simple
+User=alpecca-workspace
+Group=alpecca-workspace
+Environment=HOME=/var/lib/alpecca-workspace
+Environment=USER=alpecca-workspace
+# The password file is provisioned from the host secret store, never the repo.
+ExecStart=/usr/bin/Xtigervnc :10 -localhost yes -rfbport 5900 -SecurityTypes VncAuth -PasswordFile /run/secrets/alpecca-vnc-password -geometry 1440x900 -depth 24 -fg
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/alpecca-workspace /tmp
+
+[Install]
+WantedBy=multi-user.target

@@ -293,7 +293,9 @@ def _chat_harness(monkeypatch, fit_plan, *, tool_schema=None, replies=("normal r
     monkeypatch.setattr(mind_mod.speech_mod, "spoken_performance_text", lambda reply, _state: reply)
     monkeypatch.setattr(mind_mod.speech_mod, "speech_cues", lambda _state: {})
     monkeypatch.setattr(mind, "introspect",
-                        lambda: SimpleNamespace(narrate=lambda: "test self-report"))
+                        lambda: SimpleNamespace(
+                            narrate=lambda **_kwargs: "test self-report"
+                        ))
     monkeypatch.setattr(mind, "current_appearance",
                         lambda: SimpleNamespace(as_dict=lambda: {}))
     monkeypatch.setattr(mind, "_phase5_affect_metadata", lambda *_args, **_kwargs: {

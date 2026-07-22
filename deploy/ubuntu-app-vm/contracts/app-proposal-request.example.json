@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "appId": "flatpak:org.mozilla.firefox",
+  "approvalId": "creator-app-approval-043",
+  "expiresAt": "2030-01-02T12:10:00Z",
+  "estimatedDiskBytes": 1200000000,
+  "requestedPermissions": [],
+  "requiredFence": {
+    "leaseId": "lease-042",
+    "fencingEpoch": 42
+  }
+}

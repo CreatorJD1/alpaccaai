@@ -90,7 +90,7 @@ def test_contextless_and_cancelled_calls_do_not_reach_tool_backends(monkeypatch)
     assert calls == []
 
 
-def test_self_status_is_limited_to_the_current_turn_and_unscoped_tools_refuse(monkeypatch):
+def test_self_status_is_limited_to_the_current_turn_and_creator_tools_execute(monkeypatch):
     toolkit = _toolkit(monkeypatch)
     turn = turn_context.TurnContext.create(
         "app-chat",
@@ -113,7 +113,40 @@ def test_self_status_is_limited_to_the_current_turn_and_unscoped_tools_refuse(mo
             "commit_state": "pending",
         }
     }
-    assert toolkit.execute("journal_read", {}, turn=turn) == (
-        "error: journal_read is unavailable in a scoped turn because its "
-        "storage or side effects are not scope-partitioned"
+    monkeypatch.setattr(toolkit_mod.journal_mod, "recent", lambda **_kwargs: [])
+    assert json.loads(toolkit.execute("journal_read", {}, turn=turn))["entries"] == []
+
+
+def test_creator_side_effect_tools_dispatch_and_log_without_private_payload(monkeypatch):
+    mind = _Mind()
+    mind.state = type("State", (), {"mood_label": lambda self: "steady"})()
+    mind._location = "parlor"
+    mind._last_roam_ts = 0.0
+    mind.plan_goal = lambda goal: {"ok": True, "created": 1, "proposals": [{"id": 7}]}
+    toolkit = _toolkit(monkeypatch)
+    toolkit.mind = mind
+    turn = turn_context.TurnContext.create("creator-tools", principal="creator")
+    observations = []
+
+    monkeypatch.setattr(toolkit_mod.journal_mod, "write", lambda **_kwargs: 11)
+    monkeypatch.setattr(toolkit_mod.desires_mod, "form", lambda **_kwargs: 12)
+    monkeypatch.setattr(toolkit_mod.cognition_mod, "record_observation", observations.append)
+    monkeypatch.setattr(toolkit_mod.ActionsCfg, "PLANNER", True)
+
+    assert "entry 11" in toolkit.execute(
+        "journal_write", {"text": "private journal body"}, turn=turn,
     )
+    assert "desire 12" in toolkit.execute(
+        "note_to_self", {"text": "private intention"}, turn=turn,
+    )
+    assert "proposal_ids" in toolkit.execute(
+        "make_plan", {"goal": "private goal"}, turn=turn,
+    )
+
+    assert [item.metadata["tool"] for item in observations] == [
+        "journal_write", "note_to_self", "make_plan",
+    ]
+    serialized = json.dumps([item.metadata for item in observations])
+    assert "private journal body" not in serialized
+    assert "private intention" not in serialized
+    assert "private goal" not in serialized

@@ -226,6 +226,20 @@ class _Vault:
         }
 
 
+class _Journal:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    def fetch_and_merge(self, url, token, key, *, db_path, timeout):
+        self.events.append("merge")
+        assert url == "https://vault.example.test"
+        assert token == "v" * 32
+        assert key == b"k" * 32
+        assert db_path.read_bytes() == _RESTORED_BYTES
+        assert timeout == 12.0
+        return {"ok": True, "status": "merged", "merged": 2, "duplicates": 1}
+
+
 class _LeaseClient:
     def __init__(self, role: str, events: list[str]) -> None:
         self.role = role
@@ -324,6 +338,7 @@ def test_supervisor_restores_approves_publishes_then_starts(tmp_path):
     core = supervisor_module.CloudCoreSupervisor(
         environ=_environment(),
         vault_module=_Vault(events),
+        journal_module=_Journal(events),
         lease_client_factory=client_factory,
         lease_guard_factory=guard_factory,
         process_factory=process_factory,
@@ -333,7 +348,7 @@ def test_supervisor_restores_approves_publishes_then_starts(tmp_path):
     )
 
     assert core.run() == 0
-    assert events == ["vrm", "restore", "client", "acquire", "publish", "spawn", "release"]
+    assert events == ["vrm", "restore", "merge", "client", "acquire", "publish", "spawn", "release"]
     child_env = captured["env"]
     assert isinstance(child_env, dict)
     assert child_env["ALPECCA_LLM_BACKEND"] == "hf"
@@ -362,6 +377,7 @@ def test_supervisor_can_use_explicit_automatic_failover_policy(tmp_path):
     core = supervisor_module.CloudCoreSupervisor(
         environ=environ,
         vault_module=_Vault(events),
+        journal_module=_Journal(events),
         lease_client_factory=lambda *, role: _LeaseClient(role, events),
         lease_guard_factory=lambda client, **kwargs: _Guard(
             events,
@@ -375,7 +391,7 @@ def test_supervisor_can_use_explicit_automatic_failover_policy(tmp_path):
     )
 
     assert core.run() == 0
-    assert events == ["restore", "acquire", "publish", "spawn", "release"]
+    assert events == ["restore", "merge", "acquire", "publish", "spawn", "release"]
     child_env = captured["env"]
     assert isinstance(child_env, dict)
     assert child_env["ALPECCA_RESTORE_APPROVAL_ID"] == "deployment-auto-failover-v1"
@@ -397,6 +413,7 @@ def test_lease_loss_hard_kills_core_without_shutdown_hooks(tmp_path):
     core = supervisor_module.CloudCoreSupervisor(
         environ=_environment(),
         vault_module=_Vault(events),
+        journal_module=_Journal(events),
         lease_client_factory=lambda *, role: _LeaseClient(role, events),
         lease_guard_factory=guard_factory,
         process_factory=lambda *_args, **_kwargs: child,
@@ -407,7 +424,7 @@ def test_lease_loss_hard_kills_core_without_shutdown_hooks(tmp_path):
     assert core.run() == supervisor_module.LEASE_LOST_EXIT
     assert child.killed is True
     assert child.terminated is False
-    assert events == ["restore", "acquire", "publish", "release"]
+    assert events == ["restore", "merge", "acquire", "publish", "release"]
 
 
 def test_restore_or_approval_failure_never_starts_core(tmp_path):
@@ -415,6 +432,7 @@ def test_restore_or_approval_failure_never_starts_core(tmp_path):
     core = supervisor_module.CloudCoreSupervisor(
         environ=_environment(),
         vault_module=_Vault(events, fail=True),
+        journal_module=_Journal(events),
         lease_client_factory=lambda **_kwargs: pytest.fail("lease unexpectedly requested"),
         process_factory=lambda *_args, **_kwargs: pytest.fail("child unexpectedly started"),
         runtime_home_factory=_runtime_home(tmp_path),
@@ -429,6 +447,7 @@ def test_restore_or_approval_failure_never_starts_core(tmp_path):
     core = supervisor_module.CloudCoreSupervisor(
         environ=environ,
         vault_module=_Vault(events),
+        journal_module=_Journal(events),
         lease_client_factory=lambda **_kwargs: pytest.fail("lease unexpectedly requested"),
         process_factory=lambda *_args, **_kwargs: pytest.fail("child unexpectedly started"),
         runtime_home_factory=_runtime_home(tmp_path),
@@ -438,7 +457,7 @@ def test_restore_or_approval_failure_never_starts_core(tmp_path):
         match="explicit_restore_approval_required",
     ):
         core.run()
-    assert events == ["restore"]
+    assert events == ["restore", "merge"]
 
 
 def test_stale_approval_epoch_releases_without_publish_or_start(tmp_path):
@@ -450,6 +469,7 @@ def test_stale_approval_epoch_releases_without_publish_or_start(tmp_path):
     core = supervisor_module.CloudCoreSupervisor(
         environ=environ,
         vault_module=_Vault(events),
+        journal_module=_Journal(events),
         lease_client_factory=lambda *, role: _LeaseClient(role, events),
         lease_guard_factory=lambda client, **kwargs: _Guard(
             events,
@@ -465,7 +485,7 @@ def test_stale_approval_epoch_releases_without_publish_or_start(tmp_path):
         match="restore_approval_lease_epoch_mismatch",
     ):
         core.run()
-    assert events == ["restore", "acquire", "release"]
+    assert events == ["restore", "merge", "acquire", "release"]
 
 
 @pytest.mark.parametrize(

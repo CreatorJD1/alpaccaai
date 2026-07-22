@@ -390,6 +390,16 @@ def test_guest_scope_is_full_stable_opaque_and_domain_separated(
     assert transport.guest_scope(same_scope) == first_scope
     assert transport.guest_scope(other_actor) != first_scope
     assert transport.guest_scope(other_thread) != first_scope
+    first_contact_scope = transport.guest_contact_scope(first)
+    assert transport.guest_contact_scope(same_scope) == first_contact_scope
+    assert transport.guest_contact_scope(other_thread) == first_contact_scope
+    assert transport.guest_contact_scope(other_actor) != first_contact_scope
+    assert re.fullmatch(r"guest-discord-contact-[0-9a-f]{64}", first_contact_scope)
+    participant_scope = transport.participant_memory_scope(first)
+    assert transport.participant_memory_scope(same_scope) == participant_scope
+    assert transport.participant_memory_scope(other_thread) == participant_scope
+    assert transport.participant_memory_scope(other_actor) != participant_scope
+    assert re.fullmatch(r"alpecca-lived-discord-[0-9a-f]{64}", participant_scope)
 
     conversation_id, privacy_scope = first_scope
     assert re.fullmatch(r"discord-guest-[0-9a-f]{64}", conversation_id)
@@ -425,6 +435,8 @@ def test_guest_scope_rejects_unverified_actor_shapes() -> None:
     )
     with pytest.raises(TypeError, match="verifier-created"):
         transport.guest_scope(fake)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="verifier-created"):
+        transport.guest_contact_scope(fake)  # type: ignore[arg-type]
 
 
 def test_guest_scope_fails_closed_if_verified_actor_hmac_is_corrupted(
@@ -436,3 +448,5 @@ def test_guest_scope_fails_closed_if_verified_actor_hmac_is_corrupted(
 
     with pytest.raises(actor_identity.BridgeActorIntegrityError, match="malformed"):
         transport.guest_scope(actor)
+    with pytest.raises(actor_identity.BridgeActorIntegrityError, match="malformed"):
+        transport.guest_contact_scope(actor)

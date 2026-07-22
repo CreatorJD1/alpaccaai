@@ -15,6 +15,7 @@ Usage:
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -40,15 +41,38 @@ from alpecca.continuity_lease import (             # noqa: E402
 
 _CONTINUITY_CHILDREN: list[subprocess.Popen] = []
 
+
+def _background_creationflags() -> int:
+    """Keep every silent Alpecca sidecar out of visible Windows consoles."""
+    if os.name != "nt":
+        return 0
+    return (
+        getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+    )
+
 # Keep the supported launch paths on the same workload split.  Callers may
 # override any value explicitly; these defaults prevent the GUI, phone-share,
 # and direct full-stack launchers from silently losing the hosted/local roles
-# that START_HERE.bat configures.
+# that ALPECCA_LAUNCHER.bat configures.
 os.environ.setdefault("ALPECCA_LLM_BACKEND", "ollama")
 os.environ.setdefault("ALPECCA_MODEL", "qwen3.5:9b")
 os.environ.setdefault("ALPECCA_FAST_MODEL", "qwen3.5:9b")
 os.environ.setdefault("ALPECCA_NUM_CTX", "8192")
+os.environ.setdefault("ALPECCA_MINDPAGE", "1")
+os.environ.setdefault("ALPECCA_MINDPAGE_DISK_GB", "8")
+os.environ.setdefault("ALPECCA_PRESSURE_PAGE_TARGET", "0.55")
+# Keep the one local Qwen runtime within the laptop's commit budget. Windows
+# may back cold pageable allocations with the existing pagefile; hot prompt/KV
+# pages remain resident whenever possible. Quantized KV is applied by Ollama
+# only when the model/GPU supports Flash Attention.
+os.environ.setdefault("OLLAMA_FLASH_ATTENTION", "1")
+os.environ.setdefault("OLLAMA_KV_CACHE_TYPE", "q8_0")
+os.environ.setdefault("OLLAMA_MAX_LOADED_MODELS", "1")
+os.environ.setdefault("OLLAMA_NUM_PARALLEL", "1")
 os.environ.setdefault("ALPECCA_CHAT_CLOUD_MODEL", "gemma4:cloud")
+os.environ.setdefault("ALPECCA_CHAT_CLOUD_PAGED_MEMORY", "1")
 os.environ.setdefault("ALPECCA_CHAT_ZEROGPU", "0")
 os.environ.setdefault("ALPECCA_DEEP_BACKEND", "ollama-cloud")
 os.environ.setdefault("ALPECCA_OLLAMA_CLOUD_MODEL", "gemma4:cloud")
@@ -56,23 +80,25 @@ os.environ.setdefault("ALPECCA_REFLECT_MODEL", "qwen3.5:9b")
 os.environ.setdefault("ALPECCA_VISION_BACKEND", "local")
 os.environ.setdefault("ALPECCA_VISION_CLOUD_MODEL", "")
 os.environ.setdefault("ALPECCA_VISION_MODEL", "qwen3.5:9b")
+os.environ.setdefault("ALPECCA_CLOUD_STANDBY_URL", "https://creatorjd-alpecca-survival-core.hf.space")
 
-# Risky capabilities stay off unless the caller explicitly opted in.
+# Risky capabilities stay off unless the caller explicitly opts in.
 os.environ.setdefault("ALPECCA_COMPUTER_USE", "0")
-os.environ.setdefault("ALPECCA_SIGHT", "0")   # periodic screen glimpses
+os.environ.setdefault("ALPECCA_SIGHT", "0")   # periodic, local-only screen glimpses
 os.environ.setdefault("ALPECCA_FACE", "0")    # webcam expression sense
 os.environ.setdefault("ALPECCA_VOICE", "0")   # mic voice-tone sense
 os.environ.setdefault("ALPECCA_APPS", "")     # explicit app allowlist only
 # The full local stack may share only Alpecca's closed, verified local image
-# catalog on Discord. This mirrors START_HERE.bat and does not enable arbitrary
+# catalog on Discord. This mirrors the unified launcher and does not enable arbitrary
 # file transfer, remote vision, screen capture, or any other sensing capability.
 os.environ.setdefault("ALPECCA_DISCORD_MEDIA", "1")
-# Match START_HERE.bat for the creator-approved Discord room: voice is scoped
+# Match the unified launcher for the creator-approved Discord room: voice is scoped
 # to a claimed room, local TTS, and bounded local transcription. It is separate
 # from the ambient laptop microphone sensor above, which remains off. An
 # explicit ALPECCA_DISCORD_VOICE=0 or ALPECCA_DISCORD_VOICE_RECEIVE=0 still wins.
 os.environ.setdefault("ALPECCA_DISCORD_VOICE", "1")
 os.environ.setdefault("ALPECCA_DISCORD_VOICE_RECEIVE", "1")
+os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "f5")
 
 def _f5_worker_health(timeout: float = 0.4) -> bool:
     try:
@@ -80,7 +106,10 @@ def _f5_worker_health(timeout: float = 0.4) -> bool:
             f"http://{F5_WORKER_HOST}:{F5_WORKER_PORT}/health",
             timeout=timeout,
         ) as resp:
-            return resp.status == 200
+            if resp.status != 200:
+                return False
+            payload = json.loads(resp.read().decode("utf-8") or "{}")
+            return payload.get("ready") is True
     except Exception:
         return False
 
@@ -110,21 +139,18 @@ def _start_f5_worker() -> None:
         "stderr": open(log_dir / "f5_worker.err.log", "a", encoding="utf-8"),
     }
     if os.name == "nt":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        kwargs["creationflags"] = _background_creationflags()
     process = subprocess.Popen([sys.executable, "scripts\\f5_tts_worker.py"], **kwargs)
     _CONTINUITY_CHILDREN.append(process)
     print(f"Alpecca F5 voice worker is warming at http://{F5_WORKER_HOST}:{F5_WORKER_PORT} ...")
-    for _ in range(45):
-        if _f5_worker_health(timeout=0.8):
-            print("Alpecca F5 voice worker is ready.")
-            return
-        time.sleep(1)
-    print("Alpecca F5 voice worker is still warming; Kokoro remains available meanwhile.")
+    print("Kokoro remains available while F5 finishes warming in the background.")
 
 
 def _start_discord_bridge() -> None:
     """Bring her Discord presence up alongside her app, if a bot token is set, so
     relaunching never leaves her offline. Skips silently when no token exists."""
+    if os.environ.get("ALPECCA_CONTINUITY_OFFLINE_ISOLATED") == "1":
+        return
     root = Path(__file__).resolve().parent.parent
     secret = root / "data" / "secrets" / "alpecca_discord.env"
     token = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
@@ -143,10 +169,27 @@ def _start_discord_bridge() -> None:
         "stderr": open(log_dir / "discord_bridge.err.log", "a", encoding="utf-8"),
     }
     if os.name == "nt":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        kwargs["creationflags"] = _background_creationflags()
     process = subprocess.Popen([sys.executable, "scripts\\run_discord_bridge.py"], **kwargs)
     _CONTINUITY_CHILDREN.append(process)
     print("Alpecca Discord bridge starting -- she'll come online in her server.")
+
+
+def _wake_cloud_standby() -> None:
+    """Wake the passive cloud fallback without promoting a second CoreMind."""
+    root = Path(__file__).resolve().parent.parent
+    log_dir = root / "data" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    kwargs = {
+        "cwd": str(root),
+        "stdout": open(log_dir / "cloud_standby_wake.log", "a", encoding="utf-8"),
+        "stderr": open(log_dir / "cloud_standby_wake.err.log", "a", encoding="utf-8"),
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = _background_creationflags()
+    process = subprocess.Popen([sys.executable, "scripts\\wake_cloud_standby.py"], **kwargs)
+    _CONTINUITY_CHILDREN.append(process)
+    print("Alpecca cloud continuity standby wake requested.")
 
 
 def _backup_soul() -> None:
@@ -205,8 +248,7 @@ def _ollama_watchdog() -> None:
                 cmd = [str(exe), "serve"] if exe.exists() else ["ollama", "serve"]
                 kwargs = {}
                 if os.name == "nt":
-                    kwargs["creationflags"] = (subprocess.CREATE_NEW_PROCESS_GROUP
-                                               | subprocess.DETACHED_PROCESS)
+                    kwargs["creationflags"] = _background_creationflags()
                 subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL, **kwargs)
                 print("[watchdog] Ollama was down -- restarted it.")
@@ -279,6 +321,39 @@ def _continuity_endpoint() -> str:
     )
 
 
+def _lease_transport_unavailable(error: BaseException) -> bool:
+    """Distinguish an unreachable authority from an explicit lease refusal."""
+    return str(error).lower().startswith("lease transport failed:")
+
+
+def _enter_offline_isolated_mode(reason: str) -> None:
+    """Allow one locally locked runtime without exposing split-brain surfaces."""
+    os.environ["ALPECCA_CONTINUITY_OFFLINE_ISOLATED"] = "1"
+    os.environ.pop("ALPECCA_CONTINUITY_LEASE_ID", None)
+    os.environ.pop("ALPECCA_CONTINUITY_FENCING_EPOCH", None)
+    os.environ["ALPECCA_REMOTE"] = "0"
+    os.environ["ALPECCA_PUBLIC_URL"] = ""
+    os.environ["ALPECCA_CONTINUITY_PUBLIC_ENDPOINT"] = ""
+    os.environ["ALPECCA_CHAT_CLOUD_MODEL"] = ""
+    os.environ["ALPECCA_CHAT_CLOUD_PAGED_MEMORY"] = "0"
+    os.environ["ALPECCA_DEEP_BACKEND"] = "local"
+    os.environ["ALPECCA_OLLAMA_CLOUD_MODEL"] = ""
+    os.environ["ALPECCA_MINDSCAPE_URL"] = ""
+    os.environ["ALPECCA_MINDSCAPE_AUTO_SYNC_INTERVAL"] = "0"
+    os.environ["ALPECCA_MINDSCAPE_VAULT"] = "0"
+    os.environ["ALPECCA_MINDSCAPE_VAULT_AUTO_SYNC_INTERVAL"] = "0"
+    os.environ["ALPECCA_DISCORD_MEDIA"] = "0"
+    os.environ["ALPECCA_DISCORD_VOICE"] = "0"
+    os.environ["ALPECCA_DISCORD_VOICE_RECEIVE"] = "0"
+    print(
+        "[continuity] Lease service is unreachable; starting one local-only "
+        f"isolated session ({reason}). Cloud sync, Discord, and remote access "
+        "will remain off until Alpecca is restarted with internet access.",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def _lease_loss(reason: str) -> None:
     """Fence this runtime before another host can acquire the next epoch."""
     print(
@@ -319,6 +394,7 @@ def _start_continuity_guard() -> ContinuityLeaseGuard | None:
             grant = guard.start()
             os.environ["ALPECCA_CONTINUITY_LEASE_ID"] = grant.lease_id
             os.environ["ALPECCA_CONTINUITY_FENCING_EPOCH"] = str(grant.fencing_epoch)
+            os.environ["ALPECCA_CONTINUITY_LEASE_HOLDER"] = grant.holder
             print(
                 "Alpecca continuity lease acquired "
                 f"(local-primary, epoch {grant.fencing_epoch})."
@@ -326,9 +402,38 @@ def _start_continuity_guard() -> ContinuityLeaseGuard | None:
             return guard
         except ContinuityLeaseError as exc:
             last_error = str(exc)
+            if _lease_transport_unavailable(exc):
+                raise
             if time.monotonic() >= deadline:
                 raise ContinuityLeaseError(last_error) from exc
             time.sleep(min(2.0, max(0.05, deadline - time.monotonic())))
+
+
+def _merge_continuity_before_start() -> None:
+    """Apply cloud-created events after lease acquisition and before CoreMind."""
+    cloud_url = os.environ.get("ALPECCA_MINDSCAPE_VAULT_URL", "").strip()
+    if not cloud_url:
+        return
+    from config import DB_PATH
+    from alpecca import continuity_journal, mindscape_vault
+
+    recovery_key, _key_source = mindscape_vault.load_or_create_encryption_key()
+    transport_token, _token_source = mindscape_vault.load_or_create_transport_token()
+    result = continuity_journal.fetch_and_merge(
+        cloud_url,
+        transport_token,
+        recovery_key,
+        db_path=DB_PATH,
+        timeout=float(os.environ.get("ALPECCA_CONTINUITY_MERGE_TIMEOUT", "12")),
+    )
+    if not result.get("ok"):
+        raise ContinuityLeaseError(
+            f"continuity journal merge failed: {result.get('status', 'unknown')}"
+        )
+    print(
+        "Alpecca continuity events reconciled "
+        f"(merged={result.get('merged', 0)}, duplicates={result.get('duplicates', 0)})."
+    )
 
 
 def _run() -> int:
@@ -348,6 +453,7 @@ def _run() -> int:
         return 0
 
     _backup_soul()
+    _wake_cloud_standby()
     _start_f5_worker()
     _start_discord_bridge()
     _ollama_watchdog()
@@ -380,7 +486,12 @@ def main() -> int:
     try:
         try:
             continuity_guard = _start_continuity_guard()
+            if continuity_guard is not None:
+                _merge_continuity_before_start()
         except (ContinuityLeaseError, ValueError) as exc:
+            if isinstance(exc, ContinuityLeaseError) and _lease_transport_unavailable(exc):
+                _enter_offline_isolated_mode(str(exc))
+                return _run()
             print(
                 "Alpecca could not acquire the configured cross-host singleton "
                 f"lease; startup was refused ({exc}).",

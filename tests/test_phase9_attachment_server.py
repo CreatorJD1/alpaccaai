@@ -236,6 +236,53 @@ def test_bridge_authenticated_discord_image_has_guest_authority_and_truthful_met
     assert body["perception"] == {"status": "described"}
 
 
+def test_verified_creator_discord_image_keeps_creator_turn_authority(
+    client, monkeypatch, isolated_server
+):
+    payload = _png()
+    audit_calls: list[tuple[str, dict[str, str]]] = []
+
+    async def fake_audit(capability: str, **kwargs: str) -> bool:
+        audit_calls.append((capability, kwargs))
+        return True
+
+    monkeypatch.setattr(server, "DISCORD_MEDIA_ENABLED", True)
+    monkeypatch.setattr(
+        server.discord_creator_identity_mod,
+        "is_creator_actor_id",
+        lambda actor_id: actor_id == "200000000000000002",
+    )
+    monkeypatch.setattr(
+        server.vision,
+        "describe_and_recognize_result",
+        lambda _bytes, *, local_only=False: server.vision.VisionDescription(
+            "A creator-supplied Discord image.",
+            "local-ollama",
+            "local-only",
+            "denied",
+        ),
+    )
+    monkeypatch.setattr(server, "_record_capability_use", fake_audit)
+
+    response = _signed_discord_post(
+        client,
+        {
+            "text": "What is shown?",
+            "image": _data_url(payload),
+            "speaker": "creator",
+        },
+        event_id="100000000000000009",
+    )
+
+    assert response.status_code == 200, response.text
+    assert audit_calls == [(
+        "discord_media",
+        {"action": "observe", "principal": "creator", "source": "discord_bridge"},
+    )]
+    assert isolated_server[-1]["turn"].principal == "creator"
+    assert isolated_server[-1]["image_desc"] == "A creator-supplied Discord image."
+
+
 def test_discord_image_route_is_disabled_without_explicit_media_opt_in(
     client, monkeypatch, isolated_server
 ):

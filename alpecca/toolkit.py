@@ -20,6 +20,7 @@ from alpecca import mindpage as mindpage_mod
 from alpecca import source_perception as source_perception_mod
 from alpecca import source_workspace as source_workspace_mod
 from alpecca.turn_context import TurnContext
+from alpecca import tool_access_policy
 
 
 _SOURCE_INSPECTION_ROOTS = source_workspace_mod.inspection_roots()
@@ -89,8 +90,17 @@ class InnateToolkit:
             return ""
         return (
             "I can do limited, local work on my own behalf when it serves the current turn "
-            "or safety checks. Built-in options: " + ", ".join(self._describe()) + "."
+            "or safety checks. Built-in options: " + ", ".join(self._describe()) + ". "
+            "Creator authorization follows what a tool affects; non-private results may "
+            "be delivered as HTTPS/HTML chat links or through an approved private Drive folder."
         )
+
+    def access_manifest(self) -> list[dict]:
+        """Return the effect-based policy for every registered innate tool."""
+        return [
+            tool_access_policy.classify(schema["function"]["name"])
+            for schema in self.schemas()
+        ]
 
     def schemas(self, turn: TurnContext | None = None) -> list[dict]:
         if turn is not None and turn.principal != "creator":
@@ -306,32 +316,56 @@ class InnateToolkit:
         if not turn.allow_work():
             return "error: turn was cancelled before the innate tool could run"
         args = args or {}
-        handlers = {
+        scoped_handlers = {
             "memory_search": self._memory_search,
             "self_status": self._self_status,
             "recall_page": self._recall_page,
             "source_inspect": self._source_inspect,
         }
-        unscoped_tools = {
-            "journal_read", "journal_write", "note_to_self", "go_to_room", "make_plan",
+        creator_handlers = {
+            "journal_read": self._journal_read,
+            "journal_write": self._journal_write,
+            "note_to_self": self._note_to_self,
+            "go_to_room": self._go_to_room,
+            "make_plan": self._make_plan,
         }
-        if tool_name in unscoped_tools:
-            return (
-                f"error: {tool_name} is unavailable in a scoped turn because its "
-                "storage or side effects are not scope-partitioned"
-            )
-        fn = handlers.get(tool_name)
+        fn = scoped_handlers.get(tool_name) or creator_handlers.get(tool_name)
         if not fn:
             return f"unknown tool: {tool_name}"
+        started = time.perf_counter()
         try:
-            result = fn(args, turn)
+            result = fn(args, turn) if tool_name in scoped_handlers else fn(args)
         except Exception as exc:
             result = f"tool failed: {exc}"
         if not turn.allow_work():
             return "error: turn was cancelled before the innate tool result could be used"
-        # Cognition observations are not scope-keyed yet. Do not write tool
-        # args/results there from a private turn until that store is partitioned.
+        self._record_scoped_observation(
+            tool_name,
+            turn,
+            status="error" if str(result).lower().startswith(("error:", "tool failed:")) else "ok",
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+        )
         return str(result)
+
+    def _record_scoped_observation(self, tool_name: str, turn: TurnContext, *,
+                                   status: str, latency_ms: float) -> None:
+        """Log execution without copying private tool arguments or results."""
+        room = getattr(self.mind, "_location", home_mod.DEFAULT_ROOM) or home_mod.DEFAULT_ROOM
+        cognition_mod.record_observation(cognition_mod.CognitionObservation(
+            source="tool",
+            room=room,
+            content=f"Scoped creator tool call: {tool_name}",
+            confidence=1.0 if status == "ok" else 0.9,
+            privacy_class="local",
+            metadata={
+                "tool": tool_name,
+                "access_policy": tool_access_policy.classify(tool_name),
+                "status": status,
+                "latency_ms": max(0.0, float(latency_ms)),
+                "turn_id": turn.turn_id,
+                "surface": turn.surface,
+            },
+        ))
 
     def _record_observation(self, tool_name: str, args: dict, result: str, status: str = "ok",
                            latency_ms: float = 0.0) -> None:

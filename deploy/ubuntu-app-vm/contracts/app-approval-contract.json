@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "localPolicyMode": "dry-run-only",
+  "creatorPrincipal": "CreatorJD",
+  "defaultPolicy": "deny",
+  "approvalRequires": [
+    "external-creator-verifier-verdict",
+    "exact-operation-id",
+    "exact-canonical-sha256-operation-digest",
+    "one-use-approval-id",
+    "externally-verified-idempotency-ledger-integrity",
+    "issued-at-not-in-future",
+    "approval-not-expired",
+    "approval-does-not-outlive-operation"
+  ],
+  "allowlistRequires": [
+    "known-manager-and-action",
+    "exact-source-entry",
+    "exact-package-to-source-binding",
+    "exact-version",
+    "allowed-action",
+    "disk-estimate-at-or-below-limit",
+    "requested-permissions-subset"
+  ],
+  "idempotency": {
+    "state": "caller-supplied-externally-integrity-verified-placeholder-ledger",
+    "newEligibleDecision": "would-reserve",
+    "sameOperationReplay": "idempotent-noop",
+    "sameIdDifferentDigest": "deny",
+    "approvalReuse": "deny"
+  },
+  "dryRunOutputGuarantees": [
+    "never-runs-a-package-manager",
+    "never-adds-a-repository",
+    "never-writes-the-ledger",
+    "never-starts-or-stops-a-service",
+    "never-reads-a-credential-store",
+    "never-emits-an-execution-token"
+  ]
+}

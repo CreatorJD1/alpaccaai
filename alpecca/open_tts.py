@@ -48,6 +48,35 @@ _last_reference: dict = {}
 _last_worker: dict = {}
 
 
+def _voice_controls(state=None) -> dict:
+    """Translate Alpecca's grounded affect into bounded F5 controls."""
+    markup = {
+        "rate_pct": 100,
+        "volume": 0.8,
+        "style": "present",
+        "primary": "content",
+    }
+    if state is not None:
+        try:
+            from alpecca import affect as affect_mod
+
+            markup.update(affect_mod.voice_markup(state))
+        except Exception:
+            pass
+    rate_pct = max(80, min(120, int(markup.get("rate_pct", 100))))
+    volume = max(0.35, min(1.0, float(markup.get("volume", 0.8))))
+    return {
+        "speed": round(rate_pct / 100.0, 3),
+        # 0.8 is the neutral affect volume. The worker applies this relative
+        # gain before its hard peak limiter, preserving the current fallback.
+        "gain": round(max(0.55, min(1.2, volume / 0.8)), 3),
+        "style": str(markup.get("style") or "present")[:24],
+        "primary": str(markup.get("primary") or "content")[:24],
+        "rate_pct": rate_pct,
+        "volume": round(volume, 3),
+    }
+
+
 def _load_manifest() -> dict:
     path = Path(OPEN_TTS_REFERENCE_MANIFEST)
     if not path.is_absolute():
@@ -72,7 +101,22 @@ def _emotion_primary(state) -> str:
 
 def select_reference(state=None, preview: str = "") -> dict:
     manifest = _load_manifest()
-    refs = [r for r in manifest.get("references", []) if isinstance(r, dict) and r.get("audio")]
+    disabled_ids = {
+        value.strip()
+        for value in os.environ.get(
+            "ALPECCA_OPEN_TTS_DISABLED_REFERENCES", "present_soft"
+        ).split(",")
+        if value.strip()
+    }
+    refs = [
+        r for r in manifest.get("references", [])
+        if (
+            isinstance(r, dict)
+            and r.get("audio")
+            and r.get("enabled", True) is not False
+            and str(r.get("id") or "") not in disabled_ids
+        )
+    ]
     if not refs:
         return {}
     wanted = (preview or _emotion_primary(state) or "content").lower()
@@ -93,7 +137,9 @@ def select_reference(state=None, preview: str = "") -> dict:
         roles = [str(role).lower() for role in ref.get("roles", [])]
         if wanted in roles or wanted == str(ref.get("id", "")).lower():
             return ref
-    default_id = manifest.get("default", "")
+    default_id = os.environ.get(
+        "ALPECCA_OPEN_TTS_DEFAULT_REFERENCE", "digital_construct"
+    ).strip() or str(manifest.get("default", ""))
     for ref in refs:
         if ref.get("id") == default_id:
             return ref
@@ -209,18 +255,23 @@ def _worker_health(timeout: float = 0.45) -> dict:
         return {"enabled": True, "ready": False, "url": _worker_url(""), "error": f"{type(exc).__name__}: {exc}"}
 
 
-def _worker_synth(text: str, ref: dict):
+def _worker_synth(text: str, ref: dict, controls: dict | None = None):
     global _last_error, _last_engine, _last_reference, _last_worker
     if not F5_WORKER_ENABLED:
         return None
     ref_audio = Path(str(ref.get("audio", "")))
     if not ref_audio.is_absolute():
         ref_audio = ROOT / ref_audio
+    controls = controls or _voice_controls()
     body = json.dumps({
         "text": text,
         "ref_audio": str(ref_audio),
         "ref_text": str(ref.get("text") or ""),
         "nfe_step": max(4, int(OPEN_TTS_NFE_STEP)),
+        "speed": controls["speed"],
+        "gain": controls["gain"],
+        "style": controls["style"],
+        "primary": controls["primary"],
     }).encode("utf-8")
     req = urllib.request.Request(
         _worker_url("/synth"),
@@ -268,6 +319,8 @@ def _worker_synth(text: str, ref: dict):
         "reference": _last_reference,
         "profile": "alpecca_kling_reference_f5_worker",
         "worker": _last_worker,
+        "requested_modulation": controls,
+        "applied_modulation": _last_worker.get("applied", {}),
     }
 
 
@@ -313,6 +366,7 @@ def status() -> dict:
         "last_engine": _last_engine,
         "last_error": _last_error,
         "last_reference": _last_reference,
+        "last_worker": _last_worker,
     }
 
 
@@ -323,10 +377,11 @@ def synth(text: str, state=None, preview: str = ""):
     open-source clone engine to install locally. IndexTTS2 can be added behind
     this same interface later without changing server/UI code.
     """
-    global _last_error, _last_engine, _last_reference
+    global _last_error, _last_engine, _last_reference, _last_worker
     _last_error = ""
     _last_engine = ""
     _last_reference = {}
+    _last_worker = {}
     if OPEN_TTS_ENGINE not in ("auto", "f5", "f5-tts"):
         _last_error = f"open TTS engine {OPEN_TTS_ENGINE!r} is not enabled"
         return None
@@ -349,8 +404,9 @@ def synth(text: str, state=None, preview: str = ""):
         )
         return None
 
+    controls = _voice_controls(state)
     worker_status = _worker_health()
-    worker = _worker_synth(text, ref) if worker_status.get("ready") else None
+    worker = _worker_synth(text, ref, controls) if worker_status.get("ready") else None
     if worker:
         return worker
     if worker_status.get("ready"):
@@ -382,12 +438,19 @@ def synth(text: str, state=None, preview: str = ""):
             OPEN_TTS_DEVICE,
             "--nfe_step",
             str(max(4, int(OPEN_TTS_NFE_STEP))),
+            "--speed",
+            str(controls["speed"]),
         ]
         if LOCAL_CKPT.exists() and LOCAL_CKPT.stat().st_size > 1000 * 1024 * 1024:
             cmd.extend(["--ckpt_file", str(LOCAL_CKPT)])
             if LOCAL_VOCAB.exists():
                 cmd.extend(["--vocab_file", str(LOCAL_VOCAB)])
         try:
+            process_kwargs = {}
+            if os.name == "nt":
+                process_kwargs["creationflags"] = getattr(
+                    subprocess, "CREATE_NO_WINDOW", 0x08000000
+                )
             proc = subprocess.run(
                 cmd,
                 cwd=str(ROOT),
@@ -395,6 +458,7 @@ def synth(text: str, state=None, preview: str = ""):
                 text=True,
                 capture_output=True,
                 timeout=max(5.0, float(OPEN_TTS_TIMEOUT)),
+                **process_kwargs,
             )
         except subprocess.TimeoutExpired:
             _last_error = f"F5-TTS timed out after {OPEN_TTS_TIMEOUT:.0f}s"
@@ -420,4 +484,6 @@ def synth(text: str, state=None, preview: str = ""):
         "reference": _last_reference,
         "profile": "alpecca_kling_reference_f5",
         "worker": _last_worker,
+        "requested_modulation": controls,
+        "applied_modulation": {"speed": controls["speed"]},
     }

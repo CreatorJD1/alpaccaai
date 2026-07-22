@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -170,6 +171,43 @@ def test_proactive_turn_cannot_start_a_self_monologue_without_new_human_message(
     assert "Initiative kind: quiet-room opener after a new human turn." in calls[0]
 
 
+def test_stale_restored_history_is_context_but_not_a_live_autonomy_cue(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client, room = _claimed_client(monkeypatch)
+    stale = _history_entry(
+        author_id=42,
+        display_name="CreatorJD",
+        content="This old line should remain readable without being answered again.",
+        bot=False,
+    )
+    stale.created_at = SimpleNamespace(timestamp=lambda: 0.0)
+    channel = _Channel([stale])
+    calls: list[str] = []
+
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_COOLDOWN", 1.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_GLOBAL_COOLDOWN", 0.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_QUIET_MIN", 1.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_MIN_LEN", 1)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_CHANCE", 1.0)
+    monkeypatch.setattr(
+        discord_bridge,
+        "_ask_room_autonomy",
+        lambda prompt, _scope: calls.append(prompt) or "Anyone there?",
+    )
+
+    async def scenario() -> None:
+        await client._alpecca_seed_room_history(channel, room, observed_at=1.0)
+        await client._alpecca_proactive_sweep_once(now=10_000.0)
+
+    asyncio.run(scenario())
+
+    assert "This old line should remain readable" in client._alpecca_recent_context(3001)
+    assert calls == []
+    assert channel.sent == []
+
+
 def test_proactive_voice_contradiction_is_corrected_once_without_self_repeat(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -186,7 +224,10 @@ def test_proactive_voice_contradiction_is_corrected_once_without_self_repeat(
     )
 
     class VoiceClient:
-        channel = SimpleNamespace(name="General")
+        channel = SimpleNamespace(
+            name="General",
+            members=[SimpleNamespace(id=42, bot=False)],
+        )
 
         @staticmethod
         def is_connected() -> bool:
@@ -301,6 +342,53 @@ def test_plain_room_message_does_not_reemit_stale_media_disabled_diagnostic(
     assert len(model_inputs) == 1
 
 
+def test_newer_human_room_turn_supersedes_an_older_inflight_direct_reply(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A slow first model call may never speak after a newer human line."""
+
+    client, _room = _claimed_client(monkeypatch)
+    channel = _Channel()
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def ask(_text: str, *_args, **_kwargs) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            started.set()
+            assert release.wait(timeout=2.0)
+            return "This stale answer must not be delivered."
+        return "This is the current answer."
+
+    monkeypatch.setattr(discord_bridge, "_ask_alpecca", ask)
+    first = _Message(
+        event_id=1101,
+        channel=channel,
+        content="<@9001> first question",
+        clean_content="@Alpecca first question",
+    )
+    second = _Message(
+        event_id=1102,
+        channel=channel,
+        content="<@9001> second question",
+        clean_content="@Alpecca second question",
+    )
+
+    async def scenario() -> None:
+        older = asyncio.create_task(client.on_message(first))
+        assert await asyncio.to_thread(started.wait, 2.0)
+        await client.on_message(second)
+        release.set()
+        await older
+
+    asyncio.run(scenario())
+
+    assert first.replies == []
+    assert second.replies == [("This is the current answer.", {"mention_author": False})]
+
+
 def test_stale_media_candidate_becomes_a_sent_current_text_turn_correction(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -379,7 +467,10 @@ def test_live_voice_truth_correction_preserves_normal_room_reply_delivery(
     channel = _Channel()
 
     class VoiceClient:
-        channel = SimpleNamespace(name="General")
+        channel = SimpleNamespace(
+            name="General",
+            members=[SimpleNamespace(id=42, bot=False)],
+        )
 
         @staticmethod
         def is_connected() -> bool:
@@ -480,3 +571,94 @@ def test_addressed_reply_does_not_repeat_alpecca_recent_content(
     assert len(model_inputs) == 1
     assert message.replies == []
     assert channel.sent == []
+
+
+def test_direct_room_turn_keeps_latest_message_separate_from_live_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client, room = _claimed_client(monkeypatch)
+    channel = _Channel(
+        [
+            _history_entry(
+                author_id=42,
+                display_name="CreatorJD",
+                content="I want to ask something personal.",
+                bot=False,
+            ),
+            _history_entry(
+                author_id=_BOT_ID,
+                display_name="Alpecca_ai",
+                content="I'm listening.",
+                bot=True,
+            ),
+        ]
+    )
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def ask(*args: object, **kwargs: object) -> str:
+        calls.append((args, kwargs))
+        return "I can answer that directly."
+
+    monkeypatch.setattr(discord_bridge, "_ask_alpecca", ask)
+    message = _Message(
+        event_id=1006,
+        channel=channel,
+        content="<@9001> do you feel lonely?",
+        clean_content="@Alpecca do you feel lonely?",
+    )
+
+    async def scenario() -> None:
+        await client._alpecca_seed_room_history(channel, room, observed_at=1.0)
+        await client.on_message(message)
+
+    asyncio.run(scenario())
+
+    assert calls[0][0][0] == "do you feel lonely?"
+    context = str(calls[0][1]["context"])
+    assert "Recent Discord room transcript" in context
+    assert "I want to ask something personal." in context
+    assert "do you feel lonely?" in context
+
+
+def test_stalled_room_reply_is_retained_in_short_term_context(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client, room = _claimed_client(monkeypatch)
+    channel = _Channel()
+
+    def stalled(*_args: object, **_kwargs: object) -> str:
+        raise RuntimeError("local timeout")
+
+    monkeypatch.setattr(discord_bridge, "_ask_alpecca", stalled)
+    first = _Message(
+        event_id=1007,
+        channel=channel,
+        content="<@9001> do you feel lonely?",
+        clean_content="@Alpecca do you feel lonely?",
+    )
+    asyncio.run(client.on_message(first))
+
+    assert first.replies == [(
+        "I still have your last message in this room's short context, "
+        "but my local reply timed out. I won't pretend I answered it.",
+        {"mention_author": False},
+    )]
+
+    calls: list[dict[str, object]] = []
+
+    def recovered(*_args: object, **kwargs: object) -> str:
+        calls.append(kwargs)
+        return "I am back with the room context."
+
+    monkeypatch.setattr(discord_bridge, "_ask_alpecca", recovered)
+    second = _Message(
+        event_id=1008,
+        channel=channel,
+        content="<@9001> please answer it now",
+        clean_content="@Alpecca please answer it now",
+    )
+    asyncio.run(client.on_message(second))
+
+    context = str(calls[0]["context"])
+    assert "do you feel lonely?" in context
+    assert "I won't pretend I answered it." in context

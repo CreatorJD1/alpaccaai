@@ -1,0 +1,22 @@
+{
+  "schema": "alpecca.separate-app.v1",
+  "appId": "agentic-frontier",
+  "name": "Alventius Experimentus",
+  "version": "0.3.0",
+  "kind": "game",
+  "defaultPort": 8870,
+  "databaseOwner": "agentic-frontier",
+  "coreMindEmbedded": false,
+  "houseHqEmbedded": false,
+  "memoryIntegration": "validated-episode-candidate-export-only",
+  "visualDirection": "anime-cel-shaded-futuristic-rpg-rts",
+  "world": "Tartarus Prime",
+  "playModes": [
+    "first-person-exploration",
+    "orthographic-colony-command"
+  ],
+  "sourceDesign": "Ventis experimentus Google design document",
+  "inspiration": "cozy daily-life, relationship, gathering, crafting, and settlement progression",
+  "releaseStatus": "playable-vertical-slice",
+  "playerIdentity": "account-cookie-with-private-vrm1-avatar"
+}

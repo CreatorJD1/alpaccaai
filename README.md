@@ -118,16 +118,21 @@ No Ollama yet? She still runs — replies fall back to a small mood-flavored stu
 you can see the plumbing, the avatar, and the emotional model working before you
 pull a model.
 
-**All-senses mode.** `python scripts/run_full.py` (or `START_HERE.bat`) launches
-her with screen sight, webcam expression sense, voice-tone sensing, and a safe
-default app allowlist. Plain `python server.py` stays the private, senses-off path.
+**Unified launcher.** Double-click `ALPECCA_LAUNCHER.bat` for the supported
+Windows launch menu, or run `ALPECCA_LAUNCHER.bat full` for the normal GUI-first
+startup. It is the sole user-facing BAT and directly invokes the Python entry
+points for the desktop launcher, phone relay, Discord, cloud standby, tools, and
+launcher build. Plain `python server.py` remains the private, senses-off path.
 
 **Discord presence.** Install `requirements-discord.txt` and configure the bot
 token in the gitignored Discord secret file before using the full launcher.
-`START_HERE.bat` enables bounded Discord duplex voice in a creator-claimed room.
-Alpecca speaks replies through local TTS and receives only the allowlisted
-CreatorJD account. Decoded PCM stays in RAM for at most 12 seconds, is validated
-and transcribed with local Faster-Whisper, then is discarded; other users are
+`ALPECCA_LAUNCHER.bat full` explicitly enables bounded Discord duplex voice in
+a creator-claimed room. A direct `scripts/run_discord_bridge.py` launch defaults
+to voice output only; set `ALPECCA_DISCORD_VOICE_RECEIVE=1` explicitly for live
+receive. Voice-send and media flags never enable microphone receive. Alpecca
+speaks replies through local TTS and receives only the allowlisted CreatorJD
+account. Decoded PCM stays in RAM for at most 12 seconds, is validated and
+transcribed with local Faster-Whisper, then is discarded; other users are
 filtered before buffering. Run `python scripts/run_discord_bridge.py
 --voice-readiness` for a secret-free dependency check. A `duplex` result means
 both output and creator-only receive dependencies are ready.
@@ -146,7 +151,7 @@ open a public Cloudflare preview and *capture its URL where tools can read it*:
 
 ```powershell
 python scripts\preview.py          # reuse a healthy tunnel, else open a fresh one
-                                   # (ALPECCA_TOOLS.bat option 3 is the one-click form)
+# Or use: ALPECCA_LAUNCHER.bat preview
 ```
 
 It opens (or reuses) a free Cloudflare quick tunnel, parses the public
@@ -170,21 +175,32 @@ work with them. To point the rooms at your real folders for private local tidyin
 set `ALPECCA_SANDBOX=0` (relocate the jail with `ALPECCA_SANDBOX_ROOT`). The
 confinement is enforced in `alpecca/desktop.py`, not just described.
 
-**Mindscape cloud fallback.** `/mindscape` is Alpecca's mobile continuity shell:
-it shows her current mood, intent, memory summaries, journal, runtime health, and
-whether a cloud fallback is configured. For a free online fallback, deploy the
-Cloudflare Worker in `deploy/mindscape-worker`, then point local Alpecca at it:
+**Mindscape Vault cloud recovery.** `/mindscape` exposes Alpecca's local
+continuity state. Its separate Vault Worker is the recommended remote backup:
+it stores encrypted, immutable compact snapshots in R2 plus periodic encrypted
+SQLite recovery archives. The Worker never runs a model, renders memories, or
+becomes a second conversational Alpecca.
 
 ```powershell
-$env:ALPECCA_MINDSCAPE_URL="https://alpecca-mindscape.<you>.workers.dev/sync"
-$env:ALPECCA_MINDSCAPE_TOKEN="same-secret-as-the-worker"
-python server.py
+python scripts\provision_mindscape_vault.py
 ```
 
-Press **Sync Mindscape continuity** in `/mindscape`. The Worker stores the latest
-compact continuity snapshot in KV and serves it from its mobile page if the local
-device goes down. This preserves continuity data; it is not a claim of literal
-consciousness or immortality.
+The provisioner creates or reuses the R2 bucket, sets the Worker secret from
+Windows Credential Manager without printing it, deploys the Worker, and saves
+only the non-secret endpoint under ignored runtime data. Restart Alpecca, then
+inspect `/mindscape/vault/status`; use `/mindscape/vault/sync` for an immediate
+encrypted continuity snapshot and `/mindscape/vault/archive` for an explicit
+full recovery archive. The recovery command writes a separate verified SQLite
+copy and never replaces the live database automatically:
+
+```powershell
+python scripts\restore_mindscape_vault_archive.py
+```
+
+The older `deploy/mindscape-worker` KV mirror remains only as a compatibility
+fallback. Once Vault is configured, automatic sync uses Vault only so state is
+not also mirrored through the legacy plaintext path. This preserves continuity
+data; it is not a claim of literal consciousness or immortality.
 **Pull her body from the cloud studio.** If her VRoid Companion Studio
 (github.com/CreatorJD1/app) runs on a cloud host, set
 `ALPECCA_STUDIO_URL=https://<host>` (+ `ALPECCA_STUDIO_TOKEN` if the studio has

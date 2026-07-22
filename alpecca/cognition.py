@@ -530,7 +530,30 @@ def record_chat_turn(turn: ChatTurn, db_path: Path = DB_PATH) -> int | None:
                 turn.scope,
             ),
         )
-        return int(cur.lastrowid)
+        turn_id = int(cur.lastrowid)
+    try:
+        from alpecca import continuity_journal
+        continuity_journal.capture_event(
+            "chat_turn",
+            {
+                "chat_turn_id": turn_id,
+                "ts": turn.ts,
+                "room": turn.room,
+                "mood": turn.mood,
+                "intent": turn.intent,
+                "user_text": turn.user_text,
+                "reply": turn.reply,
+                "model_use": turn.model_use,
+                "memory_evidence": turn.memory_evidence,
+                "privacy_class": turn.privacy_class,
+            },
+            scope=turn.scope,
+            db_path=db_path,
+        )
+    except Exception:
+        # This after-commit journal must never invalidate a local chat turn.
+        pass
+    return turn_id
 
 
 def recent_chat_turns(limit: int = 8, db_path: Path = DB_PATH, *,
@@ -554,6 +577,33 @@ def recent_chat_turns(limit: int = 8, db_path: Path = DB_PATH, *,
         except Exception:
             d["memory_evidence"] = []
         out.append(d)
+    return out
+
+
+def recent_lived_chat_turns(limit: int = 8, db_path: Path = DB_PATH) -> list[dict]:
+    """Read Alpecca's recent autobiographical turns across transport scopes.
+
+    Scopes remain provenance and disclosure metadata; they do not erase an
+    encounter from Alpecca's own grounding, review, or reflective processes.
+    """
+    limit = max(1, min(50, int(limit)))
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM chat_turns ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["model_use"] = json.loads(item.get("model_use") or "{}")
+        except Exception:
+            item["model_use"] = {}
+        try:
+            item["memory_evidence"] = json.loads(item.get("memory_evidence") or "[]")
+        except Exception:
+            item["memory_evidence"] = []
+        out.append(item)
     return out
 
 
@@ -1317,7 +1367,7 @@ def state(
         "models": models,
         "senses": senses,
         "recent_observations": recent_observations(db_path=db_path),
-        "recent_chat_turns": recent_chat_turns(db_path=db_path),
+        "recent_chat_turns": recent_lived_chat_turns(db_path=db_path),
         "recalled_memories": memories,
         "memory_counts": memory_counts or {},
         "journal": journal,

@@ -7,3 +7,7 @@ imageio-ffmpeg>=0.6.0
 # Inbound DAVE compatibility stays repo-local until upstream PR #58 ships.
 discord-ext-voice-recv==0.5.2a179
 faster-whisper>=1.2.1
+# CPU-only speech onset/endpoint detection. silero-vad supplies the official
+# ONNX weights; Alpecca loads them directly so PyTorch is not imported.
+onnxruntime>=1.16.1
+silero-vad>=6.2.1

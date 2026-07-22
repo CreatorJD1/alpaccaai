@@ -369,7 +369,7 @@ def test_guild_and_thread_messages_hard_return_with_zero_side_effects(
     assert effects == []
 
 
-def test_allowlisted_dm_text_still_reaches_guest_backend_and_replies(monkeypatch):
+def test_allowlisted_dm_text_reaches_creator_backend_and_replies(monkeypatch):
     client = _client(monkeypatch)
     _allow_dm(monkeypatch)
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
@@ -394,9 +394,9 @@ def test_allowlisted_dm_text_still_reaches_guest_backend_and_replies(monkeypatch
         "hello from a claimed creator",
         "Discord guest",
         "discord-dm",
-        "guest",
+        "creator",
     )
-    assert kwargs["context"] == "Discord message from Discord guest via discord-dm"
+    assert "verified a stable participant account" in kwargs["context"]
     assert kwargs["image"] == ""
     assert kwargs["actor_bindings"] == DiscordActorBindings(
         event_id="1001",
@@ -472,10 +472,10 @@ def test_plain_greeting_in_claimed_room_is_a_direct_reply(monkeypatch):
     monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {"777:3001": room})
     monkeypatch.setattr(discord_bridge, "PARTICIPATE", True)
     monkeypatch.setattr(discord_bridge, "CHANNEL_MIN_INTERVAL", 0.0)
-    prompts: list[str] = []
+    calls: list[tuple[str, dict]] = []
 
     def ask(text: str, *_args: object, **_kwargs: object) -> str:
-        prompts.append(text)
+        calls.append((text, _kwargs))
         return "Hi Jason. I'm here."
 
     monkeypatch.setattr(discord_bridge, "_ask_alpecca", ask)
@@ -499,8 +499,9 @@ def test_plain_greeting_in_claimed_room_is_a_direct_reply(monkeypatch):
     asyncio.run(client.on_message(message))
 
     assert message.replies == [("Hi Jason. I'm here.", {"mention_author": False})]
-    assert prompts and "You are replying in an approved Discord room" in prompts[0]
-    assert "[react:eyes]" not in prompts[0]
+    assert calls and calls[0][0] == "hello"
+    assert "Discord message from" in calls[0][1]["context"]
+    assert calls[0][1]["interaction"] == "reply"
 
 
 def test_creator_message_in_claimed_room_never_falls_into_optional_participation(monkeypatch):
@@ -509,10 +510,10 @@ def test_creator_message_in_claimed_room_never_falls_into_optional_participation
     monkeypatch.setattr(discord_bridge, "PARTICIPATE", True)
     monkeypatch.setattr(discord_bridge, "CHANNEL_MIN_INTERVAL", 0.0)
     monkeypatch.setattr(discord_bridge, "_dm_author_allowed", lambda _author: True)
-    prompts: list[str] = []
+    calls: list[tuple[str, dict]] = []
 
     def ask(text: str, *_args: object, **_kwargs: object) -> str:
-        prompts.append(text)
+        calls.append((text, _kwargs))
         return "I noticed that too."
 
     monkeypatch.setattr(discord_bridge, "_ask_alpecca", ask)
@@ -532,8 +533,9 @@ def test_creator_message_in_claimed_room_never_falls_into_optional_participation
     asyncio.run(client.on_message(message))
 
     assert message.replies == [("I noticed that too.", {"mention_author": False})]
-    assert prompts and "You are replying in an approved Discord room" in prompts[0]
-    assert "Decide whether you genuinely" not in prompts[0]
+    assert calls and calls[0][0] == "The walking motion still needs tuning."
+    assert "Discord message from" in calls[0][1]["context"]
+    assert calls[0][1]["interaction"] == "reply"
 
 
 @pytest.mark.parametrize(
@@ -812,13 +814,14 @@ def test_recursive_reply_is_recorded_and_same_followup_is_not_resent(monkeypatch
         "resolve_outbound_media",
         lambda _text: None,
     )
-    def ask_direct(*_args, **_kwargs) -> str:
-        # Windows monotonic clocks are millisecond-granular; preserve the real
-        # ordering between the human turn and Alpecca's completed reply.
-        time.sleep(0.01)
-        return "First grounded answer."
-
-    monkeypatch.setattr(discord_bridge, "_ask_alpecca", ask_direct)
+    # Reproduce a coarse Windows clock tick shared by the human event and the
+    # completed direct reply. Causal ordering must not depend on a real sleep.
+    monkeypatch.setattr(discord_bridge.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(
+        discord_bridge,
+        "_ask_alpecca",
+        lambda *_args, **_kwargs: "First grounded answer.",
+    )
     recursive_prompts: list[str] = []
 
     def ask_recursive(prompt: str, _room_scope: str) -> str:
@@ -843,10 +846,9 @@ def test_recursive_reply_is_recorded_and_same_followup_is_not_resent(monkeypatch
 
     async def scenario() -> None:
         await client.on_message(message)
-        baseline = time.monotonic()
         sweep = getattr(client, "_alpecca_recursive_sweep_once")
-        await sweep(now=baseline + 10.0)
-        await sweep(now=baseline + 20.0)
+        await sweep(now=110.0)
+        await sweep(now=120.0)
 
     asyncio.run(scenario())
 
@@ -1423,6 +1425,17 @@ def test_room_history_count_is_an_allowed_content_free_diagnostic(monkeypatch, c
     }
 
 
+def test_invalid_diagnostic_metadata_does_not_raise(monkeypatch, capsys):
+    monkeypatch.setenv("ALPECCA_DISCORD_DIAGNOSTIC_STRICT", "0")
+    monkeypatch.setattr(discord_bridge, "DEBUG", True)
+
+    discord_bridge._diagnostic("room_history_seeded", invalid="metadata", elapsed_ms=1.2)
+
+    diagnostics = capsys.readouterr()
+    assert diagnostics.out == ""
+    assert diagnostics.err == ""
+
+
 def test_vision_unavailable_returns_fixed_diagnostic_not_model_text(monkeypatch):
     class Attachment:
         filename = "photo.png"
@@ -1469,7 +1482,7 @@ def test_vision_unavailable_returns_fixed_diagnostic_not_model_text(monkeypatch)
     )]
 
 
-def test_every_backend_body_is_guest_even_for_claimed_creator(monkeypatch):
+def test_bridge_preserves_creator_claim_for_independent_server_verification(monkeypatch):
     requests: list[object] = []
 
     class FakeResponse:
@@ -1515,8 +1528,10 @@ def test_every_backend_body_is_guest_even_for_claimed_creator(monkeypatch):
     assert len(requests) == 2
     assert requests[0].data is requests[1].data
     body = json.loads(requests[1].data)
-    assert body["speaker"] == "guest"
-    assert body["sender"] == "Discord guest"
+    assert body["speaker"] == "creator"
+    assert body["sender"] == "CreatorJD"
+    assert body["interaction"] == "reply"
+    assert body["memory_text"] == "I claim creator authority"
 
 
 def test_voice_synthesis_accepts_only_bounded_audio(monkeypatch):
@@ -1569,6 +1584,12 @@ def test_voice_playback_uses_local_tts_and_cleans_temp_file(monkeypatch):
     monkeypatch.setattr(discord_bridge, "_ffmpeg_exe", lambda: "ffmpeg-test")
     monkeypatch.setattr(discord_bridge.discord.opus, "is_loaded", lambda: True)
     source_paths: list[Path] = []
+    diagnostics: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        discord_bridge,
+        "_diagnostic",
+        lambda event, **fields: diagnostics.append((event, fields.get("status"))),
+    )
 
     def fake_audio(path: str, *, executable: str):
         assert executable == "ffmpeg-test"
@@ -1601,3 +1622,5 @@ def test_voice_playback_uses_local_tts_and_cleans_temp_file(monkeypatch):
     assert len(voice_client.played) == 1
     assert len(source_paths) == 1
     assert not source_paths[0].exists()
+    assert ("voice_playback_started", discord_bridge.DISCORD_VOICE_ENGINE) in diagnostics
+    assert ("voice_playback_completed", "played") in diagnostics

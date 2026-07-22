@@ -370,14 +370,35 @@ def remember_with_id(content: str, kind: str = "episodic", salience: float = 0.5
     tokens = _tokenize(content)
     vec = embed_fn(content) if embed_fn else None
     ensure_scope_schema(db_path)
+    memory_ts = time.time()
     with _connect(db_path) as conn:
         cur = conn.execute(
             "INSERT INTO memories (ts, kind, content, salience, tokens, embedding, scope) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (time.time(), kind, content, salience, json.dumps(tokens),
+            (memory_ts, kind, content, salience, json.dumps(tokens),
              json.dumps(vec) if vec is not None else None, scope),
         )
-        return int(cur.lastrowid)
+        memory_id = int(cur.lastrowid)
+    try:
+        from alpecca import continuity_journal
+        continuity_journal.capture_event(
+            "game_episode" if source == "agentic_frontier" else "memory",
+            {
+                "memory_id": memory_id,
+                "ts": memory_ts,
+                "kind": kind,
+                "content": content,
+                "salience": salience,
+                "tokens": json.dumps(tokens),
+                "embedding": json.dumps(vec) if vec is not None else None,
+            },
+            scope=scope,
+            db_path=db_path,
+        )
+    except Exception:
+        # This after-commit journal must never invalidate a local memory.
+        pass
+    return memory_id
 
 
 def remember(content: str, kind: str = "episodic", salience: float = 0.5,

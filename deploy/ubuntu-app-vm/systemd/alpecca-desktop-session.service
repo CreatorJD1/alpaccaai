@@ -1,0 +1,23 @@
+[Unit]
+Description=Alpecca persistent Xfce workspace session
+ConditionPathExists=/etc/alpecca/enable-desktop
+Requires=alpecca-desktop-display.service
+After=alpecca-desktop-display.service
+
+[Service]
+Type=simple
+User=alpecca-workspace
+Group=alpecca-workspace
+Environment=HOME=/var/lib/alpecca-workspace
+Environment=USER=alpecca-workspace
+ExecStart=/usr/bin/env DISPLAY=:10 /usr/bin/startxfce4
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/alpecca-workspace /tmp
+
+[Install]
+WantedBy=multi-user.target

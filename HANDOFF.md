@@ -1,5 +1,147 @@
 # Alpecca — Handoff (updated 2026-07-15)
 
+## 2026-07-22 Silero Discord voice stage
+
+- Added `alpecca/silero_vad.py`: direct CPU ONNX Runtime adapter for the
+  official Silero VAD 6.2.1 model already installed with the Discord runtime.
+  It preserves the required recurrent state and 64-sample rolling context
+  without importing PyTorch.
+- Discord voice now confirms two positive 32 ms frames before interruption,
+  retains 800 ms PCM pre-roll, endpoints after bounded VAD silence, and falls
+  back to the previous packet collector on any model/runtime failure.
+- Cold loading runs in a worker thread. No raw audio is newly persisted.
+- Focused verification: 43 voice tests passed. Local speech benchmark peaked at
+  0.999997, silence at 0.008911, mean packet processing 0.24 ms, cold load
+  648 ms. Live Discord microphone/noise calibration remains the release gate.
+
+## Codex Behavior, Tool, Voice, And Cleanup Pass (2026-07-22)
+
+- Added `alpecca/personality_learning.py`: six bounded traits move only from
+  unique committed evidence. Corrections shape repair/directness and confirmed
+  engagement provides a small positive signal. The compact prompt preserves
+  the existing 4,800-character chat budget.
+- Repaired creator-scoped internal tools so advertised journal, note, room,
+  plan, memory, page, status, and source calls execute. Non-creator denial stays
+  exact; shared audit metadata is content-free.
+- Repaired F5 modulation so bounded speed, gain, and style reach inference and
+  applied values return as evidence.
+- House HQ now has a truthful Tools view backed by `/growth`, `/home/state`, and
+  `/system/status`. Parlor is identified as internal-home state; source controls
+  disable offline and do not report simulated success.
+- `ALPECCA_LAUNCHER.bat` directly owns supported launch modes; legacy wrappers
+  were retired after inclusion in the local checksummed archive.
+- Cleanup inventory: `docs/REPOSITORY_CLEANUP_MANIFEST.md`. A first 68-file,
+  23,860,988-byte archive is staged at
+  `tmp/Alpecca_Legacy_Source_Archive_2026-07-22.zip`, SHA-256
+  `66E5703D8858503DE904349BF88CD56FB30220EA205F8E7A29329AAA230F4F0A`.
+  Drive upload is not verified because the migrated browser integration cannot
+  initialize. No large memory/database/Vault cleanup occurred.
+- Focused checks passed for tool scope/security, voice, launcher, personality,
+  cues, and all 58 House modules; the House production build also passed. The
+  final full core gate is green: **367 passed**.
+
+## Codex Affective Incident Learning (2026-07-22)
+
+- `alpecca/incident_learning.py` adds an evidence-backed SQLite incident ledger
+  with appraisal, exact-cue activation, recurrence, and safety/recovery learning.
+- The signal now influences measured unease and enters `soul.Snapshot`; Feeler,
+  Reflector, and Improver can respond without bypassing the existing seven-role
+  arbitration or approval boundaries.
+- High/critical measured host pressure is the first automatic incident source;
+  measured recovery records a safe outcome. Model narration cannot create an
+  incident, and prompt wording explicitly treats activation as caution rather
+  than proof of a repeated failure.
+- Creator inspection and evidence routes are under `/affect/incidents`. Design
+  and primary research links are in `docs/AFFECTIVE_INCIDENT_LEARNING.md`.
+- Verification: 24 focused incident/Soul/pressure tests and 16 selected existing
+  CoreMind emotion/Soul tests passed. The full `tests/test_core.py` invocation
+  exceeded the 120-second command budget before producing a result.
+
+## Remote Character-Design Lane (2026-07-17)
+
+- The new-computer work order is
+  `docs/REMOTE_CODEX_ALPECCA_DESIGN_HANDOFF.md`. It assigns an isolated V5
+  VRoid/VRM 1.0 design lane, records the current V4/V13/reference checksums, and
+  forbids a second speaking Alpecca. The six required design binaries are now
+  available from the private Hugging Face art dataset through the revision-
+  pinned `docs/manifests/alpecca_remote_design_v5.json` and checksum-enforcing
+  `scripts/sync_remote_design_assets.py`; no manual ignored-file package is
+  required.
+- The coordinator tree is dirty and contains local-only work beyond HEAD
+  `0e1ea29`; a remote clone is not current until a checkpoint branch/commit and
+  the explicit avatar asset package are supplied. The remote lane must not edit
+  active brain, Discord, continuity, Android, Phase 9, or House hot-path files.
+- Remote output is a candidate plus evidence, never direct promotion over
+  `data/avatar/vrm/alpecca.vrm`. CreatorJD approval and coordinator validation
+  remain required.
+
+## Codex Phase 8/9 Verification And Interactive Egress (2026-07-17)
+
+- Phase 8's full bounded-RSI and governed-learning gate is green: **309 passed**.
+  This verifies the two-hour/five-outcome contract, settlement, review,
+  rollback, and server integration; it did not start or approve a live trial.
+- Phase 9 now has an authenticated two-step private-perception egress route.
+  `alpecca/interactive_egress.py` stages only content-free exact bindings. The
+  creator must approve a pending request, then the same operation and exact
+  image bytes may invoke one configured provider use. Changed bytes and replay
+  fail closed; pixels are never persisted by the authority.
+- Server controls are `GET /perception/egress/consents`, `POST
+  /perception/egress/stage`, `POST /perception/egress/consents/{request_id}`,
+  and `POST /perception/egress/execute`. Exact provider/deployment/model/
+  location/HTTPS-route configuration is mandatory; configuration alone never
+  authorizes egress.
+- House HQ now exposes a dedicated **Privacy** system panel for staging one
+  bounded image, reviewing content-free exact bindings, and separately
+  approving, denying, or executing the matching one-use request. Provider
+  routes, payload HMACs, secrets, and image bytes are not rendered or retained
+  in the panel. The full Phase 9 suite is green: **322 passed, 2 skipped**;
+  all **55** House module tests and the production build are green. Phase 9
+  remains partial only until a configured provider completes one live
+  creator-consented soak.
+- The stale temporary audit server on port 8765 was stopped. The real stack was
+  not launched because host headroom remained below both gates: 3.98 GiB/17.1%
+  RAM free and 21.60 GiB/4.7% system-disk free.
+
+## Codex Fenced Event Continuity And Agentic Frontier Slice (2026-07-16)
+
+- `alpecca/continuity_journal.py` adds an encrypted append-only journal for
+  committed memories, chat turns, and meaningful game episodes. AES-256-GCM
+  segments are authenticated, key-bound, immutable, locally queued, and merged
+  by event ID; malformed/tampered events are quarantined rather than guessed.
+- Memory and chat capture happens after the primary SQLite commit. Journal or
+  transport failure leaves the local record intact and pending for later retry.
+  Upload acknowledgement marks exact event IDs, not positional batches.
+- The Vault Worker now has `/v1/events` and `/v1/events/latest`. Writes require
+  the exact active holder, lease ID, and fencing epoch read from the continuity
+  Durable Object before immutable R2 storage. Wrangler 4.111.0 dry-run resolved
+  both the R2 and cross-Worker Durable Object bindings.
+- Local startup reconciles remote segments after acquiring the singleton lease
+  and before CoreMind construction. HF cloud startup reconciles the tail after
+  verified archive restore. The running owner flushes every ten seconds and at
+  clean shutdown.
+- `apps/agentic-frontier/` is a separate server-authoritative game slice with
+  bounded perception, revision-checked/idempotent actions, reconnect receipts,
+  and a Jason + Alpecca relay-repair mission. It cannot import or write CoreMind.
+- It is now independently launchable at `127.0.0.1:8870`, has its own client,
+  process, manifest, and `%LOCALAPPDATA%/AgenticFrontier/frontier.db`. House and
+  `server.py` do not import or mount it. Non-loopback binding requires the
+  separate `AGENTIC_FRONTIER_TOKEN`.
+- `alpecca/game_memory.py` admits only validated evidence showing both Jason and
+  Alpecca in a meaningful shared event. Raw movement, telemetry, and solo events
+  remain game-only.
+- Visual direction is **anime cel shading** with controlled toon ramps, clean
+  outlines, readable RTS/RPG silhouettes, and futuristic materials. No visual
+  client or multiplayer cloud deployment is claimed complete in this slice.
+- Verification: continuity + game + HF supervisor focused suites are **31
+  passed**; Worker syntax and Wrangler dry-run pass. Three old singleton-launcher
+  tests still inherit the machine's live lease configuration/assert an outdated
+  source-layout string and remain separate regression debt.
+- Vault Worker deployment completed as version
+  `0cf0bdb8-d1f6-48f1-a2f9-71ea0bb76582`. Direct authenticated readback from
+  this laptop is currently intercepted by a non-JSON Cloudflare `403`, so route
+  verification, survival-Space source publication, restart, and one real
+  cloud-created event returning after failback remain open.
+
 ## Codex V4 Gait, Persistent Movement, And Android 2.2.5 (2026-07-15)
 
 - V4 remains VRM 1.0. The planted-foot IK now uses the movement-forward knee
@@ -2073,3 +2215,26 @@ free) · `scripts/` (doctor, run_full, run_talkinghead, import_rig, build_manife
   still CDN (proprietary, model tier only).
 - Talk mode (`scripts/run_talk.py`) needs a separate Python 3.12 venv
   (`.venv-talk/`) — pyaudio has no 3.14 wheels; browser 🎤 avoids this.
+# 2026-07-22 perception and House voice correction
+
+- Discord image ingress now treats generic CDN MIME declarations as unknown
+  metadata and relies on the existing authoritative byte sniffer. Concrete MIME
+  mismatches remain rejected.
+- Creator Discord image turns retain creator authority through perception;
+  the previous mid-turn downgrade could produce HTTP 500 after vision succeeded.
+- Image backend failures now return a fixed, truthful Discord diagnostic instead
+  of leaving the channel silent. Local vision stays warm for two minutes so the
+  grounded reply can reuse the loaded Qwen 3.5 9B model.
+- A local smoke test described the exact reported Discord screenshot correctly
+  in 103.47 seconds. This verifies perception but also establishes CPU vision
+  latency as a remaining constraint.
+- House Kokoro now keeps the af_heart identity profile in auto mode and no longer
+  applies linear pitch resampling. Browser/system speech is not advertised as a
+  fallback because House deliberately does not substitute a different speaker.
+- F5's low-pitch `present_soft` reference is disabled. The verified
+  `digital_construct` Alpecca reference is now the normal default. On the same
+  sentence it reduced generated duration from 23.69s to 6.48s and eliminated
+  clipping, with raw peak reduced from 1.84 to 1.01.
+- House push-to-talk now requests WebM/Opus or Ogg/Opus explicitly. A live
+  Faster-Whisper probe loaded successfully and transcribed a reference in 19.38s.
+- Storage findings are recorded in `docs/LOCAL_STORAGE_AUDIT_2026-07-22.md`.

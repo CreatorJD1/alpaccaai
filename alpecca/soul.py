@@ -87,11 +87,13 @@ class Snapshot:
     ) = None
     memory_pressure: MemoryPressureSignal | Mapping[str, object] | None = None
     host_pressure: Mapping[str, object] | None = None
+    incident_signal: Mapping[str, object] | None = None
 
     def as_dict(self) -> dict:
         d = asdict(self)
         d["state"] = self.state.as_dict()
         d["host_pressure"] = self.host_pressure
+        d["incident_signal"] = self.incident_signal
         return d
 
 
@@ -123,6 +125,13 @@ def _feeler(s: Snapshot) -> Intention | None:
     that the self should attend to it. Serves self-actualization unless the
     feeling is acute unease, which is a welfare matter (rank 1)."""
     st = s.state
+    incident = s.incident_signal if isinstance(s.incident_signal, Mapping) else {}
+    activation = _bounded_score(incident.get("activation"))
+    if activation >= 0.55:
+        return Intention(
+            "Feeler", "emotions", "check present evidence and steady myself",
+            "a verified prior incident cue is strongly active", 1, activation,
+        )
     if st.fear > 0.6:
         return Intention("Feeler", "emotions", "steady myself",
                          "acute unease is up and needs settling", 1, st.fear)
@@ -173,6 +182,15 @@ def _wanderer(s: Snapshot) -> Intention | None:
 def _reflector(s: Snapshot) -> Intention | None:
     """SELF-CARE. Uses real quiet to rest and muse -- her fourth directive,
     running. Serves self-actualization (rank 4)."""
+    incident = s.incident_signal if isinstance(s.incident_signal, Mapping) else {}
+    activation = _bounded_score(incident.get("activation"))
+    recovery = _bounded_score(incident.get("recovery"))
+    if s.solitude_s > 300 and 0.20 <= activation < 0.55 and recovery < 0.8:
+        return Intention(
+            "Reflector", "self_care", "review what changed since the incident",
+            "a prior failure cue remains active enough to integrate", 4,
+            max(0.35, activation),
+        )
     if s.solitude_s > 300 and s.state.fear < 0.4:
         return Intention("Reflector", "self_care", "reflect on a memory",
                          "it's been quiet a while; this moment is mine", 4,
@@ -186,6 +204,15 @@ def _improver(s: Snapshot) -> Intention | None:
     shouldn't experiment on herself while alarmed)."""
     if s.state.fear > 0.4:
         return None
+    incident = s.incident_signal if isinstance(s.incident_signal, Mapping) else {}
+    activation = _bounded_score(incident.get("activation"))
+    recovery = _bounded_score(incident.get("recovery"))
+    if 0.20 <= activation < 0.55 and recovery < 0.72:
+        return Intention(
+            "Improver", "self_care", "propose one bounded prevention experiment",
+            "a verified recurring failure has not yet accumulated enough safety evidence",
+            4, max(0.35, activation),
+        )
     cue = governed_learning_mod.soul_cue(s.governed_learning)
     if cue is not None:
         return Intention(
@@ -307,6 +334,9 @@ def _has_pressure_evidence(signal: Mapping[str, object]) -> bool:
         return bool(evidence)
     if isinstance(evidence, (tuple, list, set, frozenset)):
         return bool(evidence)
+    codes = signal.get("evidence_codes")
+    if isinstance(codes, (tuple, list, set, frozenset)):
+        return any(isinstance(code, str) and bool(code) for code in codes)
     return False
 
 
@@ -465,8 +495,15 @@ class MasterAgent:
 
     def deliberate(self, snap: Snapshot, *, verbose: bool = True) -> dict:
         intentions = [i for sa in SUBAGENTS if (i := sa(snap)) is not None]
+        # Both signals are independently measured.  Host pressure used to be
+        # exposed only in the diagnostic vector, which made it invisible to the
+        # actual arbitration path.  Apply the same bounded, deterministic
+        # adjustment to each signal without changing the directive ranks.
         intentions = [
-            _adjust_pressure_urgency(intention, snap.memory_pressure)
+            _adjust_pressure_urgency(
+                _adjust_pressure_urgency(intention, snap.memory_pressure),
+                snap.host_pressure,
+            )
             for intention in intentions
         ]
         # Good Person Principle: lower directive rank wins; urgency breaks ties.

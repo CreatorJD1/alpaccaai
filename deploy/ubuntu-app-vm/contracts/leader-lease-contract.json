@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "localPolicyMode": "dry-run-only",
+  "cloudContinuityTakeover": {
+    "contract": "continuity-ownership-lease-contract.json",
+    "rawLeaderReadyIsSufficient": false,
+    "requires": [
+      "stale-local-owner-heartbeat",
+      "expired-local-ownership-lease",
+      "verified-creator-activation",
+      "composite-continuity-policy-eligible"
+    ]
+  },
+  "authority": "linearizable-placeholder",
+  "defaultRole": "standby",
+  "renewIntervalSeconds": 10,
+  "leaseDurationSeconds": 35,
+  "minimumFailoverGraceSeconds": 90,
+  "grantRequires": [
+    "signed-node-identity",
+    "verified-latest-encrypted-vault-snapshot",
+    "healthy-primary-grace-expired"
+  ],
+  "grantReturns": [
+    "lease-id",
+    "monotonically-increasing-fencing-epoch",
+    "expires-at"
+  ],
+  "localGrantInputRequires": [
+    "externally-authenticated-grant-verdict",
+    "externally-verified-state-integrity",
+    "explicit-rfc3339-evaluation-time",
+    "holder-node-id-match",
+    "lease-duration-at-most-35-seconds"
+  ],
+  "vaultReadyRequires": [
+    "ready",
+    "latest-snapshot-verified",
+    "restore-completed",
+    "snapshot-id-present",
+    "verification-time-not-in-future",
+    "snapshot-epoch-not-ahead-of-lease"
+  ],
+  "localFenceCheckRequires": [
+    "leader-ready-state",
+    "exact-active-lease-id",
+    "exact-highest-fencing-epoch",
+    "unexpired-lease",
+    "no-clock-rollback"
+  ],
+  "fencedSideEffects": [
+    "authoritative-state-write",
+    "commitment-transition",
+    "discord-connect-or-send",
+    "notification-delivery",
+    "vault-snapshot",
+    "websocket-or-voice-portal"
+  ],
+  "failClosedOn": [
+    "authority-unavailable",
+    "lease-expired",
+    "lease-renewal-denied",
+    "vault-verification-failed",
+    "missing-fencing-epoch",
+    "stale-fencing-epoch"
+  ],
+  "dryRunOutputGuarantees": [
+    "never-starts-a-service",
+    "never-enables-a-runtime",
+    "never-opens-a-portal",
+    "never-performs-a-side-effect",
+    "never-reads-a-credential-store"
+  ],
+  "automaticFailback": false,
+  "creatorApprovedFailbackOrder": [
+    "drain-cloud-egress",
+    "publish-final-encrypted-snapshot",
+    "release-cloud-lease",
+    "advance-fencing-epoch",
+    "resume-local-runtime"
+  ]
+}
