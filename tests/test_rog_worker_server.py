@@ -401,13 +401,19 @@ def test_reasoning_uses_typed_history_thinking_and_bounded_8k_context() -> None:
             {"role": "user", "content": "Compare the options."},
         ],
         "stream": False,
-        "think": True,
+        "think": False,
         "options": {"temperature": 0.2, "num_predict": 90, "num_ctx": 8192},
     }
     serialized = response.text
     assert "private chain of thought" not in serialized
     assert "thinking" not in serialized
     assert factory.connections[0].closed is True
+
+
+def test_worker_nonce_capacity_tolerates_authenticated_health_polling() -> None:
+    app = worker_mod.create_app(make_settings(idempotency_entries=16))
+
+    assert app.state.worker._nonces._max_entries == 4_096
 
 
 def test_reasoning_fails_cleanly_when_only_thinking_is_returned() -> None:

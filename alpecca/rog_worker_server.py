@@ -894,7 +894,10 @@ class ROGComputeWorker:
         self._slots = threading.BoundedSemaphore(settings.max_concurrency)
         self._nonces = _NonceStore(
             settings.timestamp_skew_seconds * 2,
-            max(32, settings.idempotency_entries * 4),
+            # Health checks are authenticated too. Keep enough live nonces for
+            # several clients polling throughout the complete timestamp-skew
+            # window without weakening replay rejection or evicting live rows.
+            max(4_096, settings.idempotency_entries * 4),
             clock,
             settings.replay_db_path,
         )
@@ -1093,7 +1096,12 @@ class ROGComputeWorker:
                 "model": job.model,
                 "messages": messages,
                 "stream": False,
-                "think": True,
+                # The endpoint returns only the bounded visible conclusion and
+                # never exposes chain-of-thought. Asking Ollama for a separate
+                # thinking field can consume the full prediction budget and
+                # leave Qwen with no visible answer, so deliberation remains
+                # internal to the model invocation.
+                "think": False,
                 "options": {
                     "temperature": 0.2,
                     "num_predict": job.max_tokens,
