@@ -254,6 +254,66 @@ def test_opencv_probe_and_import_are_lazy(monkeypatch, tmp_path):
     assert imported == ["cv2", "numpy"]
 
 
+def test_status_loads_both_configured_models_before_reporting_ready(
+    monkeypatch, tmp_path
+):
+    imported = []
+    loaded_paths = []
+    detector = tmp_path / "yunet.onnx"
+    recognizer = tmp_path / "sface.onnx"
+    monkeypatch.setattr(face_worker, "opencv_available", lambda: True)
+    monkeypatch.setattr(
+        importlib,
+        "import_module",
+        lambda name: imported.append(name) or object(),
+    )
+
+    def factory(_cv2, _numpy, detector_path, recognizer_path):
+        loaded_paths.extend((detector_path, recognizer_path))
+        return FakeSFaceBackend()
+
+    worker = face_worker.FaceWorker(
+        tmp_path / "unused.sealed",
+        encrypt=_seal,
+        decrypt=_open,
+        detector_model=detector,
+        recognizer_model=recognizer,
+        opencv_factory=factory,
+    )
+
+    status = worker.handle(_request("status"))
+
+    assert status["status"] == "ready"
+    assert imported == ["cv2", "numpy"]
+    assert loaded_paths == [detector, recognizer]
+
+
+def test_status_does_not_report_ready_when_configured_model_pair_fails(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(face_worker, "opencv_available", lambda: True)
+    monkeypatch.setattr(importlib, "import_module", lambda _name: object())
+
+    def failing_factory(_cv2, _numpy, _detector, _recognizer):
+        raise face_worker.FaceWorkerError(
+            "backend_unavailable", "configured model pair failed to load"
+        )
+
+    worker = face_worker.FaceWorker(
+        tmp_path / "unused.sealed",
+        encrypt=_seal,
+        decrypt=_open,
+        detector_model=tmp_path / "yunet.onnx",
+        recognizer_model=tmp_path / "sface.onnx",
+        opencv_factory=failing_factory,
+    )
+
+    status = worker.handle(_request("status"))
+
+    assert status["status"] == "unavailable"
+    assert status["reason"] == "model_load_failed"
+
+
 def test_lazy_model_load_failure_becomes_stable_unavailable(monkeypatch, tmp_path):
     monkeypatch.setattr(face_worker, "opencv_available", lambda: True)
     monkeypatch.setattr(
@@ -269,6 +329,7 @@ def test_lazy_model_load_failure_becomes_stable_unavailable(monkeypatch, tmp_pat
         recognizer_model=tmp_path / "sface.onnx",
     )
 
+    status = worker.handle(_request("status"))
     first = face_worker.protocol_response(
         worker, _request("compare", profile_id="creator", image=_image())
     )
@@ -276,6 +337,8 @@ def test_lazy_model_load_failure_becomes_stable_unavailable(monkeypatch, tmp_pat
         worker, _request("compare", profile_id="creator", image=_image())
     )
 
+    assert status["status"] == "unavailable"
+    assert status["reason"] == "model_load_failed"
     assert first == second
     assert first["ok"] is True
     assert first["result"]["status"] == "unavailable"

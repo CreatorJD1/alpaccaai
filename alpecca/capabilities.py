@@ -47,6 +47,9 @@ CAPABILITY_SPECS = (
     CapabilitySpec("computer_control", "ALPECCA_COMPUTER_USE", "computer_control"),
     CapabilitySpec("directory_watchers", "ALPECCA_WATCH_DIRS", "filesystem", "choice"),
     CapabilitySpec("discord_media", "ALPECCA_DISCORD_MEDIA", "network"),
+    CapabilitySpec(
+        "rog_compute", "ALPECCA_ROG_WORKER_URL", "network", "choice"
+    ),
 )
 
 _AUDIT_ACTIONS = frozenset({

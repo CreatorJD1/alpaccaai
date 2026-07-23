@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import sqlite3
+import threading
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -375,7 +376,32 @@ class TemporalMemoryStore:
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
+        self._transaction_local = threading.local()
         init_db(self.db_path)
+
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        active = getattr(self._transaction_local, "connection", None)
+        if active is not None:
+            yield active
+            return
+        with _connect(self.db_path) as conn:
+            yield conn
+
+    @contextmanager
+    def transaction(self) -> Iterator["TemporalMemoryStore"]:
+        """Make a related set of store operations one SQLite transaction."""
+
+        active = getattr(self._transaction_local, "connection", None)
+        if active is not None:
+            yield self
+            return
+        with _connect(self.db_path) as conn:
+            self._transaction_local.connection = conn
+            try:
+                yield self
+            finally:
+                del self._transaction_local.connection
 
     def record_observation(
         self,
@@ -413,7 +439,7 @@ class TemporalMemoryStore:
             uid, clean_source, clean_actor, clean_surface, clean_scope,
             observed, digest, reference, metadata_json, recorded,
         )
-        with _connect(self.db_path) as conn:
+        with self._connection() as conn:
             existing = conn.execute(
                 f"SELECT * FROM {OBSERVATIONS_TABLE} WHERE observation_uid=?",
                 (uid,),
@@ -504,7 +530,7 @@ class TemporalMemoryStore:
             clean_actor, clean_surface, clean_scope, valid_start, valid_end,
             recorded, evidence_ids[0],
         )
-        with _connect(self.db_path) as conn:
+        with self._connection() as conn:
             observations = conn.execute(
                 f"SELECT id, scope FROM {OBSERVATIONS_TABLE} "
                 f"WHERE id IN ({','.join('?' for _ in evidence_ids)})",
@@ -579,7 +605,7 @@ class TemporalMemoryStore:
             time.time() if invalidated_at is None else invalidated_at,
             name="invalidated_at",
         )
-        with _connect(self.db_path) as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 f"SELECT * FROM {FACTS_TABLE} WHERE id=?", (fact_id,),
             ).fetchone()
@@ -620,7 +646,7 @@ class TemporalMemoryStore:
         lower, upper = sorted((first_fact_id, second_fact_id))
         clean_reason = _optional_text(reason, name="reason", maximum=MAX_REASON_CHARS)
         stamp = _timestamp(time.time() if linked_at is None else linked_at, name="linked_at")
-        with _connect(self.db_path) as conn:
+        with self._connection() as conn:
             facts = conn.execute(
                 f"SELECT id, scope FROM {FACTS_TABLE} WHERE id IN (?, ?)",
                 (lower, upper),
@@ -708,7 +734,7 @@ class TemporalMemoryStore:
             if value is not None:
                 clauses.append(f"{column}=?")
                 parameters.append(_clean_text(value, name=column, maximum=maximum))
-        with _connect(self.db_path) as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 f"SELECT * FROM {FACTS_TABLE} WHERE {' AND '.join(clauses)} "
                 "ORDER BY confidence DESC, valid_from DESC, id DESC",
@@ -717,7 +743,7 @@ class TemporalMemoryStore:
         return [_fact_from_row(row) for row in rows]
 
     def evidence_for_fact(self, fact_id: int) -> list[EvidenceObservation]:
-        with _connect(self.db_path) as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 f"SELECT observation.* FROM {OBSERVATIONS_TABLE} AS observation "
                 f"JOIN {EVIDENCE_TABLE} AS link ON link.observation_id=observation.id "
@@ -727,7 +753,7 @@ class TemporalMemoryStore:
         return [_observation_from_row(row) for row in rows]
 
     def contradictions_for_fact(self, fact_id: int) -> list[ContradictionLink]:
-        with _connect(self.db_path) as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 f"SELECT * FROM {CONTRADICTIONS_TABLE} "
                 "WHERE fact_id=? OR contradicts_fact_id=? ORDER BY linked_at, id",

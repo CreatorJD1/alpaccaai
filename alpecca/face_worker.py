@@ -1,7 +1,7 @@
 """Isolated CPU face-familiarity worker with a bounded JSON-lines protocol.
 
-YuNet detection and SFace comparison are optional and loaded only on first
-inference. Results are familiarity signals only: this module cannot
+YuNet detection and SFace comparison are optional and loaded only on the first
+readiness probe or inference. Results are familiarity signals only: this module cannot
 authenticate anyone or authorize the Creator principal. Face templates are
 persisted only through caller-supplied encryption and decryption callbacks.
 """
@@ -549,8 +549,9 @@ class FaceWorker:
         }
 
     def _status(self) -> dict[str, object]:
+        ready = self._backend_ready()
         result = {
-            "status": "ready" if self.backend.available else "unavailable",
+            "status": "ready" if ready else "unavailable",
             "device": "cpu",
             "backend": self.backend.name,
             "reason": self.backend.unavailable_reason,

@@ -34,7 +34,13 @@ def opener(*, public: bool, voice: bool):
         if url.endswith(":7861/healthz"):
             if not voice:
                 raise urllib.error.URLError("voice unavailable")
-            return Response({"state": "ready"})
+            return Response({
+                "state": "ready",
+                "modelLoaded": True,
+                "selfCheckPassed": True,
+                "selfCheckState": "passed",
+                "synthesisReady": True,
+            })
         if url.endswith(":7860/healthz"):
             if not public:
                 raise urllib.error.URLError("handoff in progress")
@@ -52,6 +58,22 @@ def test_health_requires_voice_even_during_promotion_grace(tmp_path: Path) -> No
     assert not healthcheck.healthy(
         opener=opener(public=False, voice=False),
         now=120.0,
+        environ=environment,
+    )
+
+
+def test_health_rejects_ready_label_without_synthesis_evidence(tmp_path: Path) -> None:
+    environment = {"ALPECCA_CLOUD_RUNTIME_ROOT": str(tmp_path)}
+
+    def incomplete_voice(url: str, timeout: float):
+        assert timeout == 2.0
+        if url.endswith(":7861/healthz"):
+            return Response({"state": "ready"})
+        return Response({"status": "ok"})
+
+    assert not healthcheck.healthy(
+        opener=incomplete_voice,
+        now=1_000.0,
         environ=environment,
     )
 

@@ -36,19 +36,63 @@ from pathlib import Path
 from typing import NoReturn
 from urllib.parse import parse_qs, quote, urlparse
 
-# A configured cross-host authority makes direct execution unsafe because it
-# would construct CoreMind before acquiring a fencing epoch. Imports remain
-# available to tests and the guarded launcher, but `python server.py` must not
-# bypass scripts/run_full.py once continuity failover is enabled.
-if (
-    __name__ == "__main__"
-    and os.environ.get("ALPECCA_CONTINUITY_LEASE_URL", "").strip()
-    and not os.environ.get("ALPECCA_CONTINUITY_FENCING_EPOCH", "").strip()
-):
-    raise SystemExit(
-        "Cross-host continuity is configured. Start Alpecca through "
-        "scripts/run_full.py so a singleton lease is acquired first."
+# A configured cross-host authority makes any unfenced CoreMind construction
+# unsafe, including direct ASGI imports such as ``uvicorn server:app``.
+_EXPLICIT_TRUE = frozenset({"1", "true", "yes", "on"})
+_continuity_lease_configured = bool(
+    os.environ.get("ALPECCA_CONTINUITY_LEASE_URL", "").strip()
+)
+_continuity_offline_isolated = (
+    os.environ.get("ALPECCA_CONTINUITY_OFFLINE_ISOLATED", "").strip().lower()
+    in _EXPLICIT_TRUE
+)
+try:
+    _continuity_fencing_epoch = int(
+        os.environ.get("ALPECCA_CONTINUITY_FENCING_EPOCH", "").strip()
     )
+except (TypeError, ValueError):
+    _continuity_fencing_epoch = 0
+try:
+    _continuity_launcher_pid = int(
+        os.environ.get("ALPECCA_CONTINUITY_LAUNCHER_PID", "").strip()
+    )
+except (TypeError, ValueError):
+    _continuity_launcher_pid = 0
+_continuity_lease_id = os.environ.get(
+    "ALPECCA_CONTINUITY_LEASE_ID", ""
+).strip()
+_continuity_lease_holder = os.environ.get(
+    "ALPECCA_CONTINUITY_LEASE_HOLDER", ""
+).strip()
+_continuity_fence_inherited = bool(
+    1 <= len(_continuity_lease_id) <= 96
+    and 1 <= len(_continuity_lease_holder) <= 96
+    and _continuity_fencing_epoch >= 1
+    and _continuity_launcher_pid == os.getpid()
+)
+
+if (
+    _continuity_lease_configured
+    and not _continuity_offline_isolated
+    and not _continuity_fence_inherited
+):
+    _continuity_guard_message = (
+        "Cross-host continuity is configured, but this process has no valid "
+        "inherited lease fence. Start Alpecca through scripts/run_full.py so "
+        "the complete singleton lease tuple is acquired in this process, or "
+        "explicitly set "
+        "ALPECCA_CONTINUITY_OFFLINE_ISOLATED=true for a local-only session."
+    )
+    if __name__ == "__main__":
+        raise SystemExit(_continuity_guard_message)
+    raise RuntimeError(_continuity_guard_message)
+
+# This must run before config imports or CoreMind construction. The ROG is a
+# non-speaking compute worker even if someone bypasses every supported launcher
+# and imports this ASGI module directly.
+from alpecca import host_roles as host_roles_mod
+
+host_roles_mod.require_primary_runtime_host()
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
@@ -62,6 +106,7 @@ import uvicorn
 
 from config import (HOME, HOST, PORT, DEEP_BACKEND, OLLAMA_HOST,
                     COLAB_URL, COLAB_MODEL, COLAB_API_KEY,
+                    ROG_WORKER_URL,
                      MINDSCAPE_ENABLED, MINDSCAPE_CLOUD_URL, MINDSCAPE_TOKEN,
                      MINDSCAPE_SYNC_TIMEOUT, MINDSCAPE_AUTO_SYNC_INTERVAL,
                      MINDSCAPE_EVENT_SYNC_MIN_INTERVAL, MINDSCAPE_VAULT_ENABLED,
@@ -93,6 +138,8 @@ from alpecca import hearing
 from alpecca import avatar as avatar_mod
 from alpecca import computer as computer_mod
 from alpecca import runtime_status as runtime_status_mod
+from alpecca import rog_worker_client as rog_worker_client_mod
+from alpecca import rog_worker_runtime as rog_worker_runtime_mod
 from alpecca import mindscape as mindscape_mod
 from alpecca import mindscape_vault as mindscape_vault_mod
 from alpecca import continuity_journal as continuity_journal_mod
@@ -1555,7 +1602,7 @@ def _house_chat_reply_tier(user_text: str, *, delivery: str = "text") -> str:
     # begin while the exchange is still conversational. Typed House chat keeps
     # the fuller reasoning tier. The same CoreMind, memory, and safety gates run
     # in both cases; this only selects the bounded generation tier.
-    return "fast" if delivery == "voice" else "reason"
+    return "voice" if delivery == "voice" else "reason"
 
 
 async def _locked_ws_chat_turn(turn: turn_context_mod.TurnContext,
@@ -2751,6 +2798,7 @@ async def lifespan(app: FastAPI):
     tender while you ground through an error, or settled while you were away.
     We keep a reference to the task so it isn't silently garbage-collected.
     """
+    host_roles_mod.require_primary_runtime_host()
     _behavior_trial_recovery_ready.clear()
     _capability_lease_recovery_ready.clear()
     try:
@@ -7093,11 +7141,74 @@ async def commitment_execute(commitment_id: int, req: Request) -> dict:
 
 @app.get("/soul")
 def soul() -> dict:
-    """Her Soul, live: the ranked slate of intentions from her seven subagents
-    (emotions, actions, self-care, compassion) and the one in focus, arbitrated
-    by the Good Person Principle (alpecca/soul.py). The single explainable answer
-    to 'what is she moved to do right now, and why.'"""
-    return mind.soul_state()
+    """Return the latest completed Soul receipt without running deliberation."""
+    from alpecca import soul as soul_mod
+
+    runtime = mind.soul_runtime_status()
+    runtime = dict(runtime) if isinstance(runtime, Mapping) else {}
+    roles = runtime.get("roles")
+    scores = runtime.get("scores")
+    active = runtime.get("active")
+    roles = tuple(roles) if isinstance(roles, (list, tuple)) else ()
+    scores = tuple(scores) if isinstance(scores, (list, tuple)) else ()
+    active = tuple(active) if isinstance(active, (list, tuple)) else ()
+    cached_by_role = {
+        role: {
+            "score": scores[index] if index < len(scores) else None,
+            "active": bool(active[index]) if index < len(active) else None,
+        }
+        for index, role in enumerate(roles)
+        if isinstance(role, str)
+    }
+
+    slate = []
+    specs_by_name = {spec.name: spec for spec in soul_mod.SUBAGENT_SPECS}
+    for spec in soul_mod.SUBAGENT_SPECS:
+        cached = cached_by_role.get(spec.name, {})
+        score = cached.get("score")
+        is_active = cached.get("active")
+        if isinstance(score, (int, float)) and not isinstance(score, bool):
+            action = f"cached perspective score {float(score):.3f}"
+        else:
+            score = None
+            action = "no completed score is cached"
+        slate.append({
+            "subagent": spec.name,
+            "category": spec.category,
+            "kind": spec.kind,
+            "tier": spec.tier,
+            "action": action,
+            "reason": (
+                "active in the latest completed Soul arbitration"
+                if is_active is True
+                else "inactive in the latest completed Soul arbitration"
+                if is_active is False
+                else "no completed Soul arbitration is cached yet"
+            ),
+            "score": score,
+            "active": is_active,
+            "source": "cached_runtime",
+        })
+
+    selected_role = runtime.get("selected_role")
+    selected_spec = specs_by_name.get(selected_role)
+    focus = ({
+        "subagent": selected_spec.name,
+        "name": selected_spec.name,
+        "category": selected_spec.category,
+        "kind": selected_spec.kind,
+        "reason": "Cached from the latest completed Soul arbitration.",
+        "source": "cached_runtime",
+    } if selected_spec is not None else {})
+    return {
+        "state": "cached" if runtime else "not_yet_observed",
+        "read_only": True,
+        "fresh_deliberation": False,
+        "principle": "Good Person Principle",
+        "focus": focus,
+        "slate": slate,
+        "soul_runtime": runtime,
+    }
 
 
 @app.get("/memories")
@@ -7519,6 +7630,93 @@ def system_status() -> dict:
     she is in full, degraded, or offline mode.
     """
     return _runtime_status(check_models=True)
+
+
+@app.get("/system/rog-worker")
+def rog_worker_status(req: Request) -> dict[str, object]:
+    """Creator-only health for the separate non-speaking ROG compute helper."""
+
+    _require_creator_request(req)
+    snapshot = rog_worker_runtime_mod.status_snapshot(ROG_WORKER_URL)
+    deep_route_loaded = any(
+        link[0] == "rog-worker"
+        for link in getattr(mind, "_deep_chain", ())
+    )
+    worker_ready = bool(snapshot.get("ready"))
+    snapshot["worker_ready"] = worker_ready
+    snapshot["deep_route_loaded"] = deep_route_loaded
+    snapshot["deep_reasoning_active"] = worker_ready and deep_route_loaded
+    snapshot["restart_required"] = worker_ready and not deep_route_loaded
+    if snapshot["restart_required"]:
+        snapshot["state"] = "worker-ready-restart-required"
+    return snapshot
+
+
+@app.post("/system/rog-worker/render")
+async def rog_worker_render(req: Request) -> JSONResponse:
+    """Render one approved worker-side Blender project and return a receipt."""
+
+    decision = _require_creator_request(req)
+    payload = await _read_bounded_json_object(req, max_bytes=4096)
+    if set(payload) != {"project", "frame"}:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "rog_render_body_invalid"},
+            headers={"Cache-Control": "no-store"},
+        )
+    project = payload.get("project")
+    frame = payload.get("frame")
+    if (
+        not isinstance(project, str)
+        or not project.strip()
+        or len(project.encode("utf-8")) > 512
+        or type(frame) is not int
+        or not 1 <= frame <= 999_999
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "rog_render_body_invalid"},
+            headers={"Cache-Control": "no-store"},
+        )
+    audited = await _record_capability_use(
+        "rog_compute",
+        action="execute",
+        principal=decision.principal,
+        source="server",
+    )
+    if not audited:
+        _raise_capability_audit_unavailable()
+    try:
+        receipt = await asyncio.to_thread(
+            rog_worker_runtime_mod.render_blender,
+            project,
+            frame,
+        )
+    except rog_worker_client_mod.RogWorkerError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "rog_worker_unavailable", "error": type(exc).__name__},
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    try:
+        cognition_mod.record_observation(cognition_mod.CognitionObservation(
+            source="rog_compute",
+            content="The ROG compute worker returned a bounded Blender render receipt.",
+            confidence=1.0,
+            privacy_class="local",
+            metadata={
+                "event": "blender_render_receipt",
+                "request_id": str(receipt.get("request_id") or "")[:128],
+                "status": str(receipt.get("status") or "")[:32],
+                "frame": frame,
+            },
+        ))
+    except Exception:
+        pass
+    return JSONResponse(
+        receipt,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 _PAGEFILE_LIVE_EVIDENCE_SCHEMA = "alpecca.phase7.pagefile-live-evidence.v1"
@@ -9237,7 +9435,7 @@ async def tts(req: Request):
     is unavailable. House HQ deliberately stays silent instead of substituting
     an unrelated browser/system speaker. Synthesis runs off the event loop."""
     from fastapi import Response
-    from config import TTS_ROUTE_TIMEOUT
+    from config import LIVE_TTS_ROUTE_TIMEOUT, TTS_ROUTE_TIMEOUT
     from alpecca import tts as tts_mod
     from alpecca import speech as speech_mod
     from alpecca.homeostasis import EmotionalState
@@ -9256,7 +9454,7 @@ async def tts(req: Request):
             headers={"Cache-Control": "no-store"},
         )
     engine = str(body.get("engine") or "").strip().lower()
-    if engine not in {"", "auto", "kokoro", "f5", "f5-tts", "open"}:
+    if engine not in {"", "auto", "cloud", "kokoro", "f5", "f5-tts", "open"}:
         return Response(
             status_code=422,
             headers={"X-Alpecca-TTS-Error": "unsupported voice engine"},
@@ -9303,9 +9501,14 @@ async def tts(req: Request):
                 )
             else:
                 synth_call = lambda: tts_mod.synth(synth_text, synth_state)
+            route_timeout = (
+                min(TTS_ROUTE_TIMEOUT, LIVE_TTS_ROUTE_TIMEOUT)
+                if engine == "cloud"
+                else TTS_ROUTE_TIMEOUT
+            )
             result = await asyncio.wait_for(
                 asyncio.to_thread(synth_call),
-                timeout=TTS_ROUTE_TIMEOUT,
+                timeout=route_timeout,
             )
         except asyncio.TimeoutError:
             tts_mod._last_error = "server voice timed out while warming or synthesizing"
@@ -10007,7 +10210,8 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         situation_hint = (
             f"{situation_hint} Live duplex voice turn: answer the person directly "
             "in one to three short, natural spoken sentences. Do not narrate the "
-            "voice pipeline or ask them to resend a recording."
+            "voice pipeline, tool parsing, or tool execution, and do not ask them "
+            "to resend a recording."
         ).strip()
 
     result = await _ws_chat_turn_with_timeout(
@@ -10025,7 +10229,7 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         ),
         situation_hint=situation_hint,
         reply_tier=(
-            "fast"
+            "voice"
             if route_surface == "discord" and delivery == "voice"
             else _house_chat_reply_tier(text, delivery=delivery)
         ),
@@ -10480,7 +10684,8 @@ async def ws(socket: WebSocket) -> None:
             if delivery == "voice":
                 context = (
                     f"{context} Live duplex voice turn: answer the person directly "
-                    "in one to three short, natural spoken sentences."
+                    "in one to three short, natural spoken sentences. Do not "
+                    "narrate tool parsing or tool execution."
                 ).strip()
             result = await _ws_chat_turn_with_timeout(
                 user_text,

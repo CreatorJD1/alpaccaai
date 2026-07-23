@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from hashlib import sha256
+import json
 import sqlite3
 from pathlib import Path
 
 import pytest
 
-from alpecca.temporal_derivation import ExtractedFact, TemporalDerivationError
+from alpecca.temporal_derivation import ExtractedFact
 from alpecca.temporal_memory import (
     OBSERVATIONS_TABLE,
     TemporalMemoryStore,
@@ -232,23 +234,167 @@ def test_custom_extractor_cannot_replace_observation_provenance(
     assert evidence.source == "house-observer"
 
 
-def test_failed_batch_remains_pending_and_increments_failure_counter(
+def test_failed_item_retries_without_blocking_later_observation(
     tmp_path: Path,
 ) -> None:
+    attempts: dict[str, int] = {}
+
+    def selective_extractor(observation):
+        attempts[observation.text] = attempts.get(observation.text, 0) + 1
+        if observation.text == "private malformed payload":
+            return ["not-an-extracted-fact"]
+        return [
+            ExtractedFact(
+                subject="project",
+                predicate="status",
+                object_text="healthy",
+                confidence=0.9,
+            )
+        ]
+
+    adapter = runtime(
+        tmp_path,
+        max_batch=2,
+        max_derivation_attempts=2,
+        extractor=selective_extractor,
+    )
+    ingest(adapter, "private malformed payload", uid="invalid", observed_at=1.0)
+    ingest(adapter, "healthy observation", uid="healthy", observed_at=2.0)
+
+    first = adapter.process_batch()
+
+    status = adapter.status()
+    assert first.observation_uids == ("healthy",)
+    assert first.retried_observation_uids == ("invalid",)
+    assert first.dead_lettered_observation_uids == ()
+    assert status.pending_observations == 1
+    assert status.retrying_observations == 1
+    assert status.observations_processed == 1
+    assert status.facts_derived == 1
+    assert status.batches_completed == 1
+    assert status.batches_failed == 1
+    assert attempts == {
+        "private malformed payload": 1,
+        "healthy observation": 1,
+    }
+
+
+def test_retry_exhaustion_dead_letters_redacted_evidence_and_recovers_capacity(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "temporal-runtime.db"
+
     def invalid_extractor(observation):
         return ["not-an-extracted-fact"]
 
-    adapter = runtime(tmp_path, extractor=invalid_extractor)
-    ingest(adapter, "unstructured statement", uid="invalid")
+    adapter = TemporalRuntime(
+        TemporalMemoryStore(db_path),
+        max_pending=1,
+        max_derivation_attempts=2,
+        extractor=invalid_extractor,
+    )
+    secret = "private malformed payload that must not enter dead-letter metadata"
+    source = ingest(adapter, secret, uid="private-source")
+    assert source.observation is not None
 
-    with pytest.raises(TemporalDerivationError, match="ExtractedFact"):
-        adapter.process_batch()
+    first = adapter.process_batch()
+    second = adapter.process_batch()
 
+    assert first.retried_observation_uids == ("private-source",)
+    assert second.dead_lettered_observation_uids == ("private-source",)
     status = adapter.status()
-    assert status.pending_observations == 1
-    assert status.observations_processed == 0
-    assert status.batches_completed == 0
-    assert status.batches_failed == 1
+    assert status.pending_observations == 0
+    assert status.retrying_observations == 0
+    assert status.observations_retried == 1
+    assert status.observations_dead_lettered == 1
+    assert status.recent_dead_letters == 1
+    assert status.dead_letter_persistence_failures == 0
+    assert status.batches_failed == 2
+
+    dead_letter = adapter.dead_letters()[0]
+    assert dead_letter.source_observation_id == source.observation.id
+    assert dead_letter.source_content_sha256 == sha256(secret.encode()).hexdigest()
+    assert dead_letter.source_observation_uid_sha256 == sha256(
+        b"private-source"
+    ).hexdigest()
+    assert dead_letter.attempts == 2
+    assert dead_letter.error_type == "TemporalDerivationError"
+    assert dead_letter.evidence_persisted
+    assert dead_letter.evidence_observation_uid is not None
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            f"SELECT raw_reference, metadata_json FROM {OBSERVATIONS_TABLE} "
+            "WHERE source='temporal-derivation-dead-letter'"
+        ).fetchone()
+    assert row is not None
+    assert row[0] == ""
+    assert secret not in row[1]
+    assert "private-source" not in row[1]
+    metadata = json.loads(row[1])
+    assert metadata == {
+        "attempts": 2,
+        "error_type": "TemporalDerivationError",
+        "kind": "temporal_derivation_dead_letter",
+        "pending_replay_on_restart": False,
+        "raw_content_retained": False,
+        "retry_limit": 2,
+        "source_content_sha256": sha256(secret.encode()).hexdigest(),
+        "source_observation_id": source.observation.id,
+        "source_observation_uid_sha256": sha256(b"private-source").hexdigest(),
+    }
+
+    accepted_after_exhaustion = ingest(
+        adapter,
+        "another malformed observation",
+        uid="replacement",
+        observed_at=200.0,
+    )
+    assert accepted_after_exhaustion.accepted
+    assert accepted_after_exhaustion.queued
+
+
+def test_restart_does_not_claim_to_rehydrate_unstored_pending_text(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "temporal-runtime.db"
+
+    def invalid_extractor(observation):
+        return ["not-an-extracted-fact"]
+
+    first_runtime = TemporalRuntime(
+        TemporalMemoryStore(db_path),
+        max_derivation_attempts=1,
+        extractor=invalid_extractor,
+    )
+    ingest(first_runtime, "private source text", uid="source")
+    first_runtime.process_batch()
+    assert first_runtime.status().observations_dead_lettered == 1
+
+    restarted = TemporalRuntime(TemporalMemoryStore(db_path))
+    status = restarted.status()
+
+    assert status.pending_observations == 0
+    assert not status.pending_queue_rehydrated
+    assert "not rehydrated" in status.restart_policy
+    assert "submitted again" in status.restart_policy
+    assert status.observations_dead_lettered == 0
+    assert restarted.dead_letters() == ()
+    with sqlite3.connect(db_path) as conn:
+        persisted = conn.execute(
+            f"SELECT count(*) FROM {OBSERVATIONS_TABLE} "
+            "WHERE source='temporal-derivation-dead-letter'"
+        ).fetchone()
+    assert persisted == (1,)
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "3"])
+def test_max_derivation_attempts_must_be_a_positive_integer(
+    tmp_path: Path,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match="max_derivation_attempts"):
+        runtime(tmp_path, max_derivation_attempts=value)
 
 
 def test_shadow_comparison_is_read_only_and_never_replaces_legacy(

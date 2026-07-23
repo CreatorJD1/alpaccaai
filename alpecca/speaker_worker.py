@@ -37,6 +37,8 @@ MAX_AUDIO_CONTAINER_BYTES = MAX_AUDIO_BYTES + 65_536
 MAX_JSON_LINE_BYTES = 4_000_000
 MAX_PROFILES = 32
 MAX_EMBEDDING_DIMENSIONS = 1_024
+READINESS_PROBE_AUDIO_SECONDS = 0.5
+READINESS_PROBE_TIMEOUT_SECONDS = 5.0
 ALLOWED_SAMPLE_RATES = frozenset({8_000, 16_000, 24_000, 32_000, 44_100, 48_000})
 _PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
@@ -69,6 +71,7 @@ class AudioPacket:
 class EmbeddingBackend(Protocol):
     name: str
     device: str
+    recognition_capable: bool
 
     def embed(self, packet: AudioPacket) -> tuple[float, ...]: ...
 
@@ -171,10 +174,11 @@ def _normalize(vector: list[float]) -> tuple[float, ...]:
 
 
 class DeterministicFallbackBackend:
-    """Small deterministic signal fingerprint for protocol/offline operation."""
+    """Non-evidentiary signal fingerprint for protocol/offline operation."""
 
     name = "deterministic-cpu-fallback"
     device = "cpu"
+    recognition_capable = False
     _SEGMENTS = 16
 
     def embed(self, packet: AudioPacket) -> tuple[float, ...]:
@@ -200,6 +204,7 @@ class SherpaOnnxBackend:
 
     name = "sherpa-onnx-cpu"
     device = "cpu"
+    recognition_capable = True
 
     def __init__(self, extractor: Callable[[bytes, int], object]) -> None:
         if not callable(extractor):
@@ -219,6 +224,47 @@ class SherpaOnnxBackend:
         if not all(math.isfinite(value) for value in vector):
             raise SpeakerWorkerError("backend_error", "speaker embedding contains invalid values")
         return _normalize(vector)
+
+    def readiness_probe(self, *, timeout_seconds: float) -> tuple[bool, str]:
+        """Run one bounded inference over ephemeral synthetic audio."""
+
+        rate = 16_000
+        frame_count = int(rate * READINESS_PROBE_AUDIO_SECONDS)
+        samples = array.array(
+            "h",
+            (
+                int(
+                    6_000 * math.sin(2.0 * math.pi * 220.0 * index / rate)
+                    + 2_000 * math.sin(2.0 * math.pi * 440.0 * index / rate)
+                )
+                for index in range(frame_count)
+            ),
+        )
+        if sys.byteorder != "little":
+            samples.byteswap()
+        packet = AudioPacket(samples.tobytes(), rate, 1, frame_count, "synthetic-probe")
+        finished = threading.Event()
+        outcome: dict[str, object] = {}
+
+        def run_probe() -> None:
+            try:
+                outcome["embedding_dimensions"] = len(self.embed(packet))
+            except Exception:
+                outcome["failed"] = True
+            finally:
+                finished.set()
+
+        thread = threading.Thread(
+            target=run_probe,
+            name="alpecca-speaker-readiness-probe",
+            daemon=True,
+        )
+        thread.start()
+        if not finished.wait(max(0.01, float(timeout_seconds))):
+            return False, "speaker_recognition_probe_timeout"
+        if outcome.get("failed") or not outcome.get("embedding_dimensions"):
+            return False, "speaker_recognition_probe_failed"
+        return True, ""
 
 
 def sherpa_onnx_available() -> bool:
@@ -375,25 +421,96 @@ class SpeakerWorker:
             Path(store_path), encrypt=encrypt, decrypt=decrypt
         )
         self._lock = threading.RLock()
+        self._probe_lock = threading.Lock()
+        self._inference_lock = threading.Lock()
+        self._probe_checked = False
+        self._probe_ready = False
+        self._probe_reason = "speaker_recognition_probe_pending"
+
+    def _recognition_state(self) -> tuple[bool, str]:
+        if not bool(getattr(self.backend, "recognition_capable", False)):
+            return False, "speaker_recognition_backend_not_configured"
+        with self._probe_lock:
+            if not self._probe_checked:
+                probe = getattr(self.backend, "readiness_probe", None)
+                if not callable(probe):
+                    self._probe_ready = False
+                    self._probe_reason = "speaker_recognition_probe_unavailable"
+                else:
+                    try:
+                        ready, reason = probe(timeout_seconds=READINESS_PROBE_TIMEOUT_SECONDS)
+                    except Exception:
+                        ready, reason = False, "speaker_recognition_probe_failed"
+                    self._probe_ready = ready is True
+                    self._probe_reason = (
+                        ""
+                        if self._probe_ready
+                        else str(reason or "speaker_recognition_probe_failed")
+                    )
+                self._probe_checked = True
+            return self._probe_ready, self._probe_reason
+
+    def _invalidate_recognition(self, reason: str) -> None:
+        with self._probe_lock:
+            self._probe_checked = True
+            self._probe_ready = False
+            self._probe_reason = reason
+
+    def _embed_if_ready(self, packet: AudioPacket) -> tuple[float, ...] | None:
+        with self._inference_lock:
+            ready, _reason = self._recognition_state()
+            if not ready:
+                return None
+            try:
+                return self.backend.embed(packet)
+            except Exception:
+                self._invalidate_recognition("speaker_recognition_backend_failed")
+                return None
+
+    def _safety(self, ready: bool) -> dict[str, object]:
+        return {
+            "purpose": PURPOSE,
+            "recognition_ready": ready,
+            "evidence_kind": "speaker-embedding-similarity" if ready else "none",
+            "may_authenticate": False,
+            "may_grant_authority": False,
+            "audio_retained": False,
+        }
+
+    def _unavailable(self, operation: str) -> dict[str, object]:
+        ready, reason = self._recognition_state()
+        return {
+            "status": "unavailable",
+            "operation": operation,
+            "backend": self.backend.name,
+            "reason": reason,
+            **self._safety(ready),
+        }
 
     def _status(self) -> dict[str, object]:
         with self._lock:
             profiles = self.store.load()
+        ready, reason = self._recognition_state()
         return {
-            "purpose": PURPOSE,
-            "may_authenticate": False,
-            "may_grant_authority": False,
+            "status": "ready" if ready else "unavailable",
+            "reason": reason,
             "device": "cpu",
             "backend": self.backend.name,
             "sherpa_onnx_available": sherpa_onnx_available(),
             "enrolled_profiles": len(profiles),
             "max_audio_seconds": MAX_AUDIO_SECONDS,
+            **self._safety(ready),
         }
 
     def _enroll(self, request: Mapping[str, object]) -> dict[str, object]:
         profile = _profile_id(request.get("profile_id"))
+        ready, _reason = self._recognition_state()
+        if not ready:
+            return self._unavailable("enroll")
         packet = parse_audio(request.get("audio"))
-        embedding = self.backend.embed(packet)
+        embedding = self._embed_if_ready(packet)
+        if embedding is None:
+            return self._unavailable("enroll")
         with self._lock:
             profiles = self.store.load()
             if profile not in profiles and len(profiles) >= MAX_PROFILES:
@@ -401,31 +518,38 @@ class SpeakerWorker:
             profiles[profile] = {"embedding": list(embedding), "backend": self.backend.name}
             self.store.save(profiles)
         return {
+            "status": "ready",
             "profile_id": profile,
             "enrolled": True,
             "backend": self.backend.name,
-            "purpose": PURPOSE,
-            "may_authenticate": False,
-            "audio_retained": False,
+            **self._safety(ready),
         }
 
     def _compare(self, request: Mapping[str, object]) -> dict[str, object]:
         profile = _profile_id(request.get("profile_id"))
+        ready, _reason = self._recognition_state()
+        if not ready:
+            return self._unavailable("compare")
         packet = parse_audio(request.get("audio"))
         with self._lock:
             record = self.store.load().get(profile)
         if record is None:
             raise SpeakerWorkerError("profile_not_found", "speaker profile is not enrolled")
-        observed = self.backend.embed(packet)
+        if record.get("backend") != self.backend.name:
+            raise SpeakerWorkerError(
+                "embedding_mismatch", "stored speaker embedding uses a different backend"
+            )
+        observed = self._embed_if_ready(packet)
+        if observed is None:
+            return self._unavailable("compare")
         score = _familiarity_score(record["embedding"], observed)  # type: ignore[arg-type]
         return {
+            "status": "ready",
             "profile_id": profile,
             "score": score,
             "familiarity": _familiarity_band(score),
-            "purpose": PURPOSE,
-            "may_authenticate": False,
-            "may_grant_authority": False,
-            "audio_retained": False,
+            "backend": self.backend.name,
+            **self._safety(ready),
         }
 
     def handle(self, request: object) -> dict[str, object]:

@@ -159,11 +159,25 @@ IMAGE_INBOUND_TIMEOUT = max(
     float(os.environ.get("ALPECCA_DISCORD_IMAGE_TIMEOUT", "300")),
 )
 VOICE_SYNTH_TIMEOUT = max(
-    15.0,
-    min(180.0, float(os.environ.get("ALPECCA_DISCORD_VOICE_TIMEOUT", "105"))),
+    1.0,
+    min(15.0, float(os.environ.get("ALPECCA_DISCORD_VOICE_TIMEOUT", "4"))),
+)
+VOICE_TRANSCRIBE_TIMEOUT = max(
+    1.0,
+    min(
+        120.0,
+        float(os.environ.get("ALPECCA_DISCORD_TRANSCRIBE_TIMEOUT", "30")),
+    ),
+)
+VOICE_PLAYBACK_CALLBACK_TIMEOUT = max(
+    5.0,
+    min(
+        120.0,
+        float(os.environ.get("ALPECCA_DISCORD_PLAYBACK_TIMEOUT", "45")),
+    ),
 )
 DISCORD_VOICE_ENGINE = os.environ.get(
-    "ALPECCA_DISCORD_TTS_ENGINE", "auto"
+    "ALPECCA_DISCORD_TTS_ENGINE", "cloud"
 ).strip().lower()
 if DISCORD_VOICE_ENGINE not in {"auto", "cloud", "kokoro", "f5", "f5-tts"}:
     DISCORD_VOICE_ENGINE = "auto"
@@ -572,6 +586,42 @@ def _room_author_is_alpecca(author: object) -> bool:
     """Recognize the bridge's own history labels across Discord display variants."""
 
     return discord_room_state.is_self_author(author, _ROOM_SELF_AUTHORS)
+
+
+_ROOM_HISTORY_SOURCE_PREFIX_RE = re.compile(
+    r"^\[(?:human|voice)\]\s*",
+    re.IGNORECASE,
+)
+_ROOM_LATEST_VOICE_RE = re.compile(
+    r"^(?P<author>.+?)\s+said aloud:\s*(?P<content>.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _room_history_identity(author: object, content: object) -> tuple[str, str]:
+    """Return a source-neutral identity for exact restored-turn deduplication."""
+
+    label = _ROOM_HISTORY_SOURCE_PREFIX_RE.sub("", str(author or "").strip())
+    normalized = " ".join(str(content or "").split())
+    return label.casefold(), normalized.casefold()
+
+
+def _without_latest_voice_duplicate(
+    history: list[tuple[str, str]],
+    latest: str,
+) -> list[tuple[str, str]]:
+    """Keep the explicit latest voice event and remove its history copy."""
+
+    match = _ROOM_LATEST_VOICE_RE.fullmatch(str(latest or "").strip())
+    if match is None:
+        return list(history)
+    target = _room_history_identity(match.group("author"), match.group("content"))
+    result = list(history)
+    for index in range(len(result) - 1, -1, -1):
+        if _room_history_identity(*result[index]) == target:
+            del result[index]
+            break
+    return result
 
 
 def _room_has_unconsumed_human_turn(
@@ -1488,8 +1538,7 @@ def _synth_voice_wav(text: str) -> "bytes | None":
     """
     if not VOICE_ENABLED:
         return None
-    server_engine = "auto" if DISCORD_VOICE_ENGINE == "cloud" else DISCORD_VOICE_ENGINE
-    body = json.dumps({"text": text, "engine": server_engine}).encode("utf-8")
+    body = json.dumps({"text": text, "engine": DISCORD_VOICE_ENGINE}).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
         BRIDGE_AUTHORIZATION_HEADER: _BRIDGE_AUTHORIZATION_SECRET,
@@ -1659,9 +1708,18 @@ def build_client() -> discord.Client:
                 int(room["guild_id"]),
                 channel_id,
             )
-            lines.extend(voice_lines)
-            saw_human = saw_human or bool(voice_lines)
-            if voice_lines:
+            discord_identities = {
+                _room_history_identity(author, content)
+                for author, content in lines
+            }
+            unique_voice_lines = [
+                (str(author), str(content))
+                for author, content in voice_lines
+                if _room_history_identity(author, content) not in discord_identities
+            ]
+            lines.extend(unique_voice_lines)
+            saw_human = saw_human or bool(unique_voice_lines)
+            if unique_voice_lines:
                 latest_meaningful_kind = "human"
         except Exception:
             _diagnostic("voice_memory_unavailable")
@@ -1700,8 +1758,13 @@ def build_client() -> discord.Client:
                 await _seed_room_history(channel, room)
 
     def _room_model_text(chan_id: int, latest: str, *, invite: bool = False) -> str:
-        context = _recent_context(chan_id)
-        history = history_buf.get(chan_id, [])[-CONTEXT_MESSAGES:]
+        history = _model_room_history(chan_id)[-CONTEXT_MESSAGES:]
+        context_history = _without_latest_voice_duplicate(history, latest)
+        context = "\n".join(
+            f"{author}: {content}"
+            for author, content in context_history
+            if content
+        )
         turns = _room_history_turns(history)
         self_turns = sum(
             1
@@ -2095,6 +2158,7 @@ def build_client() -> discord.Client:
                     return
 
                 completion = asyncio.get_running_loop().create_future()
+                playback_timed_out = False
 
                 def _resolve_playback(error: object) -> None:
                     if not completion.done():
@@ -2102,10 +2166,11 @@ def build_client() -> discord.Client:
 
                 def _playback_finished(error: object, voice_path: str = path) -> None:
                     _remove_voice_file(voice_path)
-                    _diagnostic(
-                        "voice_playback_failed" if error else "voice_playback_completed",
-                        status="ffmpeg" if error else "played",
-                    )
+                    if not playback_timed_out:
+                        _diagnostic(
+                            "voice_playback_failed" if error else "voice_playback_completed",
+                            status="ffmpeg" if error else "played",
+                        )
                     try:
                         completion.get_loop().call_soon_threadsafe(
                             _resolve_playback,
@@ -2122,7 +2187,23 @@ def build_client() -> discord.Client:
                     vc.play(source, after=_playback_finished)
                     started = True
                     _diagnostic("voice_playback_started", status=DISCORD_VOICE_ENGINE)
-                    playback_error = await completion
+                    playback_error = await asyncio.wait_for(
+                        asyncio.shield(completion),
+                        timeout=VOICE_PLAYBACK_CALLBACK_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    playback_timed_out = True
+                    _diagnostic("voice_playback_failed", status="callback_timeout")
+                    if started:
+                        try:
+                            stopper = getattr(vc, "stop_playing", None)
+                            if not callable(stopper):
+                                stopper = getattr(vc, "stop", None)
+                            if callable(stopper) and vc.is_playing():
+                                stopper()
+                        except Exception:
+                            pass
+                    return
                 except asyncio.CancelledError:
                     if started:
                         try:
@@ -2130,12 +2211,12 @@ def build_client() -> discord.Client:
                                 vc.stop_playing()
                         except Exception:
                             pass
-                    _remove_voice_file(path)
                     raise
                 except Exception:
                     _diagnostic("voice_playback_failed")
-                    _remove_voice_file(path)
                     return
+                finally:
+                    _remove_voice_file(path)
                 if playback_error or not _playback_is_current():
                     if not playback_error:
                         _diagnostic("voice_playback_skipped", status="superseded")
@@ -2325,11 +2406,38 @@ def build_client() -> discord.Client:
                         _diagnostic("voice_receive_dropped", status="audit_unavailable")
                         continue
 
-                    async with voice_transcribe_lock:
-                        transcript = await asyncio.to_thread(
-                            hearing.transcribe,
-                            inspected.audio_bytes,
+                    try:
+                        async with voice_transcribe_lock:
+                            transcript = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    hearing.transcribe,
+                                    inspected.audio_bytes,
+                                ),
+                                timeout=VOICE_TRANSCRIBE_TIMEOUT,
+                            )
+                    except asyncio.TimeoutError:
+                        await asyncio.to_thread(
+                            discord_voice.record_voice_event,
+                            "failed",
+                            duration_seconds=duration_seconds,
+                            size_bytes=audio_size,
+                            reason="transcription-timeout",
                         )
+                        _diagnostic("voice_receive_reply_failed", status="transcription_timeout")
+                        continue
+                    except Exception as exc:
+                        await asyncio.to_thread(
+                            discord_voice.record_voice_event,
+                            "failed",
+                            duration_seconds=duration_seconds,
+                            size_bytes=audio_size,
+                            reason="transcription",
+                        )
+                        _diagnostic(
+                            "voice_receive_reply_failed",
+                            status=type(exc).__name__[:60],
+                        )
+                        continue
                     if isinstance(transcript, str):
                         transcript = " ".join(transcript.split())[:MAX_VOICE_TRANSCRIPT_CHARS]
                     if not transcript:
@@ -2406,7 +2514,9 @@ def build_client() -> discord.Client:
                     if voice_generation.get(guild_id, 0) != voice_generation_snapshot:
                         _diagnostic("voice_receive_reply_dropped", status="newer_speech")
                         continue
-                    history_buf.setdefault(channel_id, []).append((speaker_name, transcript))
+                    history_buf.setdefault(channel_id, []).append(
+                        (f"[voice] {speaker_name}", transcript)
+                    )
                     del history_buf[channel_id][:-max(CONTEXT_MESSAGES, 1)]
                     last_human_ts[channel_id] = now
                     chain_depth[channel_id] = 0
@@ -2473,6 +2583,22 @@ def build_client() -> discord.Client:
                             reason="empty-reply",
                         )
                         _diagnostic("voice_receive_reply_failed", status="empty_reply")
+                        continue
+                    if (
+                        _ROOM_EXPLICIT_REPEAT_REQUEST_RE.search(transcript) is None
+                        and _room_reply_repeats_self(
+                            reply,
+                            history_buf.get(channel_id, []),
+                        )
+                    ):
+                        await asyncio.to_thread(
+                            discord_voice.record_voice_event,
+                            "dropped",
+                            duration_seconds=duration_seconds,
+                            size_bytes=audio_size,
+                            reason="self-repeat",
+                        )
+                        _diagnostic("voice_receive_reply_dropped", status="self_repeat")
                         continue
                     try:
                         await text_channel.send(reply[:MAX_DISCORD_CHARS])

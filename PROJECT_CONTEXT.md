@@ -55,6 +55,13 @@ This checkpoint supersedes older route, access, model, and phase-status text.
   short local choices, and every offline fallback. Supported launchers apply
   this split with override-preserving defaults rather than treating the two
   models as interchangeable.
+- A source-complete, deployment-pending compute worker is assigned to
+  `Jason_HOLYROG`. It exposes only authenticated, bounded local
+  `qwen3.5:9b` reasoning and one-frame Blender rendering. Deep background work
+  may try that worker before `gemma4:cloud` and the primary laptop's local
+  fallback. The worker cannot start CoreMind, Discord, memory writers, tunnels,
+  tools, or a continuity speaking lease. It is not live-verified until the ROG
+  passes qualification and an authenticated health/job smoke on port 8788.
 - The seven Soul roles remain deterministic perspectives feeding one
   arbitration path, not seven independent transformer instances. The Soul now
   emits a bounded seven-score perspective vector and contradiction/pressure
@@ -347,6 +354,17 @@ Important current priorities:
 - The local host remains authoritative for identity, policy, memory, approvals,
   presence, and continuity. Remote compute may return bounded inference results;
   it never becomes another CoreMind or owns canonical state.
+- `Jason_HOLYROG` is the designated private-LAN compute worker. Its first
+  approved workload is background deep reflection; optional Blender work is
+  restricted to a configured input root, a `.blend` basename, one numeric
+  frame, and a configured output root. Live chat and voice stay on the primary
+  route until measured latency and interruption tests justify any change.
+- Worker requests use certificate-validated HTTPS on the private LAN plus an
+  exact HMAC-signed body, timestamp, nonce, request ID, bounded schemas, and
+  persistent replay rejection. The shared secret belongs in Windows Credential
+  Manager on both machines; the TLS private key stays only on the ROG. The
+  worker binds loopback by default. Private-LAN binding is an explicit setup
+  choice and must be firewall-limited to the primary laptop.
 
 ## Alpecca Design Lock
 

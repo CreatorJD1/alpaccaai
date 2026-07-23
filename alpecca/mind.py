@@ -39,6 +39,7 @@ from config import (
     OLLAMA_TIMEOUT_SECONDS,
     HISTORY_MESSAGES,
     CHAT_CLOUD_MODEL, CHAT_CLOUD_PAGED_MEMORY,
+    CHAT_VOICE_TIMEOUT_SECONDS,
     CLOUD_NUM_CTX,
     STREAM_CHAT,
     CHAT_ZEROGPU,
@@ -65,7 +66,9 @@ from config import (DEEP_BACKEND, ANTHROPIC_API_KEY, ANTHROPIC_MODEL,
                     COLAB_URL, COLAB_MODEL, COLAB_API_KEY,
                     COLAB_TIMEOUT_SECONDS, COLAB_FAST_CHAT,
                     ZEROGPU_SPACE, ZEROGPU_API, ZEROGPU_TOKEN,
-                    OLLAMA_CLOUD_MODEL, CLOUD_REFLECT_NUM_PREDICT)
+                    OLLAMA_CLOUD_MODEL, CLOUD_REFLECT_NUM_PREDICT,
+                    ROG_WORKER_URL, ROG_WORKER_MODEL,
+                    ROG_WORKER_FAILURE_COOLDOWN_SECONDS)
 from config import LIVING_LLM, SOUL_LLM, PROACTIVE_LLM
 from alpecca.homeostasis import EmotionalState
 from alpecca import state as state_store
@@ -417,6 +420,21 @@ def _tool_message_mapping(message: object) -> Mapping[str, object]:
     }
 
 
+def _offered_tool_names(tools: list[dict]) -> frozenset[str]:
+    """Return only valid function names from the schemas offered this turn."""
+    names: set[str] = set()
+    for schema in tools:
+        if not isinstance(schema, Mapping):
+            continue
+        function = schema.get("function")
+        if not isinstance(function, Mapping):
+            continue
+        name = function.get("name")
+        if isinstance(name, str) and name:
+            names.add(name)
+    return frozenset(names)
+
+
 _RUNTIME_MODEL_QUESTION_PATTERNS = (
     re.compile(
         r"\b(?:what|which)\s+(?:ai\s+|language\s+)?(?:model|llm)\b"
@@ -463,6 +481,8 @@ def _runtime_model_status_reply(model_use: Mapping[str, object]) -> str:
         route = "Ollama's hosted cloud route, not the local model"
     elif backend == "zerogpu":
         route = "the configured Hugging Face ZeroGPU route"
+    elif backend == "rog-worker":
+        route = "the authenticated non-speaking Jason_HOLYROG compute worker"
     elif backend == "hf":
         route = "the configured Hugging Face route"
     else:
@@ -579,6 +599,16 @@ class _LLM:
             self._cloud_client = ollama.Client(host=OLLAMA_HOST, timeout=20.0)
         return self._cloud_client
 
+    def _voice_cloud_chat_client(self):
+        """Return the short-deadline hosted client for live spoken turns."""
+        if getattr(self, "_voice_cloud_client", None) is None:
+            import ollama
+            self._voice_cloud_client = ollama.Client(
+                host=OLLAMA_HOST,
+                timeout=CHAT_VOICE_TIMEOUT_SECONDS,
+            )
+        return self._voice_cloud_client
+
     def _thinking_client(self):
         """A second Ollama client with a reflection-scale timeout. The normal
         client is capped at OLLAMA_TIMEOUT_SECONDS (~18s) so a wedged call
@@ -663,6 +693,7 @@ class _LLM:
         self._deep_chain. Never raises: a missing key/package/endpoint just
         drops that link so her inner life still runs, just plainer."""
         self._deep_chain: list = []
+        self._deep_retry_after: dict[str, float] = {}
         for kind in [k.strip() for k in DEEP_BACKEND.split(",") if k.strip()]:
             try:
                 if kind == "anthropic" and ANTHROPIC_API_KEY:
@@ -686,6 +717,14 @@ class _LLM:
                     # Ollama (signed in). Same client/protocol as her local
                     # brain; the model name alone routes to the cloud.
                     self._deep_chain.append(("ollama-cloud", OLLAMA_CLOUD_MODEL))
+                elif kind == "rog-worker" and ROG_WORKER_URL:
+                    # A bounded compute-only helper: no CoreMind, memory DB,
+                    # Discord bridge, tools, or continuity speaking lease runs
+                    # there. Missing credentials simply omit this link.
+                    from alpecca.rog_worker_client import RogWorkerClient
+                    self._deep_chain.append(
+                        ("rog-worker", RogWorkerClient.from_environment())
+                    )
             except Exception as exc:
                 import sys
                 print(f"[mind] deep tier link '{kind}' unavailable. "
@@ -732,6 +771,8 @@ class _LLM:
             return OLLAMA_FAST_MODEL
         if tier == "deep" and self._deep and self._deep[0] == "ollama-cloud":
             return self._deep[1]
+        if tier == "deep" and self._deep and self._deep[0] == "rog-worker":
+            return ROG_WORKER_MODEL
         if tier == "deep" and REFLECT_MODEL:
             return REFLECT_MODEL
         return OLLAMA_MODEL
@@ -790,7 +831,7 @@ class _LLM:
         # Tool calls stay on the local Ollama protocol. Hosted chat routing is
         # plain-text only because tool schemas/round-trips are backend-specific
         # and must remain observable and bounded on the local path.
-        if (CHAT_CLOUD_MODEL and tier == "reason" and not local_only
+        if (CHAT_CLOUD_MODEL and tier in {"reason", "voice"} and not local_only
                 and not tools):
             cloud_started = time.perf_counter()
             route_detail["cloud_attempted"] = True
@@ -802,10 +843,22 @@ class _LLM:
                 # local 120-token budget gets eaten before the reply starts and
                 # the content comes back EMPTY. Cloud tokens are fast, so give
                 # hosted calls room to think AND answer.
-                ck["options"] = dict(kwargs["options"], num_ctx=CLOUD_NUM_CTX,
-                                     num_predict=max(512, OLLAMA_NUM_PREDICT))
+                cloud_predict = (
+                    max(96, min(128, OLLAMA_NUM_PREDICT))
+                    if tier == "voice"
+                    else max(512, OLLAMA_NUM_PREDICT)
+                )
+                ck["options"] = dict(
+                    kwargs["options"],
+                    num_ctx=CLOUD_NUM_CTX,
+                    num_predict=cloud_predict,
+                )
                 ck["options"].pop("num_gpu", None)   # meaningless for hosted
-                client = self._cloud_chat_client()
+                client = (
+                    self._voice_cloud_chat_client()
+                    if tier == "voice"
+                    else self._cloud_chat_client()
+                )
                 try:
                     resp = client.chat(**ck, think=False)
                 except TypeError:
@@ -829,6 +882,12 @@ class _LLM:
                 import sys
                 print(f"[mind] cloud chat unavailable -> local. "
                       f"{type(exc).__name__}: {exc}", file=sys.stderr)
+                if tier == "voice":
+                    # Yield the floor promptly. A local 9B retry can take tens
+                    # of seconds and then trigger another long TTS cascade.
+                    raise TimeoutError(
+                        "live voice cloud response deadline exceeded"
+                    ) from exc
         self.last_chat_model = kwargs["model"]
         # Force layer placement when configured -- Ollama under-offloads some
         # GGUFs (qwen3.5) and leaves the small GPU half-idle. See OLLAMA_NUM_GPU.
@@ -986,20 +1045,51 @@ class _LLM:
             # answers wins; every failure falls to the next, and the local
             # thinking pass below remains the final net.
             for link in self._deep_chain:
+                if link[0] == "rog-worker":
+                    now = time.monotonic()
+                    if now < self._deep_retry_after.get("rog-worker", 0.0):
+                        continue
+                    try:
+                        health = link[1].health()
+                        if not health.ready or not health.reasoning_ready:
+                            raise RuntimeError("ROG worker reasoning is not ready")
+                    except Exception as exc:
+                        self._deep_retry_after["rog-worker"] = (
+                            now + ROG_WORKER_FAILURE_COOLDOWN_SECONDS
+                        )
+                        import sys
+                        print(
+                            "[mind] deep link 'rog-worker' unavailable -> next. "
+                            f"{type(exc).__name__}: {exc}",
+                            file=sys.stderr,
+                        )
+                        continue
                 try:
                     text = self._generate_deep(system_prompt, user_msg, history,
                                                tier=link)
+                    if link[0] == "rog-worker":
+                        self._deep_retry_after.pop("rog-worker", None)
                     self._mark_model_use(
                         requested=tier,
                         used="deep",
                         backend=link[0],
                         # ollama-cloud/zerogpu links carry their model/space
                         # name as a string -- report exactly what served.
-                        model=(link[1] if isinstance(link[1], str)
-                               else self.model_for("deep")),
+                        model=(
+                            ROG_WORKER_MODEL
+                            if link[0] == "rog-worker"
+                            else (
+                                link[1] if isinstance(link[1], str)
+                                else self.model_for("deep")
+                            )
+                        ),
                     )
                     return text
                 except Exception as exc:
+                    if link[0] == "rog-worker":
+                        self._deep_retry_after["rog-worker"] = (
+                            time.monotonic() + ROG_WORKER_FAILURE_COOLDOWN_SECONDS
+                        )
                     import sys
                     print(f"[mind] deep link '{link[0]}' failed -> next. "
                           f"{type(exc).__name__}: {exc}", file=sys.stderr)
@@ -1326,32 +1416,70 @@ class _LLM:
                 except Exception:
                     resp = self._hf.chat_completion(**hf_call)
                 msg = resp.choices[0].message
-                import json as _json
                 # Same bounded multi-round chaining as the local path (see there).
                 rounds = max(1, ActionsCfg.MAX_TOOL_ROUNDS)
+                allowed_tool_names = _offered_tool_names(tools)
+                remaining_tool_calls = tool_call_parser_mod.MAX_TOOL_CALLS
+                executed_tool_names: list[str] = []
+                blocked_reply: str | None = None
                 for i in range(rounds):
-                    calls = getattr(msg, "tool_calls", None) or []
+                    provider_message = dict(_tool_message_mapping(msg))
+                    if provider_message.get("tool_calls") is None:
+                        provider_message.pop("tool_calls", None)
+                    parsed_calls = tool_call_parser_mod.parse_tool_calls(
+                        provider_message
+                    )
+                    calls = parsed_calls.calls
+                    rejection_reason: str | None = None
+                    if not parsed_calls.ok:
+                        rejection_reason = "malformed"
+                    elif len(calls) > remaining_tool_calls:
+                        rejection_reason = "over-limit"
+                    elif any(call.name not in allowed_tool_names for call in calls):
+                        rejection_reason = "unknown or unoffered"
+                    if rejection_reason is not None:
+                        if executed_tool_names:
+                            tool_names = ", ".join(executed_tool_names)
+                            step_label = (
+                                "step" if len(executed_tool_names) == 1 else "steps"
+                            )
+                            blocked_reply = (
+                                f"{len(executed_tool_names)} verified tool "
+                                f"{step_label} ran ({tool_names}). A later tool "
+                                "request was rejected before it ran "
+                                f"({rejection_reason})."
+                            )
+                        else:
+                            blocked_reply = (
+                                "I could not safely interpret that tool request, "
+                                "so I did not run it."
+                            )
+                        break
                     if not calls:
                         break
+                    remaining_tool_calls -= len(calls)
+                    content = provider_message.get("content", "")
                     messages.append({
-                        "role": "assistant", "content": msg.content or "",
+                        "role": "assistant",
+                        "content": content if isinstance(content, str) else "",
                         "tool_calls": [{
-                            "id": getattr(c, "id", "") or "call",
+                            "id": call.call_id or f"call-{i}-{index}",
                             "type": "function",
-                            "function": {"name": c.function.name,
-                                         "arguments": c.function.arguments},
-                        } for c in calls]})
-                    for c in calls:
-                        args = c.function.arguments
-                        if isinstance(args, str):
-                            try:
-                                args = _json.loads(args)
-                            except Exception:
-                                args = {}
-                        result = on_tool(c.function.name, args or {})
-                        messages.append({"role": "tool",
-                                         "tool_call_id": getattr(c, "id", "") or "call",
-                                         "content": str(result)})
+                            "function": {
+                                "name": call.name,
+                                "arguments": call.arguments,
+                            },
+                        } for index, call in enumerate(calls)]
+                    })
+                    for index, call in enumerate(calls):
+                        call_id = call.call_id or f"call-{i}-{index}"
+                        result = on_tool(call.name, call.arguments)
+                        executed_tool_names.append(call.name)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": str(result),
+                        })
                     last = (i == rounds - 1)
                     kw = dict(hf_call, messages=messages)
                     if not last:
@@ -1367,7 +1495,10 @@ class _LLM:
                     backend="hf",
                     model=HF_MODEL,
                 )
-                return strip_think(msg.content)
+                if blocked_reply is not None:
+                    return blocked_reply
+                content = getattr(msg, "content", "")
+                return strip_think(content or "")
             resp = self._hf.chat_completion(**hf_call)
             self._mark_model_use(
                 requested="reason",
@@ -1399,13 +1530,26 @@ class _LLM:
                        history: list[dict] | None = None,
                        tier: tuple | None = None) -> str:
         """One reply from a deep-tier link -- a stronger model for her hardest
-        inner work. Transports: Anthropic Claude, self-hosted OpenAI-compatible
-        cloud, a Hugging Face ZeroGPU Gradio Space, or an Ollama cloud model.
+        inner work. Transports: the authenticated Jason_HOLYROG compute worker,
+        Anthropic Claude, self-hosted OpenAI-compatible cloud, a Hugging Face
+        ZeroGPU Gradio Space, or an Ollama cloud model.
         No tools here: the deep tier is for thought, not actuation. Deep
         prompts carry no sensed screen context (callers pass an empty
         situation), so the no-senses-to-cloud line holds. Raises on failure so
         generate() can try the next link in the chain."""
         kind, client = tier or self._deep
+        if kind == "rog-worker":
+            result = client.reason(
+                system_prompt,
+                user_msg,
+                history=history,
+                model=ROG_WORKER_MODEL,
+                max_tokens=min(1024, max(160, CLOUD_REFLECT_NUM_PREDICT)),
+            )
+            text = strip_think(result.text).strip()
+            if not text:
+                raise RuntimeError("ROG worker deep call returned nothing")
+            return text
         if kind == "ollama-cloud":
             # Her deepest work on a big hosted thinking model, through the same
             # Ollama client as everything else. Real chain-of-thought (the chain
@@ -2617,6 +2761,13 @@ class CoreMind:
                 )
             except Exception:
                 scoped_memories = []
+            else:
+                self._compare_temporal_shadow_recall(
+                    scoped_memories,
+                    turn=turn,
+                    observed_at=time.time(),
+                    limit=4,
+                )
             if _VISUAL_REFERENCE_RE.search(memory_message):
                 try:
                     visual_memories = memory_store.recall(
@@ -2831,6 +2982,38 @@ class CoreMind:
                 },
             )
             runtime.process_batch(limit=1)
+        except Exception:
+            return
+
+    def _compare_temporal_shadow_recall(
+        self,
+        legacy_results: list[dict],
+        *,
+        turn: turn_context_mod.TurnContext,
+        observed_at: float,
+        limit: int,
+    ) -> None:
+        """Record shadow-recall evidence without changing authoritative recall.
+
+        Temporal facts remain evaluation-only. A bounded copy prevents even a
+        faulty evaluator from mutating the memories that continue into prompt
+        construction, and every shadow failure stays outside the chat path.
+        """
+        runtime = getattr(self, "_temporal_runtime", None)
+        if runtime is None:
+            return
+        bounded_legacy = tuple(
+            dict(item) if isinstance(item, Mapping) else item
+            for item in legacy_results[:limit]
+        )
+        try:
+            runtime.compare_shadow_recall(
+                bounded_legacy,
+                at=float(observed_at),
+                scope=turn.memory_scope,
+                channel=turn.surface,
+                limit=limit,
+            )
         except Exception:
             return
 
@@ -3066,6 +3249,12 @@ class CoreMind:
             memories = memory_store.recall(
                 user_msg, scope=turn.memory_scope, **recall_kwargs,
             )
+        self._compare_temporal_shadow_recall(
+            memories,
+            turn=turn,
+            observed_at=cue_observed_at,
+            limit=5,
+        )
         paged_memories = []
         if MINDPAGE:
             try:
@@ -3162,7 +3351,7 @@ class CoreMind:
                 abilities = self.toolkit.describe()
         tool_schema = (
             None
-            if attachment_context or runtime_model_question
+            if reply_tier == "voice" or attachment_context or runtime_model_question
             else self._tool_schema(low, turn=None if implicit_turn else turn)
         )
         who_prompt = people_mod.who_prompt(speaker)
@@ -3393,6 +3582,7 @@ class CoreMind:
         # back, and bounded so it can't spin.
         if (
             tool_schema is None
+            and reply_tier != "voice"
             and not runtime_model_question
             and not self.llm.last_call().get("fallback")
         ):

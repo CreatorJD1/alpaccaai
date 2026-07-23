@@ -1,5 +1,46 @@
 # Alpecca - Handoff (updated 2026-07-22)
 
+## 2026-07-22 Verified research-wave status
+
+- Receipt-language false positives are fixed: conversational phrases such as
+  `I finished listening` and `I opened up` no longer claim an external action.
+  Direct upload/download completion claims still require a successful receipt.
+  The hosted/Hugging Face tool loop also preserves an honest partial-execution
+  report when a valid tool ran before a later malformed, unknown, or over-limit
+  call was rejected.
+- Temporal shadow comparison is now wired into creator and scoped Discord
+  recall as evaluation-only evidence. Legacy SQLite/Mindpage recall remains the
+  returned authority, comparison failure cannot break chat, and temporal fact
+  application is transaction-atomic. The stale claim that shadow comparison is
+  unwired is superseded.
+- Cloud Kokoro readiness now requires a structurally coherent, playable PCM
+  RIFF/WAVE with at least one audio frame; missing readiness evidence fails
+  closed. The earlier authenticated deployment synthesis smoke remains valid
+  historical evidence, but the stricter source has not received a new sustained
+  House/Discord voice soak.
+- Configured cross-host startup now requires the complete inherited singleton
+  tuple: lease ID, holder, positive fencing epoch, and the same-process launcher
+  PID. Explicit offline-isolated mode remains the only unfenced exception.
+- Speaker readiness now requires a bounded successful inference probe and fails
+  closed on missing, malformed, failed, or timed-out extraction. `sherpa_onnx`
+  and its speaker model are not installed because the selected model's upstream
+  license remains unresolved.
+- The verified YuNet and SFace assets are installed outside Git under
+  `%LOCALAPPDATA%\Alpecca\models\face\`. Their SHA-256 hashes match the approved
+  files and the OpenCV CPU backend completed a load smoke. They remain optional,
+  are not production-wired, and have no personal enrollment/camera corpus.
+- Broad verification reached **3,197 passed, 3 skipped, 0 failed**, and the
+  House production build passed. Subsequent receipt, tool-loop, WAV-readiness,
+  speaker-readiness, temporal, and singleton changes passed their focused gates;
+  the broad suite was not rerun after every final focused patch.
+- No post-restart live Discord voice proof was performed for this checkpoint.
+  Current external gates are real shadow-recall corpus evidence, face/speaker
+  qualification and wiring, sustained voice quality, and singleton
+  failover/failback soak. Do not turn source presence or a bounded smoke into
+  release proof.
+- The single supported entry point is
+  [`ALPECCA_LAUNCHER.bat`](ALPECCA_LAUNCHER.bat).
+
 ## 2026-07-22 ASUS ROG remote-host evaluation
 
 - `Jason_HOLYROG` was last observed online in CreatorJD's Codex Remote view on
@@ -15,6 +56,10 @@
 
 ## 2026-07-22 Continuous House and duplex voice checkpoint
 
+This implementation checkpoint is retained as historical evidence. Its earlier
+deployment-proof boundary is superseded by the verified research-wave status
+above; sustained quality soaks are still open.
+
 - During an active user-started live call, House HQ keeps one microphone stream
   open, endpoints bounded PCM16 WAV turns with adaptive voice activity, and
   releases raw audio after delivery. Spoken replies are sentence-segmented,
@@ -26,9 +71,8 @@
 - Discord duplex voice now fences transcription, reply, and segmented playback
   by generation so newer speech or interruption suppresses stale output.
 - The complete House voice Node suite passed (29 tests) and the House production
-  build passed. Live browser microphone/playback, live Discord duplex, and
-  deployed authenticated cloud-voice soaks remain pending; this is not live or
-  deployment proof.
+  build passed. At this checkpoint, live browser microphone/playback, live
+  Discord duplex, and deployed authenticated cloud voice were still pending.
 
 ## 2026-07-22 Silero Discord voice stage
 
@@ -2268,3 +2312,34 @@ free) · `scripts/` (doctor, run_full, run_talkinghead, import_rig, build_manife
 - House push-to-talk now requests WebM/Opus or Ogg/Opus explicitly. A live
   Faster-Whisper probe loaded successfully and transcribed a reference in 19.38s.
 - Storage findings are recorded in `docs/LOCAL_STORAGE_AUDIT_2026-07-22.md`.
+
+## 2026-07-22 Jason_HOLYROG compute worker
+
+- Added an isolated compute-only worker for `Jason_HOLYROG`. It exposes only
+  HMAC-authenticated `GET /v1/health`, `POST /v1/reason`, and
+  `POST /v1/render/blender`; schemas, bodies, timeouts, models, paths,
+  concurrency, output sizes, timestamps, nonces, and replay IDs are bounded.
+- The worker strips inherited Discord, continuity, tunnel, file, sensor, and
+  CoreMind authority before startup. It owns no memory database and cannot
+  speak. Blender receives a sanitized child environment, `--disable-autoexec`,
+  one approved `.blend` basename, and one frame under configured roots.
+- Private-LAN use requires certificate-validated HTTPS for the exact
+  `Jason_HOLYROG` hostname plus per-request HMAC. The TLS private key stays on
+  the ROG; only its public certificate is copied to the primary. Content-free
+  replay records persist across worker restarts and never evict a live nonce.
+- The ROG hostname is fail-closed at the GUI, full-stack launcher, server
+  lifespan, and Discord bridge, so continuity loss cannot turn the worker into
+  a second Alpecca instance.
+- Primary deep background work now tries `rog-worker`, then `gemma4:cloud`, then
+  local `qwen3.5:9b`. Normal chat and voice are unchanged. Missing credentials,
+  worker errors, or timeouts fall through instead of breaking Alpecca.
+- Added creator-only `/system/rog-worker` status and render routes, capability
+  audit receipts, launcher controls, a read-only host qualifier, and
+  `docs/ROG_COMPUTE_WORKER.md`.
+- Focused integration gate: 156 passed; the complete core regression then
+  passed 371 tests. A real read-only qualification on this machine reported
+  `RygenART`, not `Jason_HOLYROG`, and started no services.
+- Deployment is not complete. `Jason_HOLYROG` resolved on the LAN, but port
+  8788 and the checked remote-management ports were unreachable. Run the setup
+  directly on the ROG, limit its firewall rule to the primary laptop, then keep
+  authenticated health, reasoning, and Blender receipts before calling it live.

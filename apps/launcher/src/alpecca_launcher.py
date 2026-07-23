@@ -93,8 +93,22 @@ def launch_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
     env.setdefault("ALPECCA_MODEL", "qwen3.5:9b")
     env.setdefault("ALPECCA_FAST_MODEL", "qwen3.5:9b")
     env.setdefault("ALPECCA_NUM_CTX", "8192")
+    env.setdefault("ALPECCA_ROG_WORKER_URL", "https://Jason_HOLYROG:8788")
+    local_app_data = Path(env.get("LOCALAPPDATA") or Path.home())
+    env.setdefault(
+        "ALPECCA_ROG_WORKER_CA_CERT",
+        str(local_app_data / "Alpecca" / "rog-worker" / "tls" / "jason-holyrog.crt"),
+    )
+    env.setdefault("ALPECCA_ROG_WORKER_MODEL", "qwen3.5:9b")
     env.setdefault("ALPECCA_TTS_BACKEND", "auto")
     return env
+
+
+def _is_dedicated_worker_host(hostname: str | None = None) -> bool:
+    import socket
+
+    observed = socket.gethostname() if hostname is None else hostname
+    return str(observed or "").strip().casefold() == "jason_holyrog"
 
 
 def _launcher_python() -> str:
@@ -351,6 +365,7 @@ class Launcher:
         actions.rowconfigure(0, weight=1)
         actions.rowconfigure(1, weight=1)
         actions.rowconfigure(2, weight=1)
+        actions.rowconfigure(3, weight=1)
 
         self._action_button(actions, "Wake Alpecca", self.wake_her, 0, 0, primary=True)
         self._action_button(actions, "Open House HQ", self.open_home, 0, 1)
@@ -358,6 +373,8 @@ class Launcher:
         self._action_button(actions, "Phone link", self.phone_access, 1, 1)
         self._action_button(actions, "Discord invite", self.discord_invite, 2, 0)
         self._action_button(actions, "Boot log", self.open_boot_log, 2, 1)
+        self._action_button(actions, "Local access point", self.local_access_point, 3, 0)
+        self._action_button(actions, "ROG compute", self.rog_compute, 3, 1)
 
         footer = tk.Frame(self.root, bg=BG)
         footer.pack(fill="x", padx=22, pady=(3, 15))
@@ -531,6 +548,13 @@ class Launcher:
 
     def wake_her(self) -> None:
         """Start one hidden full stack and expose its startup state in this UI."""
+        if _is_dedicated_worker_host():
+            self._flash()
+            self.say(
+                "This ROG is locked to non-speaking compute. "
+                "Use ROG compute; CoreMind will not start here."
+            )
+            return
         if self._awake:
             self._flash()
             self.say("Alpecca is already awake. No second instance was started.")
@@ -581,9 +605,83 @@ class Launcher:
         except Exception as exc:
             self.say(f"Could not open the Alpecca app: {type(exc).__name__}")
 
+    def _lan_url(self) -> str:
+        """The address another device on this network uses to reach THIS PC."""
+        import socket
+        ip = ""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                ip = s.getsockname()[0]
+            finally:
+                s.close()
+        except Exception:
+            ip = socket.gethostname()
+        return f"http://{ip}:{_configured_port()}"
+
+    def local_access_point(self) -> None:
+        """Expose HER OWN server on this network so the phone/other-PC app uses
+        THIS computer for all the heavy processing (LLM, TTS, vision). Starts
+        her in network mode (ALPECCA_REMOTE=1) in a visible console that prints
+        the connect address; still behind her authorization, so binding wider
+        does not open the door. If she is already running locally, that console
+        will say so -- put her to sleep first, then press this again."""
+        try:
+            if _is_dedicated_worker_host():
+                self.say("The dedicated ROG cannot start an Alpecca access point.")
+                return
+            if REPO_ROOT is None:
+                self.say("Cannot start the access point: project root not found.")
+                return
+            url = self._lan_url()
+            env = launch_environment()
+            env["ALPECCA_REMOTE"] = "1"
+            subprocess.Popen(
+                ["cmd.exe", "/k", _launcher_python(), "scripts\\run_full.py"],
+                cwd=str(REPO_ROOT),
+                env=env,
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010),
+            )
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(url)
+            except Exception:
+                pass
+            self.say(f"Access point starting. Other devices: {url}  (copied)")
+        except Exception as exc:
+            self.say(f"Could not start the access point: {type(exc).__name__}")
+
+    def rog_compute(self) -> None:
+        """Start the isolated helper on its assigned host or show its status."""
+        try:
+            import socket
+
+            if not _is_dedicated_worker_host(socket.gethostname()):
+                webbrowser.open(_protected_url("/system/rog-worker"))
+                self.say("Opening the Jason_HOLYROG compute-worker status.")
+                return
+            if REPO_ROOT is None:
+                self.say("Cannot start ROG compute: project root not found.")
+                return
+            env = launch_environment()
+            env["ALPECCA_ROG_WORKER_LAN"] = "1"
+            subprocess.Popen(
+                ["cmd.exe", "/k", _launcher_python(), "scripts\\run_rog_compute_worker.py"],
+                cwd=str(REPO_ROOT),
+                env=env,
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010),
+            )
+            self.say("Starting the non-speaking ROG compute worker.")
+        except Exception as exc:
+            self.say(f"Could not start ROG compute: {type(exc).__name__}")
+
     def phone_access(self) -> None:
         """Keep the tunnel console visible because it displays its public link."""
         try:
+            if _is_dedicated_worker_host():
+                self.say("Phone sharing stays with the primary Alpecca host.")
+                return
             if REPO_ROOT is None:
                 self.say("Cannot open a phone link because the project root was not found.")
                 return

@@ -3142,10 +3142,10 @@ def test_house_hq_chat_uses_natural_reason_tier_like_discord():
     assert server._house_chat_reply_tier("can you hear me?") == "reason"
 
 
-def test_house_live_voice_uses_fast_tier_without_changing_typed_chat():
+def test_house_live_voice_uses_cloud_first_voice_tier_without_changing_typed_chat():
     import server
 
-    assert server._house_chat_reply_tier("can you hear me?", delivery="voice") == "fast"
+    assert server._house_chat_reply_tier("can you hear me?", delivery="voice") == "voice"
     assert server._house_chat_reply_tier("can you hear me?", delivery="text") == "reason"
 
 
@@ -4945,6 +4945,8 @@ def test_tts_route_has_timeout_fallback_for_slow_voice_engine():
     assert "asyncio.wait_for" in route
     assert "server voice timed out" in route
     assert "X-Alpecca-TTS-Error" in route
+    assert '"cloud"' in route
+    assert "LIVE_TTS_ROUTE_TIMEOUT" in route
     assert '@app.post("/voice/tts")' in route
     assert '@app.post("/tts/warmup")' in text
     assert "_warm_alpecca_voice" in text
@@ -5548,6 +5550,73 @@ def test_fast_workload_stays_on_local_qwen_when_model_names_match(monkeypatch):
     assert llm.last_call()["requested_tier"] == "fast"
 
 
+def test_live_voice_uses_hosted_chat_with_bounded_spoken_budget(monkeypatch):
+    """Voice is direct conversation, while background fast scoring stays local."""
+    from alpecca import mind as mind_mod
+    from alpecca.mind import _LLM
+
+    class FakeClient:
+        def __init__(self, reply):
+            self.reply = reply
+            self.calls = []
+
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"message": {"content": self.reply}}
+
+    local = FakeClient("local fallback")
+    cloud = FakeClient("short hosted voice answer")
+    monkeypatch.setattr(mind_mod, "CHAT_CLOUD_MODEL", "gemma4:cloud")
+    monkeypatch.setattr(mind_mod, "CHAT_ZEROGPU", False)
+    llm = _LLM()
+    llm._backend = "ollama"
+    llm._client = local
+    monkeypatch.setattr(_LLM, "_voice_cloud_chat_client", lambda self: cloud)
+
+    assert llm.generate("system", "hello", tier="voice") == "short hosted voice answer"
+    assert local.calls == []
+    assert cloud.calls[0]["model"] == "gemma4:cloud"
+    assert 96 <= cloud.calls[0]["options"]["num_predict"] <= 128
+    assert llm.last_call()["requested_tier"] == "voice"
+    assert llm.last_call()["backend"] == "ollama-cloud"
+
+
+def test_live_voice_cloud_timeout_does_not_queue_local_9b_retry(monkeypatch):
+    from alpecca import mind as mind_mod
+    from alpecca.mind import _LLM
+
+    class LocalClient:
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, **_kwargs):
+            self.calls += 1
+            return {"message": {"content": "late local reply"}}
+
+    class TimedOutCloud:
+        def chat(self, **_kwargs):
+            raise TimeoutError("hosted voice deadline")
+
+    monkeypatch.setattr(mind_mod, "CHAT_CLOUD_MODEL", "gemma4:cloud")
+    monkeypatch.setattr(mind_mod, "CHAT_ZEROGPU", False)
+    local = LocalClient()
+    llm = _LLM()
+    llm._backend = "ollama"
+    llm._client = local
+    monkeypatch.setattr(
+        _LLM,
+        "_voice_cloud_chat_client",
+        lambda self: TimedOutCloud(),
+    )
+
+    reply = llm.generate("overall: content", "Are you there?", tier="voice")
+
+    assert local.calls == 0
+    assert "basic live mode" in reply
+    assert llm.last_call()["fallback"] is True
+    assert llm.last_call()["requested_tier"] == "voice"
+
+
 def test_stream_request_does_not_replace_hosted_reason_chat_with_local(monkeypatch):
     """Streaming is presentation-only; it must not silently change providers."""
     from alpecca import mind as mind_mod
@@ -5804,6 +5873,43 @@ def test_smart_tool_mode_offers_tools_for_memorized_requests_and_streams_are_pau
         assert captured["on_token"] is None
         names = [t["function"]["name"] for t in captured["tools"]]
         assert "memory_search" in names or "self_status" in names
+    finally:
+        ActionsCfg.TOOL_MODE = old_mode
+
+
+def test_live_voice_is_conversation_only_even_when_words_match_tools():
+    from alpecca.mind import CoreMind
+    from config import Actions as ActionsCfg
+
+    old_mode = ActionsCfg.TOOL_MODE
+    try:
+        ActionsCfg.TOOL_MODE = "always"
+        mind = CoreMind()
+        captured = {}
+
+        def fake_generate(system_prompt, user_msg, history=None, tools=None,
+                          on_tool=None, tier="reason", local_only=False):
+            captured.update({"tools": tools, "on_tool": on_tool, "tier": tier})
+            return "I remember what you mean."
+
+        mind.llm.generate = fake_generate
+        mind.llm._last_call = {
+            "requested_tier": "voice",
+            "used_tier": "voice",
+            "backend": "test",
+            "model": "fake",
+            "ok": True,
+            "fallback": False,
+            "error": "",
+        }
+
+        result = mind.chat(
+            "Search your memory and tell me how you feel about it.",
+            reply_tier="voice",
+        )
+
+        assert result["reply"] == "I remember what you mean."
+        assert captured == {"tools": None, "on_tool": None, "tier": "voice"}
     finally:
         ActionsCfg.TOOL_MODE = old_mode
 

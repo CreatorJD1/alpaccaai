@@ -93,6 +93,13 @@ HISTORY_MESSAGES = int(os.environ.get("ALPECCA_HISTORY_MESSAGES", "24"))
 # 100% local. Note: with this set, chat text leaves the machine; senses
 # stay out of prompts per the existing privacy line.
 CHAT_CLOUD_MODEL = os.environ.get("ALPECCA_CHAT_CLOUD_MODEL", "")
+# Live speech is turn-taking, not a batch workload. Give the hosted model a
+# separate short deadline so an unavailable route cannot queue a local 9B
+# retry and hold the Discord floor for minutes.
+CHAT_VOICE_TIMEOUT_SECONDS = max(
+    0.5,
+    min(10.0, float(os.environ.get("ALPECCA_CHAT_VOICE_TIMEOUT", "3.0"))),
+)
 # A recalled Mindpage can contain personal continuity. Keep it local unless the
 # launch surface explicitly permits those summaries on its configured hosted
 # chat model. Files, images, source inspection, and private sensors remain
@@ -223,6 +230,39 @@ CLOUD_SEND_SENSES = os.environ.get("ALPECCA_CLOUD_SEND_SENSES", "0") \
 # his ZeroGPU Space if that fails, and the local thinking pass remains the final
 # net after the whole chain (mind.generate).
 DEEP_BACKEND = os.environ.get("ALPECCA_DEEP_BACKEND", "local").lower()
+
+# Optional non-speaking compute worker. Jason_HOLYROG can run the isolated
+# worker service and take bounded background reasoning or Blender render jobs;
+# it never owns CoreMind, memory, Discord, or a continuity speaking lease.
+# Merely setting a URL does not grant access: each request is HMAC-authenticated
+# with a secret supplied by deployment or the exact Credential Manager target.
+ROG_WORKER_URL = os.environ.get("ALPECCA_ROG_WORKER_URL", "").strip().rstrip("/")
+ROG_WORKER_MODEL = os.environ.get(
+    "ALPECCA_ROG_WORKER_MODEL", "qwen3.5:9b"
+).strip()
+ROG_WORKER_TIMEOUT_SECONDS = max(
+    1.0,
+    min(
+        180.0,
+        float(
+            os.environ.get(
+                "ALPECCA_ROG_WORKER_TIMEOUT_SECONDS",
+                os.environ.get("ALPECCA_ROG_WORKER_TIMEOUT", "180"),
+            )
+        ),
+    ),
+)
+ROG_WORKER_CREDENTIAL_TARGET = os.environ.get(
+    "ALPECCA_ROG_WORKER_CREDENTIAL_TARGET",
+    "Alpecca/Jason_HOLYROG/ComputeWorker",
+).strip()
+ROG_WORKER_FAILURE_COOLDOWN_SECONDS = max(
+    5.0,
+    min(
+        300.0,
+        float(os.environ.get("ALPECCA_ROG_WORKER_FAILURE_COOLDOWN_SECONDS", "60")),
+    ),
+)
 
 # The Ollama cloud model for the deep tier. EMPTY by default so no cloud model
 # runs without an explicit choice. Jason's approved setup (2026-07-09) wires
@@ -417,6 +457,13 @@ OPEN_TTS_DEVICE = os.environ.get("ALPECCA_OPEN_TTS_DEVICE", "cuda").lower()
 # realism at a modest latency cost (F5 handles only the higher-emotion lines).
 OPEN_TTS_NFE_STEP = int(os.environ.get("ALPECCA_OPEN_TTS_NFE_STEP", "16"))
 TTS_ROUTE_TIMEOUT = float(os.environ.get("ALPECCA_TTS_ROUTE_TIMEOUT", str(max(45.0, OPEN_TTS_TIMEOUT + 5.0))))
+# Explicit cloud speech serves the live call path. It must return quickly or
+# fail cleanly; the longer route timeout remains available to explicit local
+# voice-clone and preview requests where a person chose to wait.
+LIVE_TTS_ROUTE_TIMEOUT = max(
+    0.5,
+    min(10.0, float(os.environ.get("ALPECCA_LIVE_TTS_TIMEOUT", "3.0"))),
+)
 # Warm her voice at startup so the FIRST spoken line doesn't eat Kokoro's cold
 # model load (~40s). The old warmup short-circuited whenever the F5 worker was
 # healthy -- but auto-mode routes calm, everyday speech to Kokoro, so the

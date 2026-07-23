@@ -275,72 +275,76 @@ def apply_candidates(
         candidates,
         key=lambda item: (item.valid_from, item.evidence_observation_ids, _candidate_uid(item)),
     )
-    for candidate in ordered:
-        active = store.facts_valid_at(
-            candidate.valid_from,
-            scope=candidate.scope,
-            subject=candidate.subject,
-            predicate=candidate.predicate,
-        )
-        differing = [
-            fact for fact in active
-            if fact.object_text.casefold() != candidate.object_text.casefold()
-        ]
-        if candidate.relation in {"correction", "supersession"}:
-            same_start = [fact.id for fact in differing if fact.valid_from >= candidate.valid_from]
-            if same_start:
-                raise TemporalDerivationError(
-                    "correction cannot close a differing fact with the same validity start"
-                )
-        try:
-            fact = store.record_fact(
-                fact_uid=_candidate_uid(candidate),
+    # One observation may derive several related facts. Keep all writes,
+    # closures, and contradiction links atomic so a failed later candidate
+    # cannot leave a partial fact set that is then retried or dead-lettered.
+    with store.transaction():
+        for candidate in ordered:
+            active = store.facts_valid_at(
+                candidate.valid_from,
+                scope=candidate.scope,
                 subject=candidate.subject,
                 predicate=candidate.predicate,
-                object_text=candidate.object_text,
-                confidence=candidate.confidence,
-                actor_id=candidate.actor_id,
-                surface=candidate.surface,
-                scope=candidate.scope,
-                valid_from=candidate.valid_from,
-                evidence_observation_ids=candidate.evidence_observation_ids,
-                derivation_kind=candidate.relation,
-                recorded_at=candidate.valid_from,
             )
-        except TemporalMemoryError as exc:
-            raise TemporalDerivationError(str(exc)) from exc
-
-        closed: list[int] = []
-        links: list[ContradictionLink] = []
-        for prior in differing:
-            if prior.id == fact.id:
-                continue
+            differing = [
+                fact for fact in active
+                if fact.object_text.casefold() != candidate.object_text.casefold()
+            ]
             if candidate.relation in {"correction", "supersession"}:
-                try:
-                    store.close_validity(
-                        prior.id,
-                        valid_to=candidate.valid_from,
-                        invalidated_at=candidate.valid_from,
+                same_start = [fact.id for fact in differing if fact.valid_from >= candidate.valid_from]
+                if same_start:
+                    raise TemporalDerivationError(
+                        "correction cannot close a differing fact with the same validity start"
                     )
-                except TemporalMemoryError as exc:
-                    raise TemporalDerivationError(str(exc)) from exc
-                closed.append(prior.id)
             try:
-                links.append(store.link_contradiction(
-                    prior.id,
-                    fact.id,
-                    reason=f"derived-{candidate.relation}",
-                    observation_id=candidate.evidence_observation_ids[0],
-                    linked_at=candidate.valid_from,
-                ))
+                fact = store.record_fact(
+                    fact_uid=_candidate_uid(candidate),
+                    subject=candidate.subject,
+                    predicate=candidate.predicate,
+                    object_text=candidate.object_text,
+                    confidence=candidate.confidence,
+                    actor_id=candidate.actor_id,
+                    surface=candidate.surface,
+                    scope=candidate.scope,
+                    valid_from=candidate.valid_from,
+                    evidence_observation_ids=candidate.evidence_observation_ids,
+                    derivation_kind=candidate.relation,
+                    recorded_at=candidate.valid_from,
+                )
             except TemporalMemoryError as exc:
                 raise TemporalDerivationError(str(exc)) from exc
-        outcomes.append(DerivationOutcome(
-            candidate=candidate,
-            fact=fact,
-            closed_fact_ids=tuple(sorted(closed)),
-            contradiction_links=tuple(links),
-        ))
+
+            closed: list[int] = []
+            links: list[ContradictionLink] = []
+            for prior in differing:
+                if prior.id == fact.id:
+                    continue
+                if candidate.relation in {"correction", "supersession"}:
+                    try:
+                        store.close_validity(
+                            prior.id,
+                            valid_to=candidate.valid_from,
+                            invalidated_at=candidate.valid_from,
+                        )
+                    except TemporalMemoryError as exc:
+                        raise TemporalDerivationError(str(exc)) from exc
+                    closed.append(prior.id)
+                try:
+                    links.append(store.link_contradiction(
+                        prior.id,
+                        fact.id,
+                        reason=f"derived-{candidate.relation}",
+                        observation_id=candidate.evidence_observation_ids[0],
+                        linked_at=candidate.valid_from,
+                    ))
+                except TemporalMemoryError as exc:
+                    raise TemporalDerivationError(str(exc)) from exc
+            outcomes.append(DerivationOutcome(
+                candidate=candidate,
+                fact=fact,
+                closed_fact_ids=tuple(sorted(closed)),
+                contradiction_links=tuple(links),
+            ))
     return tuple(outcomes)
 
 
@@ -368,7 +372,15 @@ def _legacy_signature(value: object) -> str:
             return _normalize_signature(f"{subject} | {predicate} | {object_text}")
         for key in ("text", "content", "fact"):
             if value.get(key):
-                return _normalize_signature(value[key])
+                text = str(value[key]).strip()
+                match = _LINE.fullmatch(text)
+                if match is not None:
+                    parts = [part.strip() for part in match.group(2).split("|")]
+                    if len(parts) in {3, 4} and all(parts[:3]):
+                        return _normalize_signature(
+                            f"{parts[0]} | {parts[1]} | {parts[2]}"
+                        )
+                return _normalize_signature(text)
     return _normalize_signature(value)
 
 

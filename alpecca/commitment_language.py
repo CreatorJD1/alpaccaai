@@ -38,18 +38,69 @@ _STATUSES = frozenset({
 })
 
 _SENTENCE = re.compile(r"[^.!?]+(?:[.!?]+|$)")
+_INTRINSIC_EXTERNAL_COMPLETION_VERBS = (
+    r"uploaded|downloaded|deleted|installed|restarted|deployed|launched|"
+    r"published|pushed|merged|scheduled"
+)
+_TARGETED_COMPLETION_VERBS = (
+    r"completed|finished|sent|created|saved|updated|opened|closed|fixed|"
+    r"implemented|deployed|ran|executed|uploaded|downloaded|deleted|moved|"
+    r"wrote|changed|installed|started|stopped|restarted|launched|published|"
+    r"committed|pushed|merged|scheduled"
+)
+_TARGETED_COMPLETION_BASE_VERBS = (
+    r"complete|finish|send|create|save|update|open|close|fix|implement|"
+    r"deploy|run|execute|upload|download|delete|move|write|change|install|"
+    r"start|stop|restart|launch|publish|commit|push|merge|schedule"
+)
+_EXTERNAL_ACTION_TARGETS = (
+    r"file|document|report|upload|download|export|import|archive|app|"
+    r"application|program|server|service|process|task|job|terminal|window|"
+    r"browser|page|link|folder|directory|repository|repo|project|connection|"
+    r"channel|session|deployment|build|test|update|installation|install|"
+    r"database|record|message|email|request|issue|ticket|commit|merge|"
+    r"pipeline|workflow|configuration|config|settings?|port|tunnel|stream|"
+    r"recording|image|video|audio|model|asset|package|launcher"
+)
 _COMPLETION = re.compile(
-    r"\b(?:"
-    r"i\s+(?:have\s+)?(?:completed|finished|did|sent|created|saved|updated|"
-    r"opened|closed|fixed|implemented|deployed|ran|executed)"
-    r"|i['’]ve\s+(?:completed|finished|done|sent|created|saved|updated|fixed|implemented|deployed)"
-    r"|(?:it|this|that)\s+(?:is|was)\s+(?:complete|completed|done|finished)"
-    r")\b",
+    rf"\b(?:"
+    rf"i\s+(?:have\s+)?(?:{_INTRINSIC_EXTERNAL_COMPLETION_VERBS})"
+    rf"|i\s+did\s+(?:upload|download|delete|install|restart|deploy|launch|"
+    rf"publish|push|merge|schedule)"
+    rf"|i(?:'|\u2019)ve\s+(?:{_INTRINSIC_EXTERNAL_COMPLETION_VERBS})"
+    rf"|(?:it|this|that)\s+(?:is|was)\s+(?:complete|completed|done|finished)"
+    rf")\b",
+    re.IGNORECASE,
+)
+_TARGETED_COMPLETION = re.compile(
+    rf"\b(?:"
+    rf"i\s+(?:have\s+)?(?:{_TARGETED_COMPLETION_VERBS})"
+    rf"|i\s+did\s+(?:{_TARGETED_COMPLETION_BASE_VERBS})"
+    rf"|i(?:'|\u2019)ve\s+(?:{_TARGETED_COMPLETION_VERBS}|done)"
+    rf")\s+(?:"
+    rf"it|them|(?:(?:the|a|an|this|that|your|my|our)\s+)?"
+    rf"(?:{_EXTERNAL_ACTION_TARGETS})s?"
+    rf")\b",
     re.IGNORECASE,
 )
 _BARE_COMPLETION = re.compile(r"^\s*(?:done|complete|completed|finished)\s*[.!?]*\s*$", re.IGNORECASE)
+_FUTURE_ACTION_VERBS = (
+    rf"{_TARGETED_COMPLETION_BASE_VERBS}|prepare|inspect|check|review|read|"
+    rf"archive|export|import|build|test|configure|connect|disconnect|do"
+)
+_FUTURE_INTRINSIC_EXTERNAL_VERBS = (
+    r"upload|download|delete|install|restart|deploy|launch|publish|"
+    r"push|merge|schedule"
+)
 _FUTURE_ACTION = re.compile(
-    r"\b(?:i\s+will|i['’]ll|i\s+am\s+going\s+to|i['’]m\s+going\s+to)\s+[a-z]",
+    rf"\b(?:i\s+will|i(?:'|\u2019)ll|i\s+am\s+going\s+to|"
+    rf"i(?:'|\u2019)m\s+going\s+to)\s+(?:"
+    rf"(?:{_FUTURE_INTRINSIC_EXTERNAL_VERBS})\b"
+    rf"|(?:{_FUTURE_ACTION_VERBS})\s+"
+    rf"(?:(?:you|him|her)\s+)?(?:"
+    rf"it|them|this|that|(?:(?:the|a|an|this|that|your|my|our)\s+)?"
+    rf"(?:{_EXTERNAL_ACTION_TARGETS})s?"
+    rf"))\b",
     re.IGNORECASE,
 )
 
@@ -159,7 +210,11 @@ def classify_action_claims(reply: str, *, max_chars: int = MAX_REPLY_CHARS) -> C
         start = match.start() + leading
         end = match.end()
         candidate = sentence.strip()
-        if _COMPLETION.search(candidate) or _BARE_COMPLETION.fullmatch(candidate):
+        if (
+            _COMPLETION.search(candidate)
+            or _TARGETED_COMPLETION.search(candidate)
+            or _BARE_COMPLETION.fullmatch(candidate)
+        ):
             kind: ClaimKind = "completion"
         elif _FUTURE_ACTION.search(candidate):
             kind = "future-action"

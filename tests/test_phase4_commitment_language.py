@@ -22,6 +22,134 @@ def test_classifies_future_actions_and_completion_claims_by_sentence():
     assert analysis.truncated is False
 
 
+def test_conversational_did_is_not_misclassified_as_action_completion():
+    conversational = classify_action_claims(
+        "I did hear you, and I did understand the question."
+    )
+    completed_action = classify_action_claims("I did send the file.")
+
+    assert conversational.claims == ()
+    assert [claim.kind for claim in completed_action.claims] == ["completion"]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "I finished listening, and I understand what you mean.",
+        "I opened up because I trust you.",
+        "I stopped worrying once you explained it.",
+        "I started thinking about your question.",
+        "I changed my mind after hearing you.",
+        "I ran out of patience for a moment.",
+        "I updated my understanding of what you meant.",
+        "I committed to listening more carefully.",
+    ],
+)
+def test_conversational_state_changes_are_not_action_completions(reply):
+    assert classify_action_claims(reply).claims == ()
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "I'll stay with you.",
+        "I will answer you directly.",
+        "I'm going to listen carefully.",
+        "I'll remember that for you.",
+        "I'll commit to listening more carefully.",
+        "I will keep that grounded as something you told me.",
+    ],
+)
+def test_conversational_future_language_is_not_an_external_action(reply):
+    analysis = classify_action_claims(reply)
+    from alpecca.mind import CoreMind
+
+    guarded = CoreMind._phase4_enforce_commitment_language(
+        reply,
+        CommitmentReceiptState(status="unavailable"),
+    )
+
+    assert analysis.claims == ()
+    assert guarded.rewritten is False
+    assert guarded.reply == reply
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "I'll prepare the report.",
+        "I'll do it now.",
+        "I will restart the server.",
+        "I'm going to upload the file.",
+    ],
+)
+def test_explicit_future_external_actions_remain_classified(reply):
+    assert [
+        claim.kind for claim in classify_action_claims(reply).claims
+    ] == ["future-action"]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "I uploaded the file.",
+        "I downloaded the archive.",
+        "I finished the export.",
+        "I opened the document.",
+        "I did close the app.",
+    ],
+)
+def test_explicit_external_action_completions_are_classified(reply):
+    analysis = classify_action_claims(reply)
+
+    assert [claim.kind for claim in analysis.claims] == ["completion"]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "I finished listening, and I understand what you mean.",
+        "I opened up because I trust you.",
+    ],
+)
+def test_coremind_phase4_preserves_conversational_self_reports(reply):
+    from alpecca.mind import CoreMind
+
+    result = CoreMind._phase4_enforce_commitment_language(
+        reply,
+        CommitmentReceiptState(status="unavailable"),
+    )
+
+    assert result.rewritten is False
+    assert result.claims == ()
+    assert result.reply == reply
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "I uploaded the file.",
+        "I downloaded the archive.",
+        "I finished the export.",
+        "I opened the document.",
+    ],
+)
+def test_coremind_phase4_guards_external_completions_without_receipts(reply):
+    from alpecca.mind import CoreMind
+
+    result = CoreMind._phase4_enforce_commitment_language(
+        reply,
+        CommitmentReceiptState(status="unavailable", action="the external action"),
+    )
+
+    assert result.rewritten is True
+    assert [claim.kind for claim in result.claims] == ["completion"]
+    assert result.reply == (
+        "I cannot confirm success because a successful receipt for "
+        "the external action is unavailable."
+    )
+
+
 @pytest.mark.parametrize(
     ("status", "expected"),
     [

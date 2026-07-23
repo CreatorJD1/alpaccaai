@@ -23,6 +23,8 @@ if str(ROOT) not in sys.path:
 
 SECRET = ROOT / "data" / "secrets" / "alpecca_discord.env"
 
+from alpecca import host_roles as host_roles_mod  # noqa: E402
+
 
 def _load_secret() -> None:
     if not SECRET.exists():
@@ -95,6 +97,56 @@ def _continuity_fence_matches(
     )
 
 
+def _terminate_stale_bridge() -> None:
+    """Stop all Discord egress after this process loses its fencing epoch."""
+    os._exit(75)
+
+
+def _watch_continuity_fence(
+    client: object,
+    *,
+    holder_node_id: str,
+    lease_id: str,
+    fencing_epoch: int,
+    tolerated_misses: int,
+    stop: threading.Event,
+    on_loss=_terminate_stale_bridge,
+) -> None:
+    """Poll one inherited epoch and fail closed after sustained mismatch."""
+    from alpecca.continuity_lease import ContinuityLeaseError
+
+    misses = 0
+    while not stop.wait(2.0):
+        try:
+            valid = _continuity_fence_matches(
+                client.status(),
+                holder_node_id=holder_node_id,
+                lease_id=lease_id,
+                fencing_epoch=fencing_epoch,
+            )
+        except ContinuityLeaseError:
+            valid = False
+        if not valid:
+            misses += 1
+            if misses > tolerated_misses:
+                print(
+                    "Discord bridge lost continuity fence; terminating stale "
+                    "Discord egress after sustained mismatch.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                on_loss()
+                return
+            print(
+                f"Discord bridge continuity miss #{misses} "
+                f"(tolerating up to {tolerated_misses} misses).",
+                file=sys.stderr,
+                flush=True,
+            )
+            continue
+        misses = 0
+
+
 def _start_continuity_watchdog() -> bool:
     """Fence Discord egress to the exact epoch inherited from run_full.py."""
     if not os.environ.get("ALPECCA_CONTINUITY_LEASE_URL", "").strip():
@@ -154,7 +206,6 @@ def _start_continuity_watchdog() -> bool:
         return False
 
     stop = threading.Event()
-    misses = {"count": 0}
     raw_tolerance = os.environ.get("ALPECCA_DISCORD_CONTINUITY_MISS_TOLERANCE", "1").strip()
     try:
         tolerated_misses = max(0, int(raw_tolerance or 1))
@@ -163,39 +214,16 @@ def _start_continuity_watchdog() -> bool:
     if tolerated_misses < 0:
         tolerated_misses = 0
 
-    def _watch() -> None:
-        while not stop.wait(2.0):
-            try:
-                valid = _continuity_fence_matches(
-                    client.status(),
-                    holder_node_id=client.node_id,
-                    lease_id=lease_id,
-                    fencing_epoch=fencing_epoch,
-                )
-            except ContinuityLeaseError:
-                valid = False
-            if not valid:
-                misses["count"] += 1
-                if misses["count"] > tolerated_misses:
-                    print(
-                        "Discord bridge lost continuity fence; bypassing guard "
-                        "after sustained mismatch and continuing on local state.",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                    return
-                print(
-                    f"Discord bridge continuity miss #{misses['count']} "
-                    f"(tolerating up to {tolerated_misses} misses).",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                continue
-            if misses["count"]:
-                misses["count"] = 0
-
     threading.Thread(
-        target=_watch,
+        target=_watch_continuity_fence,
+        kwargs={
+            "client": client,
+            "holder_node_id": client.node_id,
+            "lease_id": lease_id,
+            "fencing_epoch": fencing_epoch,
+            "tolerated_misses": tolerated_misses,
+            "stop": stop,
+        },
         name="DiscordContinuityFence",
         daemon=True,
     ).start()
@@ -243,6 +271,11 @@ def _print_voice_readiness() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        host_roles_mod.require_primary_runtime_host()
+    except host_roles_mod.ComputeOnlyHostError as exc:
+        print(f"Discord bridge startup refused: {exc}.", file=sys.stderr)
+        return 2
     # The secret/env loader uses setdefault, so an explicit process value wins
     # over the local file and an explicit false value remains a muted-media
     # override. Load it before selecting the normal direct-launch default.
@@ -253,7 +286,12 @@ def main(argv: list[str] | None = None) -> int:
     # not overwrite configured values.
     os.environ.setdefault("ALPECCA_DISCORD_VOICE", "1")
     os.environ.setdefault("ALPECCA_DISCORD_VOICE_RECEIVE", "1")
-    os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "auto")
+    os.environ.setdefault("ALPECCA_CHAT_VOICE_TIMEOUT", "3.0")
+    os.environ.setdefault("ALPECCA_CLOUD_TTS_TIMEOUT_SECONDS", "2.5")
+    os.environ.setdefault("ALPECCA_LIVE_TTS_TIMEOUT", "3.0")
+    os.environ.setdefault("ALPECCA_DISCORD_VOICE_TIMEOUT", "4.0")
+    os.environ.setdefault("ALPECCA_DISCORD_TRANSCRIBE_TIMEOUT", "6.0")
+    os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "cloud")
     args = list(sys.argv[1:] if argv is None else argv)
     if args == ["--media-readiness"]:
         _print_media_readiness()

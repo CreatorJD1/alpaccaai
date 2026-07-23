@@ -2,15 +2,32 @@
 
 Updated: 2026-07-22
 
-Implementation checkpoint: the first voice stage is now implemented. Discord
-receive uses the installed Silero VAD 6.2.1 ONNX model on CPU, with two-frame
-onset confirmation, 800 ms pre-roll, VAD silence endpointing, direct-input
-playback interruption, and packet-based fallback on any load/inference failure.
-On the target laptop, a local 5.33-second speech sample produced a 0.999997 peak
-probability versus 0.008911 for digital silence. Mean processing was 0.24 ms per
-20 ms Discord packet; cold model load was 648 ms and is performed off the
-Discord event loop. Live human Discord validation is still required before the
-stage is called release-proven.
+Implementation checkpoint: Discord receive now uses the installed Silero VAD
+6.2.1 ONNX model on CPU, with two-frame onset confirmation, 800 ms pre-roll,
+VAD silence endpointing, direct-input playback interruption, and packet-based
+fallback on load or inference failure. Silero has completed a bounded live
+smoke. The deployed Hugging Face cloud Kokoro path has also completed an
+authenticated synthesis smoke. Sustained House-browser and Discord latency,
+interruption, transcription, and voice-quality soaks remain open.
+
+Temporal facts, contradiction/supersession history, source provenance, and
+selective Soul arbitration are integrated in source. Shadow comparison is now
+wired into creator and scoped Discord recall as fail-open, evaluation-only
+evidence; it never replaces the legacy SQLite/Mindpage result. Fact application
+is transaction-atomic. The seven Soul perspectives are compact deterministic
+scoring processes, not seven transformers; only contradiction, measured
+pressure, or a close tie may trigger one bounded textual arbitration call.
+
+Receipt-language false positives and hosted-tool partial-execution reporting are
+fixed. Cloud voice health requires a coherent playable PCM WAV and fails closed
+when readiness evidence is missing. Cross-host startup requires the complete
+same-process inherited lease tuple. Speaker readiness requires a successful
+bounded inference probe and otherwise reports unavailable.
+
+Broad verification reached **3,197 passed, 3 skipped, 0 failed**, and the House
+production build passed. Later checkpoint changes passed focused gates; the
+broad suite was not rerun after every final focused patch. No post-restart live
+Discord voice proof was performed for this latest source checkpoint.
 
 This review compares active open-source projects against Alpecca's actual
 runtime: Qwen 3.5 9B through Ollama, an RTX 3050 with 4 GB VRAM, SQLite-backed
@@ -39,7 +56,42 @@ Alpecca.
 | [WeSpeaker](https://github.com/wenet-e2e/wespeaker) | Strong speaker embeddings and an ONNX runtime | Full Python environment adds PyTorch, audio, clustering, and research dependencies | EVALUATE one ONNX model only if sherpa-onnx accuracy is insufficient |
 | [SpeechBrain](https://github.com/speechbrain/speechbrain) | Broad research toolkit and ECAPA speaker verification | Heavy PyTorch-first stack duplicates the voice environment | PARK as a benchmark reference |
 
-## Lean integration order
+## Verified implementation status
+
+| Area | July 22 state | Remaining proof gate |
+|---|---|---|
+| Silero VAD | Source-integrated and live-smoked in Discord receive | Sustained noise, endpoint, interruption, and latency calibration |
+| Cloud Kokoro | Deployed HF synthesis completed an authenticated smoke | Sustained House and Discord quality soak |
+| Temporal memory | Fact validity, supersession, contradiction, source provenance, transaction-atomic application, and evaluation-only shadow comparison are source-integrated | Retained shadow metrics from a real cross-surface corpus; legacy recall remains authoritative |
+| Selective Soul | Compact deterministic seven-perspective scoring plus one bounded textual arbitration for contradiction, measured pressure, or close tie | Production observation and latency evidence under real pressure |
+| Speaker familiarity | Optional worker and benchmark harness fail closed unless a bounded real inference probe succeeds | Resolve the selected model license, then install sherpa/model, wire runtime, and qualify replay/ambiguity on a consented corpus |
+| Face familiarity | Optional worker and benchmark harness exist; verified YuNet/SFace assets load on CPU from LocalAppData | Runtime wiring and consented personal camera-corpus qualification |
+| Observer/priority paths | Source components and focused contracts exist | Production wiring, cancellation behavior, and failover soak |
+
+### Installed evaluation assets
+
+The following assets are outside Git in
+`%LOCALAPPDATA%\Alpecca\models\face\` and were re-hashed on July 22:
+
+| Asset | Bytes | Verified SHA-256 | Current proof boundary |
+|---|---:|---|---|
+| `face_detection_yunet_2023mar.onnx` | 232,589 | `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4` | OpenCV CPU model-load smoke passed |
+| `face_recognition_sface_2021dec.onnx` | 38,696,353 | `0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79` | OpenCV CPU model-load smoke passed |
+
+This verifies asset integrity and load compatibility only. No production caller,
+camera soak, liveness detector, personal enrollment, or calibrated matching
+corpus exists. Face evidence therefore remains familiarity-only and disabled on
+the production path.
+
+`sherpa_onnx` and a speaker model are not installed. The candidate model's
+upstream license could not be resolved from the authoritative sherpa material,
+so installation and personal voice-corpus work remain blocked rather than being
+silently accepted.
+
+## Original lean integration order
+
+This sequence is retained as the design record. The verified status table above
+is authoritative for what has actually been integrated or live-smoked.
 
 1. **Voice reliability:** port GLaDOS's input-priority queue, 800 ms pre-roll,
    VAD-controlled utterance boundaries, and playback interruption. Trial Silero
@@ -125,12 +177,14 @@ restricted to non-commercial research. Neither OpenCV model provides
 presentation-attack detection. Multiple consistent frames, quality checks,
 unknown/ambiguous outcomes, and enrollment deletion controls are required.
 
-For voice, sherpa-onnx is the preferred optional worker because it supports
+For voice, sherpa-onnx remains the preferred optional worker because it supports
 Windows CPU ONNX inference without importing PyTorch into Alpecca's main
-process. It can produce `likely_creator`, `familiar_guest`, `unknown`, or
-`ambiguous`; it cannot prove liveness. Replays and cloned voices remain separate
-attack classes, so creator-only tools continue to require the authenticated
-account/device boundary.
+process. The worker now fails closed unless a bounded extraction probe succeeds,
+but the package and model are not installed because the selected model's license
+is unresolved. Once licensed and qualified, it may produce `likely_creator`,
+`familiar_guest`, `unknown`, or `ambiguous`; it cannot prove liveness. Replays
+and cloned voices remain separate attack classes, so creator-only tools continue
+to require the authenticated account/device boundary.
 
 ### 3. Voice: one responsive lane and one background lane
 
@@ -178,12 +232,12 @@ honest than seven simultaneous language-model calls.
 
 ### 4. Soul and affect: preserve seven perspectives, constrain the expensive part
 
-The seven Soul perspectives can remain a load-bearing arbitration structure
-without pretending seven independent transformer instances are running. Each
-perspective should emit a compact scored vector from real state; full textual
-deliberation is invoked only for contradiction, high affect, or a close top-rank
-tie. This is the previously proposed hidden-deliberation optimization and is
-appropriate for a 4 GB GPU.
+The seven Soul perspectives remain a load-bearing arbitration structure without
+pretending seven independent transformer instances are running. Each
+perspective emits compact deterministic scores from real state. One bounded
+textual arbitration call is allowed only for contradiction, measured pressure,
+or a close top-rank tie. This hidden-deliberation optimization is integrated in
+source and remains appropriate for a 4 GB GPU.
 
 The observer may update evidence-backed personality tendencies after an outcome,
 but it may not rewrite identity, safety boundaries, tools, or historical
@@ -220,21 +274,28 @@ must use Alpecca's actual hardware and data:
 | Resource isolation | Qwen chat while voice/vision workers are active | No GPU OOM; direct-turn latency stays within target |
 | Observer | Repeated unchanged and rapidly changing state | Coalesced ticks, no duplicate speech, stale result discarded |
 
-## Integration decision
+## Integration status and next gates
 
-The recommended next implementation wave is intentionally small:
-
-1. Implement a CPU Silero VAD adapter, pre-roll, and generation cancellation in
-   the existing Discord voice coordinator.
-2. Add bitemporal fact/provenance tables and a shadow hybrid-retrieval evaluator
-   inside the canonical memory module.
-3. Add optional sherpa-onnx speaker evidence and OpenCV face evidence as separate
-   workers. Neither participates in creator authorization.
-4. Add the local benchmark corpus and publish latency, accuracy, false-recall,
-   and resource results before changing defaults.
-5. Defer Moonshine promotion, sqlite-vec activation, llama.cpp slots, and any
-   additional VLM until their individual measurements justify their maintenance
-   cost.
+1. **Silero:** integrated and live-smoked; keep it behind its deterministic
+   packet fallback until the sustained calibration soak passes.
+2. **Temporal/provenance:** source-integrated and shadow-wired in
+   evaluation-only mode; retain correction, attribution, disagreement, and
+   false-recall evidence from a real cross-surface corpus before promotion.
+3. **Selective Soul:** source-integrated; preserve compact deterministic scoring
+   and permit only the bounded contradiction/pressure/close-tie arbitration.
+4. **Speaker and face familiarity:** YuNet/SFace assets are installed and
+   CPU-load verified, but remain off the production path without a consented
+   corpus. Resolve the speaker-model license before installing sherpa; then both
+   paths must pass accuracy, replay/ambiguity, latency, and resource-isolation
+   gates.
+5. **Runtime architecture:** complete production wiring for accepted observer,
+   priority, identity-evidence, and status paths without adding a second agent or
+   memory authority.
+6. **Continuity:** complete a singleton failover/failback soak before another
+   host or cloud runtime can become a speaking authority.
+7. Continue to defer Moonshine promotion, sqlite-vec default activation,
+   llama.cpp slots, and any additional VLM until measured results justify their
+   maintenance and resource cost.
 
 ## Rejected architecture changes
 

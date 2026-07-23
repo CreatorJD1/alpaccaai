@@ -6,7 +6,10 @@ import importlib.util
 import asyncio
 import json
 from pathlib import Path
+import struct
 import sys
+import threading
+import time
 from types import ModuleType
 
 import pytest
@@ -14,6 +17,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "deploy" / "hf-cloud-core" / "cloud_voice.py"
+HEALTHCHECK_MODULE_PATH = ROOT / "deploy" / "hf-cloud-core" / "cloud_healthcheck.py"
 
 
 class FakeHTTPException(Exception):
@@ -130,10 +134,40 @@ def _load_module(monkeypatch: pytest.MonkeyPatch):
     return module
 
 
+def _load_healthcheck_module():
+    spec = importlib.util.spec_from_file_location(
+        "hf_cloud_healthcheck_voice_test", HEALTHCHECK_MODULE_PATH
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _pcm_wav(*, frames: bytes | None = None) -> bytes:
+    if frames is None:
+        # 120 ms of an alternating, clearly non-silent PCM signal.
+        frames = struct.pack("<hhhh", 0, 1_200, 0, -1_200) * 720
+    channels = 1
+    sample_rate = 24_000
+    bits = 16
+    block_align = channels * bits // 8
+    byte_rate = sample_rate * block_align
+    fmt = struct.pack(
+        "<HHIIHH", 1, channels, sample_rate, byte_rate, block_align, bits
+    )
+    data_padding = b"\x00" if len(frames) & 1 else b""
+    chunks = (
+        b"fmt " + struct.pack("<I", len(fmt)) + fmt
+        + b"data" + struct.pack("<I", len(frames)) + frames + data_padding
+    )
+    return b"RIFF" + struct.pack("<I", 4 + len(chunks)) + b"WAVE" + chunks
+
+
 class FakeSynthesizer:
-    def __init__(self, *, result: bytes = b"RIFF-fake-wave") -> None:
+    def __init__(self, *, result: bytes | None = None) -> None:
         self.loaded = False
-        self.result = result
+        self.result = _pcm_wav() if result is None else result
         self.calls: list[str] = []
 
     def synthesize(self, text: str) -> bytes:
@@ -149,33 +183,167 @@ def test_standalone_voice_listener_is_loopback_only() -> None:
     assert 'host="0.0.0.0"' not in source
 
 
-def test_health_is_content_free_and_does_not_load_model(
+def test_health_waits_for_bounded_synthesis_self_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _load_module(monkeypatch)
-    synth = FakeSynthesizer()
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingSynthesizer(FakeSynthesizer):
+        def synthesize(self, text: str) -> bytes:
+            started.set()
+            release.wait(timeout=1.0)
+            return super().synthesize(text)
+
+    synth = BlockingSynthesizer()
     client = FakeClient(module.create_app(secret="voice-secret", synthesizer=synth))
 
     response = client.get("/healthz")
 
+    assert started.wait(timeout=1.0)
     assert response.status_code == 200
     assert response.json() == {
         "service": "alpecca-cloud-kokoro-voice",
         "version": 1,
-        "state": "ready",
+        "state": "starting",
         "engine": "kokoro",
         "voice": "af_heart",
         "device": "cpu",
         "sampleRateHz": 24000,
         "modelLoaded": False,
+        "selfCheckPassed": False,
+        "selfCheckState": "running",
+        "synthesisReady": False,
         "persistence": False,
         "coreMind": False,
         "singletonAuthority": False,
         "maxTextChars": module.MAX_TEXT_CHARS,
         "maxBodyBytes": module.MAX_BODY_BYTES,
     }
-    assert synth.calls == []
     assert "voice-secret" not in response.text
+
+    release.set()
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        response = client.get("/healthz")
+        if response.json()["synthesisReady"]:
+            break
+        time.sleep(0.01)
+
+    assert response.json()["state"] == "ready"
+    assert response.json()["modelLoaded"] is True
+    assert response.json()["selfCheckPassed"] is True
+    assert response.json()["selfCheckState"] == "passed"
+    assert response.json()["synthesisReady"] is True
+    assert synth.calls == [module.SELF_CHECK_TEXT]
+    assert len(synth.calls[0]) <= module.MAX_TEXT_CHARS
+
+
+def test_health_rejects_invalid_or_timed_out_self_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module(monkeypatch)
+    invalid = FakeSynthesizer(result=b"RIFF\x04\x00\x00\x00WAVE")
+    invalid_client = FakeClient(
+        module.create_app(secret="voice-secret", synthesizer=invalid)
+    )
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        invalid_response = invalid_client.get("/healthz")
+        if invalid_response.json()["selfCheckState"] == "failed":
+            break
+        time.sleep(0.01)
+
+    assert invalid_response.json()["state"] == "unavailable"
+    assert invalid_response.json()["modelLoaded"] is True
+    assert invalid_response.json()["selfCheckPassed"] is False
+    assert invalid_response.json()["synthesisReady"] is False
+
+    release = threading.Event()
+
+    class TimedOutSynthesizer(FakeSynthesizer):
+        def synthesize(self, text: str) -> bytes:
+            release.wait(timeout=1.0)
+            return super().synthesize(text)
+
+    timed_out = TimedOutSynthesizer()
+    timeout_client = FakeClient(
+        module.create_app(
+            secret="voice-secret",
+            synthesizer=timed_out,
+            self_check_timeout_seconds=0.01,
+        )
+    )
+    timeout_client.get("/healthz")
+    time.sleep(0.03)
+    timeout_response = timeout_client.get("/healthz")
+    release.set()
+
+    assert timeout_response.json()["state"] == "unavailable"
+    assert timeout_response.json()["selfCheckState"] == "failed"
+    assert timeout_response.json()["selfCheckPassed"] is False
+    assert timeout_response.json()["synthesisReady"] is False
+
+
+def test_wav_readiness_rejects_header_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module(monkeypatch)
+
+    assert not module._valid_wav(b"RIFF\x04\x00\x00\x00WAVE")
+
+
+def test_wav_readiness_rejects_silent_or_minuscule_pcm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module(monkeypatch)
+    silent_frames = b"\x00\x00" * (module.SAMPLE_RATE_HZ // 5)
+
+    assert not module._valid_wav(_pcm_wav(frames=silent_frames))
+    assert not module._valid_wav(_pcm_wav(frames=struct.pack("<h", 1_200)))
+
+
+def test_wav_readiness_accepts_meaningful_non_silent_pcm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module(monkeypatch)
+
+    assert module._valid_wav(_pcm_wav())
+
+
+def test_container_healthcheck_requires_complete_voice_readiness() -> None:
+    healthcheck = _load_healthcheck_module()
+
+    assert healthcheck.voice_synthesis_ready(
+        {
+            "state": "ready",
+            "modelLoaded": True,
+            "selfCheckPassed": True,
+            "selfCheckState": "passed",
+            "synthesisReady": True,
+        }
+    )
+    assert not healthcheck.voice_synthesis_ready({"state": "ready"})
+    assert not healthcheck.voice_synthesis_ready(
+        {
+            "state": "ready",
+            "modelLoaded": False,
+            "selfCheckPassed": True,
+            "selfCheckState": "passed",
+            "synthesisReady": True,
+        }
+    )
+    assert not healthcheck.voice_synthesis_ready(
+        {
+            "state": "ready",
+            "modelLoaded": True,
+            "selfCheckPassed": False,
+            "selfCheckState": "failed",
+            "synthesisReady": False,
+        }
+    )
 
 
 def test_synthesis_requires_constant_time_custom_header(
@@ -207,7 +375,7 @@ def test_synthesis_requires_constant_time_custom_header(
 
     assert missing.status_code == wrong.status_code == 401
     assert accepted.status_code == 200
-    assert accepted.content == b"RIFF-fake-wave"
+    assert accepted.content == _pcm_wav()
     assert accepted.headers["content-type"] == "audio/wav"
     assert accepted.headers["cache-control"] == "no-store"
     assert synth.calls == ["hello Alpecca"]
@@ -260,6 +428,54 @@ def test_audio_result_is_bounded_and_errors_disclose_no_details(
     assert response.status_code == 503
     assert response.json() == {"detail": "invalid_synthesis_result"}
     assert "bounded request" not in response.text
+
+
+@pytest.mark.parametrize(
+    "audio",
+    [
+        b"not-a-wave",
+        _pcm_wav(frames=b"\x00\x00" * 4_800),
+        _pcm_wav(frames=struct.pack("<h", 1_200)),
+    ],
+    ids=["malformed", "silent", "minuscule"],
+)
+def test_live_synthesis_rejects_unplayable_wav(
+    monkeypatch: pytest.MonkeyPatch,
+    audio: bytes,
+) -> None:
+    module = _load_module(monkeypatch)
+    client = FakeClient(
+        module.create_app(secret="secret", synthesizer=FakeSynthesizer(result=audio))
+    )
+
+    response = client.post(
+        "/v1/voice/synthesize",
+        json={"text": "live response"},
+        headers={module.AUTHORIZATION_HEADER: "secret"},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "invalid_synthesis_result"}
+
+
+def test_live_synthesis_accepts_meaningful_non_silent_pcm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module(monkeypatch)
+    audio = _pcm_wav()
+    client = FakeClient(
+        module.create_app(secret="secret", synthesizer=FakeSynthesizer(result=audio))
+    )
+
+    response = client.post(
+        "/v1/voice/synthesize",
+        json={"text": "live response"},
+        headers={module.AUTHORIZATION_HEADER: "secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.content == audio
+    assert response.headers["content-type"] == "audio/wav"
 
 
 def test_lazy_kokoro_uses_cpu_voice_and_in_memory_wav(

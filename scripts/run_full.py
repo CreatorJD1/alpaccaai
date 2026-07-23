@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT))
 # lock must be held before config can touch persistent state or any helper can
 # start a sidecar service.
 from alpecca import instance as instance_mod      # noqa: E402
+from alpecca import host_roles as host_roles_mod  # noqa: E402
 from alpecca.continuity_lease import (             # noqa: E402
     ContinuityLeaseError,
     ContinuityLeaseGuard,
@@ -74,7 +75,17 @@ os.environ.setdefault("OLLAMA_NUM_PARALLEL", "1")
 os.environ.setdefault("ALPECCA_CHAT_CLOUD_MODEL", "gemma4:cloud")
 os.environ.setdefault("ALPECCA_CHAT_CLOUD_PAGED_MEMORY", "1")
 os.environ.setdefault("ALPECCA_CHAT_ZEROGPU", "0")
-os.environ.setdefault("ALPECCA_DEEP_BACKEND", "ollama-cloud")
+# Prefer the separate non-speaking ROG worker for background deep work. If its
+# exact shared credential is absent or the host is unavailable, CoreMind walks
+# straight on to hosted Gemma and then the existing local Qwen fallback.
+os.environ.setdefault("ALPECCA_ROG_WORKER_URL", "https://Jason_HOLYROG:8788")
+os.environ.setdefault(
+    "ALPECCA_ROG_WORKER_CA_CERT",
+    str(Path(os.environ.get("LOCALAPPDATA", Path.home()))
+        / "Alpecca" / "rog-worker" / "tls" / "jason-holyrog.crt"),
+)
+os.environ.setdefault("ALPECCA_ROG_WORKER_MODEL", "qwen3.5:9b")
+os.environ.setdefault("ALPECCA_DEEP_BACKEND", "rog-worker,ollama-cloud")
 os.environ.setdefault("ALPECCA_OLLAMA_CLOUD_MODEL", "gemma4:cloud")
 os.environ.setdefault("ALPECCA_REFLECT_MODEL", "qwen3.5:9b")
 os.environ.setdefault("ALPECCA_VISION_BACKEND", "local")
@@ -108,7 +119,30 @@ os.environ.setdefault("ALPECCA_DISCORD_MEDIA", "1")
 # explicit ALPECCA_DISCORD_VOICE=0 or ALPECCA_DISCORD_VOICE_RECEIVE=0 still wins.
 os.environ.setdefault("ALPECCA_DISCORD_VOICE", "1")
 os.environ.setdefault("ALPECCA_DISCORD_VOICE_RECEIVE", "1")
-os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "auto")
+os.environ.setdefault("ALPECCA_CHAT_VOICE_TIMEOUT", "3.0")
+os.environ.setdefault("ALPECCA_CLOUD_TTS_TIMEOUT_SECONDS", "2.5")
+os.environ.setdefault("ALPECCA_LIVE_TTS_TIMEOUT", "3.0")
+os.environ.setdefault("ALPECCA_DISCORD_VOICE_TIMEOUT", "4.0")
+os.environ.setdefault("ALPECCA_DISCORD_TRANSCRIBE_TIMEOUT", "6.0")
+os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "cloud")
+
+def _lan_access_point(port: int) -> str:
+    """The URL another device on this network uses to reach THIS computer.
+    Best-effort local IP via the standard UDP-socket route trick (no packets
+    are actually sent); falls back to the hostname form if it can't be found."""
+    import socket
+    ip = ""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
+    except Exception:
+        ip = ""
+    return f"http://{ip or socket.gethostname()}:{port}"
+
 
 def _f5_worker_health(timeout: float = 0.4) -> bool:
     try:
@@ -341,6 +375,8 @@ def _enter_offline_isolated_mode(reason: str) -> None:
     os.environ["ALPECCA_CONTINUITY_OFFLINE_ISOLATED"] = "1"
     os.environ.pop("ALPECCA_CONTINUITY_LEASE_ID", None)
     os.environ.pop("ALPECCA_CONTINUITY_FENCING_EPOCH", None)
+    os.environ.pop("ALPECCA_CONTINUITY_LEASE_HOLDER", None)
+    os.environ.pop("ALPECCA_CONTINUITY_LAUNCHER_PID", None)
     os.environ["ALPECCA_REMOTE"] = "0"
     os.environ["ALPECCA_PUBLIC_URL"] = ""
     os.environ["ALPECCA_CONTINUITY_PUBLIC_ENDPOINT"] = ""
@@ -405,6 +441,10 @@ def _start_continuity_guard() -> ContinuityLeaseGuard | None:
             os.environ["ALPECCA_CONTINUITY_LEASE_ID"] = grant.lease_id
             os.environ["ALPECCA_CONTINUITY_FENCING_EPOCH"] = str(grant.fencing_epoch)
             os.environ["ALPECCA_CONTINUITY_LEASE_HOLDER"] = grant.holder
+            # server.py is imported in this same process. Binding the inherited
+            # lease tuple to this PID prevents an accidental direct ASGI launch
+            # or a stale copied environment from constructing another CoreMind.
+            os.environ["ALPECCA_CONTINUITY_LAUNCHER_PID"] = str(os.getpid())
             print(
                 "Alpecca continuity lease acquired "
                 f"(local-primary, epoch {grant.fencing_epoch})."
@@ -454,7 +494,7 @@ def _run() -> int:
     # the home directory and can migrate persistent state at import time.
     import uvicorn
     from config import F5_WORKER_ENABLED, F5_WORKER_HOST, F5_WORKER_PORT
-    from config import HOST, PORT
+    from config import HOST, PORT, BIND_HOST, REMOTE_ACCESS
 
     existing = instance_mod.existing_server_url(PORT)
     if existing:
@@ -473,18 +513,40 @@ def _run() -> int:
 
     print(f"Alpecca is waking up (safe capability defaults) at http://{HOST}:{PORT}")
     print(f"  LLM online: {mind.llm.online}")
+    # LOCAL SERVER ACCESS POINT: when ALPECCA_REMOTE=1 she binds every interface
+    # (BIND_HOST=0.0.0.0), so the phone/desktop app on your network reaches THIS
+    # computer and offloads all the heavy processing (LLM, TTS, vision) here.
+    # Still behind her authorization -- binding wider doesn't open the door,
+    # alpecca.auth does. Off by default (localhost only) so nothing is exposed
+    # until you ask. We print the address other devices connect to.
+    if REMOTE_ACCESS:
+        lan = _lan_access_point(PORT)
+        print("  ACCESS POINT (this computer does the processing):")
+        print(f"    On your network:  {lan}")
+        print("    Open that on the phone/other PC, or install the app from it.")
+        print("    Anywhere (behind her token, needs cloudflared):")
+        print("      python scripts/share.py --tunnel")
+    else:
+        print("  Local only. To let your phone/other devices use THIS computer "
+              "for processing, relaunch with ALPECCA_REMOTE=1 (or the launcher's "
+              "'Local access point' button).")
     threading.Thread(
         target=_open_local_app_when_ready,
         args=(server_mod,),
         daemon=True,
         name="LocalBootstrap",
     ).start()
-    uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
+    uvicorn.run(app, host=BIND_HOST, port=PORT, log_level="warning")
     return 0
 
 
 def main() -> int:
     """Run one full stack, refusing a concurrent CoreMind/database writer."""
+    try:
+        host_roles_mod.require_primary_runtime_host()
+    except host_roles_mod.ComputeOnlyHostError as exc:
+        print(f"Alpecca full-stack startup refused: {exc}.", file=sys.stderr)
+        return 2
     lock = instance_mod.LocalInstanceLock(_instance_lock_path())
     try:
         lock.acquire()

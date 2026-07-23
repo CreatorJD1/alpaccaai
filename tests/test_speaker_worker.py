@@ -6,6 +6,7 @@ import io
 import json
 import math
 import struct
+import threading
 import wave
 
 import pytest
@@ -73,19 +74,263 @@ def worker(tmp_path):
         tmp_path / "speaker-profiles.sealed",
         encrypt=_seal,
         decrypt=_open,
-        prefer_sherpa=False,
+        backend=speaker_worker.SherpaOnnxBackend(
+            lambda _pcm_f32, _sample_rate_hz: [1.0, 0.5, 0.25]
+        ),
     )
 
 
-def test_status_is_cpu_familiarity_only_and_does_not_require_sherpa(worker):
+def test_status_is_cpu_familiarity_only_for_recognition_backend(worker):
     result = worker.handle(_request("status"))
 
+    assert result["status"] == "ready"
     assert result["purpose"] == "familiarity-only"
+    assert result["recognition_ready"] is True
+    assert result["evidence_kind"] == "speaker-embedding-similarity"
     assert result["may_authenticate"] is False
     assert result["may_grant_authority"] is False
     assert result["device"] == "cpu"
-    assert result["backend"] == "deterministic-cpu-fallback"
+    assert result["backend"] == "sherpa-onnx-cpu"
     assert result["enrolled_profiles"] == 0
+
+
+def test_sherpa_readiness_probe_is_lazy_cached_and_does_not_retain_audio(tmp_path):
+    observed = []
+
+    def extractor(pcm_f32: bytes, sample_rate_hz: int):
+        observed.append((len(pcm_f32), sample_rate_hz))
+        return [1.0, 0.5, 0.25]
+
+    backend = speaker_worker.SherpaOnnxBackend(extractor)
+    probed = speaker_worker.SpeakerWorker(
+        tmp_path / "probe-profiles.sealed",
+        encrypt=_seal,
+        decrypt=_open,
+        backend=backend,
+    )
+
+    assert observed == []
+    first = probed.handle(_request("status"))
+    second = probed.handle(_request("status"))
+
+    assert first["status"] == second["status"] == "ready"
+    assert len(observed) == 1
+    assert observed[0] == (
+        int(16_000 * speaker_worker.READINESS_PROBE_AUDIO_SECONDS) * 4,
+        16_000,
+    )
+    assert first["audio_retained"] is False
+    assert not any(
+        isinstance(value, (bytes, bytearray, speaker_worker.AudioPacket))
+        for value in vars(backend).values()
+    )
+
+
+@pytest.mark.parametrize(
+    "extractor, reason",
+    [
+        (
+            lambda _pcm_f32, _sample_rate_hz: (_ for _ in ()).throw(RuntimeError("broken")),
+            "speaker_recognition_probe_failed",
+        ),
+        (lambda _pcm_f32, _sample_rate_hz: [], "speaker_recognition_probe_failed"),
+    ],
+)
+def test_broken_sherpa_probe_stays_unavailable_and_never_processes_user_audio(
+    tmp_path, extractor, reason
+):
+    calls = []
+
+    def observed_extractor(pcm_f32: bytes, sample_rate_hz: int):
+        calls.append((len(pcm_f32), sample_rate_hz))
+        return extractor(pcm_f32, sample_rate_hz)
+
+    backend = speaker_worker.SherpaOnnxBackend(observed_extractor)
+    probed = speaker_worker.SpeakerWorker(
+        tmp_path / "broken-profiles.sealed",
+        encrypt=_seal,
+        decrypt=_open,
+        backend=backend,
+    )
+
+    status = probed.handle(_request("status"))
+    enrolled = probed.handle(
+        _request("enroll", profile_id="creator", audio=_audio(_pcm()))
+    )
+
+    assert status["status"] == "unavailable"
+    assert status["recognition_ready"] is False
+    assert status["reason"] == reason
+    assert enrolled["status"] == "unavailable"
+    assert enrolled["reason"] == reason
+    assert enrolled["may_authenticate"] is False
+    assert enrolled["may_grant_authority"] is False
+    assert len(calls) == 1
+    assert not (tmp_path / "broken-profiles.sealed").exists()
+
+
+def test_static_recognition_flag_without_real_probe_cannot_report_ready(tmp_path):
+    class FlagOnlyBackend:
+        name = "flag-only"
+        device = "cpu"
+        recognition_capable = True
+
+        def embed(self, _packet):
+            raise AssertionError("embed must not run without a readiness probe")
+
+    probed = speaker_worker.SpeakerWorker(
+        tmp_path / "flag-only-profiles.sealed",
+        encrypt=_seal,
+        decrypt=_open,
+        backend=FlagOnlyBackend(),
+    )
+
+    status = probed.handle(_request("status"))
+
+    assert status["status"] == "unavailable"
+    assert status["recognition_ready"] is False
+    assert status["reason"] == "speaker_recognition_probe_unavailable"
+    assert status["evidence_kind"] == "none"
+    assert status["may_authenticate"] is False
+
+
+def test_sherpa_probe_timeout_fails_closed_and_is_not_retried(tmp_path, monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def extractor(_pcm_f32: bytes, _sample_rate_hz: int):
+        nonlocal calls
+        calls += 1
+        started.set()
+        release.wait(1.0)
+        return [1.0, 0.5, 0.25]
+
+    monkeypatch.setattr(speaker_worker, "READINESS_PROBE_TIMEOUT_SECONDS", 0.01)
+    probed = speaker_worker.SpeakerWorker(
+        tmp_path / "timeout-profiles.sealed",
+        encrypt=_seal,
+        decrypt=_open,
+        backend=speaker_worker.SherpaOnnxBackend(extractor),
+    )
+
+    try:
+        first = probed.handle(_request("status"))
+        assert started.wait(0.2)
+        second = probed.handle(_request("status"))
+    finally:
+        release.set()
+
+    assert first["status"] == second["status"] == "unavailable"
+    assert first["reason"] == "speaker_recognition_probe_timeout"
+    assert calls == 1
+
+
+def test_enroll_inference_failure_invalidates_cached_readiness_until_restart(tmp_path):
+    calls = 0
+
+    def extractor(_pcm_f32: bytes, _sample_rate_hz: int):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return [1.0, 0.5, 0.25]
+        raise RuntimeError("private backend failure")
+
+    probed = speaker_worker.SpeakerWorker(
+        tmp_path / "enroll-failure-profiles.sealed",
+        encrypt=_seal,
+        decrypt=_open,
+        backend=speaker_worker.SherpaOnnxBackend(extractor),
+    )
+    pcm = _pcm()
+
+    assert probed.handle(_request("status"))["status"] == "ready"
+    enrolled = probed.handle(
+        _request("enroll", profile_id="creator", audio=_audio(pcm))
+    )
+    status = probed.handle(_request("status"))
+
+    assert enrolled["status"] == "unavailable"
+    assert enrolled["reason"] == "speaker_recognition_backend_failed"
+    assert enrolled["recognition_ready"] is False
+    assert enrolled["audio_retained"] is False
+    assert "score" not in enrolled
+    assert "familiarity" not in enrolled
+    assert status["status"] == "unavailable"
+    assert status["reason"] == "speaker_recognition_backend_failed"
+    assert calls == 2
+    assert not (tmp_path / "enroll-failure-profiles.sealed").exists()
+
+
+def test_compare_inference_failure_invalidates_without_label_or_retry(tmp_path):
+    calls = 0
+
+    def extractor(_pcm_f32: bytes, _sample_rate_hz: int):
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            return [1.0, 0.5, 0.25]
+        raise RuntimeError("private backend failure")
+
+    store_path = tmp_path / "compare-failure-profiles.sealed"
+    probed = speaker_worker.SpeakerWorker(
+        store_path,
+        encrypt=_seal,
+        decrypt=_open,
+        backend=speaker_worker.SherpaOnnxBackend(extractor),
+    )
+    pcm = _pcm()
+
+    assert probed.handle(_request("status"))["status"] == "ready"
+    assert probed.handle(
+        _request("enroll", profile_id="creator", audio=_audio(pcm))
+    )["status"] == "ready"
+    compared = probed.handle(
+        _request("compare", profile_id="creator", audio=_audio(pcm))
+    )
+    status = probed.handle(_request("status"))
+
+    assert compared["status"] == "unavailable"
+    assert compared["reason"] == "speaker_recognition_backend_failed"
+    assert compared["recognition_ready"] is False
+    assert compared["audio_retained"] is False
+    assert compared["may_authenticate"] is False
+    assert compared["may_grant_authority"] is False
+    assert "score" not in compared
+    assert "familiarity" not in compared
+    assert status["status"] == "unavailable"
+    assert status["reason"] == "speaker_recognition_backend_failed"
+    assert calls == 3
+    assert base64.b64encode(pcm) not in store_path.read_bytes()
+
+
+def test_default_fallback_never_enrolls_or_labels_speaker_as_familiar(tmp_path):
+    fallback = speaker_worker.SpeakerWorker(
+        tmp_path / "fallback-profiles.sealed",
+        encrypt=_seal,
+        decrypt=_open,
+        prefer_sherpa=False,
+    )
+    pcm = _pcm()
+
+    status = fallback.handle(_request("status"))
+    enrolled = fallback.handle(
+        _request("enroll", profile_id="creator", audio=_audio(pcm))
+    )
+    compared = fallback.handle(
+        _request("compare", profile_id="creator", audio=_audio(pcm))
+    )
+
+    assert status["status"] == "unavailable"
+    assert status["recognition_ready"] is False
+    assert status["evidence_kind"] == "none"
+    assert enrolled["status"] == "unavailable"
+    assert compared["status"] == "unavailable"
+    assert enrolled["may_authenticate"] is False
+    assert compared["may_authenticate"] is False
+    assert "score" not in compared
+    assert "familiarity" not in compared
+    assert not (tmp_path / "fallback-profiles.sealed").exists()
 
 
 def test_enroll_and_compare_are_deterministic_and_store_only_sealed_embeddings(
@@ -96,11 +341,15 @@ def test_enroll_and_compare_are_deterministic_and_store_only_sealed_embeddings(
     compared = worker.handle(_request("compare", profile_id="creator", audio=_audio(pcm)))
 
     assert enrolled == {
+        "status": "ready",
         "profile_id": "creator",
         "enrolled": True,
-        "backend": "deterministic-cpu-fallback",
+        "backend": "sherpa-onnx-cpu",
         "purpose": "familiarity-only",
+        "recognition_ready": True,
+        "evidence_kind": "speaker-embedding-similarity",
         "may_authenticate": False,
+        "may_grant_authority": False,
         "audio_retained": False,
     }
     assert compared["score"] == 1.0
@@ -114,7 +363,7 @@ def test_enroll_and_compare_are_deterministic_and_store_only_sealed_embeddings(
     assert base64.b64encode(pcm) not in stored
     assert speaker_worker.EncryptedEmbeddingStore(
         tmp_path / "speaker-profiles.sealed", encrypt=_seal, decrypt=_open
-    ).load()["creator"]["backend"] == "deterministic-cpu-fallback"
+    ).load()["creator"]["backend"] == "sherpa-onnx-cpu"
 
 
 def test_compare_does_not_conflate_a_score_with_authentication(worker):
@@ -169,6 +418,9 @@ def test_identity_sealing_callback_is_rejected(tmp_path):
         tmp_path / "bad.sealed",
         encrypt=lambda payload: payload,
         decrypt=lambda payload: payload,
+        backend=speaker_worker.SherpaOnnxBackend(
+            lambda _pcm_f32, _sample_rate_hz: [1.0, 0.5, 0.25]
+        ),
     )
 
     response = speaker_worker.protocol_response(
@@ -211,6 +463,7 @@ def test_sherpa_import_is_lazy_and_missing_package_falls_back(monkeypatch):
     )
 
     assert backend.name == "deterministic-cpu-fallback"
+    assert backend.recognition_capable is False
     assert imported == []
 
 
@@ -233,5 +486,6 @@ def test_sherpa_factory_can_supply_a_lazy_cpu_extractor(monkeypatch):
     vector = backend.embed(speaker_worker.parse_audio(_audio(_pcm())))
 
     assert backend.name == "sherpa-onnx-cpu"
+    assert backend.recognition_capable is True
     assert len(vector) == 3
     assert observed and observed[0][1] == 16_000

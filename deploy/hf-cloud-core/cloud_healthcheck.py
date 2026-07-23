@@ -38,6 +38,18 @@ def promotion_grace_is_fresh(
     return 0.0 <= age <= PROMOTION_HEALTH_GRACE_SECONDS
 
 
+def voice_synthesis_ready(voice: dict) -> bool:
+    """Require explicit successful synthesis evidence; missing fields fail closed."""
+
+    return (
+        voice.get("state") == "ready"
+        and voice.get("modelLoaded") is True
+        and voice.get("selfCheckPassed") is True
+        and voice.get("selfCheckState") == "passed"
+        and voice.get("synthesisReady") is True
+    )
+
+
 def healthy(
     *,
     opener: Callable = urllib.request.urlopen,
@@ -53,7 +65,7 @@ def healthy(
         )
     except Exception:
         return False
-    if voice.get("state") != "ready":
+    if not voice_synthesis_ready(voice):
         return False
 
     try:
