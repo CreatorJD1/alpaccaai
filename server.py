@@ -7640,7 +7640,7 @@ def rog_worker_status(req: Request) -> dict[str, object]:
     snapshot = rog_worker_runtime_mod.status_snapshot(ROG_WORKER_URL)
     deep_route_loaded = any(
         link[0] == "rog-worker"
-        for link in getattr(mind, "_deep_chain", ())
+        for link in getattr(mind.llm, "_deep_chain", ())
     )
     worker_ready = bool(snapshot.get("ready"))
     snapshot["worker_ready"] = worker_ready

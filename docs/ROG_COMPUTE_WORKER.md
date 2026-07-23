@@ -1,8 +1,8 @@
 # Jason_HOLYROG Compute Worker
 
-Status: source-complete and focused-test green; deployment pending. The worker
-is not operational until this source checkpoint is on `Jason_HOLYROG`,
-qualification passes there, and a live health/job smoke is captured.
+Status: authenticated health and `qwen3.5:9b` reasoning were live-verified from
+the primary on 2026-07-23. Persistent dedicated-server installation remains a
+separate ROG-side step until the scheduled task below is installed and checked.
 
 Current source verification: 156 focused worker/client/launcher/host-role tests
 and 371 core regression tests pass. This is not a substitute for the live ROG
@@ -66,7 +66,7 @@ audit record.
 The setup script does not install packages, pull models, modify firewall rules,
 create services, or create scheduled tasks. It inventories the machine with the
 read-only `scripts/qualify_rog_worker.py` utility and prints explicit next
-steps.
+steps. A separate, explicit dedicated-server installer is described below.
 
 ## Setup
 
@@ -140,6 +140,47 @@ the authenticated worker state at `GET /system/rog-worker` and request one
 approved render with `POST /system/rog-worker/render` using exactly
 `{"project":"alpecca_scene.blend","frame":1}`. Deep background reflection
 tries the worker first, then the existing hosted and local fallback chain.
+
+## Dedicated Server Mode
+
+After the foreground health and reasoning checks pass, install the compute-only
+worker as a dedicated Windows scheduled task from an **Administrator
+PowerShell** on `Jason_HOLYROG`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_rog_compute_server.ps1 -Install
+```
+
+This separate installer performs worker qualification again, registers one
+hidden task named `Alpecca ROG Compute Server`, starts it at the dedicated
+Windows account's logon, and restarts it one minute after a failure. It keeps
+the existing authenticated HTTPS listener on port 8788 and writes operational
+output under `%LOCALAPPDATA%\Alpecca\rog-worker\logs`.
+
+It launches only `setup_rog_worker.ps1 -CheckWorker -StartWorker`. It does not
+launch CoreMind, Discord, memory, continuity, Cloudflare, or another Alpecca
+instance. Tailscale remains the private cross-network transport; do not add a
+public tunnel or router port-forward.
+
+Inspect or control the task on the ROG with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_rog_compute_server.ps1 -Status
+powershell -ExecutionPolicy Bypass -File scripts\install_rog_compute_server.ps1 -Stop
+powershell -ExecutionPolicy Bypass -File scripts\install_rog_compute_server.ps1 -Start
+```
+
+Removal unregisters only this task and preserves its credential, TLS identity,
+models, logs, and all Alpecca data:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_rog_compute_server.ps1 -Remove
+```
+
+The primary's ordered deep route remains `rog-worker,ollama-cloud`; if the ROG
+is unreachable or rejects a job, Alpecca continues to `gemma4:cloud` and then
+the existing local Qwen fallback. The dedicated worker is never a required
+speaker or memory authority.
 
 The primary must retain its existing local/cloud fallback. A timeout, refused
 connection, bad signature, stale request, malformed response, or unavailable

@@ -23,6 +23,7 @@ def test_primary_worker_status_is_creator_scoped_and_content_free():
     assert '@app.get("/system/rog-worker")' in source
     assert "_require_creator_request(req)" in function
     assert "status_snapshot(ROG_WORKER_URL)" in function
+    assert 'getattr(mind.llm, "_deep_chain", ())' in function
     assert 'snapshot["deep_route_loaded"]' in function
     assert 'snapshot["restart_required"]' in function
 

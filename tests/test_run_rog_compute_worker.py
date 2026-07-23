@@ -421,3 +421,27 @@ def test_setup_and_documentation_preserve_worker_only_boundary() -> None:
         "start-process",
     )
     assert not any(path in setup_lower for path in forbidden_start_paths)
+
+
+def test_dedicated_server_task_remains_compute_only_and_restartable() -> None:
+    installer = (
+        ROOT / "scripts" / "install_rog_compute_server.ps1"
+    ).read_text(encoding="utf-8")
+    lowered = installer.lower()
+
+    assert "alpecca rog compute server" in lowered
+    assert "register-scheduledtask" in lowered
+    assert "new-scheduledtasktrigger -atlogon" in lowered
+    assert "-restartcount 999" in lowered
+    assert "setup_rog_worker.ps1" in lowered
+    assert "alpecca_rog_worker_lan = '1'" in lowered
+    assert "qwen3.5:9b" in lowered
+    for forbidden in (
+        "server.py",
+        "run_full.py",
+        "run_discord_bridge.py",
+        "share.py",
+        "cloudflared",
+        "continuity_lease",
+    ):
+        assert forbidden not in lowered
