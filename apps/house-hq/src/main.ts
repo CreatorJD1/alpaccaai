@@ -992,6 +992,7 @@ type AlpeccaSystemId =
   | "files"
   | "games"
   | "mindscape"
+  | "development"
   | "runtime";
 type AlpeccaRouteGuide = {
   hall: THREE.Vector3;
@@ -1206,6 +1207,7 @@ hud.innerHTML = `
           </div>
           <div class="systems-nav-group"><span>System</span>
             <button type="button" data-system-id="devices">Devices</button>
+            <button type="button" data-system-id="development">Development</button>
             <button type="button" data-system-id="runtime">Runtime</button>
           </div>
         </nav>
@@ -4643,6 +4645,7 @@ const alpeccaSystemEndpoints: Record<AlpeccaSystemId, string> = {
   files: "/desktop",
   games: "/games",
   mindscape: "/mindscape/state",
+  development: "/system/remote-development",
   runtime: "/system/status",
 };
 
@@ -4664,6 +4667,7 @@ const alpeccaSystemLabels: Record<AlpeccaSystemId, string> = {
   files: "Files",
   games: "Games",
   mindscape: "Mindscape",
+  development: "Development",
   runtime: "Runtime",
 };
 
@@ -4683,6 +4687,7 @@ function alpeccaSystemFromPath(path: string): AlpeccaSystemId {
   if (normalized.includes("privacy") || normalized.includes("egress") || normalized.includes("consent")) return "privacy";
   if (normalized.includes("sight") || normalized.includes("sense")) return "senses";
   if (normalized.includes("studio")) return "studio";
+  if (normalized.includes("development") || normalized.includes("terminal") || normalized.includes("ssh")) return "development";
   if (normalized.includes("system") || normalized.includes("doctor")) return "runtime";
   if (normalized.includes("state") || normalized.includes("introspect") || normalized.includes("character")) return "self";
   if (normalized.includes("app") || normalized.includes("device") || normalized.includes("share")) return "devices";
@@ -5002,6 +5007,26 @@ function renderAlpeccaSystem(systemId: AlpeccaSystemId, data: Record<string, unk
       <section><h3>Parlor</h3>${systemRow("Internal-home state", parlorDetail, tools.parlorCurrent ? "CURRENT" : tools.parlorKnown ? "KNOWN" : "UNAVAILABLE")}</section>
       <section><h3>Bounded read surfaces</h3>${HOUSE_READ_TOOLS.map((tool) => systemRow(tool.label, `${tool.method} ${tool.endpoint}`, "CONNECTED")).join("")}</section>
       <section><h3>Approved commitment executor</h3>${tools.executableTools.map((tool) => systemRow(tool, "Backend reports this tool as executable only through the commitment approval path.", "AVAILABLE")).join("") || systemEmpty("The backend reports no executable commitment tools.")}</section>`;
+  }
+  if (systemId === "development") {
+    const ready = data.ready === true;
+    return `${systemIntro("DEVELOP", "ROG development terminal", "Creator-authenticated PowerShell over the private Tailscale OpenSSH connection. Commands run on Jason_HOLYROG and return an audited receipt.")}
+      <div class="systems-metrics">
+        <div><span>Host</span><strong>${escapeHudText(systemString(data.host, "Jason_HOLYROG"))}</strong></div>
+        <div><span>Connection</span><strong>${ready ? "Ready" : "Setup required"}</strong></div>
+        <div><span>House access</span><strong>${escapeHudText(systemString(data.house_access, "offline"))}</strong></div>
+        <div><span>Discord access</span><strong>${escapeHudText(systemString(data.discord_access, "offline"))}</strong></div>
+      </div>
+      <section class="remote-development-console">
+        <h3>Remote PowerShell</h3>
+        <label><span>Working directory</span><input id="alpeccaRemoteCwd" value="C:\\Users\\Jason\\Documents\\GitHub\\alpaccaai" autocomplete="off" spellcheck="false"></label>
+        <label><span>Command</span><textarea id="alpeccaRemoteCommand" rows="6" maxlength="32768" placeholder="Enter a PowerShell command" autocomplete="off" spellcheck="false"></textarea></label>
+        <div class="remote-development-controls">
+          <label><span>Timeout</span><input id="alpeccaRemoteTimeout" type="number" min="1" max="3600" value="300"></label>
+          <button type="button" data-system-action="remote-execute"${ready ? "" : " disabled"}>Run on ROG</button>
+        </div>
+        <pre id="alpeccaRemoteOutput" aria-live="polite">${ready ? "Ready." : escapeHudText(systemString(data.reason, "OpenSSH enrollment is incomplete."))}</pre>
+      </section>`;
   }
   if (systemId === "growth") {
     const desires = systemArray(data.desires);
@@ -15727,6 +15752,26 @@ async function handleAlpeccaSystemAction(action: string) {
   try {
     if (action === "egress-stage") {
       await stageAlpeccaPerceptionEgress();
+      return;
+    }
+    if (action === "remote-execute") {
+      const command = alpeccaSystemsBody.querySelector<HTMLTextAreaElement>("#alpeccaRemoteCommand")?.value.trim() || "";
+      const cwd = alpeccaSystemsBody.querySelector<HTMLInputElement>("#alpeccaRemoteCwd")?.value.trim() || "";
+      const timeoutInput = alpeccaSystemsBody.querySelector<HTMLInputElement>("#alpeccaRemoteTimeout");
+      const timeoutSeconds = Math.max(1, Math.min(3600, Number(timeoutInput?.value || 300) || 300));
+      const output = alpeccaSystemsBody.querySelector<HTMLPreElement>("#alpeccaRemoteOutput");
+      if (!command) throw new Error("Enter a PowerShell command.");
+      if (output) output.textContent = "Running on Jason_HOLYROG...";
+      const data = await postAlpeccaSystem("/system/remote-development/execute", {
+        command,
+        cwd,
+        timeout_seconds: timeoutSeconds,
+      });
+      const stdout = systemString(data.stdout, "");
+      const stderr = systemString(data.stderr, "");
+      const text = [stdout, stderr].filter(Boolean).join("\n") || "Completed without output.";
+      if (output) output.textContent = text;
+      setAlpeccaSystemsNotice(`ROG command finished with exit code ${systemString(data.exit_code, "unknown")} in ${systemString(data.elapsed_ms, "0")} ms.`);
       return;
     }
     if (action === "memory-search") return void searchAlpeccaSystem("memory");

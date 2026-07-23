@@ -140,6 +140,7 @@ from alpecca import computer as computer_mod
 from alpecca import runtime_status as runtime_status_mod
 from alpecca import rog_worker_client as rog_worker_client_mod
 from alpecca import rog_worker_runtime as rog_worker_runtime_mod
+from alpecca import rog_remote_admin as rog_remote_admin_mod
 from alpecca import mindscape as mindscape_mod
 from alpecca import mindscape_vault as mindscape_vault_mod
 from alpecca import continuity_journal as continuity_journal_mod
@@ -3619,6 +3620,7 @@ _DISCORD_SERVICE_PATHS = frozenset({
     "/channel/discord",
     "/channel/discord/actor-envelope",
     "/channel/discord/autonomy",
+    "/channel/discord/development",
 })
 
 def _access_html(
@@ -7652,6 +7654,75 @@ def rog_worker_status(req: Request) -> dict[str, object]:
     return snapshot
 
 
+@app.get("/system/remote-development")
+def remote_development_status(req: Request) -> dict[str, object]:
+    """Creator-only status for the private ROG administrator channel."""
+
+    _require_creator_request(req)
+    return rog_remote_admin_mod.status()
+
+
+@app.post("/system/remote-development/execute")
+async def remote_development_execute(req: Request) -> JSONResponse:
+    """Run CreatorJD's explicit PowerShell command on the ROG over SSH."""
+
+    decision = _require_creator_request(req)
+    payload = await _read_bounded_json_object(req, max_bytes=40 * 1024)
+    if not set(payload).issubset({"command", "cwd", "timeout_seconds"}):
+        raise HTTPException(status_code=400, detail={"code": "remote_command_invalid"})
+    command = payload.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise HTTPException(status_code=400, detail={"code": "remote_command_invalid"})
+    request_id = f"house-admin-{uuid.uuid4().hex}"
+    try:
+        result = await asyncio.to_thread(
+            rog_remote_admin_mod.execute,
+            command,
+            cwd=payload.get("cwd", ""),
+            timeout_seconds=payload.get("timeout_seconds", 300),
+            request_id=request_id,
+        )
+    except rog_remote_admin_mod.RemoteDevelopmentError as exc:
+        try:
+            cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                source="remote_development",
+                content="A CreatorJD ROG development command failed before completion.",
+                confidence=1.0,
+                privacy_class="private",
+                metadata={
+                    "event": "remote_command_failed",
+                    "request_id": request_id,
+                    "principal": decision.principal,
+                    "error": type(exc).__name__,
+                },
+            ))
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "remote_development_unavailable", "error": type(exc).__name__},
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    try:
+        cognition_mod.record_observation(cognition_mod.CognitionObservation(
+            source="remote_development",
+            content="CreatorJD completed one explicit ROG development command.",
+            confidence=1.0,
+            privacy_class="private",
+            metadata={
+                "event": "remote_command_completed",
+                "request_id": request_id,
+                "principal": decision.principal,
+                "exit_code": result.exit_code,
+                "elapsed_ms": result.elapsed_ms,
+                "command_sha256": hashlib.sha256(command.encode("utf-8")).hexdigest(),
+            },
+        ))
+    except Exception:
+        pass
+    return JSONResponse(result.as_dict(), headers={"Cache-Control": "no-store"})
+
+
 @app.post("/system/rog-worker/render")
 async def rog_worker_render(req: Request) -> JSONResponse:
     """Render one approved worker-side Blender project and return a receipt."""
@@ -9634,6 +9705,50 @@ async def issue_discord_actor_envelope(req: Request, response: Response) -> dict
     except bridge_actor_identity_mod.BridgeActorIdentityError:
         _raise_discord_actor_denied()
     return {"envelope": envelope.encode()}
+
+
+@app.post("/channel/discord/development")
+async def discord_remote_development(req: Request) -> JSONResponse:
+    """Run one fixed low-risk ROG check for the verified CreatorJD actor."""
+
+    payload, _actor, bindings = await _verified_discord_actor_request(req)
+    if not discord_creator_identity_mod.is_creator_actor_id(bindings.actor_id):
+        _raise_discord_actor_denied()
+    if set(payload) != {"action"} or not isinstance(payload.get("action"), str):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "discord_development_action_invalid"},
+            headers={"Cache-Control": "no-store"},
+        )
+    action = payload["action"].strip().casefold()
+    try:
+        result = await asyncio.to_thread(
+            rog_remote_admin_mod.execute_low_risk,
+            action,
+        )
+    except rog_remote_admin_mod.RemoteDevelopmentError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "remote_development_unavailable", "error": type(exc).__name__},
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    try:
+        cognition_mod.record_observation(cognition_mod.CognitionObservation(
+            source="remote_development",
+            content="CreatorJD requested one low-risk ROG development check through Discord.",
+            confidence=1.0,
+            privacy_class="private",
+            metadata={
+                "event": "discord_remote_check",
+                "actor_id_hash": hashlib.sha256(bindings.actor_id.encode("ascii")).hexdigest()[:16],
+                "action": action,
+                "exit_code": result.exit_code,
+                "request_id": result.request_id,
+            },
+        ))
+    except Exception:
+        pass
+    return JSONResponse(result.as_dict(), headers={"Cache-Control": "no-store"})
 
 
 def _record_discord_autonomy_outcome(

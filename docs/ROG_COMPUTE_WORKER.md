@@ -151,6 +151,19 @@ PowerShell** on `Jason_HOLYROG`:
 powershell -ExecutionPolicy Bypass -File scripts\install_rog_compute_server.ps1 -Install
 ```
 
+When Blender is installed and render offload is wanted, enable the bounded
+render lane during installation:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_rog_compute_server.ps1 -Install -EnableBlender
+```
+
+This creates only `%LOCALAPPDATA%\Alpecca\rog-worker\blend-input` and
+`render-output`, plus a local enable marker. The scheduled worker resolves the
+installed `blender.exe` on every start and exposes only projects placed directly
+in the approved input root. It does not accept arbitrary paths or Blender
+scripts.
+
 This separate installer performs worker qualification again, registers one
 hidden task named `Alpecca ROG Compute Server`, starts it at the dedicated
 Windows account's logon, and restarts it one minute after a failure. It keeps

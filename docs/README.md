@@ -1,6 +1,6 @@
 ﻿# Docs Index
 
-**Last updated:** 2026-07-22
+**Last updated:** 2026-07-23
 
 Stage 0 is complete. Native phone trust and communication-channel boundaries
 now have implemented security gates; live phone, Discord voice, and release
@@ -71,6 +71,7 @@ as required passdown or reference logs.
 - `docs/EXPERIENCE_SHAPED_PERSONALITY.md`
 - `docs/OPEN_SOURCE_RESEARCH_REVIEW.md` (2026-07-22 source-reviewed integration decisions and local acceptance gates)
 - `docs/ROG_COMPUTE_WORKER.md` (compute-only Jason_HOLYROG setup and deployment gates)
+- `docs/ALPECCA_STATE_DIAGNOSTIC_2026-07-23.md` (live measured primary/ROG health, latency, storage, and completion matrix)
 - `docs/VIDEO_COMPANION_STREAMING_PLAN.md` (2026-07-22 researched full-video, live-stream, reactor, and governed-sharing stages)
 - `docs/REPOSITORY_CLEANUP_MANIFEST.md`
 - `docs/DOWNLOADED_SYSTEMS.md`

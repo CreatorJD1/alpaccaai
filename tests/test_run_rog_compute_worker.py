@@ -436,6 +436,13 @@ def test_dedicated_server_task_remains_compute_only_and_restartable() -> None:
     assert "setup_rog_worker.ps1" in lowered
     assert "alpecca_rog_worker_lan = '1'" in lowered
     assert "qwen3.5:9b" in lowered
+    assert "enableblender" in lowered
+    assert "alpecca_rog_worker_blender_exe" in lowered
+    assert "alpecca_rog_worker_blend_root" in lowered
+    assert "alpecca_rog_worker_output_root" in lowered
+    assert "blender-enabled" in lowered
+    assert "blend-input" in lowered
+    assert "render-output" in lowered
     for forbidden in (
         "server.py",
         "run_full.py",

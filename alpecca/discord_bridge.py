@@ -839,6 +839,35 @@ def _room_control_action(message: object, user_id: object) -> str | None:
     return next(iter(actions)) if len(actions) == 1 else None
 
 
+def _development_control_action(
+    message: object,
+    user_id: object,
+    *,
+    creator_allowed: bool,
+) -> str | None:
+    """Parse one explicit CreatorJD-only low-risk development command."""
+
+    if not creator_allowed:
+        return None
+    allowed = "health|branch|log|resources"
+    raw = str(getattr(message, "content", "") or "").strip()
+    if getattr(message, "guild", None) is None:
+        match = re.fullmatch(rf"dev\s+({allowed})\s*[.!]?", raw, re.IGNORECASE)
+        return match.group(1).casefold() if match else None
+    wanted = str(user_id)
+    if not _message_mentions_user(message, wanted):
+        return None
+    matches = {
+        action.casefold()
+        for action in re.findall(
+            rf"^\s*<@!?{re.escape(wanted)}>\s+dev\s+({allowed})\s*[.!]?\s*$",
+            raw,
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
 def _load_social_rooms() -> dict[str, dict[str, str]]:
     """Read the creator-claimed room registry; malformed state fails closed."""
     try:
@@ -1303,6 +1332,46 @@ def _ask_alpecca(
     if type(reply) is not str:
         raise RuntimeError("alpecca backend returned a malformed Discord reply")
     return reply.strip()
+
+
+def _run_remote_development_action(
+    action: str,
+    actor_bindings: bridge_actor_transport.DiscordActorBindings,
+) -> dict[str, object]:
+    """Send one fixed CreatorJD development action through the signed bridge."""
+
+    body = json.dumps(
+        {"action": action},
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    base_headers = {
+        "Content-Type": "application/json",
+        BRIDGE_AUTHORIZATION_HEADER: _BRIDGE_AUTHORIZATION_SECRET,
+        **actor_bindings.as_headers(),
+    }
+    mint = _post_json_once(
+        f"{BACKEND_URL}/channel/discord/actor-envelope",
+        body=body,
+        headers=base_headers,
+        timeout=INBOUND_TIMEOUT,
+    )
+    if set(mint) != {"envelope"} or type(mint.get("envelope")) is not str:
+        raise RuntimeError("alpecca backend returned a malformed actor envelope")
+    envelope = bridge_actor_transport.parse_envelope_header(
+        {bridge_actor_transport.ENVELOPE_HEADER: mint["envelope"]}
+    )
+    return _post_json_once(
+        f"{BACKEND_URL}/channel/discord/development",
+        body=body,
+        headers={
+            **base_headers,
+            bridge_actor_transport.ENVELOPE_HEADER: envelope,
+        },
+        timeout=min(INBOUND_TIMEOUT, 45.0),
+    )
 
 
 def _ask_room_autonomy(text: str, room_scope: str) -> str:
@@ -2844,6 +2913,42 @@ def build_client() -> discord.Client:
 
         is_dm = message.guild is None
         creator_allowed = _dm_author_allowed(message.author)
+        development_action = _development_control_action(
+            message,
+            client.user.id,
+            creator_allowed=creator_allowed,
+        )
+        if development_action is not None:
+            try:
+                actor_bindings = _message_actor_bindings(message)
+                result = await asyncio.to_thread(
+                    _run_remote_development_action,
+                    development_action,
+                    actor_bindings,
+                )
+                output = "\n".join(
+                    part.strip()
+                    for part in (
+                        str(result.get("stdout") or ""),
+                        str(result.get("stderr") or ""),
+                    )
+                    if part.strip()
+                )
+                output = output.replace("```", "''' ")[:1700]
+                exit_code = result.get("exit_code")
+                response_text = (
+                    f"ROG {development_action} check (exit {exit_code}):\n"
+                    f"```text\n{output or 'Completed without output.'}\n```"
+                )
+                await message.reply(response_text, mention_author=False)
+                _diagnostic("remote_development_completed", status=development_action)
+            except Exception as exc:
+                _diagnostic("remote_development_failed", status=type(exc).__name__)
+                await message.reply(
+                    "The private ROG development channel is unavailable.",
+                    mention_author=False,
+                )
+            return
         if not is_dm:
             message_content = str(getattr(message, "content", "") or "")
             mentioned = _message_mentions_user(message, client.user.id)

@@ -2343,3 +2343,22 @@ free) · `scripts/` (doctor, run_full, run_talkinghead, import_rig, build_manife
   8788 and the checked remote-management ports were unreachable. Run the setup
   directly on the ROG, limit its firewall rule to the primary laptop, then keep
   authenticated health, reasoning, and Blender receipts before calling it live.
+
+## 2026-07-23 live state diagnostic and ROG measurements
+
+- The compute worker is now reachable over authenticated HTTPS on port 8788 and
+  reports compute-only Qwen 3.5 9B reasoning ready. It still reports Blender
+  unavailable and owns no speaking, Discord, memory, or continuity role.
+- Three ROG probes completed in 0.62-1.84 seconds. A matched 37-token local Qwen
+  response took 36.92 seconds; a four-token local retry took 35.36 seconds, with
+  31.88 seconds spent loading the model. The ROG is therefore a substantial,
+  measured reasoning improvement under current primary-host pressure.
+- The active primary process reports `deep_route_loaded=false` because it
+  predates the latest route configuration. Restart only after storage recovery,
+  then require a primary-originated job receipt naming `rog-worker`.
+- Primary resources were critical during measurement: 94.05% physical memory,
+  91.23% committed memory, 92.05% CPU, and about 76 MB system-drive space free.
+  Do not perform a broad restart or full regression run until storage is safely
+  recovered. No data was deleted by the diagnostic.
+- Full measured results, current subsystem status, and the required acceptance
+  gates are in `docs/ALPECCA_STATE_DIAGNOSTIC_2026-07-23.md`.

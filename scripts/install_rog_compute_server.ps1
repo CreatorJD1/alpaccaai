@@ -5,7 +5,8 @@ param(
     [switch]$Start,
     [switch]$Stop,
     [switch]$Status,
-    [switch]$RunWorker
+    [switch]$RunWorker,
+    [switch]$EnableBlender
 )
 
 Set-StrictMode -Version Latest
@@ -17,7 +18,25 @@ $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $SetupScript = Join-Path $PSScriptRoot 'setup_rog_worker.ps1'
 $LogDir = Join-Path $env:LOCALAPPDATA 'Alpecca\rog-worker\logs'
 $LogPath = Join-Path $LogDir 'dedicated-server.log'
+$WorkerDataDir = Join-Path $env:LOCALAPPDATA 'Alpecca\rog-worker'
+$BlenderMarker = Join-Path $WorkerDataDir 'blender-enabled'
+$BlendRoot = Join-Path $WorkerDataDir 'blend-input'
+$OutputRoot = Join-Path $WorkerDataDir 'render-output'
 $ObservedHost = [System.Net.Dns]::GetHostName()
+
+function Find-BlenderExecutable {
+    $command = Get-Command blender -ErrorAction SilentlyContinue
+    if ($null -ne $command) {
+        return $command.Source
+    }
+    $foundation = Join-Path $env:ProgramFiles 'Blender Foundation'
+    if (-not (Test-Path -LiteralPath $foundation -PathType Container)) {
+        return $null
+    }
+    return Get-ChildItem -LiteralPath $foundation -Filter blender.exe -File -Recurse -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending |
+        Select-Object -First 1 -ExpandProperty FullName
+}
 
 if (-not [string]::Equals($ObservedHost, $ExpectedHost, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "The dedicated compute server is assigned to $ExpectedHost; this machine is $ObservedHost."
@@ -27,6 +46,15 @@ if ($RunWorker) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
     $env:ALPECCA_ROG_WORKER_LAN = '1'
     $env:ALPECCA_ROG_WORKER_MODEL = 'qwen3.5:9b'
+    if (Test-Path -LiteralPath $BlenderMarker -PathType Leaf) {
+        $blender = Find-BlenderExecutable
+        if ([string]::IsNullOrWhiteSpace($blender)) {
+            throw 'Blender rendering is enabled, but blender.exe could not be found.'
+        }
+        $env:ALPECCA_ROG_WORKER_BLENDER_EXE = $blender
+        $env:ALPECCA_ROG_WORKER_BLEND_ROOT = $BlendRoot
+        $env:ALPECCA_ROG_WORKER_OUTPUT_ROOT = $OutputRoot
+    }
     "`n=== Dedicated ROG worker start $(Get-Date -Format o) ===" | Add-Content -LiteralPath $LogPath
     try {
         & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
@@ -54,6 +82,19 @@ if ($Install) {
         )
     if (-not $isAdmin) {
         throw 'Run this installer from an Administrator PowerShell window on Jason_HOLYROG.'
+    }
+
+    if ($EnableBlender) {
+        $blender = Find-BlenderExecutable
+        if ([string]::IsNullOrWhiteSpace($blender)) {
+            throw 'Blender was not found. Install Blender for all users or add blender.exe to PATH.'
+        }
+        New-Item -ItemType Directory -Path $BlendRoot -Force | Out-Null
+        New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
+        New-Item -ItemType File -Path $BlenderMarker -Force | Out-Null
+        Write-Host "Blender worker enabled: $blender" -ForegroundColor Green
+        Write-Host "Approved input root: $BlendRoot"
+        Write-Host "Approved output root: $OutputRoot"
     }
 
     $env:ALPECCA_ROG_WORKER_LAN = '1'
@@ -140,4 +181,7 @@ $info = Get-ScheduledTaskInfo -TaskName $TaskName
     LastTaskResult = $info.LastTaskResult
     NextRunTime = $info.NextRunTime
     LogPath = $LogPath
+    BlenderEnabled = Test-Path -LiteralPath $BlenderMarker -PathType Leaf
+    BlendRoot = $BlendRoot
+    OutputRoot = $OutputRoot
 } | Format-List
