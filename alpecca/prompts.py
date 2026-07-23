@@ -10,6 +10,7 @@ initiative on their own.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 from alpecca.homeostasis import EmotionalState
@@ -26,6 +27,23 @@ _REFERENCE_PATH = (
     / "voice_references"
     / "alpecca_voice_personality_profile.json"
 )
+
+
+def runtime_clock(now: datetime | None = None, *, compact: bool = False) -> str:
+    """Return one authoritative wall-clock fact for prompts and self-status."""
+    local = now or datetime.now().astimezone()
+    if local.tzinfo is None:
+        local = local.astimezone()
+    zone = local.tzname() or "local time"
+    offset = local.strftime("%z")
+    offset = f"UTC{offset[:3]}:{offset[3:]}" if len(offset) == 5 else zone
+    if compact:
+        return f"{local:%Y-%m-%d} {local.strftime('%I').lstrip('0') or '12'}:{local:%M:%S %p} {zone}"
+    return (
+        f"{local:%A, %B} {local.day}, {local.year} at "
+        f"{local.strftime('%I').lstrip('0') or '12'}:{local:%M:%S %p} "
+        f"{zone} ({offset})"
+    )
 
 
 def alpecca_reference_prompt() -> str:
@@ -213,6 +231,13 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
         parts = [PERSONA, "", charter.charter_prompt(), "", values.values_prompt(),
                  "", VOICE, "", RESILIENCE, "", GUIDANCE, "", GROUNDING]
 
+    parts += [
+        "",
+        ("Clock now (measured): " if compact else
+         "Authoritative local clock (measured now; use this for time awareness): ")
+        + runtime_clock(compact=compact),
+    ]
+
     try:
         learned_personality = personality_learning.prompt_guidance(
             personality_db_path or personality_learning.DB_PATH,
@@ -226,7 +251,7 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
 
     reference = alpecca_reference_prompt()
     if compact:
-        reference = _compact_text(reference, 560)
+        reference = _compact_text(reference, 320)
     if reference:
         parts += ["", reference]
 

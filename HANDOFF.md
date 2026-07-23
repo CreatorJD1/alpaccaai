@@ -1,4 +1,36 @@
-# Alpecca - Handoff (updated 2026-07-22)
+# Alpecca - Handoff (updated 2026-07-23)
+
+## 2026-07-23 Clock, initiative, and Google Workspace assistance
+
+- Every CoreMind prompt now receives an authoritative local wall clock. Compact
+  chat uses a short second-accurate form so the fixed prompt remains below its
+  4,800-character regression budget; living ticks retain the full timezone and
+  UTC offset as evidence.
+- The background House living loop now suppresses recently carried questions,
+  includes measured time in its observation, and reaches House as an Alpecca
+  conversation turn with optional voice playback. It no longer appears only as
+  a system/profile bubble. Claimed Discord rooms may make one grounded
+  empty-room check-in after 20 minutes by default; unanswered outreach still
+  uses the existing exponential backoff and cannot become a recursive monologue.
+- `self_status` now reports the authenticated creator turn plus Alpecca's live
+  clock, room, mood, trends, memory count, senses, host pressure, and Google
+  Workspace readiness. House Tools renders the same Google readiness evidence.
+- `alpecca/google_workspace.py` adds a real Google Drive/Docs REST adapter for
+  status, additive private-folder creation, and additive Google Doc creation.
+  It cannot share, overwrite, move, or delete. Every server operation records a
+  content-free cognition receipt; success requires a Google file ID and link.
+- `scripts/connect_google_workspace.py` performs one Microsoft Edge OAuth
+  desktop flow, creates the app-owned `Alpecca Assistance` root, and stores the
+  client secret plus refresh token only in Windows Credential Manager. Runtime
+  support is source-complete but operationally **SETUP REQUIRED** until a Google
+  OAuth desktop client JSON is authorized once on the primary machine.
+- TeamViewer is installed locally and its service was observed running with
+  automatic startup. The Codex Windows-control runtime failed before capture,
+  so account assignment, Easy Access, and `Jason_HOLYROG` remote control were
+  not verified or changed in this checkpoint.
+- Verification: 15 focused Python tests passed; Python compilation passed; the
+  House TypeScript/Vite production build passed. Discord-focused collection was
+  unavailable in the slim Codex runtime because `discord.py` is not installed.
 
 ## 2026-07-22 Verified research-wave status
 

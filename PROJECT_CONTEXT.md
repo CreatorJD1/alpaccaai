@@ -3,9 +3,23 @@
 This is the canonical project context for coding agents working on Alpecca.
 Read this before `AGENTS.md`, `CLAUDE.md`, `HANDOFF.md`, or implementation files.
 
-## Current Implementation Checkpoint (2026-07-22)
+## Current Implementation Checkpoint (2026-07-23)
 
 This checkpoint supersedes older route, access, model, and phase-status text.
+
+### 2026-07-23 time, initiative, and assistance update
+
+- CoreMind receives an authoritative local clock on every turn. House living
+  ticks surface as Alpecca-authored, optionally spoken initiative and suppress
+  recently repeated questions instead of remaining hidden system activity.
+- A bounded Google Workspace adapter can report readiness and create only new
+  private folders or Google Docs under one configured app-owned Drive root.
+  Sharing, overwrite, move, and delete are absent. The integration is source-
+  complete but operationally setup-required until its one-time Microsoft Edge
+  OAuth desktop flow stores authorization in Windows Credential Manager.
+- Creator `self_status` now includes measured clock, room, affect trends,
+  memory/sense state, host pressure, and Google readiness. House Tools renders
+  the Google readiness state rather than inferring it from source presence.
 
 ### 2026-07-22 behavior and connectivity update
 

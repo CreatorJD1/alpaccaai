@@ -826,6 +826,8 @@ class Actions:
         not in ("", "0", "false", "False")
     PLANNER = os.environ.get("ALPECCA_PLANNER", "1") \
         not in ("", "0", "false", "False")
+    GOOGLE_WORKSPACE = os.environ.get("ALPECCA_GOOGLE_WORKSPACE", "1") \
+        not in ("", "0", "false", "False")
     # How many tool-call rounds she may chain within a single chat turn. One
     # round is single-shot ("open Spotify"); a few rounds let her carry out a
     # small multi-step request mid-conversation (e.g. open an app, then open a

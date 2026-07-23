@@ -39,6 +39,9 @@ export type ToolLibrarySnapshot = {
   parlorCurrent: boolean;
   actuatorEnabled: boolean;
   executableTools: string[];
+  googleWorkspaceReady: boolean;
+  googleWorkspaceState: string;
+  googleWorkspaceCapabilities: string[];
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -52,6 +55,8 @@ export function buildToolLibrarySnapshot(data: Record<string, unknown>): ToolLib
   const home = record(data.home);
   const runtime = record(data.runtime);
   const senses = record(runtime.senses);
+  const integrations = record(runtime.integrations);
+  const googleWorkspace = record(integrations.google_workspace);
   const rooms = Array.isArray(home.rooms) ? home.rooms.map(record) : [];
   const currentRoom = String(home.location || home.current_room || home.room || "unknown").trim() || "unknown";
   const executableTools = Array.isArray(growth.executable_tools)
@@ -66,5 +71,10 @@ export function buildToolLibrarySnapshot(data: Record<string, unknown>): ToolLib
     parlorCurrent: currentRoom.toLowerCase() === "parlor",
     actuatorEnabled: senses.actions === true,
     executableTools,
+    googleWorkspaceReady: googleWorkspace.ready === true,
+    googleWorkspaceState: String(googleWorkspace.state || "unavailable"),
+    googleWorkspaceCapabilities: Array.isArray(googleWorkspace.capabilities)
+      ? googleWorkspace.capabilities.filter((value): value is string => typeof value === "string")
+      : [],
   };
 }

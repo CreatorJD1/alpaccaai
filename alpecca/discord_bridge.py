@@ -232,12 +232,13 @@ PROACTIVE_GLOBAL_COOLDOWN = max(
     30.0,
     float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_GLOBAL_COOLDOWN", "60")),
 )
-# A claimed room may get one deliberate check-in after a genuinely long pause,
+# A claimed room may get one deliberate check-in after a real quiet stretch,
 # but never a rapid sequence of self-directed messages.  This is distinct from
-# a follow-up earned by a new human turn.
+# a follow-up earned by a new human turn. Unanswered outreach continues through
+# the existing exponential backoff, so initiative does not become a monologue.
 EMPTY_ROOM_NUDGE_QUIET = max(
-    60.0 * 60.0,
-    float(os.environ.get("ALPECCA_DISCORD_EMPTY_ROOM_NUDGE_QUIET", "14400")),
+    5.0 * 60.0,
+    float(os.environ.get("ALPECCA_DISCORD_EMPTY_ROOM_NUDGE_QUIET", "1200")),
 )
 # Recursive self-continuation: when the room goes quiet after SHE spoke, she may
 # continue her own train of thought a little deeper -- bounded, paced, and it

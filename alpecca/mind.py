@@ -1885,6 +1885,9 @@ class CoreMind:
                     "memory", "remember", "journal", "note", "status",
                     "location", "self status", "go room", "make a plan",
                     "draft a plan", "plan for", "workshop plan",
+                    "google drive", "google doc", "google folder",
+                    "create a document", "create document", "create a folder",
+                    "workspace status",
                 ))
                 or source_intent
                 # Non-trivial direct request to review internal state.
@@ -1915,6 +1918,12 @@ class CoreMind:
             preferred_names.extend(["recall_page", "memory_search"])
         if "journal" in user_low:
             preferred_names.extend(["journal_read", "journal_write"])
+        if any(term in user_low for term in ("google", "drive", "workspace status")):
+            preferred_names.append("google_status")
+            if any(term in user_low for term in ("folder", "directory")):
+                preferred_names.append("google_create_folder")
+            if any(term in user_low for term in ("doc", "document", "notes")):
+                preferred_names.append("google_create_document")
         selected = []
         selected_names = set()
         for name in preferred_names:
@@ -5214,10 +5223,11 @@ class CoreMind:
         room_purpose = room.purpose if room else "unknown purpose"
         speaker = self._speaker or "creator"
         creator_name = people_mod.CREATOR
-        open_questions = journal_mod.open_questions(limit=6)
-        recent_observations = cognition_mod.recent_observations(limit=8)
+        open_questions = journal_mod.open_questions(limit=30)
+        recent_observations = cognition_mod.recent_observations(limit=24)
         recent_chats = cognition_mod.recent_lived_chat_turns(limit=3)
         systems = systems or {}
+        clock_text = prompts.runtime_clock()
         sees_creator = speaker == "creator" and (
             bool(recent_chats)
             or any(
@@ -5251,13 +5261,36 @@ class CoreMind:
             (
                 f"How can I notice {creator_name} more clearly while respecting evidence and privacy?"
             ),
+            (
+                "What does my measured system status say needs attention before it becomes a problem?"
+            ),
+            (
+                "Given the current date and time, is there anything timely I should prepare or mention?"
+            ),
+            (
+                "Which unfinished commitment can I advance safely without waiting for another prompt?"
+            ),
         ]
         already_open = {
             str(q.get("body", "")).strip().lower()
             for q in open_questions
             if isinstance(q, dict)
         }
-        choices = [q for q in question_bank if q.lower() not in already_open] or question_bank
+        recently_carried = set()
+        for observation in recent_observations:
+            metadata = observation.get("metadata", {}) if isinstance(observation, dict) else {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    metadata = {}
+            prior = str(metadata.get("question") or "").strip().lower() if isinstance(metadata, dict) else ""
+            if prior:
+                recently_carried.add(prior)
+        choices = [
+            q for q in question_bank
+            if q.lower() not in already_open and q.lower() not in recently_carried
+        ] or [q for q in question_bank if q.lower() not in recently_carried] or question_bank
         question = None
         if LIVING_LLM:
             obs_context = "; ".join(str(o.get("content", ""))[:120] for o in recent_observations[:4])
@@ -5276,7 +5309,7 @@ class CoreMind:
             )
         observation_text = (
             f"Living loop in {room_name}: purpose={room_purpose}. "
-            f"{creator_evidence} Current role: use House HQ as embodied scaffold, "
+            f"Clock={clock_text}. {creator_evidence} Current role: use House HQ as embodied scaffold, "
             "the Alpecca app as virtual state surface, and Mindscape for continuity. "
             f"Question: {question}"
         )
@@ -5294,6 +5327,7 @@ class CoreMind:
                 "question": question,
                 "sees_creator": sees_creator,
                 "open_question_count": len(open_questions),
+                "clock": clock_text,
             },
         ))
         journal_id = journal_mod.ask(question, mood=self.state.mood_label())
@@ -5426,15 +5460,16 @@ class CoreMind:
             confidence=0.82,
         ))
         line = (
-            f"I am in House HQ's {room_name}. Current role: {creator_name or 'creator'}. "
-            f"I activated {activation.get('label', system_id)}. "
-            f"My next question is: {question} A possible next step is to "
-            f"{next_action['action']}."
+            f"It's {clock_text}. I'm in {room_name}, and I checked "
+            f"{activation.get('label', system_id)}; it reports "
+            f"{activation.get('status', 'a current state')}. "
+            f"That leaves me wondering: {question}"
         )
         return {
             "ok": True,
             "phase": "system_activation",
             "reason": reason,
+            "clock": clock_text,
             "room": {"id": self._location, "name": room_name, "purpose": room_purpose},
             "creator": {"name": creator_name, "speaker": speaker, "fresh_evidence": sees_creator},
             "question": question,

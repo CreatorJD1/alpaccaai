@@ -5005,6 +5005,13 @@ function renderAlpeccaSystem(systemId: AlpeccaSystemId, data: Record<string, unk
         <div><span>Internal room</span><strong>${escapeHudText(roomLabel)}</strong></div>
       </div>
       <section><h3>Parlor</h3>${systemRow("Internal-home state", parlorDetail, tools.parlorCurrent ? "CURRENT" : tools.parlorKnown ? "KNOWN" : "UNAVAILABLE")}</section>
+      <section><h3>Google Workspace</h3>${systemRow(
+        "Private assistance folder",
+        tools.googleWorkspaceReady
+          ? `Ready for ${tools.googleWorkspaceCapabilities.join(", ")}. Ask Alpecca in chat to create a folder or Google Doc.`
+          : `Connection state: ${tools.googleWorkspaceState}. No Drive action will be claimed without a verified Google receipt.`,
+        tools.googleWorkspaceReady ? "READY" : "SETUP",
+      )}</section>
       <section><h3>Bounded read surfaces</h3>${HOUSE_READ_TOOLS.map((tool) => systemRow(tool.label, `${tool.method} ${tool.endpoint}`, "CONNECTED")).join("")}</section>
       <section><h3>Approved commitment executor</h3>${tools.executableTools.map((tool) => systemRow(tool, "Backend reports this tool as executable only through the commitment approval path.", "AVAILABLE")).join("") || systemEmpty("The backend reports no executable commitment tools.")}</section>`;
   }
@@ -5637,12 +5644,14 @@ function handleAlpeccaAiMessage(raw: string) {
 
   if (message.type === "living_loop") {
     const line = message.living_loop?.line || responseText || "Alpecca asked herself a grounded question.";
-    setAlpeccaActivity("Alpecca is recursively questioning her world.", "observe", 4.2);
+    appendAlpeccaLog("Alpecca", line);
+    setAlpeccaActivity("Alpecca is sharing a grounded thought from her live state.", "think", 4.2);
     setAlpeccaLivingState(message.living_loop, line);
     routeAlpeccaToLivingLoopTarget(message.living_loop);
     pulseAlpeccaActivatedSystem(message.living_loop?.activated_system?.id || "");
-    if (!alpeccaChat.classList.contains("hidden")) showAlpeccaProfileLine(line, "thinking", "home");
+    if (!alpeccaChat.classList.contains("hidden")) showAlpeccaProfileLine(line, "talking", "home");
     else showMessage(line, 5.5);
+    if (alpeccaSpokenRepliesEnabled) startAlpeccaSpeech(line, "", "proactive");
     alpecca.glitchTimer = Math.max(alpecca.glitchTimer, 0.24);
     alpeccaProfileGlitchTimer = Math.max(alpeccaProfileGlitchTimer, 0.42);
     return;
@@ -6641,10 +6650,11 @@ async function runAlpeccaQuietWorldTick(reason = "house_hq_autonomous_cadence") 
     const targetRoom = officeRooms.find((item) => item.id === targetRoomId) ?? room;
     if (featureId) void runAlpeccaFeatureToolBridge(featureId, targetRoom, false);
     const line = String(data.line || data.question || "Alpecca asked herself one grounded world question.");
-    appendAlpeccaLog("System", `Living loop: ${line}`);
-    setAlpeccaActivity(`Alpecca is recursively checking ${targetRoom.name}.`, "observe", 4.2);
+    appendAlpeccaLog("Alpecca", line);
+    setAlpeccaActivity(`Alpecca is sharing what she noticed in ${targetRoom.name}.`, "think", 4.2);
     if (alpeccaCuriosityNoticeTimer <= 0) {
       showMessage(line, 4.2);
+      if (alpeccaSpokenRepliesEnabled) startAlpeccaSpeech(line, "", "proactive");
       alpeccaCuriosityNoticeTimer = 14;
     }
     if (data.proposal || data.engagement_proposal) pulseAlpeccaImprovementQueue(3.4);

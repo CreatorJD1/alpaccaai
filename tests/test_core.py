@@ -2801,7 +2801,9 @@ def test_house_living_loop_routes_alpecca_to_activation_terminals():
     assert "routeAlpeccaToLivingLoopTarget(message.living_loop)" in src
     assert "routeAlpeccaToLivingLoopTarget(data)" in src
     living_handler = src[src.index('if (message.type === "living_loop")') : src.index('if (message.type === "reply")')]
+    assert 'appendAlpeccaLog("Alpecca", line)' in living_handler
     assert 'if (!alpeccaChat.classList.contains("hidden")) showAlpeccaProfileLine' in living_handler
+    assert 'startAlpeccaSpeech(line, "", "proactive")' in living_handler
     assert "else showMessage(line, 5.5)" in living_handler
 
 
@@ -3587,6 +3589,17 @@ def test_image_seen_lands_in_prompt_grounded():
     p = prompts.build_system_prompt(EmotionalState(), [], image_seen="a small brown dog on a beach")
     assert "a small brown dog on a beach" in p
     assert "really there" in p   # the grounding nudge rides along
+
+
+def test_runtime_clock_is_authoritative_and_in_every_prompt():
+    from datetime import datetime, timezone, timedelta
+
+    now = datetime(2026, 7, 23, 14, 5, 9, tzinfo=timezone(timedelta(hours=-7), "PDT"))
+    clock = prompts.runtime_clock(now)
+    assert clock == "Thursday, July 23, 2026 at 2:05:09 PM PDT (UTC-07:00)"
+    assert "Clock now (measured)" in prompts.build_system_prompt(
+        EmotionalState(), [], compact=True,
+    )
 
 
 # --- Proactive speech ---------------------------------------------------------

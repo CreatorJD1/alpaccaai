@@ -147,6 +147,7 @@ from alpecca import continuity_journal as continuity_journal_mod
 from alpecca import memory as memory_store
 from alpecca import mindpage as mindpage_mod
 from alpecca import journal as journal_mod
+from alpecca import google_workspace as google_workspace_mod
 from alpecca import cognition as cognition_mod
 from alpecca import instance as instance_mod
 from alpecca import routines as routines_mod
@@ -766,6 +767,9 @@ def _runtime_status(
             house=house_voice_status,
             discord=discord_voice_status,
         ),
+    }
+    status["integrations"] = {
+        "google_workspace": google_workspace_mod.status(),
     }
     return status
 
@@ -7632,6 +7636,69 @@ def system_status() -> dict:
     she is in full, degraded, or offline mode.
     """
     return _runtime_status(check_models=True)
+
+
+@app.get("/integrations/google-workspace")
+def google_workspace_status(req: Request) -> dict:
+    """Creator-only, credential-free Google Workspace readiness."""
+    _require_creator_request(req)
+    return google_workspace_mod.status()
+
+
+def _record_google_workspace_receipt(operation: str, *, ok: bool,
+                                     file_kind: str = "") -> None:
+    cognition_mod.record_observation(cognition_mod.CognitionObservation(
+        source="google_workspace",
+        room="workshop",
+        content=f"Google Workspace {operation} {'completed' if ok else 'failed'}.",
+        confidence=1.0,
+        privacy_class="private",
+        metadata={
+            "operation": operation,
+            "status": "ok" if ok else "error",
+            "file_kind": file_kind,
+            "content_logged": False,
+        },
+    ))
+
+
+@app.post("/integrations/google-workspace/folders")
+async def google_workspace_create_folder(req: Request) -> JSONResponse:
+    """Create one new folder under Alpecca's configured private Drive root."""
+    _require_creator_request(req)
+    payload = await _read_bounded_json_object(req, max_bytes=8 * 1024)
+    if set(payload) - {"name"}:
+        raise HTTPException(status_code=400, detail={"code": "google_folder_invalid"})
+    try:
+        receipt = await asyncio.to_thread(
+            google_workspace_mod.create_folder,
+            payload.get("name"),
+        )
+    except google_workspace_mod.GoogleWorkspaceError as exc:
+        _record_google_workspace_receipt("create_folder", ok=False, file_kind="folder")
+        raise HTTPException(status_code=503, detail={"code": "google_workspace_unavailable", "message": str(exc)}) from exc
+    _record_google_workspace_receipt("create_folder", ok=True, file_kind="folder")
+    return JSONResponse(receipt)
+
+
+@app.post("/integrations/google-workspace/documents")
+async def google_workspace_create_document(req: Request) -> JSONResponse:
+    """Create one new Google Doc; never share, overwrite, move, or delete."""
+    _require_creator_request(req)
+    payload = await _read_bounded_json_object(req, max_bytes=120 * 1024)
+    if set(payload) - {"title", "content"}:
+        raise HTTPException(status_code=400, detail={"code": "google_document_invalid"})
+    try:
+        receipt = await asyncio.to_thread(
+            google_workspace_mod.create_document,
+            payload.get("title"),
+            payload.get("content", ""),
+        )
+    except google_workspace_mod.GoogleWorkspaceError as exc:
+        _record_google_workspace_receipt("create_document", ok=False, file_kind="document")
+        raise HTTPException(status_code=503, detail={"code": "google_workspace_unavailable", "message": str(exc)}) from exc
+    _record_google_workspace_receipt("create_document", ok=True, file_kind="document")
+    return JSONResponse(receipt)
 
 
 @app.get("/system/rog-worker")
