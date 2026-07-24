@@ -651,6 +651,30 @@ def _shape_text_for_alpecca_voice(text: str, dyn: dict) -> str:
 
 
 # --- edge-tts (always-works neural fallback) --------------------------------
+def _mp3_to_wav(mp3: bytes) -> "bytes | None":
+    """Transcode MP3 bytes to a clean 24 kHz mono WAV via ffmpeg.
+
+    edge-tts streams a duration-less MP3 that Discord's FFmpeg playback path
+    mangles into morphing/pitched artifacts. A proper WAV (the same shape Kokoro
+    serves) plays cleanly. Returns None if ffmpeg is unavailable or the transcode
+    fails, so the caller can fall back to the raw MP3."""
+    import shutil
+    import subprocess
+    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-hide_banner", "-loglevel", "error",
+             "-i", "pipe:0", "-ar", "24000", "-ac", "1", "-f", "wav", "pipe:1"],
+            input=mp3, capture_output=True, timeout=15,
+        )
+        wav = proc.stdout
+        if wav and len(wav) >= 44 and wav[:4] == b"RIFF" and wav[8:12] == b"WAVE":
+            return wav
+    except Exception:
+        pass
+    return None
+
+
 def _synth_edge(text: str, state=None):
     try:
         import asyncio
@@ -674,11 +698,16 @@ def _synth_edge(text: str, state=None):
 
     try:
         data = asyncio.run(_go())
-        return ("audio/mpeg", data) if data else None
     except Exception as exc:
         print(f"[tts] edge-tts failed ({type(exc).__name__}: {exc}); "
               f"install with: python -m pip install edge-tts", file=sys.stderr)
         return None
+    if not data:
+        return None
+    # Serve a clean WAV so the Discord voice path plays the natural edge voice
+    # undistorted (the raw streaming MP3 morphed into pitched/garbled voices).
+    wav = _mp3_to_wav(data)
+    return ("audio/wav", wav) if wav else ("audio/mpeg", data)
 
 
 def _prefers_clone_voice(state=None) -> bool:
