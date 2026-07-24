@@ -22,10 +22,11 @@ The image does not run Ollama or substitute an older Qwen family.
 
 `cloud_entrypoint.py` and `app.py` enforce this sequence:
 
-1. Start the descriptor-free Kokoro voice sidecar on internal port 7861, then
-   serve the standby identity and authenticated voice gateway on the only
-   public Space port, 7860. The standby identity is explicitly not CoreMind and
-   the phone launcher will not accept it as active Alpecca.
+1. Start the sparse standby identity on the only public Space port, 7860, then
+   attempt the optional descriptor-free Kokoro voice sidecar on loopback port
+   7861. The standby identity is explicitly not CoreMind and the phone launcher
+   will not accept it as active Alpecca. Missing configuration or optional
+   voice/model startup cannot remove this content-free health endpoint.
 2. Poll authenticated authority status without loading a model or memory. A
    promotion attempt begins only when there is no active lease and no fresh
    local-primary heartbeat.
@@ -50,7 +51,7 @@ The image does not run Ollama or substitute an older Qwen family.
 
 There is no pre-lease CoreMind. The credential-free standby response contains
 only service/state flags and no memory, model output, credential, or private
-status. A disabled deployment leaves the process inert; missing configuration,
+status. A disabled deployment remains sparse health-only; missing configuration,
 Vault failure, promotion-policy failure, lease denial, or endpoint-publication
 failure returns the enabled process to standby. The local laptop remains
 preferred while its heartbeat is fresh.
@@ -60,13 +61,14 @@ preferred while its heartbeat is fresh.
 Hugging Face routes one configured Docker Space `app_port`, which is 7860 for
 this image. The supervised Kokoro process listens on loopback-only port 7861,
 and the standby gateway addresses it through that fixed URL. Hugging Face does
-not publish 7861 as a second Space port. If the sidecar exits, the container
-exits instead of reporting a voice-capable but unusable standby; container
-health also requires the sidecar's content-free loopback health route to be
-ready during both standby and promotion. A timestamped five-minute health grace
+not publish 7861 as a second Space port. If the sidecar fails or exits,
+`/voice/health` reports it unavailable while the non-speaking standby remains
+healthy. Container health validates only the sparse standby identity or the
+fenced promoted server; voice readiness remains a separate capability signal.
+A timestamped five-minute health grace
 covers only the intentional public-port handoff across the capped VRM download,
-archive restore, event merge, and promoted Core bind; it cannot hide sidecar
-failure or a longer stall.
+archive restore, event merge, and promoted Core bind; it cannot hide a longer
+promotion stall.
 
 While the continuity core is in standby:
 

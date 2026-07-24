@@ -44,35 +44,31 @@ def opener(*, public: bool, voice: bool):
         if url.endswith(":7860/healthz"):
             if not public:
                 raise urllib.error.URLError("handoff in progress")
-            return Response({"status": "ok"})
+            return Response({"service": "alpecca", "version": 1})
         raise AssertionError(f"unexpected health URL: {url}")
 
     return open_url
 
 
-def test_health_requires_voice_even_during_promotion_grace(tmp_path: Path) -> None:
-    marker = tmp_path / "promotion-health-grace"
-    marker.write_text("100.0", encoding="ascii")
+def test_sparse_health_is_independent_of_optional_voice(tmp_path: Path) -> None:
     environment = {"ALPECCA_CLOUD_RUNTIME_ROOT": str(tmp_path)}
 
-    assert not healthcheck.healthy(
-        opener=opener(public=False, voice=False),
-        now=120.0,
+    assert healthcheck.healthy(
+        opener=opener(public=True, voice=False),
+        now=1_000.0,
         environ=environment,
     )
 
 
-def test_health_rejects_ready_label_without_synthesis_evidence(tmp_path: Path) -> None:
+def test_health_rejects_unrecognized_public_payload(tmp_path: Path) -> None:
     environment = {"ALPECCA_CLOUD_RUNTIME_ROOT": str(tmp_path)}
 
-    def incomplete_voice(url: str, timeout: float):
+    def invalid_public(url: str, timeout: float):
         assert timeout == 2.0
-        if url.endswith(":7861/healthz"):
-            return Response({"state": "ready"})
-        return Response({"status": "ok"})
+        return Response({"state": "ready"})
 
     assert not healthcheck.healthy(
-        opener=incomplete_voice,
+        opener=invalid_public,
         now=1_000.0,
         environ=environment,
     )
@@ -81,7 +77,7 @@ def test_health_rejects_ready_label_without_synthesis_evidence(tmp_path: Path) -
 def test_health_accepts_public_service_or_fresh_handoff_marker(tmp_path: Path) -> None:
     environment = {"ALPECCA_CLOUD_RUNTIME_ROOT": str(tmp_path)}
     assert healthcheck.healthy(
-        opener=opener(public=True, voice=True),
+        opener=opener(public=True, voice=False),
         now=1_000.0,
         environ=environment,
     )
@@ -89,7 +85,7 @@ def test_health_accepts_public_service_or_fresh_handoff_marker(tmp_path: Path) -
     marker = tmp_path / "promotion-health-grace"
     marker.write_text("100.0", encoding="ascii")
     assert healthcheck.healthy(
-        opener=opener(public=False, voice=True),
+        opener=opener(public=False, voice=False),
         now=200.0,
         environ=environment,
     )
@@ -97,7 +93,7 @@ def test_health_accepts_public_service_or_fresh_handoff_marker(tmp_path: Path) -
 
 def test_health_rejects_missing_stale_or_future_handoff_marker(tmp_path: Path) -> None:
     environment = {"ALPECCA_CLOUD_RUNTIME_ROOT": str(tmp_path)}
-    unavailable = opener(public=False, voice=True)
+    unavailable = opener(public=False, voice=False)
     assert not healthcheck.healthy(opener=unavailable, now=200.0, environ=environment)
 
     marker = tmp_path / "promotion-health-grace"
@@ -106,3 +102,25 @@ def test_health_rejects_missing_stale_or_future_handoff_marker(tmp_path: Path) -
 
     marker.write_text("201.0", encoding="ascii")
     assert not healthcheck.healthy(opener=unavailable, now=200.0, environ=environment)
+
+
+def test_sparse_standby_identity_is_strict() -> None:
+    assert healthcheck.public_service_ready({"service": "alpecca", "version": 1})
+    for state in (
+        "disabled",
+        "configuration-required",
+        "lease-unavailable",
+        "waiting-for-singleton-lease",
+    ):
+        assert healthcheck.public_service_ready({
+            "service": "alpecca-continuity-standby",
+            "version": 1,
+            "state": state,
+            "coreMind": False,
+        })
+    assert not healthcheck.public_service_ready({
+        "service": "alpecca-continuity-standby",
+        "version": 1,
+        "state": "active",
+        "coreMind": True,
+    })

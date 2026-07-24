@@ -1,4 +1,4 @@
-"""Bounded process supervisor for the cloud standby gateway and voice sidecar."""
+"""Bounded process supervisor for the cloud standby gateway and optional voice."""
 from __future__ import annotations
 
 import os
@@ -55,30 +55,30 @@ def supervise(
     sleep: Callable[[float], None] = time.sleep,
     stop_event: threading.Event | None = None,
 ) -> int:
-    """Run both children; either child's exit tears down the other."""
+    """Keep the sparse gateway alive even when optional voice is unavailable."""
     requested = stop_event or threading.Event()
     python = sys.executable
     root = Path(__file__).resolve().parent
-    voice = process_factory([python, str(root / "cloud_voice.py")])
+    gateway = process_factory([python, str(root / "cloud_entrypoint.py")])
+    voice: ChildProcess | None = None
     try:
-        gateway = process_factory([python, str(root / "cloud_entrypoint.py")])
+        voice = process_factory([python, str(root / "cloud_voice.py")])
     except Exception:
-        stop_child(voice)
-        raise
+        voice = None
 
     while not requested.is_set():
-        voice_status = voice.poll()
         gateway_status = gateway.poll()
-        if voice_status is not None:
-            stop_child(gateway)
-            return int(voice_status) if int(voice_status) != 0 else 1
         if gateway_status is not None:
-            stop_child(voice)
+            if voice is not None:
+                stop_child(voice)
             return int(gateway_status)
+        if voice is not None and voice.poll() is not None:
+            voice = None
         sleep(POLL_SECONDS)
 
     stop_child(gateway)
-    stop_child(voice)
+    if voice is not None:
+        stop_child(voice)
     return 143
 
 
