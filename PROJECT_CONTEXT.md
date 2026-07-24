@@ -26,6 +26,9 @@ This checkpoint supersedes older route, access, model, and phase-status text.
   key must remain only on HolyROG. Do not describe MagicDNS health as verified
   until the rotated worker returns an authenticated, certificate-validated
   health receipt from the primary.
+- The current tailnet endpoint is reachable at TCP level, but its HTTPS health
+  handshake times out. TeamViewer currently returns a black HolyROG framebuffer,
+  so no blind worker restart or certificate rotation was attempted.
 - The existing compute-only HTTPS worker stayed live on port 8788. A fresh
   RygenART process still needs its Windows Credential Manager record restored
   before authenticated health/reasoning and fallback receipts can be rerun.

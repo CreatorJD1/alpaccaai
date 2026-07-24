@@ -16,6 +16,13 @@
   HolyROG checkout has completed the stop/rotate/copy/start/verify sequence.
   Python and tests were outside this documentation/wrapper work order and were
   not edited as part of it.
+- Latest live evidence: Tailscale resolves
+  `jason-holyrog.tailda0108.ts.net` to `100.92.250.12` and TCP port 8788 accepts
+  a connection, but the HTTPS health handshake times out. TeamViewer reconnects
+  only to a black remote framebuffer and its free session then closes. The
+  scheduled worker and current certificate were deliberately left untouched.
+  Do not report HolyROG as healthy until the controlled rotation and an
+  authenticated health receipt both succeed.
 
 ## 2026-07-23 HolyROG isolated HyFusER runtime checkpoint
 
