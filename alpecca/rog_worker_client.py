@@ -30,6 +30,8 @@ from urllib.request import (
     build_opener,
 )
 
+from alpecca.multimodal_affect_fusion import EMOTION_ORDER
+
 
 HEALTH_PATH = "/v1/health"
 REASON_PATH = "/v1/reason"
@@ -100,7 +102,8 @@ HYFUSER_PERSPECTIVES = (
     "Reflector",
     "Improver",
 )
-HYFUSER_VECTOR_DIM = 8
+HYFUSER_EMOTION_ORDER = tuple(EMOTION_ORDER)
+HYFUSER_VECTOR_DIM = len(HYFUSER_EMOTION_ORDER)
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$")
 _NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{16,96}$")
@@ -183,6 +186,7 @@ class HyfuserHealth:
     state: str
     architecture: str
     perspectives: tuple[str, ...]
+    emotion_order: tuple[str, ...]
     advisory: bool = True
     shadow_only: bool = True
     speaking: bool = False
@@ -667,8 +671,8 @@ class RogWorkerClient:
             payload,
             {
                 "schema", "ok", "request_id", "ready", "state",
-                "architecture", "perspectives", "advisory", "shadow_only",
-                "speaking", "state_mutation",
+                "architecture", "perspectives", "emotion_order", "advisory",
+                "shadow_only", "speaking", "state_mutation",
             },
         )
         if (
@@ -680,6 +684,7 @@ class RogWorkerClient:
             )
         self._expect_request_id(payload, request_id)
         perspectives = _required_perspectives(payload)
+        _required_emotion_order(payload)
         ready = _required_bool(payload, "ready")
         state = _required_text(payload, "state", maximum=32)
         if state not in {"ready", "unavailable"} or ready != (state == "ready"):
@@ -693,12 +698,15 @@ class RogWorkerClient:
             state=state,
             architecture=_required_text(payload, "architecture", maximum=64),
             perspectives=perspectives,
+            emotion_order=HYFUSER_EMOTION_ORDER,
         )
 
     def score_soul(
         self,
         text_emotion: Sequence[float],
         speech_emotion: Sequence[float],
+        *,
+        emotion_order: Sequence[str] = HYFUSER_EMOTION_ORDER,
     ) -> HyfuserScoreResult:
         """Request seven advisory scores without action or mutation authority."""
 
@@ -707,6 +715,7 @@ class RogWorkerClient:
             "schema": HYFUSER_REQUEST_SCHEMA,
             "request_id": request_id,
             "mode": "shadow",
+            "emotion_order": list(_validated_emotion_order(emotion_order)),
             "text_emotion": _validated_emotion_vector(
                 text_emotion, "text_emotion"
             ),
@@ -766,7 +775,7 @@ class RogWorkerClient:
             )
         provenance = _required_mapping(result, "provenance")
         if set(provenance) != {
-            "runtime_id", "weights_sha256", "input_dimensions"
+            "runtime_id", "weights_sha256", "input_dimensions", "emotion_order"
         }:
             raise RogWorkerProtocolError(
                 "worker HyFusER provenance was invalid"
@@ -778,6 +787,7 @@ class RogWorkerClient:
             raise RogWorkerProtocolError(
                 "worker HyFusER dimensions did not match"
             )
+        _required_emotion_order(provenance)
         digest = _required_text(provenance, "weights_sha256", maximum=64)
         if not _HEX_64_RE.fullmatch(digest):
             raise RogWorkerProtocolError(
@@ -1373,10 +1383,25 @@ def _validated_emotion_vector(value: object, name: str) -> list[float]:
         raise RogWorkerConfigurationError(
             f"{name} must contain {HYFUSER_VECTOR_DIM} values"
         )
-    return [
-        _bounded_float(item, name, minimum=-1.0, maximum=1.0)
+    cleaned = [
+        _bounded_float(item, name, minimum=0.0, maximum=1.0)
         for item in value
     ]
+    if not math.isclose(sum(cleaned), 1.0, rel_tol=0.0, abs_tol=1e-6):
+        raise RogWorkerConfigurationError(f"{name} must sum to one")
+    return cleaned
+
+
+def _validated_emotion_order(value: object) -> tuple[str, ...]:
+    if (
+        isinstance(value, (str, bytes))
+        or not isinstance(value, Sequence)
+        or tuple(value) != HYFUSER_EMOTION_ORDER
+    ):
+        raise RogWorkerConfigurationError(
+            "emotion_order must match the canonical affect order"
+        )
+    return HYFUSER_EMOTION_ORDER
 
 
 def _env_bool(values: Mapping[str, str], name: str, default: bool) -> bool:
@@ -1509,6 +1534,15 @@ def _required_perspectives(payload: Mapping[str, object]) -> tuple[str, ...]:
     return HYFUSER_PERSPECTIVES
 
 
+def _required_emotion_order(payload: Mapping[str, object]) -> tuple[str, ...]:
+    value = payload.get("emotion_order")
+    if not isinstance(value, list) or tuple(value) != HYFUSER_EMOTION_ORDER:
+        raise RogWorkerProtocolError(
+            "worker HyFusER emotion order did not match"
+        )
+    return HYFUSER_EMOTION_ORDER
+
+
 def _require_shadow_contract(payload: Mapping[str, object]) -> None:
     if (
         _required_bool(payload, "advisory") is not True
@@ -1590,6 +1624,7 @@ __all__ = [
     "HEALTH_TIMEOUT_ENV",
     "HYFUSER_HEALTH_PATH",
     "HYFUSER_HEALTH_SCHEMA",
+    "HYFUSER_EMOTION_ORDER",
     "HYFUSER_PERSPECTIVES",
     "HYFUSER_REQUEST_SCHEMA",
     "HYFUSER_RESPONSE_SCHEMA",

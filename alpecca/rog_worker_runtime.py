@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from alpecca.rog_worker_client import RogWorkerClient, RogWorkerError
+from alpecca.rog_worker_client import (
+    HYFUSER_EMOTION_ORDER,
+    RogWorkerClient,
+    RogWorkerError,
+)
 
 
 STATUS_SCHEMA = "alpecca.rog-worker.primary-status.v1"
@@ -27,6 +31,7 @@ def status_snapshot(
             "schema": STATUS_SCHEMA,
             "configured": False,
             "state": "disabled",
+            "emotion_order": list(HYFUSER_EMOTION_ORDER),
             "ready": False,
             "role": "compute-only",
             "speaking": False,
@@ -41,6 +46,7 @@ def status_snapshot(
             "schema": STATUS_SCHEMA,
             "configured": True,
             "state": "unavailable",
+            "emotion_order": list(HYFUSER_EMOTION_ORDER),
             "ready": False,
             "role": "compute-only",
             "speaking": False,
@@ -130,6 +136,7 @@ def hyfuser_status(
         "state": health.state,
         "architecture": health.architecture,
         "perspectives": list(health.perspectives),
+        "emotion_order": list(health.emotion_order),
         "advisory": True,
         "shadow_only": True,
         "speaking": False,
@@ -142,11 +149,16 @@ def score_hyfuser_shadow(
     text_emotion: list[float],
     speech_emotion: list[float],
     *,
+    emotion_order: tuple[str, ...] | list[str] = HYFUSER_EMOTION_ORDER,
     client_factory: ClientFactory = RogWorkerClient.from_environment,
 ) -> dict[str, object]:
     """Return metadata-bound advisory scores without applying them."""
 
-    result = client_factory().score_soul(text_emotion, speech_emotion)
+    result = client_factory().score_soul(
+        text_emotion,
+        speech_emotion,
+        emotion_order=emotion_order,
+    )
     return {
         "schema": HYFUSER_RECEIPT_SCHEMA,
         "ok": True,
@@ -163,6 +175,7 @@ def score_hyfuser_shadow(
         "provenance": {
             "runtime_id": result.runtime_id,
             "weights_sha256": result.weights_sha256,
+            "emotion_order": list(HYFUSER_EMOTION_ORDER),
         },
         "elapsed_ms": result.elapsed_ms,
         "advisory": True,

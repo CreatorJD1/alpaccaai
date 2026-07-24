@@ -33,6 +33,8 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from alpecca.multimodal_affect_fusion import EMOTION_ORDER
+
 
 HEALTH_SCHEMA = "alpecca.rog-worker.health.v1"
 REASON_REQUEST_SCHEMA = "alpecca.rog-worker.reason.request.v1"
@@ -54,7 +56,8 @@ HYFUSER_PERSPECTIVES = (
     "Reflector",
     "Improver",
 )
-HYFUSER_VECTOR_DIM = 8
+HYFUSER_EMOTION_ORDER = tuple(EMOTION_ORDER)
+HYFUSER_VECTOR_DIM = len(HYFUSER_EMOTION_ORDER)
 HYFUSER_RUNTIME_MODULE = "alpecca_hyfuser_runtime"
 HYFUSER_WEIGHTS_ENV = "ALPECCA_ROG_HYFUSER_WEIGHTS"
 HYFUSER_WEIGHTS_SHA256_ENV = "ALPECCA_ROG_HYFUSER_WEIGHTS_SHA256"
@@ -646,10 +649,18 @@ def _emotion_vector(value: object, label: str) -> tuple[float, ...]:
         if isinstance(item, bool) or not isinstance(item, (int, float)):
             raise WorkerRequestError(422, f"invalid_{label}")
         number = float(item)
-        if not math.isfinite(number) or not -1.0 <= number <= 1.0:
+        if not math.isfinite(number) or not 0.0 <= number <= 1.0:
             raise WorkerRequestError(422, f"invalid_{label}")
         cleaned.append(number)
+    if not math.isclose(sum(cleaned), 1.0, rel_tol=0.0, abs_tol=1e-6):
+        raise WorkerRequestError(422, f"invalid_{label}")
     return tuple(cleaned)
+
+
+def _emotion_order(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or tuple(value) != HYFUSER_EMOTION_ORDER:
+        raise WorkerRequestError(422, "invalid_emotion_order")
+    return HYFUSER_EMOTION_ORDER
 
 
 def _hyfuser_job(payload: Mapping[str, Any]) -> HyfuserJob:
@@ -660,6 +671,7 @@ def _hyfuser_job(payload: Mapping[str, Any]) -> HyfuserJob:
                 "schema",
                 "request_id",
                 "mode",
+                "emotion_order",
                 "text_emotion",
                 "speech_emotion",
             }
@@ -667,6 +679,7 @@ def _hyfuser_job(payload: Mapping[str, Any]) -> HyfuserJob:
     )
     if payload["schema"] != HYFUSER_REQUEST_SCHEMA or payload["mode"] != "shadow":
         raise WorkerRequestError(422, "invalid_schema")
+    _emotion_order(payload["emotion_order"])
     return HyfuserJob(
         request_id=_request_id(payload["request_id"]),
         text_emotion=_emotion_vector(payload["text_emotion"], "text_emotion"),
@@ -994,6 +1007,7 @@ def _load_hyfuser_backend(
             weights_sha256=expected_digest,
             architecture=HYFUSER_ARCHITECTURE,
             perspectives=HYFUSER_PERSPECTIVES,
+            emotion_order=HYFUSER_EMOTION_ORDER,
             text_emotion_dim=HYFUSER_VECTOR_DIM,
             speech_emotion_dim=HYFUSER_VECTOR_DIM,
         )
@@ -1017,6 +1031,7 @@ def _hyfuser_readiness(backend: object | None) -> dict[str, Any] | None:
         "runtime_id",
         "weights_sha256",
         "perspectives",
+        "emotion_order",
         "text_emotion_dim",
         "speech_emotion_dim",
     }:
@@ -1026,6 +1041,8 @@ def _hyfuser_readiness(backend: object | None) -> dict[str, Any] | None:
     if value.get("architecture") != HYFUSER_ARCHITECTURE:
         return None
     if tuple(value.get("perspectives", ())) != HYFUSER_PERSPECTIVES:
+        return None
+    if tuple(value.get("emotion_order", ())) != HYFUSER_EMOTION_ORDER:
         return None
     if (
         value.get("text_emotion_dim") != HYFUSER_VECTOR_DIM
@@ -1142,6 +1159,7 @@ class ROGComputeWorker:
             "state": "ready" if ready else "unavailable",
             "architecture": HYFUSER_ARCHITECTURE,
             "perspectives": list(HYFUSER_PERSPECTIVES),
+            "emotion_order": list(HYFUSER_EMOTION_ORDER),
             "advisory": True,
             "shadow_only": True,
             "speaking": False,
@@ -1160,6 +1178,7 @@ class ROGComputeWorker:
             output = infer(
                 text_emotion=job.text_emotion,
                 speech_emotion=job.speech_emotion,
+                emotion_order=HYFUSER_EMOTION_ORDER,
                 timeout_seconds=self.settings.hyfuser_timeout_seconds,
             )
         except TimeoutError as exc:
@@ -1221,6 +1240,7 @@ class ROGComputeWorker:
                         "text_emotion": HYFUSER_VECTOR_DIM,
                         "speech_emotion": HYFUSER_VECTOR_DIM,
                     },
+                    "emotion_order": list(HYFUSER_EMOTION_ORDER),
                 },
                 "elapsed_ms": max(
                     0, int((self._monotonic() - started) * 1000)
