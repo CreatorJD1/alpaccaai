@@ -208,6 +208,115 @@ def test_stale_restored_history_is_context_but_not_a_live_autonomy_cue(
     assert channel.sent == []
 
 
+def test_stale_restored_exchange_can_earn_one_empty_room_check_in(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client, room = _claimed_client(monkeypatch)
+    human = _history_entry(
+        author_id=42,
+        display_name="CreatorJD",
+        content="We were checking whether you can start conversations yourself.",
+        bot=False,
+    )
+    alpecca = _history_entry(
+        author_id=9001,
+        display_name="Alpecca_ai",
+        content="I want to follow up when I have a grounded reason.",
+        bot=True,
+    )
+    human.created_at = SimpleNamespace(timestamp=lambda: 0.0)
+    alpecca.created_at = SimpleNamespace(timestamp=lambda: 0.0)
+    channel = _Channel([human, alpecca])
+    prompts: list[str] = []
+
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_COOLDOWN", 1.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_GLOBAL_COOLDOWN", 0.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_QUIET_MIN", 1.0)
+    monkeypatch.setattr(discord_bridge, "EMPTY_ROOM_NUDGE_QUIET", 5.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_MIN_LEN", 1)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_CHANCE", 1.0)
+    monkeypatch.setattr(discord_bridge.random, "random", lambda: 0.0)
+    monkeypatch.setattr(
+        discord_bridge,
+        "_ask_room_autonomy",
+        lambda prompt, _scope: prompts.append(prompt) or "Jason? I had one follow-up thought.",
+    )
+
+    async def scenario() -> None:
+        await client._alpecca_seed_room_history(channel, room, observed_at=1.0)
+        await client._alpecca_proactive_sweep_once(now=10.0)
+        await client._alpecca_proactive_sweep_once(now=20.0)
+
+    asyncio.run(scenario())
+
+    assert channel.sent == ["Jason? I had one follow-up thought."]
+    assert len(prompts) == 1
+    assert "Initiative kind: deliberate empty-room check-in." in prompts[0]
+
+
+def test_creator_dm_can_receive_one_bounded_unprompted_follow_up(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(discord_bridge, "DEBUG", False)
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {})
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", {"42"})
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())
+    monkeypatch.setattr(discord_bridge, "PUBLIC_DMS", False)
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "PARTICIPATE", False)
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_COOLDOWN", 0.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_GLOBAL_COOLDOWN", 0.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_QUIET_MIN", 1.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_MIN_LEN", 1)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_CHANCE", 1.0)
+    monkeypatch.setattr(discord_bridge.random, "random", lambda: 0.0)
+    monkeypatch.setattr(discord_bridge, "_ask_alpecca", lambda *_a, **_k: "I heard you.")
+    monkeypatch.setattr(
+        discord_bridge.discord_media,
+        "resolve_outbound_media",
+        lambda _text: None,
+    )
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        discord_bridge,
+        "_ask_room_autonomy",
+        lambda prompt, _scope: prompts.append(prompt) or "One more thought: how are you doing?",
+    )
+
+    client = discord_bridge.build_client()
+    client._connection.user = SimpleNamespace(
+        id=_BOT_ID,
+        name="Alpecca",
+        display_name="Alpecca",
+    )
+    channel = _Channel()
+    channel.guild = None
+    message = _Message(
+        event_id=5001,
+        channel=channel,
+        content="I have had a long day.",
+        clean_content="I have had a long day.",
+    )
+    message.guild = None
+    message.mentions = []
+
+    async def scenario() -> None:
+        await client.on_message(message)
+        later = discord_bridge.time.monotonic() + 10.0
+        await client._alpecca_proactive_sweep_once(now=later)
+        await client._alpecca_proactive_sweep_once(now=later + 10.0)
+
+    asyncio.run(scenario())
+
+    assert message.replies == [("I heard you.", {"mention_author": False})]
+    assert channel.sent == ["One more thought: how are you doing?"]
+    assert len(prompts) == 1
+    assert "Initiative kind: quiet-room opener after a new human turn." in prompts[0]
+
+
 def test_proactive_voice_contradiction_is_corrected_once_without_self_repeat(
     monkeypatch: pytest.MonkeyPatch,
 ):
