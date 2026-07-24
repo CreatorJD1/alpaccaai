@@ -717,10 +717,11 @@ def _synth_edge(text: str, state=None):
         return None
     if not data:
         return None
-    # Serve a clean WAV so the Discord voice path plays the natural edge voice
-    # undistorted (the raw streaming MP3 morphed into pitched/garbled voices).
+    # Serve ONLY the clean WAV. If the transcode fails (ffmpeg missing or busy
+    # under load), return None so she falls back to text rather than ever playing
+    # the raw duration-less MP3, which garbles into pitched/morphing voices.
     wav = _mp3_to_wav(data)
-    return ("audio/wav", wav) if wav else ("audio/mpeg", data)
+    return ("audio/wav", wav) if wav else None
 
 
 def _prefers_clone_voice(state=None) -> bool:
