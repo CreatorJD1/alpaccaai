@@ -1,5 +1,24 @@
 # Alpecca - Handoff (updated 2026-07-24)
 
+## 2026-07-24 HolyROG live compute checkpoint
+
+- Replaced RygenART's stale HolyROG public trust certificate with the live
+  dual-SAN public certificate. No private key or shared credential was copied,
+  logged, committed, or exposed.
+- Authenticated health passed for the compute-only worker. Direct inference
+  initially failed with `reasoning_upstream_error` because HolyROG's Ollama
+  runtime was stale; updating and restarting Ollama cleared the HTTP 502.
+- Verified receipts: one bounded direct `qwen3.5:9b` reasoning request
+  completed, then Alpecca's production-configured `_LLM` chain loaded
+  `rog-worker` before `ollama-cloud` and returned a deep-tier route with
+  `backend=rog-worker`, `model=qwen3.5:9b`, and `fallback=false`.
+- Restarted the local coordinator so the long-lived worker client loaded the
+  corrected trust state. One core listener (8765), one F5 listener (8776), and
+  one Discord bridge lock (8779) are active. Keep `ollama-cloud` after
+  `rog-worker`; it is the required fallback when HolyROG is off.
+- Remaining HolyROG work is operational soak and the separately gated,
+  untrained HyFusER seven-head research path. Do not describe HyFusER as live.
+
 ## 2026-07-24 internal review and runtime checkpoint
 
 - Repaired the production Python install and both dormant voice virtual

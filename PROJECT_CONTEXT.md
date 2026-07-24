@@ -7,6 +7,24 @@ Read this before `AGENTS.md`, `CLAUDE.md`, `HANDOFF.md`, or implementation files
 
 This checkpoint supersedes older route, access, model, and phase-status text.
 
+### 2026-07-24 HolyROG authenticated compute activation
+
+- HolyROG now presents the dual-SAN TLS identity for `Jason_HOLYROG` and
+  `jason-holyrog.tailda0108.ts.net`; RygenART trusts only its public
+  certificate. The TLS private key remains on HolyROG and the shared secret
+  remains in Windows Credential Manager.
+- An authenticated worker health receipt reports the compute-only role ready
+  for reasoning and Blender, with speaking and Discord disabled. After the
+  stale Ollama runtime was updated, a real bounded `qwen3.5:9b` reasoning job
+  completed successfully instead of returning the former upstream HTTP 502.
+- Alpecca's production deep chain was reloaded and verified as
+  `rog-worker,ollama-cloud`. A real `_LLM.generate(..., tier="deep")` routing
+  check returned through `backend=rog-worker`, `model=qwen3.5:9b`, with no
+  fallback. Gemma cloud remains the next link when HolyROG is unavailable.
+- This proves authenticated compute and fail-open routing to the existing
+  cloud fallback. It does not prove the still-gated seven-head HyFusER model,
+  cloud continuity failover, or a sustained production workload soak.
+
 ### 2026-07-24 source review and live-runtime repair
 
 - The supported Windows Python 3.12.10 runtime was repaired. The master BAT
