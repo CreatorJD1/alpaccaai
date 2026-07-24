@@ -42,6 +42,11 @@
   `vision_ready=false` while preserving strict validation. Live HolyROG health is
   again valid for reasoning; private vision remains disabled until the remote
   worker is upgraded and reports its new vision endpoint ready.
+- Live verification after reloading the single stack passed the initiative gate:
+  Discord message `1530285492971503826` was authored by Alpecca after the latest
+  human/Alpecca exchange, with no newer human prompt. This proves direct-DM
+  self-initiation is operating. The line's content quality remains a separate
+  personality/grounding refinement; do not conflate delivery proof with ideal prose.
 
 ## 2026-07-24 temporary local vision recovery
 
