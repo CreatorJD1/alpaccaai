@@ -178,7 +178,7 @@ VOICE_PLAYBACK_CALLBACK_TIMEOUT = max(
     ),
 )
 DISCORD_VOICE_ENGINE = os.environ.get(
-    "ALPECCA_DISCORD_TTS_ENGINE", "auto"
+    "ALPECCA_DISCORD_TTS_ENGINE", "kokoro"
 ).strip().lower()
 if DISCORD_VOICE_ENGINE not in {"auto", "cloud", "kokoro", "f5", "f5-tts"}:
     DISCORD_VOICE_ENGINE = "auto"

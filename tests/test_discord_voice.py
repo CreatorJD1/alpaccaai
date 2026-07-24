@@ -1416,14 +1416,15 @@ def test_cloud_tts_readiness_accepts_ready_local_f5_fallback(monkeypatch):
     assert readiness["status"] == "ready"
 
 
-def test_full_launcher_defaults_discord_tts_to_auto_voice():
-    # Discord voice uses her full 'auto' voice (F5 identity-clone + Kokoro), the
-    # same expressive voice House HQ uses, not the flatter cloud-only route.
+def test_full_launcher_defaults_discord_tts_to_local_kokoro_voice():
+    # Discord voice uses her clean local Kokoro af_heart voice -- the alive,
+    # emotion-modulated voice House HQ leads with -- not the flatter cloud route
+    # or the GPU-heavy F5 clone that distorts on this hardware.
     source = (discord_bridge.ROOT / "scripts" / "run_full.py").read_text(
         encoding="utf-8"
     )
 
-    assert 'os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "auto")' in source
+    assert 'os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "kokoro")' in source
     assert 'os.environ.setdefault("ALPECCA_CHAT_VOICE_TIMEOUT", "3.0")' in source
     assert 'os.environ.setdefault("ALPECCA_CLOUD_TTS_TIMEOUT_SECONDS", "2.5")' in source
 
