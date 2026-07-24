@@ -168,10 +168,10 @@ def kokoro_status() -> dict:
         call = _kokoro_call
         busy = bool(call and not call["done"].is_set())
         started = float(call["started"]) if busy else None
-    if not installed:
-        state = "unavailable"
-    elif busy:
+    if busy:
         state = "warming_or_synthesizing"
+    elif not installed:
+        state = "unavailable"
     elif _kokoro_ready is False:
         state = "failed"
     elif _kokoro is not None:
@@ -688,8 +688,9 @@ def synth(text: str, state=None, *, backend_override: str = ""):
     """Return (mime_type, audio_bytes) for `text`, or None to let the browser
     voice handle it. `state` is her live EmotionalState so the voice carries
     emotion. ALPECCA_TTS_BACKEND: auto (default) tries configured cloud Kokoro,
-    then blends the local F5 clone and Kokoro by emotion. 'cloud', 'kokoro',
-    'edge', and 'f5' force one route; 'browser'/'off' disable server TTS.
+    then blends the local F5 clone and Kokoro by emotion. 'cloud' prefers the
+    bounded cloud route but falls back to local Kokoro; 'kokoro', 'edge', and
+    'f5' force one route; 'browser'/'off' disable server TTS.
     Trusted channel bridges may pin one engine for a request so a bad clone
     render cannot silently replace the channel's established voice."""
     text = (text or "").strip()
@@ -703,7 +704,7 @@ def synth(text: str, state=None, *, backend_override: str = ""):
     # Emotion may vary native speed and gain, but must not pitch-resample her
     # into a different perceived speaker.
     identity_token = _force_kokoro_identity_profile.set(
-        backend in {"auto", "kokoro"}
+        backend in {"auto", "cloud", "kokoro"}
     )
     print(f"[tts] synth: backend={backend!r} "
           f"(env ALPECCA_TTS_BACKEND={os.environ.get('ALPECCA_TTS_BACKEND')!r})",
@@ -718,7 +719,16 @@ def synth(text: str, state=None, *, backend_override: str = ""):
 
             order = (open_tts.synth,)
         elif backend == "cloud":
+            # Discord normally prefers the low-latency cloud renderer, but an
+            # unavailable provider must not make a live voice channel silent.
+            # Prefer the ready F5 identity clone before Kokoro so Discord keeps
+            # Alpecca's established voice when the hosted renderer is absent.
+            from alpecca import open_tts
+
             order = (_synth_cloud,)
+            if open_tts.ready():
+                order += (open_tts.synth,)
+            order += (_synth_kokoro,)
         elif backend == "kokoro":
             # Kokoro af_heart is her actual voice profile. Do not substitute a
             # different server voice and label it as Alpecca.

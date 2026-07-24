@@ -32,9 +32,9 @@ def _keep_bridge_tests_on_packet_fallback(monkeypatch):
             "last_failure": "",
         },
     )
-    event_token = discord_voice._active_voice_event_id.set(None)
+    event_fence = discord_voice._active_voice_event_id.set(None)
     yield
-    discord_voice._active_voice_event_id.reset(event_token)
+    discord_voice._active_voice_event_id.reset(event_fence)
 
 
 def _packet(seconds: float = 0.02) -> bytes:
@@ -1371,6 +1371,49 @@ def test_auto_tts_readiness_uses_resolved_protected_cloud_authorization(monkeypa
     assert readiness["status"] == "unverified"
     assert endpoint not in serialized
     assert protected_authorization not in serialized
+
+
+def test_cloud_tts_readiness_retains_local_kokoro_fallback(monkeypatch):
+    from alpecca import open_tts
+
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "DISCORD_VOICE_ENGINE", "cloud")
+    monkeypatch.setattr(
+        open_tts,
+        "status",
+        lambda: {"ready": False, "worker": {"enabled": True, "ready": False}},
+    )
+    monkeypatch.setattr(
+        discord_bridge.importlib.util,
+        "find_spec",
+        lambda name: object() if name in {"kokoro", "soundfile"} else None,
+    )
+    monkeypatch.setattr(discord_bridge.os, "environ", {})
+
+    readiness = discord_bridge._local_discord_tts_readiness()
+
+    assert readiness["cloud_status"] == "unavailable"
+    assert readiness["status"] == "unverified"
+
+
+def test_cloud_tts_readiness_accepts_ready_local_f5_fallback(monkeypatch):
+    from alpecca import open_tts
+
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "DISCORD_VOICE_ENGINE", "cloud")
+    monkeypatch.setattr(
+        open_tts,
+        "status",
+        lambda: {"ready": True, "worker": {"enabled": True, "ready": True}},
+    )
+    monkeypatch.setattr(discord_bridge.importlib.util, "find_spec", lambda _name: None)
+    monkeypatch.setattr(discord_bridge.os, "environ", {})
+
+    readiness = discord_bridge._local_discord_tts_readiness()
+
+    assert readiness["cloud_status"] == "unavailable"
+    assert readiness["f5_worker_status"] == "ready"
+    assert readiness["status"] == "ready"
 
 
 def test_full_launcher_defaults_discord_tts_to_bounded_cloud_voice():

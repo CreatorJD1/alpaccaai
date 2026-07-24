@@ -1508,26 +1508,28 @@ def _local_discord_tts_readiness() -> dict[str, str]:
         ).strip()
     cloud_configured = bool(cloud_endpoint and cloud_authorization)
     cloud_status = "configured" if cloud_configured else "unavailable"
+    kokoro_installed = (
+        importlib.util.find_spec("kokoro") is not None
+        and importlib.util.find_spec("soundfile") is not None
+    )
 
     if not VOICE_ENABLED:
         tts_status = "disabled"
     elif DISCORD_VOICE_ENGINE == "cloud":
-        # The bridge maps this compatibility name to server auto so a failed
-        # cloud call can still use the canonical local Alpecca voice fallback.
-        tts_status = "unverified" if cloud_configured else "unavailable"
+        # Cloud is preferred for latency; server TTS falls back to the locked
+        # local F5 identity clone and then Kokoro when it is unavailable.
+        tts_status = (
+            "ready"
+            if f5_local_ready
+            else "unverified"
+            if cloud_configured or kokoro_installed
+            else "unavailable"
+        )
     elif DISCORD_VOICE_ENGINE in {"f5", "f5-tts"}:
         tts_status = "ready" if f5_local_ready else "unavailable"
     elif DISCORD_VOICE_ENGINE == "kokoro":
-        kokoro_installed = (
-            importlib.util.find_spec("kokoro") is not None
-            and importlib.util.find_spec("soundfile") is not None
-        )
         tts_status = "unverified" if kokoro_installed else "unavailable"
     else:
-        kokoro_installed = (
-            importlib.util.find_spec("kokoro") is not None
-            and importlib.util.find_spec("soundfile") is not None
-        )
         tts_status = (
             "ready"
             if f5_local_ready

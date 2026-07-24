@@ -766,7 +766,7 @@ class Hearing:
 class Vision:
     # Keep the 9B model for Alpecca's reasoning. The smaller multimodal model is
     # a bounded local fallback for sight on 4 GB GPUs.
-    MODEL = os.environ.get("ALPECCA_VISION_MODEL", "qwen3.5:4b")
+    MODEL = os.environ.get("ALPECCA_VISION_MODEL", "qwen3.5:9b")
     SIGHT_ENABLED = os.environ.get("ALPECCA_SIGHT", "0") not in ("", "0", "false", "False")
     FACE_ENABLED = os.environ.get("ALPECCA_FACE", "0") not in ("", "0", "false", "False")
     SIGHT_INTERVAL = 60.0     # seconds between screen glimpses
@@ -895,16 +895,6 @@ class SystemPressure:
     PAGEFILE_TARGET_COMMIT_HEADROOM = float(os.environ.get(
         "ALPECCA_PAGEFILE_TARGET_COMMIT_HEADROOM", "0.20"))
     PAGEFILE_APPROVAL_TTL_S = float(os.environ.get("ALPECCA_PAGEFILE_APPROVAL_TTL", "1800"))
-
-
-# The existing selfmod loop is autonomous and reversible, but previously ran
-# only when a probabilistic Soul focus happened to select Improver. This cadence
-# guarantees periodic evaluation during genuine idle time while preserving the
-# same four allowlisted DB-only tunables and rollback behavior.
-class RecursiveImprovement:
-    ENABLED = os.environ.get("ALPECCA_RECURSIVE_IMPROVEMENT", "1") \
-        not in ("", "0", "false", "False")
-    MIN_INTERVAL_S = float(os.environ.get("ALPECCA_RECURSIVE_IMPROVEMENT_INTERVAL", "1800"))
 
 
 # --- Computer use: she sees the screen and drives mouse/keyboard -------------

@@ -629,13 +629,29 @@ def record_chat_turn(turn: ChatTurn, db_path: Path = DB_PATH) -> int | None:
 
 
 def recent_chat_turns(limit: int = 8, db_path: Path = DB_PATH, *,
-                      scope: str = "shared") -> list[dict]:
-    limit = max(1, min(50, int(limit)))
+                      scope: str = "shared", surface: str = "",
+                      exclude_surface: str = "") -> list[dict]:
+    limit = max(1, min(200, int(limit)))
     scope = _scope(scope)
+    surface = str(surface or "").strip()[:80]
+    exclude_surface = str(exclude_surface or "").strip()[:80]
+    clauses = ["scope=?"]
+    params: list[Any] = [scope]
+    if surface:
+        clauses.extend(("json_valid(model_use)", "json_extract(model_use, '$.turn.surface')=?"))
+        params.append(surface)
+    elif exclude_surface:
+        clauses.append(
+            "(NOT json_valid(model_use) OR "
+            "coalesce(json_extract(model_use, '$.turn.surface'), '')<>?)"
+        )
+        params.append(exclude_surface)
+    params.append(limit)
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM chat_turns WHERE scope=? ORDER BY id DESC LIMIT ?",
-            (scope, limit),
+            "SELECT * FROM chat_turns WHERE " + " AND ".join(clauses)
+            + " ORDER BY id DESC LIMIT ?",
+            tuple(params),
         ).fetchall()
     out = []
     for r in rows:

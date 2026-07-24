@@ -103,11 +103,11 @@ os.environ.setdefault("ALPECCA_OLLAMA_CLOUD_MODEL", "gemma4:cloud")
 os.environ.setdefault("ALPECCA_REFLECT_MODEL", "qwen3.5:9b")
 os.environ.setdefault("ALPECCA_VISION_BACKEND", "local")
 os.environ.setdefault("ALPECCA_VISION_CLOUD_MODEL", "gemma4:cloud")
-os.environ.setdefault("ALPECCA_DISCORD_CREATOR_CLOUD_VISION", "1")
+os.environ.setdefault("ALPECCA_DISCORD_CREATOR_CLOUD_VISION", "0")
 os.environ.setdefault("ALPECCA_VISION_CLOUD_TRANSPORT_ROUTE", "https://ollama.com/api/chat")
 os.environ.setdefault("ALPECCA_VISION_CLOUD_DEPLOYMENT", "ollama-cloud")
 os.environ.setdefault("ALPECCA_VISION_CLOUD_PROCESSING_LOCATION", "provider-managed")
-os.environ.setdefault("ALPECCA_VISION_MODEL", "qwen3.5:4b")
+os.environ.setdefault("ALPECCA_VISION_MODEL", "qwen3.5:9b")
 os.environ.setdefault("ALPECCA_VISION_NUM_GPU", "99")
 os.environ.setdefault("ALPECCA_VISION_TIMEOUT", "60")
 os.environ.setdefault("ALPECCA_CLOUD_STANDBY_URL", "https://creatorjd-alpecca-survival-core.hf.space")
@@ -136,7 +136,7 @@ os.environ.setdefault("ALPECCA_CHAT_VOICE_TIMEOUT", "3.0")
 os.environ.setdefault("ALPECCA_CLOUD_TTS_TIMEOUT_SECONDS", "2.5")
 os.environ.setdefault("ALPECCA_LIVE_TTS_TIMEOUT", "3.0")
 os.environ.setdefault("ALPECCA_DISCORD_VOICE_TIMEOUT", "4.0")
-os.environ.setdefault("ALPECCA_DISCORD_TRANSCRIBE_TIMEOUT", "6.0")
+os.environ.setdefault("ALPECCA_DISCORD_TRANSCRIBE_TIMEOUT", "30.0")
 os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "cloud")
 
 def _lan_access_point(port: int) -> str:
@@ -185,6 +185,29 @@ def _f5_worker_port_taken() -> bool:
         return False
 
 
+def _voice_python_supports_device(executable: Path, device: str) -> bool:
+    """Require the selected worker runtime to have F5 and its requested Torch device."""
+    if not executable.is_file():
+        return False
+    requires_cuda = str(device or "cuda").strip().lower().startswith("cuda")
+    probe = (
+        "import f5_tts, torch, sys; "
+        f"sys.exit(0 if ({'torch.cuda.is_available()' if requires_cuda else 'True'}) else 1)"
+    )
+    try:
+        result = subprocess.run(
+            [str(executable), "-c", probe],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+            check=False,
+            creationflags=_background_creationflags(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def _start_f5_worker() -> None:
     if not F5_WORKER_ENABLED or _f5_worker_health() or _f5_worker_port_taken():
         return
@@ -197,7 +220,31 @@ def _start_f5_worker() -> None:
     }
     if os.name == "nt":
         kwargs["creationflags"] = _background_creationflags()
-    process = subprocess.Popen([sys.executable, "scripts\\f5_tts_worker.py"], **kwargs)
+    configured_python = str(OPEN_TTS_PYTHON or "").strip()
+    default_voice_python = (
+        Path(__file__).resolve().parent.parent
+        / ".venv-f5-tts" / "Scripts" / "python.exe"
+    )
+    requested_device = os.environ.get("ALPECCA_OPEN_TTS_DEVICE", "cuda")
+    if configured_python:
+        candidates = [Path(configured_python).expanduser()]
+    else:
+        # Prefer the isolated environment when it can serve the configured
+        # device, then fall back to the already-qualified CoreMind runtime.
+        candidates = [default_voice_python, Path(sys.executable)]
+    voice_python = next(
+        (candidate for candidate in candidates
+         if _voice_python_supports_device(candidate, requested_device)),
+        None,
+    )
+    if voice_python is None:
+        print(
+            "Alpecca F5 worker was not started: no Python runtime has F5-TTS "
+            f"with device {requested_device!r}; Kokoro remains available."
+        )
+        return
+    worker_python = str(voice_python)
+    process = subprocess.Popen([worker_python, "scripts\\f5_tts_worker.py"], **kwargs)
     _CONTINUITY_CHILDREN.append(process)
     print(f"Alpecca F5 voice worker is warming at http://{F5_WORKER_HOST}:{F5_WORKER_PORT} ...")
     print("Kokoro remains available while F5 finishes warming in the background.")
@@ -501,12 +548,17 @@ def _merge_continuity_before_start() -> None:
 
 def _run() -> int:
     """Start the stack after the process-wide instance lock is held."""
-    global F5_WORKER_ENABLED, F5_WORKER_HOST, F5_WORKER_PORT, HOST, PORT
+    global F5_WORKER_ENABLED, F5_WORKER_HOST, F5_WORKER_PORT, OPEN_TTS_PYTHON, HOST, PORT
 
     # Import AFTER the env is set and the lock is acquired: config.py creates
     # the home directory and can migrate persistent state at import time.
     import uvicorn
-    from config import F5_WORKER_ENABLED, F5_WORKER_HOST, F5_WORKER_PORT
+    from config import (
+        F5_WORKER_ENABLED,
+        F5_WORKER_HOST,
+        F5_WORKER_PORT,
+        OPEN_TTS_PYTHON,
+    )
     from config import HOST, PORT, BIND_HOST, REMOTE_ACCESS
 
     existing = instance_mod.existing_server_url(PORT)

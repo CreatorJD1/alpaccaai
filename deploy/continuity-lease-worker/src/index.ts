@@ -5,6 +5,7 @@ import {
   type AuthorityAction,
   type JsonObject,
 } from "./contracts";
+import { ContinuityLeaseAuthority } from "./authority";
 
 export { ContinuityLeaseAuthority } from "./authority";
 
@@ -12,6 +13,10 @@ interface Route {
   action: AuthorityAction;
   readsBody: boolean;
   auditLimit?: number;
+}
+
+function authorityStub(env: Env): DurableObjectStub<ContinuityLeaseAuthority> {
+  return env.IDENTITY.getByName("identity") as DurableObjectStub<ContinuityLeaseAuthority>;
 }
 
 class HttpError extends Error {
@@ -213,7 +218,7 @@ export default {
     if (request.method === "GET" && requestUrl.pathname === "/v1/endpoint") {
       try {
         requireNoQuery(requestUrl);
-        const authority = env.IDENTITY.getByName("identity");
+        const authority = authorityStub(env);
         const reply = await authority.handle("get-endpoint", "{}", 0);
         return serializedJson(reply.bodyJson, reply.status);
       } catch (error) {
@@ -254,7 +259,7 @@ export default {
     try {
       const route = matchRoute(request, requestUrl);
       const payload = route.readsBody ? await readBoundedJson(request) : {};
-      const authority = env.IDENTITY.getByName("identity");
+      const authority = authorityStub(env);
       const reply = await authority.handle(
         route.action,
         JSON.stringify(payload),

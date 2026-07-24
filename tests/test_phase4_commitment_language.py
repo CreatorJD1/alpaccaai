@@ -92,6 +92,20 @@ def test_explicit_future_external_actions_remain_classified(reply):
 @pytest.mark.parametrize(
     "reply",
     [
+        "I'll inspect the requested source files.",
+        "I'll review the attached local document.",
+        "I'll retain this detail briefly and inspect the source later.",
+    ],
+)
+def test_natural_external_action_phrasing_remains_classified(reply):
+    assert [
+        claim.kind for claim in classify_action_claims(reply).claims
+    ] == ["future-action"]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
         "I uploaded the file.",
         "I downloaded the archive.",
         "I finished the export.",

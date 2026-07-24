@@ -50,15 +50,11 @@ REPO_ROOT = find_repo_root()
 
 
 def _configured_port() -> int:
-    """Read the project port when config is importable; otherwise use 8765."""
-    if REPO_ROOT is None:
-        return 8765
+    """Read the port without importing stateful project configuration."""
     try:
-        sys.path.insert(0, str(REPO_ROOT))
-        from config import PORT as configured_port  # noqa: E402
-
-        return int(configured_port)
-    except Exception:
+        port = int(os.environ.get("ALPECCA_PORT", "8765"))
+        return port if 1 <= port <= 65535 else 8765
+    except (TypeError, ValueError):
         return 8765
 
 
@@ -112,10 +108,29 @@ def _is_dedicated_worker_host(hostname: str | None = None) -> bool:
 
 
 def _launcher_python() -> str:
-    """Prefer a no-console interpreter when the launcher is frozen."""
+    """Resolve a real interpreter instead of silently spawning ``python``."""
     if not getattr(sys, "frozen", False):
         return sys.executable or "python"
-    return shutil.which("pythonw.exe") or shutil.which("python.exe") or "python"
+    configured = os.environ.get("ALPECCA_PYTHON", "").strip()
+    candidates = [
+        Path(configured) if configured else None,
+        REPO_ROOT / ".venv" / "Scripts" / "pythonw.exe" if REPO_ROOT else None,
+        REPO_ROOT / ".venv" / "Scripts" / "python.exe" if REPO_ROOT else None,
+        Path(os.environ.get("LOCALAPPDATA", ""))
+        / "Programs" / "Python" / "Python312" / "pythonw.exe",
+        Path(os.environ.get("LOCALAPPDATA", ""))
+        / "Programs" / "Python" / "Python312" / "python.exe",
+    ]
+    for candidate in candidates:
+        if candidate is not None and candidate.is_file():
+            return str(candidate)
+    discovered = shutil.which("pythonw.exe") or shutil.which("python.exe")
+    if discovered:
+        return discovered
+    raise RuntimeError(
+        "Python 3.12 is not installed or configured. Install Python 3.12 or "
+        "set ALPECCA_PYTHON to its python.exe path."
+    )
 
 
 def _boot_log_path(repo_root: Path) -> Path:
@@ -465,25 +480,6 @@ class Launcher:
                     target=self._launch_phone_relay,
                     daemon=True,
                     name="AlpeccaLauncherPhoneRelay",
-                ).start()
-            if self._awake and not self._cloud_standby_started_for_wake and REPO_ROOT is not None:
-                self._cloud_standby_started_for_wake = True
-                threading.Thread(
-                    target=self._launch_cloud_standby,
-                    daemon=True,
-                    name="AlpeccaLauncherCloudStandby",
-                ).start()
-            if (
-                self._awake
-                and not self._discord_bridge_started_for_wake
-                and REPO_ROOT is not None
-                and not _loopback_port_open(DISCORD_BRIDGE_LOCK_PORT)
-            ):
-                self._discord_bridge_started_for_wake = True
-                threading.Thread(
-                    target=self._launch_discord_bridge,
-                    daemon=True,
-                    name="AlpeccaLauncherDiscordBridge",
                 ).start()
             if self._awake and self._booting:
                 self._booting = False

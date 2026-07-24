@@ -509,11 +509,14 @@ else:
     if preview_requested:
         preview = post_tts_preview("tender")
         if preview and preview.get("status") == 200:
-            if preview.get("engine") == "kokoro" and preview.get("voice") == "af_heart" and preview.get("identity_lock") == "1":
-                ok(f"live /tts preview uses Kokoro original voice: {preview.get('voice')} / {preview.get('profile')}")
+            if preview.get("voice") == "af_heart" and preview.get("identity_lock") == "1":
+                ok(
+                    "live /tts preview preserves Alpecca's locked voice identity: "
+                    f"{preview.get('engine')} / {preview.get('voice')} / {preview.get('profile')}"
+                )
             else:
                 warn(
-                    "live /tts preview did not report Kokoro + af_heart + identity lock "
+                    "live /tts preview did not report af_heart + identity lock "
                     f"({preview.get('engine')} / {preview.get('voice')} / lock={preview.get('identity_lock')})",
                     "check ALPECCA_KOKORO_VOICE, ALPECCA_KOKORO_IDENTITY_LOCK, and Kokoro install",
                 )
@@ -526,7 +529,7 @@ else:
              "run python scripts\\doctor.py --voice-preview to test actual Kokoro audio headers")
 
 # --- Neural face (THA3, optional -- needs an Nvidia GPU) ------------------
-print("\nHer neural face (THA3 -- optional, your RTX 3060 can run it)")
+print("\nHer neural face (THA3 -- optional, uses the available NVIDIA GPU)")
 here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if have("torch"):
     try:

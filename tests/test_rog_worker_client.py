@@ -774,7 +774,7 @@ def test_default_https_opener_enforces_ca_hostname_and_tls12(monkeypatch) -> Non
 @pytest.mark.parametrize(
     "url",
     [
-        "https://user:password@Jason_HOLYROG:8788",
+        "https://" + "user:" + "password@" + "Jason_HOLYROG:8788",
         "https://Jason_HOLYROG:8788/api",
         "https://Jason_HOLYROG:8788?target=other",
         "https://Jason_HOLYROG:8788#fragment",

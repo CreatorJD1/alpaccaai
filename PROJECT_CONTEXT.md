@@ -3,9 +3,59 @@
 This is the canonical project context for coding agents working on Alpecca.
 Read this before `AGENTS.md`, `CLAUDE.md`, `HANDOFF.md`, or implementation files.
 
-## Current Implementation Checkpoint (2026-07-23)
+## Current Implementation Checkpoint (2026-07-24)
 
 This checkpoint supersedes older route, access, model, and phase-status text.
+
+### 2026-07-24 source review and live-runtime repair
+
+- The supported Windows Python 3.12.10 runtime was repaired. The master BAT
+  and desktop launcher now resolve an explicit interpreter, the repo virtual
+  environment, the standard per-user Python install, or `PATH` in that order;
+  they no longer assume that the `python` alias exists.
+- Natural future commitments such as inspecting requested source files are now
+  classified and rewritten when execution has not occurred. Kokoro/F5 busy
+  state is reported before package availability so an active synthesis is not
+  falsely labeled unavailable.
+- Discord remains cloud-preferred for latency, but cloud failure now falls back
+  to the locked local Kokoro voice instead of becoming silent. Its normal
+  transcription deadline is 30 seconds, which covers the previously measured
+  19.38-second local Faster-Whisper path. This prevents dropped turns; it does
+  not yet satisfy the desired three-second live latency target.
+- Local vision now consistently targets `qwen3.5:9b`. Automatic creator-image
+  cloud egress is off by default; local vision remains available without
+  uploading pixels. Cross-surface creator recall filters the requested surface
+  in SQLite before applying its result limit, so newer traffic on another
+  surface cannot hide the requested House or Discord turn.
+- The GUI no longer races `run_full.py` to launch duplicate cloud and Discord
+  sidecars, and importing the GUI no longer imports stateful project config
+  before the singleton owner is established. The F5 worker now uses its
+  dedicated `.venv-f5-tts` interpreter only when it supports F5-TTS and the
+  requested Torch device; this laptop's CPU-only voice environment is rejected
+  in favor of the CUDA-qualified production interpreter.
+- Verification completed on this checkpoint: the expanded Python suite passed
+  **3,579 tests with 3 skips**, including both deployment test trees; the
+  complete House Node suite passed **86 tests**; protected live routes
+  returned 200 through Alpecca's diagnostic client; and a real `/tts` preview
+  returned F5 audio with `af_heart` and identity lock enabled. The standard
+  pytest configuration now includes deployment tests, `npm run house:test`
+  runs all House test files rather than only embodiment tests, both production
+  web builds passed, and the continuity worker typecheck plus **11 tests**
+  passed.
+- One local server, one F5 worker, and one Discord bridge lock are active. A
+  sustained Discord gateway/voice conversation, browser microphone session,
+  stable named Cloudflare URL, HolyROG authenticated job, and cloud failback
+  remain external operational gates. Source presence is not proof of those
+  live outcomes.
+- After the expanded suite, focused launcher/voice gates passed **78** and
+  **60** tests. The reloaded F5 worker selected CUDA successfully, reported
+  ready after a 50.101-second cold load, produced a real identity-locked tender
+  preview, and made Discord's local TTS fallback report `ready`.
+- The verified phase matrix remains P0/P2-P5 bounded-complete; P1/P6/P8-P13
+  operationally partial; P7 and P14 blocked. P13 has source-complete fenced
+  reconciliation but not deployment/failback proof. The Stage 4 art contract
+  also remains in progress: no approved 4K production strip or runtime sprite
+  candidate exists yet.
 
 ### 2026-07-23 HolyROG runtime qualification update
 

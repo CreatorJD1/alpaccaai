@@ -52,7 +52,7 @@ def test_one_room_collector_accepts_consecutive_utterances_and_fences_old_turn()
         assert collector.push(speaker, _pcm_packet()) in {"buffered", "vad-waiting"}
     assert collector.finish(speaker) is True
     first = utterances[-1]
-    first_token = discord_voice.VoiceTurnToken(
+    first_fence = discord_voice.VoiceTurnToken(
         first.listener_epoch, first.turn_sequence
     )
 
@@ -60,18 +60,18 @@ def test_one_room_collector_accepts_consecutive_utterances_and_fences_old_turn()
         collector.push(speaker, _pcm_packet())
     assert collector.finish(speaker) is True
     second = utterances[-1]
-    second_token = discord_voice.VoiceTurnToken(
+    second_fence = discord_voice.VoiceTurnToken(
         second.listener_epoch, second.turn_sequence
     )
 
     assert len(utterances) == 2
     assert second.listener_epoch == first.listener_epoch
     assert second.turn_sequence == first.turn_sequence + 1
-    assert collector.turn_fence.is_current(first_token) is False
-    assert collector.turn_fence.is_current(second_token) is True
+    assert collector.turn_fence.is_current(first_fence) is False
+    assert collector.turn_fence.is_current(second_fence) is True
 
     collector.cleanup()
-    assert collector.turn_fence.is_current(second_token) is False
+    assert collector.turn_fence.is_current(second_fence) is False
 
 
 def test_stale_video_frame_is_rejected_without_invoking_vision(monkeypatch):

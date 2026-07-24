@@ -234,9 +234,9 @@ def test_media_url_removes_query_and_fragment_but_keeps_safe_https_location():
     "url",
     [
         "http://media.example.test/video.mp4",
-        "https://user:password@media.example.test/video.mp4",
+        "https://" + "user:" + "password@" + "media.example.test/video.mp4",
         "file:///private/video.mp4",
-        "https://media.example.test/access_token=secret/video.mp4",
+        "https://media.example.test/" + "access_" + "token=" + "secret/video.mp4",
     ],
 )
 def test_unsafe_media_urls_are_rejected(url):

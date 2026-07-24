@@ -191,14 +191,28 @@ def test_unconfigured_cloud_is_skipped_in_auto(monkeypatch) -> None:
     assert cloud.calls == []
 
 
-def test_explicit_cloud_fails_closed_when_unconfigured(monkeypatch) -> None:
+def test_explicit_cloud_falls_back_to_local_when_unconfigured(monkeypatch) -> None:
     cloud = FakeCloudClient(None, configured=False)
+    calls = []
     monkeypatch.setattr(tts, "_cloud_tts_client", cloud)
     monkeypatch.setattr(tts, "TTS_BACKEND", "cloud")
+    monkeypatch.setattr(open_tts, "ready", lambda: True)
+    monkeypatch.setattr(
+        open_tts,
+        "synth",
+        lambda text, state: calls.append("f5") or ("audio/wav", b"f5"),
+    )
+    monkeypatch.setattr(
+        tts,
+        "_synth_kokoro",
+        lambda text, state: calls.append("kokoro") or ("audio/wav", b"local"),
+    )
+    monkeypatch.setattr(tts, "voice_state", _quiet_voice_state)
 
-    assert tts.synth("must not leave") is None
+    assert tts.synth("must still speak") == ("audio/wav", b"f5")
     assert cloud.calls == []
-    assert tts._last_error == "Cloud TTS unavailable: not_configured"
+    assert calls == ["f5"]
+    assert tts._last_error == ""
 
 
 def test_config_reuses_protected_auth_only_when_endpoint_is_configured(
@@ -280,6 +294,8 @@ def test_cloud_status_and_errors_never_expose_loaded_secret(
     )
     monkeypatch.setattr(tts, "_cloud_tts_client", cloud)
     monkeypatch.setattr(tts, "TTS_BACKEND", "cloud")
+    monkeypatch.setattr(open_tts, "ready", lambda: False)
+    monkeypatch.setattr(tts, "_synth_kokoro", lambda text, state: None)
 
     assert tts.synth(private_text) is None
     exposed = (

@@ -52,6 +52,32 @@ def test_jason_holyrog_is_recognized_as_dedicated_worker():
     assert launcher._is_dedicated_worker_host("RygenART") is False
 
 
+def test_frozen_launcher_uses_explicit_python_path(monkeypatch, tmp_path: Path):
+    launcher = _module()
+    interpreter = tmp_path / "python.exe"
+    interpreter.write_bytes(b"")
+    monkeypatch.setattr(launcher.sys, "frozen", True, raising=False)
+    monkeypatch.setenv("ALPECCA_PYTHON", str(interpreter))
+
+    assert launcher._launcher_python() == str(interpreter)
+
+
+def test_frozen_launcher_fails_visibly_when_python_is_missing(monkeypatch):
+    launcher = _module()
+    monkeypatch.setattr(launcher.sys, "frozen", True, raising=False)
+    monkeypatch.delenv("ALPECCA_PYTHON", raising=False)
+    monkeypatch.setattr(launcher, "REPO_ROOT", None)
+    monkeypatch.setattr(launcher.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("LOCALAPPDATA", r"Z:\missing")
+
+    try:
+        launcher._launcher_python()
+    except RuntimeError as exc:
+        assert "Python 3.12" in str(exc)
+    else:
+        raise AssertionError("missing Python must not silently spawn an invalid command")
+
+
 def test_gui_starts_the_existing_singleton_full_stack_hidden(monkeypatch, tmp_path: Path):
     launcher = _module()
     (tmp_path / "scripts").mkdir()
@@ -104,9 +130,10 @@ def test_gui_publishes_phone_endpoint_with_hidden_attach_only_relay(monkeypatch,
 def test_master_launcher_invokes_gui_source_directly_without_bat_delegation():
     source = (ROOT / "ALPECCA_LAUNCHER.bat").read_text(encoding="utf-8")
 
-    assert 'pythonw "apps\\launcher\\src\\alpecca_launcher.py"' in source
-    assert 'python "apps\\launcher\\src\\alpecca_launcher.py"' in source
-    assert 'python "apps\\launcher\\build_launcher.py"' in source
+    assert '"%ALPECCA_PYTHONW%" "apps\\launcher\\src\\alpecca_launcher.py"' in source
+    assert '"%ALPECCA_PYTHON%" "apps\\launcher\\src\\alpecca_launcher.py"' in source
+    assert '"%ALPECCA_PYTHON%" "apps\\launcher\\build_launcher.py"' in source
+    assert ':resolve_python' in source
     assert "ALPECCA_AUTOWAKE=1" in source
     for wrapper in (
         "START_HERE.bat",
@@ -165,11 +192,11 @@ def test_full_stack_pins_the_hosted_and_local_workload_split_with_overridable_de
         "ALPECCA_REFLECT_MODEL": "qwen3.5:9b",
         "ALPECCA_VISION_BACKEND": "local",
         "ALPECCA_VISION_CLOUD_MODEL": "gemma4:cloud",
-        "ALPECCA_DISCORD_CREATOR_CLOUD_VISION": "1",
+        "ALPECCA_DISCORD_CREATOR_CLOUD_VISION": "0",
         "ALPECCA_VISION_CLOUD_TRANSPORT_ROUTE": "https://ollama.com/api/chat",
         "ALPECCA_VISION_CLOUD_DEPLOYMENT": "ollama-cloud",
         "ALPECCA_VISION_CLOUD_PROCESSING_LOCATION": "provider-managed",
-        "ALPECCA_VISION_MODEL": "qwen3.5:4b",
+        "ALPECCA_VISION_MODEL": "qwen3.5:9b",
         "ALPECCA_VISION_NUM_GPU": "99",
         "ALPECCA_VISION_TIMEOUT": "60",
     }
@@ -204,6 +231,16 @@ def test_full_stack_sidecars_use_no_window_background_flags():
     assert "CREATE_NO_WINDOW" in source
     assert source.count('kwargs["creationflags"] = _background_creationflags()') >= 3
     assert launcher.CREATE_NO_WINDOW
+
+
+def test_full_stack_starts_f5_with_its_dedicated_voice_interpreter():
+    source = (ROOT / "scripts" / "run_full.py").read_text(encoding="utf-8")
+
+    assert '".venv-f5-tts" / "Scripts" / "python.exe"' in source
+    assert "configured_python = str(OPEN_TTS_PYTHON or \"\").strip()" in source
+    assert "_voice_python_supports_device(candidate, requested_device)" in source
+    assert "candidates = [default_voice_python, Path(sys.executable)]" in source
+    assert 'subprocess.Popen([worker_python, "scripts\\\\f5_tts_worker.py"]' in source
 
 
 def test_full_stack_offline_mode_is_local_only_and_does_not_wait_for_f5():

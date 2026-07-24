@@ -59,8 +59,17 @@ _EXTERNAL_ACTION_TARGETS = (
     r"browser|page|link|folder|directory|repository|repo|project|connection|"
     r"channel|session|deployment|build|test|update|installation|install|"
     r"database|record|message|email|request|issue|ticket|commit|merge|"
-    r"pipeline|workflow|configuration|config|settings?|port|tunnel|stream|"
+    r"pipeline|workflow|configuration|config|settings?|source|code|port|tunnel|stream|"
     r"recording|image|video|audio|model|asset|package|launcher"
+)
+_ACTION_TARGET_MODIFIERS = (
+    r"requested|attached|provided|referenced|previous|source|local|current|"
+    r"selected|specified"
+)
+_ACTION_TARGET_PHRASE = (
+    rf"(?:(?:the|a|an|this|that|your|my|our)\s+)?"
+    rf"(?:(?:{_ACTION_TARGET_MODIFIERS})\s+){{0,3}}"
+    rf"(?:{_EXTERNAL_ACTION_TARGETS})s?"
 )
 _COMPLETION = re.compile(
     rf"\b(?:"
@@ -98,9 +107,15 @@ _FUTURE_ACTION = re.compile(
     rf"(?:{_FUTURE_INTRINSIC_EXTERNAL_VERBS})\b"
     rf"|(?:{_FUTURE_ACTION_VERBS})\s+"
     rf"(?:(?:you|him|her)\s+)?(?:"
-    rf"it|them|this|that|(?:(?:the|a|an|this|that|your|my|our)\s+)?"
-    rf"(?:{_EXTERNAL_ACTION_TARGETS})s?"
+    rf"it|them|this|that|{_ACTION_TARGET_PHRASE}"
     rf"))\b",
+    re.IGNORECASE,
+)
+_FUTURE_COORDINATED_ACTION = re.compile(
+    rf"\b(?:i\s+will|i(?:'|\u2019)ll|i\s+am\s+going\s+to|"
+    rf"i(?:'|\u2019)m\s+going\s+to)\s+[^.!?]{{1,120}}?\band\s+"
+    rf"(?:{_FUTURE_ACTION_VERBS})\s+"
+    rf"(?:(?:you|him|her)\s+)?(?:it|them|this|that|{_ACTION_TARGET_PHRASE})\b",
     re.IGNORECASE,
 )
 
@@ -216,7 +231,10 @@ def classify_action_claims(reply: str, *, max_chars: int = MAX_REPLY_CHARS) -> C
             or _BARE_COMPLETION.fullmatch(candidate)
         ):
             kind: ClaimKind = "completion"
-        elif _FUTURE_ACTION.search(candidate):
+        elif (
+            _FUTURE_ACTION.search(candidate)
+            or _FUTURE_COORDINATED_ACTION.search(candidate)
+        ):
             kind = "future-action"
         else:
             continue

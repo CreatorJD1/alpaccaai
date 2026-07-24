@@ -1,4 +1,47 @@
-# Alpecca - Handoff (updated 2026-07-23)
+# Alpecca - Handoff (updated 2026-07-24)
+
+## 2026-07-24 internal review and runtime checkpoint
+
+- Repaired the production Python install and both dormant voice virtual
+  environments. `ALPECCA_LAUNCHER.bat` and the GUI launcher now resolve a real
+  interpreter without depending on a Windows Store alias. The F5 sidecar uses
+  `.venv-f5-tts` (or `ALPECCA_OPEN_TTS_PYTHON`) rather than the CoreMind
+  interpreter.
+- Fixed commitment recognition for coordinated natural promises, TTS busy
+  status ordering, cloud-preferred voice fallback, Discord transcription's
+  too-short six-second deadline, the stale 4B vision default, surface-filtered
+  creator continuity recall, GUI sidecar duplication, and GUI config import
+  before singleton ownership.
+- Fixed F5 worker interpreter selection: the isolated voice environment is
+  accepted only when it has F5-TTS and the requested Torch device. On this
+  laptop its CPU-only Torch is rejected in favor of the CUDA-qualified
+  production Python, while Kokoro remains the fallback if neither qualifies.
+- Added `pytest.ini` as the committed collection boundary. It includes `tests/`
+  plus both deployment test trees and excludes runtime/data scratch trees.
+  Added `npm run house:test`; it runs every House `*.test.mjs` file. Updated the
+  Tool Library contract test for its Google Workspace readiness fields.
+- Verified: expanded Python gate **3,579 passed, 3 skipped** (including both
+  deployment trees); focused repaired paths **86 passed**; House Node gate **86
+  passed**; House and Agentic Frontier production builds passed; and the
+  continuity worker typecheck plus **11 tests** passed.
+- Live evidence: Ollama 0.30.7 is listening with `qwen3.5:9b`; protected
+  `/state`, `/cognition/state`, `/house-hq`, `/mindscape`, `/system/status`, and
+  `/system/doctor` returned 200; one server listens on 8765, one F5 worker on
+  8776, and one Discord bridge lock on 8779. `/tts` returned real F5 audio while
+  preserving `af_heart` and identity lock. This proves synthesis, not a
+  sustained House or Discord call.
+- Post-suite F5 selection and Discord fallback repairs passed focused gates of
+  **78** and **60** tests. The reloaded F5 worker reported CUDA ready after a
+  50.101-second cold load, a real tender `/tts` line preserved the locked voice
+  identity, and Discord readiness now reports duplex receive plus TTS `ready`.
+- Do not mark the project globally complete. Remaining gates are explicit:
+  P1 release scans/public-shell rebuild; P6 measured 8K context run; P7
+  creator-approved elevated pagefile execution; P8 real creator-approved RSI
+  trial; P9 provider soak; P10 Discord/voice/acoustic soak; P11 browser/mobile
+  proof; P12 authenticated visual/physics/design-lock soak; P13 deployed
+  failover/failback; and P14 release soak. HolyROG TLS/authenticated compute,
+  HyFusER trained weights, Google OAuth, stable Cloudflare naming, Video
+  Companion production wiring, and approved 4K art remain unproved.
 
 ## 2026-07-23 HolyROG dual-SAN TLS rotation handoff
 

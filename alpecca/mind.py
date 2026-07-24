@@ -204,8 +204,10 @@ def _creator_cross_surface_context(
     requested_surface = "house-hq" if "house hq" in requested or "house-hq" in requested else ""
     try:
         recent = cognition_mod.recent_chat_turns(
-            limit=20,
+            limit=50,
             scope=turn.memory_scope,
+            surface=requested_surface,
+            exclude_surface="" if requested_surface else turn.surface,
         )
     except Exception:
         return ""

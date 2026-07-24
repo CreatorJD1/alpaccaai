@@ -290,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
     os.environ.setdefault("ALPECCA_CLOUD_TTS_TIMEOUT_SECONDS", "2.5")
     os.environ.setdefault("ALPECCA_LIVE_TTS_TIMEOUT", "3.0")
     os.environ.setdefault("ALPECCA_DISCORD_VOICE_TIMEOUT", "4.0")
-    os.environ.setdefault("ALPECCA_DISCORD_TRANSCRIBE_TIMEOUT", "6.0")
+    os.environ.setdefault("ALPECCA_DISCORD_TRANSCRIBE_TIMEOUT", "30.0")
     os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "cloud")
     args = list(sys.argv[1:] if argv is None else argv)
     if args == ["--media-readiness"]:

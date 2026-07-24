@@ -2,6 +2,9 @@
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
+call :resolve_python
+if errorlevel 1 goto python_missing
+
 set "MODE=%~1"
 if "%MODE%"=="" (
   set "INTERACTIVE=1"
@@ -71,11 +74,10 @@ goto menu
 :start_here
 call :set_start_defaults
 set "ALPECCA_AUTOWAKE=1"
-where pythonw >nul 2>nul
-if errorlevel 1 (
-  start "Alpecca Launcher" python "apps\launcher\src\alpecca_launcher.py" %LAUNCH_ARGS%
+if exist "%ALPECCA_PYTHONW%" (
+  start "Alpecca Launcher" "%ALPECCA_PYTHONW%" "apps\launcher\src\alpecca_launcher.py" %LAUNCH_ARGS%
 ) else (
-  start "Alpecca Launcher" pythonw "apps\launcher\src\alpecca_launcher.py" %LAUNCH_ARGS%
+  start "Alpecca Launcher" "%ALPECCA_PYTHON%" "apps\launcher\src\alpecca_launcher.py" %LAUNCH_ARGS%
 )
 goto finish
 
@@ -92,17 +94,17 @@ if errorlevel 1 (
 )
 if "%ALPECCA_MODEL%"=="" set "ALPECCA_MODEL=qwen3.5:9b"
 set "ALPECCA_NUM_CTX=8192"
-python scripts\share.py --tunnel %LAUNCH_ARGS%
+"%ALPECCA_PYTHON%" scripts\share.py --tunnel %LAUNCH_ARGS%
 goto finish
 
 :wake_cloud
 title Alpecca (cloud standby)
-python scripts\wake_cloud_standby.py %LAUNCH_ARGS%
+"%ALPECCA_PYTHON%" scripts\wake_cloud_standby.py %LAUNCH_ARGS%
 goto finish
 
 :start_discord
 echo Starting Alpecca's Discord bridge...
-python scripts\run_discord_bridge.py %LAUNCH_ARGS%
+"%ALPECCA_PYTHON%" scripts\run_discord_bridge.py %LAUNCH_ARGS%
 echo.
 echo Bridge stopped. Read any message above for the reason.
 goto finish
@@ -116,7 +118,7 @@ setlocal
 cd /d "%~dp0"
 if not defined AGENTIC_FRONTIER_PORT set "AGENTIC_FRONTIER_PORT=8870"
 start "Agentic Frontier" http://127.0.0.1:%AGENTIC_FRONTIER_PORT%
-python -m agentic_frontier.app %LAUNCH_ARGS%
+"%ALPECCA_PYTHON%" -m agentic_frontier.app %LAUNCH_ARGS%
 endlocal
 goto finish
 
@@ -162,7 +164,7 @@ set "ALPECCA_NUM_CTX=8192"
 set "ALPECCA_TTS_BACKEND=auto"
 set "ALPECCA_COMPUTER_USE=1"
 echo Checking Alpecca health...
-python scripts\doctor.py
+"%ALPECCA_PYTHON%" scripts\doctor.py
 echo.
 echo Making sure Ollama is running...
 start "Ollama" /min cmd /c "ollama serve"
@@ -171,7 +173,7 @@ echo Pulling/checking %ALPECCA_MODEL%...
 ollama pull %ALPECCA_MODEL%
 echo.
 echo Waking Alpecca with full senses...
-python scripts\run_full.py
+"%ALPECCA_PYTHON%" scripts\run_full.py
 endlocal
 goto tool_done
 
@@ -182,7 +184,7 @@ set "ALPECCA_COMPUTER_USE=1"
 if "%ALPECCA_MODEL%"=="" set "ALPECCA_MODEL=qwen3.5:9b"
 set "ALPECCA_NUM_CTX=8192"
 set "ALPECCA_TTS_BACKEND=auto"
-python app.py
+"%ALPECCA_PYTHON%" app.py
 endlocal
 goto tool_done
 
@@ -190,12 +192,12 @@ goto tool_done
 set "TOOL_CONTEXT=1"
 if exist "data\cloudflared\config.yml" (
   echo Opening stable Cloudflare tunnel...
-  python scripts\run_cloudflare_tunnel.py %LAUNCH_ARGS%
+  "%ALPECCA_PYTHON%" scripts\run_cloudflare_tunnel.py %LAUNCH_ARGS%
 ) else (
   echo Opening temporary Cloudflare preview...
   echo To create a permanent link, run:
   echo   python scripts\setup_cloudflare_tunnel.py --hostname alpecca.your-domain.com
-  python scripts\preview.py %LAUNCH_ARGS%
+  "%ALPECCA_PYTHON%" scripts\preview.py %LAUNCH_ARGS%
 )
 goto tool_done
 
@@ -216,7 +218,7 @@ if not errorlevel 1 (
 )
 echo.
 echo Building and publishing House HQ to R2...
-python scripts\prepare_house_hq_r2_static.py --build --public-url "%ALPECCA_R2_PUBLIC_URL%" --bucket "%ALPECCA_R2_BUCKET%" --upload
+"%ALPECCA_PYTHON%" scripts\prepare_house_hq_r2_static.py --build --public-url "%ALPECCA_R2_PUBLIC_URL%" --bucket "%ALPECCA_R2_BUCKET%" --upload
 if errorlevel 1 goto publish_failed
 echo.
 echo House HQ preview:
@@ -246,10 +248,10 @@ goto tool_voice
 
 :tool_voice_install
 echo Installing edge-tts...
-python -m pip install --no-cache-dir --disable-pip-version-check --timeout 30 --retries 1 -v edge-tts || python -m pip install --no-cache-dir --no-deps edge-tts
+"%ALPECCA_PYTHON%" -m pip install --no-cache-dir --disable-pip-version-check --timeout 30 --retries 1 -v edge-tts || "%ALPECCA_PYTHON%" -m pip install --no-cache-dir --no-deps edge-tts
 echo.
 echo Installing kokoro + soundfile...
-python -m pip install --no-cache-dir --disable-pip-version-check --timeout 60 --retries 1 -v kokoro soundfile || python -m pip install --no-cache-dir --no-deps kokoro soundfile
+"%ALPECCA_PYTHON%" -m pip install --no-cache-dir --disable-pip-version-check --timeout 60 --retries 1 -v kokoro soundfile || "%ALPECCA_PYTHON%" -m pip install --no-cache-dir --no-deps kokoro soundfile
 echo.
 echo Install espeak-ng for Kokoro if needed:
 echo https://github.com/espeak-ng/espeak-ng/releases
@@ -257,17 +259,17 @@ goto tool_done
 
 :tool_voice_check
 echo Checking Kokoro...
-python -c "from kokoro import KPipeline; KPipeline(lang_code='a'); print('KOKORO: OK')"
+"%ALPECCA_PYTHON%" -c "from kokoro import KPipeline; KPipeline(lang_code='a'); print('KOKORO: OK')"
 echo.
 echo Checking edge-tts...
-python -c "import edge_tts; print('EDGE: OK')"
+"%ALPECCA_PYTHON%" -c "import edge_tts; print('EDGE: OK')"
 goto tool_done
 
 :tool_rigger
 set "TOOL_CONTEXT=1"
 if not exist "data\avatar\her.psd" goto no_psd
 echo Starting her rigged figure...
-python scripts\run_rigger.py
+"%ALPECCA_PYTHON%" scripts\run_rigger.py
 goto tool_done
 
 :no_psd
@@ -277,7 +279,7 @@ goto tool_done
 
 :tool_build_exe
 set "TOOL_CONTEXT=1"
-python "apps\launcher\build_launcher.py" %LAUNCH_ARGS%
+"%ALPECCA_PYTHON%" "apps\launcher\build_launcher.py" %LAUNCH_ARGS%
 goto tool_done
 
 :tool_done
@@ -342,6 +344,27 @@ set "ALPECCA_DISCORD_VOICE=1"
 set "ALPECCA_DISCORD_VOICE_RECEIVE=1"
 set "ALPECCA_TTS_BACKEND=auto"
 goto :eof
+
+:resolve_python
+if defined ALPECCA_PYTHON if exist "%ALPECCA_PYTHON%" goto python_found
+set "ALPECCA_PYTHON="
+for %%P in (
+  "%~dp0.venv\Scripts\python.exe"
+  "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+) do if not defined ALPECCA_PYTHON if exist "%%~fP" set "ALPECCA_PYTHON=%%~fP"
+if not defined ALPECCA_PYTHON for /f "delims=" %%P in ('where python.exe 2^>nul') do if not defined ALPECCA_PYTHON set "ALPECCA_PYTHON=%%~fP"
+if not defined ALPECCA_PYTHON exit /b 1
+:python_found
+for %%P in ("%ALPECCA_PYTHON%") do set "ALPECCA_PYTHONW=%%~dpPpythonw.exe"
+exit /b 0
+
+:python_missing
+echo.
+echo Python 3.12 is required but was not found.
+echo Install Python 3.12 or set ALPECCA_PYTHON to its python.exe path.
+echo.
+if "%INTERACTIVE%"=="1" pause
+goto done
 
 :finish
 if "%INTERACTIVE%"=="1" (
