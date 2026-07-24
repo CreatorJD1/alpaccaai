@@ -1,5 +1,32 @@
 # Alpecca - Handoff (updated 2026-07-23)
 
+## 2026-07-23 HolyROG isolated HyFusER runtime checkpoint
+
+- The dedicated compute checkout at
+  `C:\Users\Jason\Documents\Alpecca_duel computer local server setup\alpaccaai-rog-latest`
+  was clean for tracked files and fast-forwarded to `81ad1e3`. Its two stashes
+  and one untracked item were preserved. The everyday HolyROG development
+  checkout under `Documents\GitHub\alpaccaai` was left untouched.
+- HolyROG now has a separate CPython 3.11.9 environment at
+  `%LOCALAPPDATA%\Alpecca\rog-worker\venvs\hyfuser-py311` with
+  `torch 2.7.0+cu128`. A direct import check reported CUDA 12.8 available on
+  the NVIDIA GeForce RTX 4060 Laptop GPU with 8 GB VRAM.
+- `scripts/preflight_rog_hyfuser_runtime.py` passed all 10 host, Python, GPU,
+  driver, and VRAM checks. The report deliberately remains `shadow_only=true`
+  and `authorizes_activation=false`; no HyFusER or Emotion-LLaMA checkpoint or
+  dataset was downloaded.
+- The existing compute-only HTTPS worker remained untouched and listening on
+  port 8788 as PID 45496. Remote SSH administration is now opt-in instead of
+  enabled by default.
+- Focused verification on the primary checkout: 31 tests passed across the
+  runtime preflight and launcher/singleton coverage.
+- Current operational gate: RygenART does not presently have the shared ROG
+  credential in its Windows Credential Manager, so an authenticated primary-
+  to-worker receipt cannot yet be reproduced from a fresh local process. Do
+  not expose the secret in source, logs, or chat. Restore the credential through
+  the existing secure install flow, then prove health and one bounded reasoning
+  request before restarting the full stack with the ROG deep route loaded.
+
 ## 2026-07-23 activation and seven-transformer checkpoint
 
 - Added a real optional seven-transformer Soul research architecture: one

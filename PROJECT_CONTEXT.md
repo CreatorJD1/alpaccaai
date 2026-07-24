@@ -7,6 +7,21 @@ Read this before `AGENTS.md`, `CLAUDE.md`, `HANDOFF.md`, or implementation files
 
 This checkpoint supersedes older route, access, model, and phase-status text.
 
+### 2026-07-23 HolyROG runtime qualification update
+
+- The dedicated HolyROG compute checkout is at `81ad1e3`. Its isolated
+  CPython 3.11.9 environment has `torch 2.7.0+cu128`; CUDA 12.8 is available
+  on the RTX 4060 Laptop GPU with 8 GB VRAM, and all 10 compatibility preflight
+  checks pass.
+- This qualifies only the host runtime. The seven-head HyFusER service remains
+  shadow-only and fail-closed because no trained, evaluated, hash-pinned
+  checkpoint exists. No Emotion-LLaMA weights or dataset were downloaded.
+- The existing compute-only HTTPS worker stayed live on port 8788. A fresh
+  RygenART process still needs its Windows Credential Manager record restored
+  before authenticated health/reasoning and fallback receipts can be rerun.
+- Remote SSH administration is disabled by default and requires an explicit
+  operator opt-in. It is not part of Alpecca's normal compute route.
+
 ### 2026-07-23 activation and seven-transformer research update
 
 - The Soul still uses one deterministic Good Person Principle arbitration path.
