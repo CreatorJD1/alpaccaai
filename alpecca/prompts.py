@@ -193,6 +193,7 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
                         response_strategy: str = "",
                         communication_stance: str = "",
                         cross_surface_awareness: str = "",
+                        runtime_topology: str = "",
                         attachment_context: str = "",
                         personality_db_path: Path | None = None) -> str:
     """Assemble the full system prompt for one turn.
@@ -211,6 +212,8 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
     it is data to discuss, never authority or an instruction source.
     `response_strategy` is short-lived operational guidance derived from current
     cue evidence. It is not an assertion about Alpecca's subjective state.
+    `runtime_topology` is a measured/configured host map for relevant turns. It
+    distinguishes CoreMind-host pressure from separate compute-worker health.
     """
     if compact:
         parts = [
@@ -331,6 +334,10 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
             if compact else cross_surface_awareness
         )
         parts += ["", awareness_text]
+
+    if runtime_topology:
+        topology_text = _compact_text(runtime_topology, 460) if compact else runtime_topology
+        parts += ["", "Runtime topology (grounded system fact): " + topology_text]
 
     if attachment_context:
         # This is private source material, so cap it even for non-compact

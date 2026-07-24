@@ -169,7 +169,11 @@ def _describe_local(image_bytes: bytes, prompt: str) -> Optional[str]:
         import ollama
         client = ollama.Client(
             host=OLLAMA_HOST,
-            timeout=_timeout_seconds("ALPECCA_VISION_TIMEOUT", 60.0),
+            # A cold qwen3.5:9b multimodal load on the primary laptop has been
+            # measured at about 88 seconds. Keep this below Discord's separate
+            # 300-second image envelope, but do not abort a healthy local read
+            # at the old 60-second boundary.
+            timeout=_timeout_seconds("ALPECCA_VISION_TIMEOUT", 120.0),
         )
         kwargs = {
             "model": VisionCfg.MODEL,

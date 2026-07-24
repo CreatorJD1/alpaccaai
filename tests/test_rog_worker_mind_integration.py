@@ -96,6 +96,71 @@ def test_runtime_model_status_names_compute_worker_truthfully():
     assert "non-speaking" in reply
 
 
+def test_runtime_topology_question_recognizes_worker_name_requests():
+    from alpecca.mind import _asks_runtime_topology
+
+    assert _asks_runtime_topology("what is your dedicated compute server called?")
+    assert _asks_runtime_topology("the new computer, not RygenART")
+    assert not _asks_runtime_topology("what do you want to talk about?")
+
+
+def test_runtime_topology_prompt_separates_primary_pressure_from_worker(monkeypatch):
+    from alpecca import mind as mind_mod
+
+    monkeypatch.setattr(mind_mod.socket, "gethostname", lambda: "RygenART")
+    monkeypatch.setattr(
+        mind_mod, "ROG_WORKER_URL", "https://jason-holyrog.example:8788"
+    )
+
+    prompt = mind_mod._runtime_topology_prompt()
+
+    assert "primary host RygenART" in prompt
+    assert "Jason_HOLYROG" in prompt
+    assert "primary host only" in prompt
+    assert "not another Alpecca" in prompt
+
+
+def test_runtime_compute_worker_reply_uses_authenticated_health(monkeypatch):
+    from alpecca import mind as mind_mod
+
+    monkeypatch.setattr(mind_mod.socket, "gethostname", lambda: "RygenART")
+    monkeypatch.setattr(mind_mod, "ROG_WORKER_MODEL", "qwen3.5:9b")
+
+    class Worker:
+        def health(self):
+            return SimpleNamespace(
+                hostname="Jason_HOLYROG",
+                ready=True,
+                reasoning_ready=True,
+                blender_ready=True,
+            )
+
+    llm = SimpleNamespace(_deep_chain=[("rog-worker", Worker())])
+    reply = mind_mod._runtime_compute_worker_reply(llm)
+
+    assert "dedicated non-speaking compute worker is Jason_HOLYROG" in reply
+    assert "authenticated and ready" in reply
+    assert "qwen3.5:9b reasoning" in reply
+    assert "CoreMind remains on RygenART" in reply
+
+
+def test_runtime_compute_worker_reply_does_not_claim_unreachable_worker(monkeypatch):
+    from alpecca import mind as mind_mod
+
+    monkeypatch.setattr(mind_mod.socket, "gethostname", lambda: "RygenART")
+
+    class Worker:
+        def health(self):
+            raise TimeoutError("offline")
+
+    reply = mind_mod._runtime_compute_worker_reply(
+        SimpleNamespace(_deep_chain=[("rog-worker", Worker())])
+    )
+
+    assert "authenticated health check is unavailable" in reply
+    assert "cannot claim" not in reply
+
+
 def test_unreachable_worker_uses_short_health_gate_and_cooldown(monkeypatch):
     from alpecca import mind as mind_mod
 

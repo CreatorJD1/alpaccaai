@@ -21,12 +21,14 @@ import json
 import math
 import os
 import re
+import socket
 import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from numbers import Number
 from typing import Literal
+from urllib.parse import urlparse
 
 from config import (
     OLLAMA_MODEL,
@@ -492,6 +494,78 @@ def _runtime_model_status_reply(model_use: Mapping[str, object]) -> str:
     return (
         f"The language call for this turn used {model} through {route}; "
         "this status line comes from the measured call record."
+    )
+
+
+_RUNTIME_TOPOLOGY_PATTERNS = (
+    re.compile(r"\b(?:dedicated|separate|second|new|other)\s+(?:compute\s+)?(?:computer|server|worker|host)\b", re.I),
+    re.compile(r"\b(?:computer|server|worker|host)(?:'s|\s+is|\s+was)?\s+(?:name|called)\b", re.I),
+    re.compile(r"\b(?:holyrog|holy\s*rog|jason[_-]holyrog|rygenart)\b", re.I),
+    re.compile(r"\b(?:where|what)\b.{0,48}\b(?:compute|running|hosted|server)\b", re.I),
+)
+
+
+def _asks_runtime_topology(user_msg: str) -> bool:
+    text = " ".join(str(user_msg or "").split())[:600]
+    return bool(text) and any(pattern.search(text) for pattern in _RUNTIME_TOPOLOGY_PATTERNS)
+
+
+def _configured_rog_worker_name() -> str:
+    host = (urlparse(ROG_WORKER_URL).hostname or "").strip()
+    if host.casefold().startswith("jason-holyrog"):
+        return "Jason_HOLYROG"
+    return host or "the configured compute worker"
+
+
+def _runtime_topology_prompt() -> str:
+    primary = socket.gethostname().strip() or "the primary host"
+    worker = _configured_rog_worker_name()
+    return (
+        f"Your one CoreMind/person is running on primary host {primary}. "
+        f"Your separate non-speaking compute worker is named {worker}; it may handle "
+        f"deep {ROG_WORKER_MODEL} reasoning and bounded Blender jobs, but it is not "
+        "another Alpecca. A host-resource warning in your introspection describes "
+        "the primary host only; it is not evidence that the compute worker is strained."
+    )
+
+
+def _runtime_compute_worker_reply(llm: object) -> str:
+    primary = socket.gethostname().strip() or "the primary host"
+    configured_name = _configured_rog_worker_name()
+    worker_client = None
+    for link in getattr(llm, "_deep_chain", ()) or ():
+        if isinstance(link, tuple) and len(link) >= 2 and link[0] == "rog-worker":
+            worker_client = link[1]
+            break
+    if worker_client is None:
+        return (
+            f"My CoreMind is on {primary}. My configured compute worker is "
+            f"{configured_name}, but it is not loaded in my current deep route, so I "
+            "cannot claim that it is online."
+        )
+    try:
+        health = worker_client.health()
+    except Exception:
+        return (
+            f"My CoreMind is on {primary}. My dedicated compute worker is "
+            f"{configured_name}, but its authenticated health check is unavailable "
+            "right now; my cloud fallback remains separate."
+        )
+    hostname = str(getattr(health, "hostname", "") or configured_name).strip()
+    ready = bool(getattr(health, "ready", False))
+    reasoning = bool(getattr(health, "reasoning_ready", False))
+    blender = bool(getattr(health, "blender_ready", False))
+    state = "authenticated and ready" if ready else "authenticated but degraded"
+    capabilities = []
+    if reasoning:
+        capabilities.append(f"{ROG_WORKER_MODEL} reasoning")
+    if blender:
+        capabilities.append("bounded Blender jobs")
+    capability_text = " and ".join(capabilities) or "no currently ready job capability"
+    return (
+        f"My dedicated non-speaking compute worker is {hostname}. It is {state} for "
+        f"{capability_text}. My one CoreMind remains on {primary}; the worker is not "
+        "another instance of me."
     )
 
 
@@ -3249,6 +3323,9 @@ class CoreMind:
         moved = False
         low = user_msg.lower()
         runtime_model_question = _asks_runtime_model(user_msg)
+        runtime_topology_question = _asks_runtime_topology(user_msg)
+        runtime_topology = _runtime_topology_prompt() if runtime_topology_question else ""
+        runtime_fact_question = runtime_model_question or runtime_topology_question
         live_house_room, legacy_house_room = self._house_context_room(situation)
         pending_house_room = (
             legacy_house_room if legacy_house_room and legacy_house_room != self._location else ""
@@ -3379,7 +3456,7 @@ class CoreMind:
                 abilities = self.toolkit.describe()
         tool_schema = (
             None
-            if reply_tier == "voice" or attachment_context or runtime_model_question
+            if reply_tier == "voice" or attachment_context or runtime_fact_question
             else self._tool_schema(low, turn=None if implicit_turn else turn)
         )
         who_prompt = people_mod.who_prompt(speaker)
@@ -3416,6 +3493,7 @@ class CoreMind:
             response_strategy=response_strategy,
             communication_stance=communication_stance.prompt_instruction(),
             cross_surface_awareness=cross_surface_awareness,
+            runtime_topology=runtime_topology,
             attachment_context=attachment_context,
         )
         history_window = history[-HISTORY_MESSAGES:]
@@ -3480,6 +3558,7 @@ class CoreMind:
             response_strategy=response_strategy,
             communication_stance=communication_stance.prompt_instruction(),
             cross_surface_awareness=cross_surface_awareness,
+            runtime_topology=runtime_topology,
             attachment_context=attachment_context,
         )
         prompt_history, exact_ledger = mindpage_mod.fit_request(
@@ -3514,6 +3593,7 @@ class CoreMind:
             response_strategy=response_strategy,
             communication_stance=communication_stance.prompt_instruction(),
             cross_surface_awareness=cross_surface_awareness,
+            runtime_topology=runtime_topology,
             attachment_context=attachment_context,
         )
         prompt_history, final_ledger = mindpage_mod.fit_request(
@@ -3585,7 +3665,7 @@ class CoreMind:
             if (
                 on_token is not None
                 and tool_schema is None
-                and not runtime_model_question
+                and not runtime_fact_question
             )
             else {}
         )
@@ -3611,7 +3691,7 @@ class CoreMind:
         if (
             tool_schema is None
             and reply_tier != "voice"
-            and not runtime_model_question
+            and not runtime_fact_question
             and not self.llm.last_call().get("fallback")
         ):
             tries = 0
@@ -3658,8 +3738,13 @@ class CoreMind:
                                           **privacy_kwargs)
                 if self.llm.last_call().get("fallback"):
                     break
+        runtime_status_parts = []
+        if runtime_topology_question:
+            runtime_status_parts.append(_runtime_compute_worker_reply(self.llm))
         if runtime_model_question:
-            reply = _runtime_model_status_reply(self.llm.last_call())
+            runtime_status_parts.append(_runtime_model_status_reply(self.llm.last_call()))
+        if runtime_status_parts:
+            reply = " ".join(runtime_status_parts)
         if not turn.begin_commit():
             return self._cancelled_turn_result(turn)
 

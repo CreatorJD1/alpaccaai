@@ -1,5 +1,21 @@
 # Alpecca - Handoff (updated 2026-07-24)
 
+## 2026-07-24 dual-host vision acceleration handoff
+
+- The active work order is
+  `docs/FOR_CLAUDE_DUAL_HOST_VISION_ACCELERATION.md`. Claude on RygenART owns
+  the authenticated worker/client and Alpecca integration; Claude on
+  `Jason_HOLYROG` owns model installation, GPU benchmarks, and worker
+  deployment. Their file ownership must not overlap.
+- First candidate is `qwen3-vl:4b` (3.3 GB, Apache-2.0 upstream), followed by
+  `qwen3-vl:2b` (1.9 GB). Promotion requires five resident same-image runs and
+  an authenticated end-to-end request at or below 30 seconds with screenshot
+  reading accuracy. `qwen3.5:9b` remains the reasoning model.
+- The current RygenART local vision path is functional but measured at about
+  60 seconds on the reported Discord screenshot after its timeout was raised
+  from 60 to 120 seconds. This is fallback evidence, not completion of the
+  under-30-second target.
+
 ## 2026-07-24 HolyROG live compute checkpoint
 
 - Replaced RygenART's stale HolyROG public trust certificate with the live

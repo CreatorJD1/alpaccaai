@@ -198,7 +198,7 @@ def test_full_stack_pins_the_hosted_and_local_workload_split_with_overridable_de
         "ALPECCA_VISION_CLOUD_PROCESSING_LOCATION": "provider-managed",
         "ALPECCA_VISION_MODEL": "qwen3.5:9b",
         "ALPECCA_VISION_NUM_GPU": "99",
-        "ALPECCA_VISION_TIMEOUT": "60",
+        "ALPECCA_VISION_TIMEOUT": "120",
     }
     for name, value in expected_defaults.items():
         if name == "ALPECCA_ROG_WORKER_URL":
