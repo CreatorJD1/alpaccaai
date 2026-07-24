@@ -276,6 +276,8 @@ def test_authenticated_health_is_content_free_and_typed(monkeypatch) -> None:
         "ready": True,
         "speaking": False,
         "discord": False,
+        "vision_ready": False,
+        "vision_model": None,
         "capabilities": {
             "reasoning": {"ready": True},
             "blender": {"ready": False},
@@ -876,3 +878,230 @@ def test_environment_defaults_to_qwen35_and_8k_context() -> None:
     assert settings.model_allowlist == frozenset({"qwen3.5:9b"})
     assert "qwen3:8b" not in settings.model_allowlist
     assert settings.ollama_num_ctx == 8192
+
+
+# --- /v1/vision: bounded authenticated sight endpoint ------------------------
+
+import base64 as _base64
+import io as _io
+
+from PIL import Image as _Image
+
+
+def _png_bytes(width: int = 8, height: int = 8, color=(20, 40, 60)) -> bytes:
+    buffer = _io.BytesIO()
+    _Image.new("RGB", (width, height), color).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _png_b64(width: int = 8, height: int = 8) -> str:
+    return _base64.b64encode(_png_bytes(width, height)).decode("ascii")
+
+
+def _noise_png_b64(width: int = 200, height: int = 200) -> str:
+    # Random pixels do not compress, so the encoded payload is genuinely large.
+    image = _Image.frombytes("RGB", (width, height), os.urandom(width * height * 3))
+    buffer = _io.BytesIO()
+    image.save(buffer, format="PNG")
+    return _base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def vision_settings(**overrides) -> worker_mod.WorkerSettings:
+    base = make_settings(
+        model_allowlist=frozenset({"qwen3.5:9b", "qwen3-vl:4b"}),
+        vision_model="qwen3-vl:4b",
+    )
+    return replace(base, **overrides)
+
+
+def vision_payload(image_b64: str | None = None, **overrides) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema": worker_mod.VISION_REQUEST_SCHEMA,
+        "request_id": "request-vision-0001",
+        "model": "qwen3-vl:4b",
+        "mime": "image/png",
+        "image_base64": _png_b64() if image_b64 is None else image_b64,
+        "prompt": "Describe this image for Alpecca.",
+        "max_tokens": 128,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def vision_factory(description: str = "A Discord channel showing one message.") -> ConnectionFactory:
+    return ConnectionFactory({"message": {"content": description}})
+
+
+def post_vision(
+    client: TestClient,
+    payload: dict[str, object],
+    *,
+    nonce: str = "nonce-0000000000000001",
+):
+    body = encoded(payload)
+    return client.post(
+        "/v1/vision",
+        content=body,
+        headers=signed_headers("POST", "/v1/vision", body, nonce=nonce),
+    )
+
+
+def test_vision_describes_image_and_never_returns_chain_of_thought() -> None:
+    factory = vision_factory("A Discord text channel with one visible message.")
+    app = worker_mod.create_app(vision_settings(), clock=lambda: NOW, connection_factory=factory)
+    response = post_vision(TestClient(app), vision_payload())
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schema"] == worker_mod.VISION_RESPONSE_SCHEMA
+    assert body["ok"] is True
+    assert body["request_id"] == "request-vision-0001"
+    assert set(body["result"]) == {"model", "description", "elapsed_ms"}
+    assert body["result"]["model"] == "qwen3-vl:4b"
+    assert body["result"]["description"] == "A Discord text channel with one visible message."
+    # The upstream call disables thinking and never surfaces a thinking field.
+    assert "thinking" not in body["result"]
+    upstream = json.loads(factory.calls[0]["body"])
+    assert upstream["think"] is False
+    assert upstream["options"]["num_predict"] == 128
+
+
+def test_vision_is_fail_closed_when_no_model_is_configured() -> None:
+    app = worker_mod.create_app(make_settings(), clock=lambda: NOW)
+    response = post_vision(TestClient(app), vision_payload())
+    assert response.status_code == 503
+    assert response.json()["error"] == "vision_not_configured"
+
+
+def test_vision_rejects_model_off_the_allowlist() -> None:
+    app = worker_mod.create_app(vision_settings(), clock=lambda: NOW)
+    response = post_vision(TestClient(app), vision_payload(model="qwen3.5:9b"))
+    assert response.status_code == 403
+    assert response.json()["error"] == "model_not_allowed"
+
+
+def test_vision_rejects_malformed_base64() -> None:
+    app = worker_mod.create_app(vision_settings(), clock=lambda: NOW)
+    response = post_vision(TestClient(app), vision_payload("not*valid*base64!!"))
+    assert response.status_code == 422
+    assert response.json()["error"] == "invalid_image_encoding"
+
+
+def test_vision_rejects_declared_mime_that_contradicts_the_magic_bytes() -> None:
+    app = worker_mod.create_app(vision_settings(), clock=lambda: NOW)
+    # Real PNG bytes, but the request claims JPEG.
+    response = post_vision(TestClient(app), vision_payload(mime="image/jpeg"))
+    assert response.status_code == 422
+    assert response.json()["error"] == "image_mime_mismatch"
+
+
+def test_vision_rejects_non_raster_containers() -> None:
+    app = worker_mod.create_app(vision_settings(), clock=lambda: NOW)
+    client = TestClient(app)
+    blobs = (b"GIF89a\x01\x00\x01\x00", b"<svg xmlns='http://x'></svg>", b"<html></html>")
+    for index, blob in enumerate(blobs):
+        encoded_blob = _base64.b64encode(blob).decode("ascii")
+        response = post_vision(
+            client, vision_payload(encoded_blob), nonce=f"nonce-nonraster-{index:016d}"
+        )
+        assert response.status_code == 415
+        assert response.json()["error"] == "unsupported_media_type"
+
+
+def test_vision_enforces_a_decompression_dimension_bound() -> None:
+    # A small file that decodes to dimensions beyond the configured long edge is
+    # rejected before any inference -- the decompression-bomb fence.
+    app = worker_mod.create_app(vision_settings(vision_long_edge_max=64), clock=lambda: NOW)
+    response = post_vision(TestClient(app), vision_payload(_png_b64(200, 200)))
+    assert response.status_code == 422
+    assert response.json()["error"] == "image_dimensions_too_large"
+
+
+def test_vision_rejects_an_image_over_the_encoded_pixel_budget() -> None:
+    app = worker_mod.create_app(vision_settings(max_vision_image_bytes=1024, max_vision_body_bytes=4096), clock=lambda: NOW)
+    big = _png_b64(400, 400)
+    response = post_vision(TestClient(app), vision_payload(big))
+    assert response.status_code == 413
+    assert response.json()["error"] == "image_too_large"
+
+
+def test_vision_rejects_a_request_body_over_the_vision_cap() -> None:
+    app = worker_mod.create_app(vision_settings(max_vision_image_bytes=2048, max_vision_body_bytes=3072), clock=lambda: NOW)
+    body = encoded(vision_payload(_noise_png_b64(200, 200)))
+    response = TestClient(app).post(
+        "/v1/vision",
+        content=body,
+        headers=signed_headers("POST", "/v1/vision", body),
+    )
+    assert response.status_code == 413
+    assert response.json()["error"] == "request_body_too_large"
+
+
+def test_vision_rejects_a_replayed_nonce() -> None:
+    factory = vision_factory()
+    client = TestClient(worker_mod.create_app(vision_settings(), clock=lambda: NOW, connection_factory=factory))
+    first = post_vision(client, vision_payload(), nonce="nonce-vision-replay-0001")
+    assert first.status_code == 200
+    second = post_vision(
+        client, vision_payload(request_id="request-vision-0002"), nonce="nonce-vision-replay-0001"
+    )
+    assert second.status_code == 409
+    assert second.json()["error"] == "nonce_replay"
+
+
+def test_vision_upstream_timeout_is_reported_as_unavailable() -> None:
+    class TimingOutConnection:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def request(self, *args, **kwargs) -> None:
+            raise TimeoutError("upstream stalled")
+
+        def getresponse(self):  # pragma: no cover - never reached
+            raise AssertionError("request should have raised")
+
+        def close(self) -> None:
+            pass
+
+    def factory(host, port, *, timeout):
+        return TimingOutConnection()
+
+    app = worker_mod.create_app(vision_settings(), clock=lambda: NOW, connection_factory=factory)
+    response = post_vision(TestClient(app), vision_payload())
+    assert response.status_code == 504
+    assert response.json()["error"] == "vision_unavailable"
+
+
+def test_vision_rejects_an_oversized_upstream_response() -> None:
+    factory = vision_factory("x" * 5000)  # exceeds max_ollama_response_bytes (4096)
+    app = worker_mod.create_app(vision_settings(), clock=lambda: NOW, connection_factory=factory)
+    response = post_vision(TestClient(app), vision_payload())
+    assert response.status_code == 502
+    assert response.json()["error"] == "vision_response_too_large"
+
+
+def test_health_surfaces_vision_readiness_and_model_when_configured() -> None:
+    factory = tags_factory("qwen3.5:9b", "qwen3-vl:4b")
+    app = worker_mod.create_app(vision_settings(), clock=lambda: NOW, connection_factory=factory)
+    response = TestClient(app).get("/v1/health", headers=signed_headers("GET", "/v1/health"))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["vision_ready"] is True
+    assert body["vision_model"] == "qwen3-vl:4b"
+
+
+def test_health_vision_not_ready_when_model_absent_from_ollama() -> None:
+    factory = tags_factory("qwen3.5:9b")  # vision model not installed
+    app = worker_mod.create_app(vision_settings(), clock=lambda: NOW, connection_factory=factory)
+    response = TestClient(app).get("/v1/health", headers=signed_headers("GET", "/v1/health"))
+    body = response.json()
+    assert body["vision_ready"] is False
+    assert body["vision_model"] == "qwen3-vl:4b"
+
+
+def test_vision_model_must_be_on_the_allowlist() -> None:
+    with pytest.raises(worker_mod.WorkerConfigurationError):
+        worker_mod.WorkerSettings(
+            secret=SECRET,
+            model_allowlist=frozenset({"qwen3.5:9b"}),
+            vision_model="qwen3-vl:4b",
+        )

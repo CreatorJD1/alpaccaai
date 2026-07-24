@@ -7,9 +7,11 @@ Discord, or continuity-lease authority.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 import hashlib
 import hmac
+import io
 import ipaddress
 import json
 import math
@@ -36,6 +38,7 @@ from alpecca.multimodal_affect_fusion import EMOTION_ORDER
 HEALTH_PATH = "/v1/health"
 REASON_PATH = "/v1/reason"
 BLENDER_PATH = "/v1/render/blender"
+VISION_PATH = "/v1/vision"
 HYFUSER_HEALTH_PATH = "/v1/soul/hyfuser/health"
 HYFUSER_SCORE_PATH = "/v1/soul/hyfuser/score"
 
@@ -58,6 +61,8 @@ MAX_REQUEST_BYTES_ENV = "ALPECCA_ROG_WORKER_MAX_REQUEST_BYTES"
 MAX_RESPONSE_BYTES_ENV = "ALPECCA_ROG_WORKER_MAX_RESPONSE_BYTES"
 MODEL_ENV = "ALPECCA_ROG_WORKER_MODEL"
 ALLOWED_MODELS_ENV = "ALPECCA_ROG_WORKER_MODELS"
+VISION_MODEL_ENV = "ALPECCA_ROG_WORKER_VISION_MODEL"
+VISION_TIMEOUT_ENV = "ALPECCA_ROG_WORKER_VISION_TIMEOUT"
 CREDENTIAL_TARGET_ENV = "ALPECCA_ROG_WORKER_CREDENTIAL_TARGET"
 CA_CERT_ENV = "ALPECCA_ROG_WORKER_CA_CERT"
 
@@ -70,6 +75,7 @@ DEFAULT_HEALTH_TIMEOUT_SECONDS = 2.0
 DEFAULT_REASON_TIMEOUT_SECONDS = 180.0
 DEFAULT_RENDER_TIMEOUT_SECONDS = 650.0
 DEFAULT_HYFUSER_TIMEOUT_SECONDS = 8.0
+DEFAULT_VISION_TIMEOUT_SECONDS = 30.0
 DEFAULT_TIMEOUT_SECONDS = DEFAULT_REASON_TIMEOUT_SECONDS
 DEFAULT_MAX_REQUEST_BYTES = 65_536
 DEFAULT_MAX_RESPONSE_BYTES = 128 * 1024
@@ -77,8 +83,23 @@ MAX_HEALTH_TIMEOUT_SECONDS = 5.0
 MAX_REASON_TIMEOUT_SECONDS = 180.0
 MAX_RENDER_TIMEOUT_SECONDS = 900.0
 MAX_HYFUSER_TIMEOUT_SECONDS = 15.0
+MAX_VISION_TIMEOUT_SECONDS = 60.0
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
+# Vision requests carry a bounded base64 image, so they use a dedicated, larger
+# request envelope than the small JSON-only worker requests.
+MAX_VISION_REQUEST_BYTES = 8 * 1024 * 1024
+MAX_VISION_IMAGE_BYTES = 2 * 1024 * 1024
+VISION_LONG_EDGE_MAX = 1600
+VISION_ALLOWED_MIME = ("image/png", "image/jpeg", "image/webp")
+DEFAULT_VISION_PROMPT = (
+    "Describe this image for Alpecca. Identify the app or surface, read the "
+    "central visible message as accurately as possible, distinguish observed "
+    "details from uncertainty, and do not infer actions or identities that are "
+    "not visible. Return a concise factual description only."
+)
+MAX_VISION_DESCRIPTION_BYTES = 32 * 1024
+MAX_VISION_TOKENS = 512
 MAX_SYSTEM_PROMPT_BYTES = 8 * 1024
 MAX_USER_PROMPT_BYTES = 32 * 1024
 MAX_HISTORY_MESSAGES = 32
@@ -95,6 +116,8 @@ REASON_REQUEST_SCHEMA = "alpecca.rog-worker.reason.request.v1"
 REASON_RESPONSE_SCHEMA = "alpecca.rog-worker.reason.response.v1"
 BLENDER_REQUEST_SCHEMA = "alpecca.rog-worker.blender.request.v1"
 BLENDER_RESPONSE_SCHEMA = "alpecca.rog-worker.blender.response.v1"
+VISION_REQUEST_SCHEMA = "alpecca.rog-worker.vision.request.v1"
+VISION_RESPONSE_SCHEMA = "alpecca.rog-worker.vision.response.v1"
 HYFUSER_HEALTH_SCHEMA = "alpecca.rog-worker.hyfuser.health.v1"
 HYFUSER_REQUEST_SCHEMA = "alpecca.rog-worker.hyfuser.request.v1"
 HYFUSER_RESPONSE_SCHEMA = "alpecca.rog-worker.hyfuser.response.v1"
@@ -182,6 +205,8 @@ class WorkerHealth:
     role: str = "compute-only"
     speaking: bool = False
     discord: bool = False
+    vision_ready: bool = False
+    vision_model: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +266,14 @@ class BlenderRenderResult:
     elapsed_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class VisionResult:
+    request_id: str
+    model: str
+    description: str = field(repr=False)
+    elapsed_ms: int = 0
+
+
 class _NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -298,16 +331,19 @@ class RogWorkerClient:
         "_ca_cert",
         "_clock",
         "_default_model",
+        "_default_vision_model",
         "_health_timeout_seconds",
         "_hyfuser_timeout_seconds",
         "_max_request_bytes",
         "_max_response_bytes",
+        "_max_vision_request_bytes",
         "_nonce_factory",
         "_opener",
         "_request_id_factory",
         "_reason_timeout_seconds",
         "_render_timeout_seconds",
         "_secret",
+        "_vision_timeout_seconds",
     )
 
     def __init__(
@@ -322,9 +358,12 @@ class RogWorkerClient:
         reason_timeout_seconds: float | None = None,
         render_timeout_seconds: float = DEFAULT_RENDER_TIMEOUT_SECONDS,
         hyfuser_timeout_seconds: float = DEFAULT_HYFUSER_TIMEOUT_SECONDS,
+        vision_timeout_seconds: float = DEFAULT_VISION_TIMEOUT_SECONDS,
         max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        max_vision_request_bytes: int = MAX_VISION_REQUEST_BYTES,
         default_model: str = DEFAULT_MODEL,
+        default_vision_model: str | None = None,
         allowed_models: Sequence[str] | None = None,
         opener: OpenCallable | object | None = None,
         clock: Clock = time.time,
@@ -381,6 +420,12 @@ class RogWorkerClient:
             minimum=0.2,
             maximum=MAX_HYFUSER_TIMEOUT_SECONDS,
         )
+        self._vision_timeout_seconds = _bounded_float(
+            vision_timeout_seconds,
+            "vision_timeout_seconds",
+            minimum=1.0,
+            maximum=MAX_VISION_TIMEOUT_SECONDS,
+        )
         self._max_request_bytes = _bounded_int(
             max_request_bytes,
             "max_request_bytes",
@@ -392,6 +437,12 @@ class RogWorkerClient:
             "max_response_bytes",
             minimum=1024,
             maximum=MAX_RESPONSE_BYTES,
+        )
+        self._max_vision_request_bytes = _bounded_int(
+            max_vision_request_bytes,
+            "max_vision_request_bytes",
+            minimum=64 * 1024,
+            maximum=MAX_VISION_REQUEST_BYTES,
         )
         self._default_model = _validated_model(default_model)
         if isinstance(allowed_models, (str, bytes)):
@@ -410,6 +461,16 @@ class RogWorkerClient:
         )
         if self._default_model not in self._allowed_models:
             raise RogWorkerConfigurationError("default model is not allowed")
+        if default_vision_model is not None:
+            self._default_vision_model: str | None = _validated_model(
+                default_vision_model
+            )
+            if self._default_vision_model not in self._allowed_models:
+                raise RogWorkerConfigurationError(
+                    "default vision model is not allowed"
+                )
+        else:
+            self._default_vision_model = None
         if not callable(clock):
             raise RogWorkerConfigurationError("clock must be callable")
         self._clock = clock
@@ -475,6 +536,11 @@ class RogWorkerClient:
             if raw_allowed
             else (default_model,)
         )
+        # A configured vision model is implicitly allowed so operators do not
+        # have to list it twice; the worker still enforces its own allowlist.
+        vision_model_env = values.get(VISION_MODEL_ENV, "").strip() or None
+        if vision_model_env and vision_model_env not in allowed_models:
+            allowed_models = allowed_models + (vision_model_env,)
         reason_timeout_seconds = _environment_reason_timeout(values)
         return cls(
             base_url,
@@ -502,6 +568,11 @@ class RogWorkerClient:
                 HYFUSER_TIMEOUT_ENV,
                 DEFAULT_HYFUSER_TIMEOUT_SECONDS,
             ),
+            vision_timeout_seconds=_env_float(
+                values,
+                VISION_TIMEOUT_ENV,
+                DEFAULT_VISION_TIMEOUT_SECONDS,
+            ),
             max_request_bytes=_env_int(
                 values,
                 MAX_REQUEST_BYTES_ENV,
@@ -513,6 +584,7 @@ class RogWorkerClient:
                 DEFAULT_MAX_RESPONSE_BYTES,
             ),
             default_model=default_model,
+            default_vision_model=(values.get(VISION_MODEL_ENV, "").strip() or None),
             allowed_models=allowed_models,
             opener=opener,
             clock=clock,
@@ -540,6 +612,8 @@ class RogWorkerClient:
                 "ready",
                 "speaking",
                 "discord",
+                "vision_ready",
+                "vision_model",
                 "capabilities",
             },
         )
@@ -554,6 +628,15 @@ class RogWorkerClient:
         ready = _required_bool(payload, "ready")
         speaking = _required_bool(payload, "speaking")
         discord = _required_bool(payload, "discord")
+        vision_ready = _required_bool(payload, "vision_ready")
+        vision_model_value = payload.get("vision_model")
+        if vision_model_value is not None and (
+            not isinstance(vision_model_value, str)
+            or not _MODEL_RE.fullmatch(vision_model_value)
+        ):
+            raise RogWorkerProtocolError("worker vision model was invalid")
+        if vision_ready and vision_model_value is None:
+            raise RogWorkerProtocolError("worker vision readiness was inconsistent")
         if hostname.casefold() != EXPECTED_HOSTNAME.casefold():
             raise RogWorkerProtocolError("worker hostname did not match")
         if role != "compute-only" or speaking or discord:
@@ -574,6 +657,8 @@ class RogWorkerClient:
             role=role,
             speaking=speaking,
             discord=discord,
+            vision_ready=vision_ready,
+            vision_model=vision_model_value,
         )
 
     def reason(
@@ -875,6 +960,80 @@ class RogWorkerClient:
             elapsed_ms=_required_nonnegative_int(result, "elapsed_ms"),
         )
 
+    def describe_vision(
+        self,
+        image_bytes: bytes,
+        *,
+        model: str | None = None,
+        prompt: str = DEFAULT_VISION_PROMPT,
+        max_tokens: int = MAX_VISION_TOKENS,
+    ) -> VisionResult:
+        """Describe one image through the authenticated private worker.
+
+        The image is resized and re-encoded in memory on this (RygenART) side so
+        the long edge is at most ``VISION_LONG_EDGE_MAX`` and the transferred
+        payload never exceeds ``MAX_VISION_IMAGE_BYTES``. Raw bytes are not
+        written to disk. Chain-of-thought is never requested or returned.
+        """
+
+        selected_model = _validated_model(
+            model or self._default_vision_model or self._default_model
+        )
+        if selected_model not in self._allowed_models:
+            raise RogWorkerConfigurationError("requested vision model is not allowed")
+        clean_prompt = _bounded_utf8_text(prompt, "prompt", MAX_USER_PROMPT_BYTES)
+        if not clean_prompt.strip():
+            raise RogWorkerConfigurationError("prompt must not be empty")
+        clean_max_tokens = _bounded_int(
+            max_tokens,
+            "max_tokens",
+            minimum=1,
+            maximum=MAX_VISION_TOKENS,
+        )
+        mime, encoded = _prepare_vision_image(image_bytes)
+        image_b64 = base64.b64encode(encoded).decode("ascii")
+        request_id = self._new_request_id()
+        request_payload: dict[str, object] = {
+            "schema": VISION_REQUEST_SCHEMA,
+            "request_id": request_id,
+            "model": selected_model,
+            "mime": mime,
+            "image_base64": image_b64,
+            "prompt": clean_prompt,
+            "max_tokens": clean_max_tokens,
+        }
+        payload = self._request_json(
+            "POST",
+            VISION_PATH,
+            request_payload,
+            request_id=request_id,
+            timeout_seconds=self._vision_timeout_seconds,
+            max_request_bytes=self._max_vision_request_bytes,
+        )
+        _exact_response_keys(payload, {"schema", "ok", "request_id", "result"})
+        if payload.get("schema") != VISION_RESPONSE_SCHEMA:
+            raise RogWorkerProtocolError("worker response schema did not match")
+        if payload.get("ok") is not True:
+            raise RogWorkerProtocolError("worker vision response was not successful")
+        self._expect_request_id(payload, request_id)
+        result = _required_mapping(payload, "result")
+        if set(result) != {"model", "description", "elapsed_ms"}:
+            raise RogWorkerProtocolError("worker vision result fields did not match")
+        response_model = _required_text(result, "model", maximum=128)
+        if response_model != selected_model:
+            raise RogWorkerProtocolError("worker returned a different model")
+        description = _required_text(
+            result, "description", maximum=MAX_VISION_DESCRIPTION_BYTES
+        )
+        if not description.strip():
+            raise RogWorkerProtocolError("worker vision description was empty")
+        return VisionResult(
+            request_id=request_id,
+            model=response_model,
+            description=description,
+            elapsed_ms=_required_nonnegative_int(result, "elapsed_ms"),
+        )
+
     def _request_json(
         self,
         method: str,
@@ -883,9 +1042,15 @@ class RogWorkerClient:
         *,
         request_id: str,
         timeout_seconds: float,
+        max_request_bytes: int | None = None,
     ) -> Mapping[str, object]:
         body = b"" if payload is None else _canonical_json(payload)
-        if len(body) > self._max_request_bytes:
+        request_limit = (
+            self._max_request_bytes
+            if max_request_bytes is None
+            else max_request_bytes
+        )
+        if len(body) > request_limit:
             raise RogWorkerConfigurationError("worker request exceeded byte limit")
         timestamp_value = self._clock()
         if isinstance(timestamp_value, bool) or not isinstance(
@@ -1051,6 +1216,61 @@ def _canonical_json(value: Mapping[str, object]) -> bytes:
         raise RogWorkerConfigurationError("worker request was not valid JSON") from None
 
 
+def _prepare_vision_image(image_bytes: object) -> tuple[str, bytes]:
+    """Resize and re-encode an image in memory for a bounded vision request.
+
+    Runs entirely on this (RygenART) side before any transfer: the long edge is
+    capped at ``VISION_LONG_EDGE_MAX`` and the re-encoded payload at
+    ``MAX_VISION_IMAGE_BYTES``. Lossless PNG is preferred so screenshot text
+    stays crisp; JPEG and further downscaling are used only when PNG exceeds the
+    byte cap. Raw bytes are never written to disk.
+    """
+
+    if not isinstance(image_bytes, (bytes, bytearray)) or not image_bytes:
+        raise RogWorkerConfigurationError("image bytes are required")
+    try:
+        from PIL import Image
+    except Exception as exc:  # pragma: no cover - host without Pillow
+        raise RogWorkerConfigurationError("Pillow is required for vision") from exc
+    resample = getattr(Image, "LANCZOS", None)
+    if resample is None:  # pragma: no cover - very new Pillow
+        resample = Image.Resampling.LANCZOS
+    try:
+        with Image.open(io.BytesIO(bytes(image_bytes))) as source:
+            source.load()
+            image = source.convert("RGB")
+    except Exception as exc:
+        raise RogWorkerConfigurationError("image could not be decoded") from exc
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        raise RogWorkerConfigurationError("image dimensions are invalid")
+    long_edge = max(width, height)
+    if long_edge > VISION_LONG_EDGE_MAX:
+        scale = VISION_LONG_EDGE_MAX / float(long_edge)
+        image = image.resize(
+            (max(1, int(width * scale)), max(1, int(height * scale))),
+            resample,
+        )
+    for _ in range(6):
+        png = io.BytesIO()
+        image.save(png, format="PNG", optimize=True)
+        data = png.getvalue()
+        if len(data) <= MAX_VISION_IMAGE_BYTES:
+            return "image/png", data
+        for quality in (85, 70, 55):
+            jpg = io.BytesIO()
+            image.save(jpg, format="JPEG", quality=quality, optimize=True)
+            jdata = jpg.getvalue()
+            if len(jdata) <= MAX_VISION_IMAGE_BYTES:
+                return "image/jpeg", jdata
+        current_w, current_h = image.size
+        image = image.resize(
+            (max(1, current_w * 3 // 4), max(1, current_h * 3 // 4)),
+            resample,
+        )
+    raise RogWorkerConfigurationError("image could not be reduced under the size cap")
+
+
 def _validated_secret(secret: str | bytes) -> bytes:
     if isinstance(secret, str):
         if "\x00" in secret or "\r" in secret or "\n" in secret:
@@ -1148,6 +1368,7 @@ def _validated_path(path: str) -> str:
         HEALTH_PATH,
         REASON_PATH,
         BLENDER_PATH,
+        VISION_PATH,
         HYFUSER_HEALTH_PATH,
         HYFUSER_SCORE_PATH,
     }:

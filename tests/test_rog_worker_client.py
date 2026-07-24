@@ -81,6 +81,8 @@ def health_payload(**overrides) -> dict[str, object]:
         "ready": True,
         "speaking": False,
         "discord": False,
+        "vision_ready": False,
+        "vision_model": None,
         "capabilities": {
             "reasoning": {"ready": True},
             "blender": {"ready": False},
@@ -968,3 +970,126 @@ def test_client_reason_round_trip_matches_actual_worker_server_contract() -> Non
     assert result.text == "server-aligned answer"
     assert result.model == "qwen3.5:9b"
     assert result.elapsed_ms >= 0
+
+
+# --- describe_vision: RygenART-side prep + authenticated round trip ----------
+
+def _sample_png(width: int = 40, height: int = 30) -> bytes:
+    import io as _io
+
+    from PIL import Image as _Image
+
+    buffer = _io.BytesIO()
+    _Image.new("RGB", (width, height), (30, 90, 150)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_prepare_vision_image_bounds_the_long_edge_and_bytes() -> None:
+    import io as _io
+
+    from PIL import Image as _Image
+
+    original = _io.BytesIO()
+    _Image.new("RGB", (4000, 1000), (12, 34, 56)).save(original, format="PNG")
+    mime, encoded = rog._prepare_vision_image(original.getvalue())
+    assert mime in rog.VISION_ALLOWED_MIME
+    assert len(encoded) <= rog.MAX_VISION_IMAGE_BYTES
+    reopened = _Image.open(_io.BytesIO(encoded))
+    assert max(reopened.size) <= rog.VISION_LONG_EDGE_MAX
+
+
+def test_describe_vision_rejects_a_model_off_the_allowlist_before_network() -> None:
+    def opener(request, timeout):  # pragma: no cover - must never be called
+        raise AssertionError("no request should be sent")
+
+    worker = make_client(
+        opener,
+        allowed_models=("qwen3.5:9b", "qwen3-vl:4b"),
+        default_vision_model="qwen3-vl:4b",
+    )
+    with pytest.raises(rog.RogWorkerConfigurationError):
+        worker.describe_vision(_sample_png(), model="not-allowed:1b")
+
+
+def test_client_vision_round_trip_matches_actual_worker_server_contract() -> None:
+    from fastapi.testclient import TestClient
+
+    from alpecca import rog_worker_server as server
+
+    class UpstreamResponse:
+        status = 200
+
+        def read(self, limit):
+            return json.dumps(
+                {"message": {"content": "A Discord channel with one visible message."}}
+            ).encode("utf-8")[:limit]
+
+    class UpstreamConnection:
+        def request(self, method, path, body=None, headers=None):
+            self.request_record = (method, path, body, headers)
+
+        def getresponse(self):
+            return UpstreamResponse()
+
+        def close(self):
+            pass
+
+    captured: dict[str, object] = {}
+
+    def connection_factory(host, port, *, timeout):
+        assert (host, port) == ("127.0.0.1", 11434)
+        connection = UpstreamConnection()
+        captured["connection"] = connection
+        return connection
+
+    settings = server.WorkerSettings(
+        secret=SECRET_BYTES,
+        model_allowlist=frozenset({"qwen3.5:9b", "qwen3-vl:4b"}),
+        vision_model="qwen3-vl:4b",
+    )
+    app_client = TestClient(
+        server.create_app(
+            settings,
+            clock=lambda: NOW,
+            connection_factory=connection_factory,
+        ),
+        base_url=BASE_URL,
+    )
+
+    def opener(request, timeout):
+        parsed = urlsplit(request.full_url)
+        transported_headers = dict(request.header_items())
+        response = app_client.request(
+            request.get_method(),
+            parsed.path,
+            content=request.data,
+            headers=transported_headers,
+        )
+        if response.status_code >= 400:
+            raise HTTPError(
+                request.full_url,
+                response.status_code,
+                response.text,
+                response.headers,
+                BytesIO(response.content),
+            )
+        return Response(
+            response.content,
+            url=request.full_url,
+            status=response.status_code,
+            headers=dict(response.headers),
+        )
+
+    worker = make_client(
+        opener,
+        allowed_models=("qwen3.5:9b", "qwen3-vl:4b"),
+        default_vision_model="qwen3-vl:4b",
+    )
+    result = worker.describe_vision(_sample_png(), prompt="Describe this image.")
+    assert result.model == "qwen3-vl:4b"
+    assert result.description == "A Discord channel with one visible message."
+    assert result.elapsed_ms >= 0
+    # Confirm the worker forwarded a base64 image with thinking disabled.
+    upstream_body = json.loads(captured["connection"].request_record[2])
+    assert upstream_body["think"] is False
+    assert upstream_body["messages"][0]["images"]
