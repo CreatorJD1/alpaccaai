@@ -20,6 +20,7 @@ import {
   resolveVrmGroundTarget,
   resolveVrmGazeFollow,
   resolveVrmGazeTargetAngles,
+  resolveVrmGaitAngularSpeed,
   resolveVrmMotionTelemetry,
   resolveVrmKneeFlex,
   resolveVrmKneePole,
@@ -31,6 +32,7 @@ import {
   shouldScheduleVrmPerformance,
   shouldSettleProceduralPerformance,
   shouldStabilizeVrmSpringTransition,
+  shouldApplyVrmGroundedGait,
   shouldVrmTrackCamera,
   solveTwoBoneReach,
   strideDistanceForMotion,
@@ -139,6 +141,23 @@ test("authored locomotion cadence follows measured world speed within safe bound
   );
 });
 
+test("grounded gait cadence is distance-locked to the admitted walk and run strides", () => {
+  const walkAngular = resolveVrmGaitAngularSpeed(0.18, false);
+  const runAngular = resolveVrmGaitAngularSpeed(0.32, true);
+  near(strideDistanceForMotion(0.18, walkAngular), 0.42);
+  near(strideDistanceForMotion(0.32, runAngular), 0.62);
+  assert.ok(runAngular > walkAngular);
+  assert.equal(resolveVrmGaitAngularSpeed(0, false), 2.2);
+  assert.equal(resolveVrmGaitAngularSpeed(Number.NaN, true), 3.2);
+});
+
+test("collision-grounded contact owns both procedural and VRMA locomotion", () => {
+  assert.equal(shouldApplyVrmGroundedGait(true, "walk"), true);
+  assert.equal(shouldApplyVrmGroundedGait(true, "run"), true);
+  assert.equal(shouldApplyVrmGroundedGait(false, "walk"), false);
+  assert.equal(shouldApplyVrmGroundedGait(true, "idle"), false);
+});
+
 test("camera awareness persists across the room and throughout speech", () => {
   assert.equal(shouldVrmTrackCamera(false, false, 10), true);
   assert.equal(shouldVrmTrackCamera(false, false, 12), false);
@@ -176,7 +195,7 @@ test("planted-foot gait gives one foot a monotonic lifted swing while the other 
 test("stride distance remains synchronized to actual world movement", () => {
   near(strideDistanceForMotion(0.24, Math.PI * 2), 0.24);
   assert.equal(strideDistanceForMotion(0, Math.PI), 0);
-  assert.equal(strideDistanceForMotion(0.8, 0.01), 0.5);
+  assert.equal(strideDistanceForMotion(0.8, 0.01), 0.64);
 });
 
 test("the walk-reference gait still lifts a foot with no horizontal stride", () => {
