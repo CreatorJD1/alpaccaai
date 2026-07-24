@@ -16,6 +16,11 @@ import tempfile
 import time
 from pathlib import Path
 
+# Direct ASGI imports in this canonical local suite must not inherit a live
+# cross-host continuity deployment. Dedicated fencing tests supply their own
+# process environments and continue to exercise the production guard.
+os.environ["ALPECCA_CONTINUITY_OFFLINE_ISOLATED"] = "1"
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from alpecca.homeostasis import EmotionalState
@@ -2736,6 +2741,11 @@ def test_cognition_recursive_engagement_scorecard_uses_evidence_not_claims():
             score=0.8,
             supports_status="testing",
         ), db_path=db)
+        for index in range(60):
+            cognition.record_observation(cognition.CognitionObservation(
+                source="senses",
+                content=f"unrelated sensor event {index}",
+            ), db_path=db)
         full = cognition.recursive_engagement_scorecard(db_path=db)
         assert full["ok"] is True
         assert full["score"] == 1

@@ -3041,6 +3041,23 @@ class CoreMind:
         except Exception:
             return {"available": False, "authority": "sqlite_mindpage"}
 
+    def derive_temporal_evidence(self, *, max_rows: int = 16) -> dict:
+        """Advance bounded shadow derivation over already committed evidence."""
+        runtime = getattr(self, "_temporal_runtime", None)
+        if runtime is None:
+            return {
+                "available": False,
+                "authority": "sqlite_mindpage",
+                "mode": "shadow",
+            }
+        result = runtime.derive_committed_evidence(max_rows=max_rows)
+        return {
+            "available": True,
+            "authority": "sqlite_mindpage",
+            "mode": "shadow",
+            **asdict(result),
+        }
+
     def _cancelled_turn_result(self, turn: turn_context_mod.TurnContext) -> dict:
         """Return a non-committing worker result after a timeout/disconnect."""
         if turn.principal != "creator":
@@ -5460,8 +5477,8 @@ class CoreMind:
             confidence=0.82,
         ))
         line = (
-            f"It's {clock_text}. I'm in {room_name}, and I checked "
-            f"{activation.get('label', system_id)}; it reports "
+            f"It's {clock_text}. I'm in House HQ's {room_name}, and as part of "
+            f"my current role I checked {activation.get('label', system_id)}; it reports "
             f"{activation.get('status', 'a current state')}. "
             f"That leaves me wondering: {question}"
         )

@@ -41,6 +41,22 @@ GOVERNED_LEARNING_SOURCE = "governed_learning"
 GOVERNED_LEARNING_SCOPE = "creator-personal"
 GOVERNED_CANDIDATE_ACTION = "Consider a bounded proactive chatter trial"
 
+# These machine-generated sources can report the same measured state many
+# times per minute. Preserve frequency in metadata instead of manufacturing a
+# new apparent experience for every identical poll. Human chat and voice are
+# intentionally absent: repeated human communication remains distinct history.
+COALESCED_OBSERVATION_SOURCES = frozenset({
+    "affective_incident_learning",
+    "authorization_audit",
+    "capability_audit",
+    "host_resources",
+    "house-perception",
+    "house-presence",
+    "living_perception",
+    "senses",
+})
+OBSERVATION_COALESCE_SECONDS = 60.0
+
 _SCOPE_RE = re.compile(r"[^a-zA-Z0-9_.:-]+")
 
 
@@ -340,12 +356,68 @@ def _insert_observation(conn: sqlite3.Connection, obs: CognitionObservation) -> 
     return int(cur.lastrowid)
 
 
+def _metadata_without_coalescing(value: dict[str, Any]) -> dict[str, Any]:
+    clean = dict(value or {})
+    clean.pop("coalesced_occurrences", None)
+    clean.pop("coalesced_first_ts", None)
+    clean.pop("coalesced_last_ts", None)
+    return clean
+
+
+def _coalesce_observation(
+    conn: sqlite3.Connection,
+    obs: CognitionObservation,
+) -> int | None:
+    if obs.source not in COALESCED_OBSERVATION_SOURCES:
+        return None
+    row = conn.execute(
+        "SELECT id,ts,confidence,privacy_class,metadata "
+        "FROM cognition_observations "
+        "WHERE source=? AND scope=? AND room=? AND content=? "
+        "ORDER BY id DESC LIMIT 1",
+        (obs.source, obs.scope, obs.room, obs.content),
+    ).fetchone()
+    if row is None or obs.ts - float(row["ts"]) > OBSERVATION_COALESCE_SECONDS:
+        return None
+    try:
+        previous = json.loads(str(row["metadata"] or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        previous = {}
+    if not isinstance(previous, dict):
+        previous = {}
+    if (
+        _metadata_without_coalescing(previous)
+        != _metadata_without_coalescing(obs.metadata)
+        or str(row["privacy_class"]) != obs.privacy_class
+    ):
+        return None
+    count = max(1, int(previous.get("coalesced_occurrences") or 1)) + 1
+    first_ts = float(previous.get("coalesced_first_ts") or row["ts"])
+    metadata = {
+        **_metadata_without_coalescing(previous),
+        "coalesced_occurrences": count,
+        "coalesced_first_ts": first_ts,
+        "coalesced_last_ts": obs.ts,
+    }
+    conn.execute(
+        "UPDATE cognition_observations SET ts=?,confidence=?,metadata=? WHERE id=?",
+        (
+            obs.ts,
+            max(float(row["confidence"]), obs.confidence),
+            json.dumps(metadata, ensure_ascii=True),
+            int(row["id"]),
+        ),
+    )
+    return int(row["id"])
+
+
 def record_observation(obs: CognitionObservation, db_path: Path = DB_PATH) -> int | None:
     obs = obs.clean()
     if not obs.content:
         return None
     with _connect(db_path) as conn:
-        return _insert_observation(conn, obs)
+        existing = _coalesce_observation(conn, obs)
+        return existing if existing is not None else _insert_observation(conn, obs)
 
 
 def governed_learning_candidate_card(
@@ -577,6 +649,32 @@ def recent_chat_turns(limit: int = 8, db_path: Path = DB_PATH, *,
         except Exception:
             d["memory_evidence"] = []
         out.append(d)
+    return out
+
+
+def recent_observations_by_source(source: str, limit: int = 12,
+                                  db_path: Path = DB_PATH, *,
+                                  scope: str = "shared") -> list[dict]:
+    """Return a bounded source-specific stream despite unrelated sensor load."""
+    clean_source = str(source or "").strip()[:80]
+    if not clean_source:
+        return []
+    scope = _scope(scope)
+    limit = max(1, min(100, int(limit)))
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM cognition_observations "
+            "WHERE source=? AND scope=? ORDER BY id DESC LIMIT ?",
+            (clean_source, scope, limit),
+        ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["metadata"] = json.loads(item.get("metadata") or "{}")
+        except Exception:
+            item["metadata"] = {}
+        out.append(item)
     return out
 
 
@@ -1015,14 +1113,12 @@ def recursive_engagement_scorecard(db_path: Path = DB_PATH) -> dict:
     asked a grounded question, stored memory evidence, recorded self-feedback,
     and proposed a bounded next action.
     """
-    observations = recent_observations(limit=40, db_path=db_path)
+    living_observations = recent_observations_by_source(
+        "living_loop", limit=40, db_path=db_path
+    )
     recursive = recent_recursive_engagement(limit=12, db_path=db_path)
     proposals = recent_action_proposals(limit=25, db_path=db_path)
     intent = current_intent(db_path=db_path)
-    living_observations = [
-        row for row in observations
-        if str(row.get("source") or "") == "living_loop"
-    ]
     living_with_question = [
         row for row in living_observations
         if isinstance(row.get("metadata"), dict) and str(row["metadata"].get("question") or "").strip()
@@ -1032,6 +1128,10 @@ def recursive_engagement_scorecard(db_path: Path = DB_PATH) -> dict:
         if int(row.get("remembered") or 0) == 1 and row.get("memory_id") is not None
     ]
     engagement_proposals = [
+        row for row in recursive
+        if str(row.get("action") or "") == "Strengthen autonomous recursive engagement"
+        and str(row.get("status") or "") not in CLOSED_PROPOSAL_STATUSES
+    ] or [
         row for row in proposals
         if str(row.get("action") or "") == "Strengthen autonomous recursive engagement"
         and str(row.get("status") or "") not in CLOSED_PROPOSAL_STATUSES

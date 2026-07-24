@@ -12,6 +12,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -47,6 +48,7 @@ _NONCE_BYTES = 12
 _KEY_DOMAIN = b"Alpecca Mindscape Vault AES-256-GCM v1\x00"
 _SCOPE_DOMAIN = b"Alpecca Mindscape Vault scope v1\x00"
 _MAX_RESPONSE_BYTES = 64 * 1024
+_ARCHIVE_FILE_RE = re.compile(r"^archive-[0-9]{20}-[0-9a-f]{16}\.bin$")
 
 
 class VaultError(ValueError):
@@ -761,6 +763,75 @@ def _archive_outbox_dir(path: Path | None = None) -> Path:
     return root
 
 
+def _archive_files(root: Path) -> list[Path]:
+    """Return only regular, non-link files created by this Vault writer."""
+
+    try:
+        entries = tuple(root.iterdir())
+    except FileNotFoundError:
+        return []
+    return sorted(
+        (
+            entry
+            for entry in entries
+            if _ARCHIVE_FILE_RE.fullmatch(entry.name)
+            and not entry.is_symlink()
+            and entry.is_file()
+        ),
+        key=lambda entry: entry.name,
+    )
+
+
+def prune_local_archive_files(
+    *,
+    state_db: Path = DB_PATH,
+    outbox_dir: Path | None = None,
+    dry_run: bool = True,
+    max_files: int = 512,
+) -> dict[str, object]:
+    """Remove bounded orphan ciphertext files, never indexed recovery work.
+
+    The SQLite outbox is authoritative. Only exact Vault archive filenames in
+    its configured directory are eligible, and dry-run is the public default.
+    Unknown files and links are deliberately invisible to this cleanup path.
+    """
+
+    bounded = max(1, min(int(max_files), 4096))
+    root = _archive_outbox_dir(outbox_dir).resolve()
+    init_db(state_db)
+    with connect(state_db) as conn:
+        referenced = {
+            str(Path(row[0]).resolve())
+            for row in conn.execute("SELECT path FROM mindscape_vault_archives")
+        }
+    candidates = [
+        entry
+        for entry in _archive_files(root)
+        if str(entry.resolve()) not in referenced
+    ][:bounded]
+    removed = 0
+    removed_bytes = 0
+    errors = 0
+    for candidate in candidates:
+        try:
+            size = candidate.stat().st_size
+            if not dry_run:
+                candidate.unlink()
+            removed += 1
+            removed_bytes += size
+        except (FileNotFoundError, OSError):
+            errors += 1
+    return {
+        "ok": errors == 0,
+        "dry_run": bool(dry_run),
+        "eligible": len(candidates),
+        "removed": 0 if dry_run else removed,
+        "bytes": removed_bytes,
+        "errors": errors,
+        "remaining_indexed": len(referenced),
+    }
+
+
 def queue_database_archive(
     secret: str | bytes,
     *,
@@ -812,6 +883,14 @@ def queue_database_archive(
                 "(SELECT sequence FROM mindscape_vault_archives ORDER BY sequence DESC LIMIT ?)",
                 (DEFAULT_ARCHIVE_OUTBOX_LIMIT,),
             )
+        # The row retention query above cannot atomically unlink filesystem
+        # payloads. Sweep only exact, now-unreferenced Vault ciphertext names.
+        prune_local_archive_files(
+            state_db=state_db,
+            outbox_dir=root,
+            dry_run=False,
+            max_files=DEFAULT_ARCHIVE_OUTBOX_LIMIT + 8,
+        )
         return metadata
     except SQLiteBackupError as exc:
         raise VaultError(str(exc)) from exc
@@ -1008,5 +1087,6 @@ __all__ = [
     "VAULT_KEY_ENV", "VAULT_SCHEMA", "VAULT_TOKEN_CREDENTIAL_TARGET", "VAULT_TOKEN_ENV", "VaultError", "archive_due", "derive_key", "endpoint",
     "enqueue_snapshot", "fetch_latest_archive", "fetch_latest_snapshot", "flush_archives", "flush_snapshots", "init_db",
     "key_id", "load_or_create_encryption_key", "load_or_create_transport_token", "local_status", "queue_database_archive",
+    "prune_local_archive_files",
     "scope_id", "seal_snapshot", "sync_snapshot", "unseal_snapshot", "validate_snapshot_envelope",
 ]

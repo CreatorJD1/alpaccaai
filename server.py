@@ -3120,6 +3120,25 @@ async def lifespan(app: FastAPI):
 
     async def automation_loop() -> None:
         routines_mod.init_db()
+        if AutomationCfg.ROUTINES and AutomationCfg.SAFE_INTERNAL_ROUTINES:
+            try:
+                created = routines_mod.bootstrap_safe_internal()
+                if created:
+                    cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                        source="routine",
+                        room=getattr(mind, "_location", ""),
+                        content="Safe internal maintenance routines were initialized.",
+                        confidence=1.0,
+                        privacy_class="local",
+                        metadata={
+                            "kind": "safe_internal_bootstrap",
+                            "count": len(created),
+                        },
+                    ))
+            except Exception as exc:
+                _background_autonomy_status["last_routine_bootstrap_error"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
         watcher = watchers_mod.DirectoryWatcher(
             watchers_mod.parse_watch_dirs(AutomationCfg.WATCH_DIRS),
             max_files=AutomationCfg.WATCH_MAX_FILES,
@@ -3128,6 +3147,20 @@ async def lifespan(app: FastAPI):
         while True:
             await asyncio.sleep(max(10.0, float(AutomationCfg.ROUTINE_POLL_SECONDS or 60.0)))
             try:
+                if (AutomationCfg.TEMPORAL_DERIVATION
+                        and not _player_chat_priority_active()):
+                    temporal_result = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            mind.derive_temporal_evidence,
+                            max_rows=AutomationCfg.TEMPORAL_BATCH,
+                        ),
+                        timeout=12.0,
+                    )
+                    _background_autonomy_status["last_temporal_derivation"] = {
+                        key: value
+                        for key, value in temporal_result.items()
+                        if key not in {"source_cursors"}
+                    }
                 await _run_due_routines_once()
                 now = _time.time()
                 if (AutomationCfg.WATCH_DIRS
@@ -6014,15 +6047,32 @@ def _issue_behavior_trial_candidate_from_baseline() -> dict:
         profile = behavior_trial_profile_store.active_profile(
             behavior_trial_controller.default_chatter_chance
         )
-        baseline = qualified_response_ledger.baseline_summary(
-            since=profile.get("updated_at")
-        )
     except Exception:
         return {"issued": False, "reason": "baseline_unavailable"}
-    result = behavior_trial_candidate_store.issue_from_baseline(
-        baseline,
-        preimage_value=behavior_trial_controller.default_chatter_chance,
+    activate = getattr(
+        behavior_trial_candidate_store, "activate_from_committed_evidence", None
     )
+    if callable(activate):
+        try:
+            result = activate(
+                preimage_value=behavior_trial_controller.default_chatter_chance,
+                since=profile.get("updated_at"),
+            )
+        except Exception:
+            return {"issued": False, "reason": "baseline_unavailable"}
+    else:
+        # Compatibility for narrow adapters; production uses the sealed
+        # committed-evidence entrypoint above.
+        try:
+            baseline = qualified_response_ledger.baseline_summary(
+                since=profile.get("updated_at")
+            )
+            result = behavior_trial_candidate_store.issue_from_baseline(
+                baseline,
+                preimage_value=behavior_trial_controller.default_chatter_chance,
+            )
+        except Exception:
+            return {"issued": False, "reason": "baseline_unavailable"}
     if result.get("issued") and not result.get("reused"):
         candidate = result.get("candidate") or {}
         proposal = result.get("proposal") or {}
