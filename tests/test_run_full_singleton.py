@@ -51,6 +51,18 @@ def test_full_launcher_uses_validated_sqlite_snapshots_not_raw_file_copies() -> 
     assert "shutil.copy2" not in source
 
 
+def test_full_launcher_disables_rog_ssh_by_default_but_preserves_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("ALPECCA_ROG_SSH_ENABLED", raising=False)
+    launcher = _load_launcher(monkeypatch, tmp_path / "default")
+    assert launcher.os.environ["ALPECCA_ROG_SSH_ENABLED"] == "0"
+
+    monkeypatch.setenv("ALPECCA_ROG_SSH_ENABLED", "1")
+    opted_in = _load_launcher(monkeypatch, tmp_path / "opted-in")
+    assert opted_in.os.environ["ALPECCA_ROG_SSH_ENABLED"] == "1"
+
+
 def test_second_full_launcher_never_enters_startup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     launcher = _load_launcher(monkeypatch, tmp_path)
     first_started = threading.Event()

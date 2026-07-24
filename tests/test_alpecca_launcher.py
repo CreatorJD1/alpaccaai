@@ -160,6 +160,7 @@ def test_full_stack_pins_the_hosted_and_local_workload_split_with_overridable_de
         "ALPECCA_ROG_WORKER_URL": "https://Jason_HOLYROG:8788",
         "ALPECCA_ROG_WORKER_MODEL": "qwen3.5:9b",
         "ALPECCA_DEEP_BACKEND": "rog-worker,ollama-cloud",
+        "ALPECCA_ROG_SSH_ENABLED": "0",
         "ALPECCA_OLLAMA_CLOUD_MODEL": "gemma4:cloud",
         "ALPECCA_REFLECT_MODEL": "qwen3.5:9b",
         "ALPECCA_VISION_BACKEND": "local",
@@ -176,6 +177,15 @@ def test_full_stack_pins_the_hosted_and_local_workload_split_with_overridable_de
         assert f'os.environ.setdefault("{name}", "{value}")' in source
     assert '"ALPECCA_ROG_WORKER_CA_CERT"' in source
     assert '"jason-holyrog.crt"' in source
+    assert 'os.environ.setdefault("ALPECCA_ROG_SSH_HOST", "Jason_HOLYROG")' in source
+    assert 'os.environ.setdefault("ALPECCA_ROG_SSH_USER", "Jason")' in source
+
+
+def test_full_stack_keeps_ssh_remote_administration_explicitly_opt_in():
+    source = (ROOT / "scripts" / "run_full.py").read_text(encoding="utf-8")
+
+    assert 'os.environ.setdefault("ALPECCA_ROG_SSH_ENABLED", "0")' in source
+    assert 'os.environ.setdefault("ALPECCA_ROG_SSH_ENABLED", "1")' not in source
 
 
 def test_full_stack_sidecars_use_no_window_background_flags():

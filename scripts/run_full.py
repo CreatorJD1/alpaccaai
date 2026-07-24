@@ -86,7 +86,9 @@ os.environ.setdefault(
 )
 os.environ.setdefault("ALPECCA_ROG_WORKER_MODEL", "qwen3.5:9b")
 os.environ.setdefault("ALPECCA_DEEP_BACKEND", "rog-worker,ollama-cloud")
-os.environ.setdefault("ALPECCA_ROG_SSH_ENABLED", "1")
+# Remote administration is separate from the bounded compute route. Keep it
+# disabled unless the operator explicitly opts in for this launch.
+os.environ.setdefault("ALPECCA_ROG_SSH_ENABLED", "0")
 os.environ.setdefault("ALPECCA_ROG_SSH_HOST", "Jason_HOLYROG")
 os.environ.setdefault("ALPECCA_ROG_SSH_USER", "Jason")
 os.environ.setdefault("ALPECCA_OLLAMA_CLOUD_MODEL", "gemma4:cloud")
