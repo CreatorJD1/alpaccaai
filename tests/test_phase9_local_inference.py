@@ -186,6 +186,7 @@ def test_local_vision_disables_qwen_thinking_with_old_client_fallback(monkeypatc
     assert calls[0]["think"] is False
     assert "think" not in calls[1]
     assert calls[0]["options"] == calls[1]["options"]
+    assert calls[0]["keep_alive"] == calls[1]["keep_alive"] == "30m"
     assert client_options == [{
         "host": "http://127.0.0.1:11434",
         "timeout": 120.0,

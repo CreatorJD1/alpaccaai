@@ -1,5 +1,15 @@
 # Alpecca - Handoff (updated 2026-07-24)
 
+## 2026-07-24 temporary local vision recovery
+
+- The exact failed Discord screenshot was successfully described through the
+  verified-local route. `qwen3.5:9b` required 63.92 seconds, while the installed
+  `qwen3.5:4b` took 30.69 seconds cold and 3.56 seconds warm with a correct
+  Discord/participant description and no pixel egress.
+- Production vision now defaults to `qwen3.5:4b` and keeps it resident for 30
+  minutes. This changes only sight; `qwen3.5:9b` remains Alpecca's reasoning
+  model. The HolyROG `qwen3-vl` work order remains the long-term replacement.
+
 ## 2026-07-24 dual-host vision acceleration handoff
 
 - The active work order is

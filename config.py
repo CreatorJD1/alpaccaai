@@ -766,7 +766,7 @@ class Hearing:
 class Vision:
     # Keep the 9B model for Alpecca's reasoning. The smaller multimodal model is
     # a bounded local fallback for sight on 4 GB GPUs.
-    MODEL = os.environ.get("ALPECCA_VISION_MODEL", "qwen3.5:9b")
+    MODEL = os.environ.get("ALPECCA_VISION_MODEL", "qwen3.5:4b")
     SIGHT_ENABLED = os.environ.get("ALPECCA_SIGHT", "0") not in ("", "0", "false", "False")
     FACE_ENABLED = os.environ.get("ALPECCA_FACE", "0") not in ("", "0", "false", "False")
     SIGHT_INTERVAL = 60.0     # seconds between screen glimpses

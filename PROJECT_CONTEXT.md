@@ -40,9 +40,11 @@ This checkpoint supersedes older route, access, model, and phase-status text.
   transcription deadline is 30 seconds, which covers the previously measured
   19.38-second local Faster-Whisper path. This prevents dropped turns; it does
   not yet satisfy the desired three-second live latency target.
-- Local vision now consistently targets `qwen3.5:9b`. Automatic creator-image
-  cloud egress is off by default; local vision remains available without
-  uploading pixels. Cross-surface creator recall filters the requested surface
+- Local vision now targets the dedicated `qwen3.5:4b` multimodal path while
+  `qwen3.5:9b` remains the reasoning model. The same Discord screenshot measured
+  30.69 seconds cold and 3.56 seconds warm on RygenART, so sight stays resident
+  for 30 minutes. Automatic creator-image cloud egress is off by default; local
+  vision remains available without uploading pixels. Cross-surface creator recall filters the requested surface
   in SQLite before applying its result limit, so newer traffic on another
   surface cannot hide the requested House or Discord turn.
 - The GUI no longer races `run_full.py` to launch duplicate cloud and Discord
@@ -187,8 +189,9 @@ This checkpoint supersedes older route, access, model, and phase-status text.
 - The configured local model family is `qwen3.5:9b`; do not reintroduce
   `qwen3:8b` defaults or describe it as the current model.
 - The supported full-stack workload split uses `gemma4:cloud` for hosted chat
-  and deep reflection, while `qwen3.5:9b` owns local reasoning, local vision,
-  short local choices, and every offline fallback. Supported launchers apply
+  and deep reflection. `qwen3.5:9b` owns local reasoning, short local choices,
+  and offline language fallback; `qwen3.5:4b` owns temporary local vision on
+  the 4 GB primary GPU. Supported launchers apply
   this split with override-preserving defaults rather than treating the two
   models as interchangeable.
 - A source-complete, deployment-pending compute worker is assigned to

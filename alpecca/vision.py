@@ -169,10 +169,9 @@ def _describe_local(image_bytes: bytes, prompt: str) -> Optional[str]:
         import ollama
         client = ollama.Client(
             host=OLLAMA_HOST,
-            # A cold qwen3.5:9b multimodal load on the primary laptop has been
-            # measured at about 88 seconds. Keep this below Discord's separate
-            # 300-second image envelope, but do not abort a healthy local read
-            # at the old 60-second boundary.
+            # Keep a generous fallback boundary for cold loads. The production
+            # 4B sight model is kept resident so ordinary image turns use the
+            # measured warm path instead of paying this startup cost.
             timeout=_timeout_seconds("ALPECCA_VISION_TIMEOUT", 120.0),
         )
         kwargs = {
@@ -187,10 +186,9 @@ def _describe_local(image_bytes: bytes, prompt: str) -> Optional[str]:
                 "num_ctx": OLLAMA_NUM_CTX,
                 "num_predict": 192,
             },
-            # The same local model handles the grounded reply after perception.
-            # Keeping it warm briefly avoids immediately unloading and loading
-            # several GB again, which previously made image turns time out.
-            "keep_alive": os.environ.get("ALPECCA_VISION_KEEP_ALIVE", "2m"),
+            # Keep the dedicated sight model resident. On the measured RTX 3050
+            # path the same screenshot fell from 30.69s cold to 3.56s warm.
+            "keep_alive": os.environ.get("ALPECCA_VISION_KEEP_ALIVE", "30m"),
         }
         # Qwen 3.5 may put all output in a reasoning field unless thinking is
         # disabled. Older Ollama Python clients do not accept this argument, so

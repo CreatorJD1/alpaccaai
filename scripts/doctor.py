@@ -146,7 +146,7 @@ for mod, pip in [("fastapi", "fastapi"), ("uvicorn", "uvicorn"),
 print("\nOllama (her brain -- without it she only gives canned replies)")
 model = os.environ.get("ALPECCA_MODEL", "qwen3.5:9b")
 fast = os.environ.get("ALPECCA_FAST_MODEL", "qwen3.5:9b")
-vision = os.environ.get("ALPECCA_VISION_MODEL", "qwen3.5:9b")
+vision = os.environ.get("ALPECCA_VISION_MODEL", "qwen3.5:4b")
 if have("ollama"):
     try:
         import ollama
