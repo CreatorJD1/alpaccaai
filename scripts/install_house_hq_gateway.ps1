@@ -87,12 +87,11 @@ if ($RunGateway) {
     Import-GatewayConfig
     "`n=== House HQ gateway start $(Get-Date -Format o) ===" | Add-Content -LiteralPath $LogPath
     $python = Get-PythonExe
-    try {
-        & $python $Gateway *>> $LogPath
-    } catch {
-        "House HQ gateway exited: $($_.Exception.GetType().Name): $($_.Exception.Message)" | Add-Content -LiteralPath $LogPath
-        throw
-    }
+    # uvicorn writes its normal INFO/health lines to stderr; under the strict
+    # error preference PowerShell would treat those as terminating and kill a
+    # perfectly healthy server. Relax it for the long-running child only.
+    $ErrorActionPreference = 'Continue'
+    & $python $Gateway *>> $LogPath
     exit $LASTEXITCODE
 }
 
