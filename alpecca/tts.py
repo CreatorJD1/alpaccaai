@@ -660,16 +660,29 @@ def _mp3_to_wav(mp3: bytes) -> "bytes | None":
     fails, so the caller can fall back to the raw MP3."""
     import shutil
     import subprocess
+    import wave
     ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
     try:
+        # Decode to RAW PCM (s16le) -- a pipe is non-seekable, so asking ffmpeg
+        # for '-f wav pipe:1' makes it write a placeholder (max) size into the
+        # RIFF/data headers, and players then misframe the clip into garbled,
+        # morphing voices. Emitting headerless PCM and wrapping it with Python's
+        # wave module writes the CORRECT sizes.
         proc = subprocess.run(
             [ffmpeg, "-hide_banner", "-loglevel", "error",
-             "-i", "pipe:0", "-ar", "24000", "-ac", "1", "-f", "wav", "pipe:1"],
+             "-i", "pipe:0", "-ar", "24000", "-ac", "1", "-f", "s16le", "pipe:1"],
             input=mp3, capture_output=True, timeout=15,
         )
-        wav = proc.stdout
-        if wav and len(wav) >= 44 and wav[:4] == b"RIFF" and wav[8:12] == b"WAVE":
-            return wav
+        pcm = proc.stdout
+        if not pcm or len(pcm) < 2:
+            return None
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(24000)
+            writer.writeframes(pcm)
+        return buf.getvalue()
     except Exception:
         pass
     return None
