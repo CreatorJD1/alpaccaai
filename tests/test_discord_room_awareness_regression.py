@@ -337,7 +337,7 @@ def test_known_creator_dm_can_start_without_an_active_conversation(
     monkeypatch.setattr(discord_bridge, "PROACTIVE_COOLDOWN", 0.0)
     monkeypatch.setattr(discord_bridge, "PROACTIVE_GLOBAL_COOLDOWN", 0.0)
     monkeypatch.setattr(discord_bridge, "PROACTIVE_QUIET_MIN", 1.0)
-    monkeypatch.setattr(discord_bridge, "DIRECT_INITIATIVE_QUIET", 5.0)
+    monkeypatch.setattr(discord_bridge, "DIRECT_REVIEW_MIN_SECONDS", 1)
     monkeypatch.setattr(discord_bridge, "PROACTIVE_MIN_LEN", 999)
     monkeypatch.setattr(
         discord_bridge.random,
@@ -350,7 +350,9 @@ def test_known_creator_dm_can_start_without_an_active_conversation(
     monkeypatch.setattr(
         discord_bridge,
         "_ask_room_autonomy",
-        lambda prompt, _scope: prompts.append(prompt) or "Jason, what are you up to today?",
+        lambda prompt, _scope: (
+            prompts.append(prompt) or ("Jason, what are you up to today?", 37)
+        ),
     )
 
     client = discord_bridge.build_client()

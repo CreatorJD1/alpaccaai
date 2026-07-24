@@ -240,12 +240,11 @@ EMPTY_ROOM_NUDGE_QUIET = max(
     5.0 * 60.0,
     float(os.environ.get("ALPECCA_DISCORD_EMPTY_ROOM_NUDGE_QUIET", "1200")),
 )
-# A known direct-message surface is also an outbound presence channel. Alpecca
-# may decide to start a new topic there without pretending a human spoke first.
-DIRECT_INITIATIVE_QUIET = max(
-    60.0,
-    float(os.environ.get("ALPECCA_DISCORD_DIRECT_INITIATIVE_QUIET", "300")),
-)
+# Model-selected review times stay bounded by code for burst prevention and
+# recovery from malformed or unavailable deliberation responses.
+DIRECT_REVIEW_MIN_SECONDS = 60
+DIRECT_REVIEW_MAX_SECONDS = 120 * 60
+DIRECT_REVIEW_FALLBACK_SECONDS = 10 * 60
 # Recursive self-continuation: when the room goes quiet after SHE spoke, she may
 # continue her own train of thought a little deeper -- bounded, paced, and it
 # yields the instant any human speaks, so it never becomes a monologue/spam.
@@ -1386,7 +1385,7 @@ def _run_remote_development_action(
     )
 
 
-def _ask_room_autonomy(text: str, room_scope: str) -> str:
+def _ask_room_autonomy(text: str, room_scope: str) -> tuple[str, int]:
     """Ask for one room-scoped initiative without impersonating a person.
 
     The server keeps this on its guest-only, no-tools, no-private-continuity
@@ -1410,9 +1409,34 @@ def _ask_room_autonomy(text: str, room_scope: str) -> str:
         timeout=INBOUND_TIMEOUT,
     )
     reply = payload.get("reply")
-    if type(reply) is not str:
+    revisit_seconds = payload.get("revisit_seconds")
+    if (
+        type(reply) is not str
+        or type(revisit_seconds) is not int
+        or revisit_seconds < DIRECT_REVIEW_MIN_SECONDS
+        or revisit_seconds > DIRECT_REVIEW_MAX_SECONDS
+    ):
         raise RuntimeError("alpecca backend returned a malformed Discord autonomy reply")
-    return reply.strip()
+    return reply.strip(), revisit_seconds
+
+
+def _coerce_room_autonomy_result(value: object) -> tuple[str, int]:
+    """Normalize production results while keeping simple test doubles valid."""
+
+    if (
+        type(value) is tuple
+        and len(value) == 2
+        and type(value[0]) is str
+        and type(value[1]) is int
+    ):
+        return (
+            value[0].strip(),
+            max(
+                DIRECT_REVIEW_MIN_SECONDS,
+                min(DIRECT_REVIEW_MAX_SECONDS, value[1]),
+            ),
+        )
+    return str(value or "").strip(), DIRECT_REVIEW_FALLBACK_SECONDS
 
 
 _FFMPEG_EXE = None
@@ -2019,6 +2043,7 @@ def build_client() -> discord.Client:
     history_buf: dict[int, list] = {}             # channel -> [(author, content), ...] recent
     direct_rooms: dict[int, dict[str, str]] = {}  # DM channel -> participant binding
     direct_ready_at: dict[int, float] = {}         # DM channel -> outbound surface ready ts
+    direct_next_review_at: dict[int, float] = {}   # DM channel -> model-directed review ts
     last_participate_eval: dict[int, float] = {}  # channel -> ts she last weighed chiming in
     _sweepers_started = {"recursive": False, "proactive": False}
     _proactive_global_eval = {"at": 0.0}
@@ -2044,9 +2069,11 @@ def build_client() -> discord.Client:
             {"channel_id": str(chan), "user_id": str(participant_id)},
         )
         channel_obj[chan] = channel
-        direct_ready_at.setdefault(
+        observed = time.monotonic() if observed_at is None else float(observed_at)
+        direct_ready_at.setdefault(chan, observed)
+        direct_next_review_at.setdefault(
             chan,
-            time.monotonic() if observed_at is None else float(observed_at),
+            observed + DIRECT_REVIEW_MIN_SECONDS,
         )
         return room
 
@@ -3183,6 +3210,7 @@ def build_client() -> discord.Client:
             if last_proactive_at.get(chan, 0.0) > last_human_ts.get(chan, 0.0):
                 ignored_streak[chan] = 0
             last_human_ts[chan] = now
+            direct_next_review_at[chan] = now + DIRECT_REVIEW_MIN_SECONDS
             reply_generation = _advance_room_generation(chan)
             chain_depth[chan] = 0
             _ensure_room_sweepers()
@@ -3880,9 +3908,12 @@ def build_client() -> discord.Client:
                     initiative_kind = "human-turn"
                 elif (
                     is_direct
-                    and tick_now - latest_activity >= DIRECT_INITIATIVE_QUIET
-                    and tick_now - last_empty_room_nudge_at.get(chan, 0.0)
-                    >= DIRECT_INITIATIVE_QUIET
+                    and tick_now
+                    >= direct_next_review_at.get(
+                        chan,
+                        direct_ready_at.get(chan, tick_now)
+                        + DIRECT_REVIEW_MIN_SECONDS,
+                    )
                 ):
                     initiative_kind = "direct-idle"
                 elif (
@@ -3935,6 +3966,7 @@ def build_client() -> discord.Client:
                         "capability issue, or repeat a previous question.\n"
                     )
                 elif initiative_kind == "direct-idle":
+                    silence_seconds = max(0, int(tick_now - latest_activity))
                     prompt_prefix = (
                         "Initiative kind: self-started direct conversation.\n"
                         "No active conversation or new human message is required. "
@@ -3942,6 +3974,9 @@ def build_client() -> discord.Client:
                         "in Alpecca's current state, time awareness, remembered "
                         "interests, or a genuine question. Otherwise pass. Do not "
                         "pretend anyone just spoke or continue an imaginary dialogue.\n"
+                        f"Measured silence: {silence_seconds} seconds. "
+                        f"Unanswered outreach level: {ignored_streak.get(chan, 0)}. "
+                        f"Current local time: {time.strftime('%Y-%m-%d %H:%M:%S')}.\n"
                     )
                 else:
                     prompt_prefix = (
@@ -3958,7 +3993,7 @@ def build_client() -> discord.Client:
                     + ("\n\n" + presence_context if presence_context else "")
                 )[:7_500]
                 try:
-                    reply = await asyncio.to_thread(
+                    autonomy_result = await asyncio.to_thread(
                         _ask_room_autonomy,
                         prompt,
                         (
@@ -3968,8 +4003,17 @@ def build_client() -> discord.Client:
                         ),
                     )
                 except Exception:
+                    if is_direct:
+                        direct_next_review_at[chan] = (
+                            tick_now + DIRECT_REVIEW_FALLBACK_SECONDS
+                        )
                     _diagnostic("proactive_request_failed")
                     return
+                reply, revisit_seconds = _coerce_room_autonomy_result(
+                    autonomy_result
+                )
+                if is_direct:
+                    direct_next_review_at[chan] = tick_now + revisit_seconds
                 if (
                     last_human_ts.get(chan, 0.0) != human_snapshot
                     or not _room_generation_is_current(chan, generation_snapshot)
@@ -4094,7 +4138,7 @@ def build_client() -> discord.Client:
                 # self-directed line after a proactive one.
                 last_initiative_human_ts[chan] = human
                 try:
-                    reply = await asyncio.to_thread(
+                    autonomy_result = await asyncio.to_thread(
                         _ask_room_autonomy,
                         prompt,
                         scope,
@@ -4102,6 +4146,9 @@ def build_client() -> discord.Client:
                 except Exception:
                     _diagnostic("recursive_request_failed")
                     continue
+                reply, _revisit_seconds = _coerce_room_autonomy_result(
+                    autonomy_result
+                )
                 if (
                     last_human_ts.get(chan, 0.0) != human
                     or not _room_generation_is_current(chan, generation_snapshot)
