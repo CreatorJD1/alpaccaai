@@ -3931,7 +3931,14 @@ def build_client() -> discord.Client:
                     # deliberate check-in, but not another dialogue turn.
                     continue
                 cooldown = _proactive_backoff_seconds(ignored_streak.get(chan, 0))
-                if tick_now - last_proactive_eval_at.get(chan, tick_now) < cooldown:
+                # A direct idle review already has a model-directed schedule in
+                # direct_next_review_at. Applying the generic room cooldown as
+                # well made the advertised review time unreachable (60 seconds
+                # was silently overridden by the 180-second room cooldown).
+                if (
+                    initiative_kind != "direct-idle"
+                    and tick_now - last_proactive_eval_at.get(chan, tick_now) < cooldown
+                ):
                     continue
                 if tick_now - _proactive_global_eval["at"] < PROACTIVE_GLOBAL_COOLDOWN:
                     return

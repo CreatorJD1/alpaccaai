@@ -334,7 +334,7 @@ def test_known_creator_dm_can_start_without_an_active_conversation(
     monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", False)
     monkeypatch.setattr(discord_bridge, "RECURSIVE_ENABLED", False)
     monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", True)
-    monkeypatch.setattr(discord_bridge, "PROACTIVE_COOLDOWN", 0.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_COOLDOWN", 180.0)
     monkeypatch.setattr(discord_bridge, "PROACTIVE_GLOBAL_COOLDOWN", 0.0)
     monkeypatch.setattr(discord_bridge, "PROACTIVE_QUIET_MIN", 1.0)
     monkeypatch.setattr(discord_bridge, "DIRECT_REVIEW_MIN_SECONDS", 1)
