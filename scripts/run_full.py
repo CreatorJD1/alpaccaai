@@ -138,13 +138,13 @@ os.environ.setdefault("ALPECCA_CLOUD_TTS_TIMEOUT_SECONDS", "2.5")
 os.environ.setdefault("ALPECCA_LIVE_TTS_TIMEOUT", "3.0")
 os.environ.setdefault("ALPECCA_DISCORD_VOICE_TIMEOUT", "10.0")
 os.environ.setdefault("ALPECCA_DISCORD_TRANSCRIBE_TIMEOUT", "30.0")
-# Lock her voice to the warm LOCAL Kokoro af_heart "original voice" everywhere
-# (House HQ AND Discord). It is reliable and never morphs (unlike the F5 clone)
-# and never goes silent waiting on the cloud; the keep-warm loop keeps it ready
-# so it never plays cold -- a cold/warming engine was the source of the garbled,
-# morphing playback.
-os.environ.setdefault("ALPECCA_TTS_BACKEND", "kokoro")
-os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "kokoro")
+# Her voice is her Edge neural voice (ALPECCA_TTS_VOICE, e.g. en-US-AriaNeural)
+# on BOTH House HQ and Discord. edge streams a duration-less MP3 that the
+# playback path garbled into morphing voices, so tts transcodes it to a clean
+# WAV; this locks in the natural Aria voice and avoids the F5 clone (which morphs
+# on longer lines) and the flaky cloud entirely.
+os.environ.setdefault("ALPECCA_TTS_BACKEND", "edge")
+os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "edge")
 
 def _lan_access_point(port: int) -> str:
     """The URL another device on this network uses to reach THIS computer.
