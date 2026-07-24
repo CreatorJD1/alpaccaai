@@ -7,21 +7,15 @@
 # scripts/sync_remote_design_assets.py restores them on approved workstations.
 data/
 
-# Extracted third-party handoff material (ComfyClaw / OpenClaw zips).
-.handoff/
-
 # Python
 __pycache__/
 *.pyc
 
 # Frontend app build/cache output.
 node_modules/
-apps/*/node_modules/
 apps/*/dist/
 apps/*/build/
-output/
 *.log
-.wrangler/
 # Dedicated Python 3.12 venv for talk mode (pyaudio has no 3.14 wheels).
 .venv-talk/
 .venv-f5-tts/
@@ -58,7 +52,3 @@ claude.exe
 # multi-GB checkouts -- model checkpoints, their own .venv/.git, weights well past
 # GitHub's 100 MB file limit. They're fetched/set up locally, never committed.
 vendor/
-
-# Session scratch: rendered PDF/PNG artifacts and remote-attachment photo drops.
-tmp/
-.codex-remote-attachments/
