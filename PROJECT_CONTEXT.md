@@ -16,6 +16,16 @@ This checkpoint supersedes older route, access, model, and phase-status text.
 - This qualifies only the host runtime. The seven-head HyFusER service remains
   shadow-only and fail-closed because no trained, evaluated, hash-pinned
   checkpoint exists. No Emotion-LLaMA weights or dataset were downloaded.
+- HolyROG TLS is moving to one self-signed identity containing both the local
+  hostname and Tailscale MagicDNS name: `Jason_HOLYROG` and
+  `jason-holyrog.tailda0108.ts.net`. The user-facing setup wrapper exposes a
+  manual `-RotateTls` operation, but it never stops or starts the scheduled
+  worker. The controlled order is stop, rotate with backup, copy only the
+  public certificate, start, then verify authenticated MagicDNS health.
+- This dual-SAN rotation is source-prepared, not live-deployed. The TLS private
+  key must remain only on HolyROG. Do not describe MagicDNS health as verified
+  until the rotated worker returns an authenticated, certificate-validated
+  health receipt from the primary.
 - The existing compute-only HTTPS worker stayed live on port 8788. A fresh
   RygenART process still needs its Windows Credential Manager record restored
   before authenticated health/reasoning and fallback receipts can be rerun.

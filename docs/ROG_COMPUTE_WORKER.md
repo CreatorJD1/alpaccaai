@@ -31,10 +31,15 @@ default. LAN listening requires the explicit
 `ALPECCA_ROG_WORKER_LAN=1` setting.
 
 Private-LAN traffic is HTTPS-only. The worker generates a private key and a
-self-signed certificate for the exact DNS name `Jason_HOLYROG` under
+self-signed certificate with both `Jason_HOLYROG` and
+`jason-holyrog.tailda0108.ts.net` DNS subject alternative names under
 `%LOCALAPPDATA%\Alpecca\rog-worker\tls`; the private key never leaves the ROG.
 The primary trusts a copied public certificate through
 `ALPECCA_ROG_WORKER_CA_CERT`. HMAC still authenticates each bounded request.
+
+The dual-SAN identity and its controlled rotation procedure are source-ready,
+but the rotated certificate is **not yet live-deployed** on HolyROG. A source
+change or wrapper invocation is not deployment evidence.
 
 ## Trust Boundary
 
@@ -200,6 +205,53 @@ connection, bad signature, stale request, malformed response, or unavailable
 ROG capability must fail that one remote attempt; it must not stall live chat,
 promote the ROG to speaker, or transfer memory authority.
 
+## Controlled Dual-SAN TLS Rotation
+
+Run this only after the dedicated checkout on HolyROG contains a runner that
+supports `--rotate-tls`. The setup wrapper does not stop or start the scheduled
+worker. Keep the existing certificate and key available until the replacement
+has passed the final health check.
+
+Use this exact order:
+
+1. Stop the scheduled worker on HolyROG:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\install_rog_compute_server.ps1 -Stop
+   ```
+
+2. Rotate the TLS identity. The runner backs up the existing certificate and
+   private key before generating the replacement dual-SAN identity:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\setup_rog_worker.ps1 -RotateTls
+   ```
+
+3. Copy only
+   `%LOCALAPPDATA%\Alpecca\rog-worker\tls\jason-holyrog.crt` to the primary
+   computer and replace the primary's trusted public-certificate copy. Never
+   copy `jason-holyrog.key`; the private key never leaves HolyROG.
+
+4. Start the scheduled worker on HolyROG:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\install_rog_compute_server.ps1 -Start
+   ```
+
+5. From the primary, verify authenticated certificate-validated health through
+   the MagicDNS endpoint:
+
+   ```powershell
+   $env:ALPECCA_ROG_WORKER_URL = 'https://jason-holyrog.tailda0108.ts.net:8788'
+   $env:ALPECCA_ROG_WORKER_CA_CERT = "$env:LOCALAPPDATA\Alpecca\rog-worker\tls\jason-holyrog.crt"
+   python -c "from alpecca.rog_worker_client import RogWorkerClient; print(RogWorkerClient.from_environment().health())"
+   ```
+
+Accept the rotation only when health reports the compute-only role over that
+MagicDNS URL. If any step fails, leave the worker stopped and restore the
+runner-created certificate and key backup on HolyROG as one matching pair.
+This procedure has not yet been run against the live worker.
+
 ## Operational Checks
 
 Before accepting the worker as live evidence, record all of these:
@@ -246,7 +298,8 @@ remove it separately only after confirming it is not shared by another use.
   with the same value; never place it in a tracked `.env` file.
 - **Model not ready:** run `ollama show qwen3.5:9b`, then pull it if absent.
 - **Works on loopback but not LAN:** confirm the explicit LAN environment,
-  copied public certificate, exact `Jason_HOLYROG` DNS name, private DNS/IP
+  copied public certificate, required `Jason_HOLYROG` and
+  `jason-holyrog.tailda0108.ts.net` certificate names, private DNS/IP
   reachability, and a narrowly scoped Private-profile firewall rule. Do not
   replace the HTTPS URL with private-LAN HTTP.
 - **Primary falls back:** inspect content-free worker health and audit status;

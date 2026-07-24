@@ -1,5 +1,22 @@
 # Alpecca - Handoff (updated 2026-07-23)
 
+## 2026-07-23 HolyROG dual-SAN TLS rotation handoff
+
+- `scripts/setup_rog_worker.ps1` now has a standalone `-RotateTls` switch that
+  invokes the runner's `--rotate-tls` operation. It does not stop, start, or
+  restart the `Alpecca ROG Compute Server` scheduled task.
+- The controlled deployment order is documented in
+  `docs/ROG_COMPUTE_WORKER.md`: stop the task, rotate with backup, copy only the
+  public certificate to the primary, start the task, and verify authenticated
+  health through `https://jason-holyrog.tailda0108.ts.net:8788`.
+- The replacement certificate must contain both `Jason_HOLYROG` and
+  `jason-holyrog.tailda0108.ts.net`. The private key never leaves HolyROG.
+- This is **not live-deployed**. The wrapper and runner contract are present in
+  the current shared worktree, but neither the primary nor the dedicated
+  HolyROG checkout has completed the stop/rotate/copy/start/verify sequence.
+  Python and tests were outside this documentation/wrapper work order and were
+  not edited as part of it.
+
 ## 2026-07-23 HolyROG isolated HyFusER runtime checkpoint
 
 - The dedicated compute checkout at

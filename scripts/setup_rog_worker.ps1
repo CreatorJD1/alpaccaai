@@ -2,6 +2,7 @@
 param(
     [switch]$InstallSecret,
     [switch]$InstallTls,
+    [switch]$RotateTls,
     [switch]$RemoveCredential,
     [switch]$CheckWorker,
     [switch]$StartWorker
@@ -29,6 +30,9 @@ if ([string]::IsNullOrWhiteSpace($env:ALPECCA_ROG_WORKER_REPLAY_DB)) {
 
 if ($InstallSecret -and $RemoveCredential) {
     throw 'Choose either -InstallSecret or -RemoveCredential, not both.'
+}
+if ($RotateTls -and ($InstallSecret -or $InstallTls -or $RemoveCredential -or $CheckWorker -or $StartWorker)) {
+    throw 'Run -RotateTls by itself after manually stopping the scheduled worker.'
 }
 
 $ObservedHost = [System.Net.Dns]::GetHostName()
@@ -110,6 +114,16 @@ if ($InstallTls) {
     }
 }
 
+if ($RotateTls) {
+    Write-Host 'Rotating the stopped worker TLS identity; scheduled tasks are not stopped or started by this command.' -ForegroundColor Cyan
+    & $Python $Runner --rotate-tls $ExpectedHost
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The dedicated ROG TLS identity could not be rotated.'
+    }
+    Write-Host "Copy only '$env:ALPECCA_ROG_WORKER_TLS_CERT' to the primary computer, then start and verify the worker manually." -ForegroundColor Green
+    exit 0
+}
+
 $Model = if ([string]::IsNullOrWhiteSpace($env:ALPECCA_ROG_WORKER_MODEL)) {
     $DefaultModel
 } else {
@@ -161,6 +175,7 @@ Write-Host "  Install Python packages:  & '$Python' -m pip install -r '$RepoRoot
 Write-Host "  Install the local model:  ollama pull $DefaultModel"
 Write-Host "  Store the shared secret: powershell -ExecutionPolicy Bypass -File '$PSCommandPath' -InstallSecret"
 Write-Host "  Create the TLS identity: powershell -ExecutionPolicy Bypass -File '$PSCommandPath' -InstallTls"
+Write-Host "  Rotate stopped-worker TLS: powershell -ExecutionPolicy Bypass -File '$PSCommandPath' -RotateTls"
 Write-Host "  Validate the worker:     powershell -ExecutionPolicy Bypass -File '$PSCommandPath' -CheckWorker"
 Write-Host "  Start loopback-only:     powershell -ExecutionPolicy Bypass -File '$PSCommandPath' -StartWorker"
 Write-Host '  Enable private LAN for this terminal before startup:'
