@@ -1,5 +1,33 @@
 # Alpecca - Handoff (updated 2026-07-23)
 
+## 2026-07-23 activation and seven-transformer checkpoint
+
+- Added a real optional seven-transformer Soul research architecture: one
+  shared dual-cross-modal HyFusER-style backbone and seven distinct lightweight
+  perspective heads. Canonical affect order is `neutral, joy, sadness, fear,
+  anger, surprise, disgust`; every worker request and response binds that exact
+  order. The model is shadow-only and fail-closed without verified weights.
+- Added authenticated ROG health/scoring transport and Brain Garden evidence.
+  The current ROG must pull this branch and receive a trained, evaluated
+  checkpoint before it can report ready. Follow
+  `docs/FOR_CLAUDE_HOLYROG_SOUL_SETUP.md` on `Jason_HOLYROG`.
+- Added an opt-in Emotion-LLaMA research teacher/evaluator. Code is
+  BSD-3-Clause; MER data remains under its research EULA and stays external.
+  No model or dataset was downloaded in this checkpoint.
+- Activated bounded temporal derivation, safe internal routine bootstrap, and
+  sealed committed-evidence RSI candidate creation. None can authorize an
+  external act or source edit.
+- Repaired Discord listener/turn fencing, sticky voice/vision inference health,
+  V4 grounded locomotion constraints, protected notification acknowledgement
+  continuity, and Hugging Face sparse-standby health.
+- Fixed Vault file retention and removed 197 orphan archives (18,050,231,376
+  bytes). Two indexed archives remain; free disk rose from about 1.07 GB to
+  about 56.2 GB.
+- Verification at this checkpoint: canonical `tests/test_core.py` 372 passed;
+  seven-transformer/fusion/ROG 139 passed; notification 125 passed; House
+  production build passed. Live ROG model deployment, Discord duplex soak,
+  browser embodiment inspection, and cloud failover/failback remain required.
+
 ## 2026-07-23 Clock, initiative, and Google Workspace assistance
 
 - Every CoreMind prompt now receives an authoritative local wall clock. Compact

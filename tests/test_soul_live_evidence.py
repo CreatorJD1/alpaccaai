@@ -136,16 +136,32 @@ def test_brain_garden_soul_probe_exposes_only_bounded_numeric_evidence() -> None
     serialized = json.dumps(node, sort_keys=True)
 
     assert node["state"] == "degraded"
-    assert "model_calls=0" in node["summary"]
-    assert "not seven independent transformer" in node["summary"]
-    assert "does not choose actions" in node["summary"]
+    assert "Seven deterministic perspectives are live" in node["summary"]
+    assert "ROG shadow runtime is not ready" in node["summary"]
     assert "soul.perspective_vector.model_calls=0" in node["evidence"]
     assert "soul.perspective_vector.independent_transformers=false" in node["evidence"]
     assert "soul.perspective_vector.advisory_only=true" in node["evidence"]
+    assert "soul.hyfuser.distinct_transformer_heads=7" in node["evidence"]
+    assert "soul.hyfuser.ready=false" in node["evidence"]
     assert any(item.startswith("soul.perspective_vector.scores=") for item in node["evidence"])
     assert secret_marker not in serialized
     assert "send private text" not in serialized
     assert sum(len(item) for item in node["evidence"]) < 1_200
+
+
+def test_brain_garden_reports_ready_transformer_heads_as_shadow_only() -> None:
+    node = _soul_node({
+        "soul_agent_count": 7,
+        "soul_perspective_vector": _runtime_vector(),
+        "hyfuser_soul": {"configured": True, "ready": True},
+    })
+
+    assert node["state"] == "degraded"
+    assert "seven distinct ROG transformer heads are live" in node["summary"]
+    assert "cannot choose actions" in node["summary"]
+    assert "soul.hyfuser.configured=true" in node["evidence"]
+    assert "soul.hyfuser.ready=true" in node["evidence"]
+    assert "soul.hyfuser.shadow_only=true" in node["evidence"]
 
 
 def test_brain_garden_rejects_unbounded_vector_and_exposes_no_unknown_fields() -> None:
@@ -213,7 +229,7 @@ def test_server_brain_graph_and_introspection_publish_same_advisory_vector(
     assert payload["soul_perspective_vector"] == vector
 
 
-def test_core_manifest_states_the_vector_is_advisory_and_not_transformer_instances() -> None:
+def test_core_manifest_states_transformer_heads_are_shared_and_shadow_only() -> None:
     root = Path(__file__).resolve().parents[1]
     manifest = json.loads(
         (root / "alpecca" / "brain_plugins" / "alpecca_core.json").read_text(
@@ -222,6 +238,7 @@ def test_core_manifest_states_the_vector_is_advisory_and_not_transformer_instanc
     )
     soul_node = next(item for item in manifest["nodes"] if item["id"] == "soul")
 
-    assert "bounded advisory vector" in soul_node["detail"]
-    assert "model_calls=0" in soul_node["detail"]
-    assert "not independent transformer instances" in soul_node["detail"]
+    assert "deterministic arbitration" in soul_node["detail"]
+    assert "seven distinct ROG transformer heads" in soul_node["detail"]
+    assert "one shared HyFusER-style multimodal representation" in soul_node["detail"]
+    assert "shadow mode" in soul_node["detail"]

@@ -7,6 +7,32 @@ Read this before `AGENTS.md`, `CLAUDE.md`, `HANDOFF.md`, or implementation files
 
 This checkpoint supersedes older route, access, model, and phase-status text.
 
+### 2026-07-23 activation and seven-transformer research update
+
+- The Soul still uses one deterministic Good Person Principle arbitration path.
+  A new optional ROG research model now implements one shared HyFusER-style
+  text/speech fusion backbone plus seven distinct lightweight TransformerEncoder
+  heads, one for each Soul perspective. Untrained or unqualified checkpoints
+  remain shadow-only and cannot alter focus, emotion, speech, or actions.
+- Emotion-LLaMA has an opt-in research-teacher adapter and qualification
+  manifest for `Jason_HOLYROG`. Its external weights and MER research data stay
+  outside Git; no checkpoint or dataset has been downloaded by this checkout.
+- Committed chat/memory evidence now advances the temporal shadow ledger in
+  bounded background batches. An empty routine catalog receives only three
+  safe internal maintenance routines; no speech or external-action routine is
+  seeded.
+- RSI candidate activation now reads sealed committed SQLite outcomes instead
+  of accepting a caller-constructed baseline. It can create a review proposal,
+  but cannot approve, start, retain, apply, or edit source autonomously.
+- Discord voice and event-vision readiness now require transport/inference
+  evidence and reject stale generations. Cloud standby health remains available
+  when optional voice or model startup fails. These source repairs still need
+  live deployment and sustained voice/failover soaks before release claims.
+- Mindscape Vault retention now removes evicted archive files as well as rows.
+  The one-time repair removed 197 unindexed archives (about 18.05 GB) while
+  retaining the two indexed archives. Machine-generated observation duplicates
+  are coalesced; human chat is never coalesced.
+
 ### 2026-07-23 time, initiative, and assistance update
 
 - CoreMind receives an authoritative local clock on every turn. House living

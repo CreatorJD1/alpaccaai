@@ -179,6 +179,9 @@ def _safe_soul_vector(value: object) -> dict[str, Any] | None:
 def _probe_soul(facts: Mapping[str, Any]) -> ProbeResult:
     count = facts.get("soul_agent_count")
     if count == 7:
+        hyfuser = _mapping(facts.get("hyfuser_soul"))
+        transformer_ready = hyfuser.get("ready") is True
+        transformer_configured = hyfuser.get("configured") is True
         vector = _safe_soul_vector(facts.get("soul_perspective_vector"))
         if vector is not None:
             evidence = (
@@ -197,13 +200,27 @@ def _probe_soul(facts: Mapping[str, Any]) -> ProbeResult:
                 "soul.perspective_vector.model_calls=0",
                 "soul.perspective_vector.independent_transformers=false",
                 "soul.perspective_vector.advisory_only=true",
+                "soul.hyfuser.shared_backbone=true",
+                "soul.hyfuser.distinct_transformer_heads=7",
+                f"soul.hyfuser.configured={str(transformer_configured).lower()}",
+                f"soul.hyfuser.ready={str(transformer_ready).lower()}",
+                "soul.hyfuser.shadow_only=true",
             )
+            if transformer_ready:
+                return ProbeResult(
+                    "degraded",
+                    "Seven deterministic perspectives remain authoritative; seven "
+                    "distinct ROG transformer heads are live in shadow mode over one "
+                    "shared multimodal backbone and cannot choose actions.",
+                    84,
+                    evidence,
+                )
             return ProbeResult(
                 "degraded",
-                "Seven bounded deterministic perspectives are live through one "
-                "advisory vector; model_calls=0, and they are not seven independent "
-                "transformer instances. The vector does not choose actions.",
-                72,
+                "Seven deterministic perspectives are live; the seven-head "
+                "transformer architecture is source-complete but its ROG shadow "
+                "runtime is not ready. Deterministic arbitration remains active.",
+                76 if transformer_configured else 74,
                 evidence,
             )
         return ProbeResult("degraded", "Seven bounded perspectives are implemented; they are not seven independent transformer instances.", 72, ("alpecca/soul.py", "soul_agent_count=7"))

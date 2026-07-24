@@ -7764,6 +7764,9 @@ def rog_worker_status(req: Request) -> dict[str, object]:
 
     _require_creator_request(req)
     snapshot = rog_worker_runtime_mod.status_snapshot(ROG_WORKER_URL)
+    snapshot["hyfuser_soul"] = rog_worker_runtime_mod.hyfuser_status(
+        ROG_WORKER_URL
+    )
     deep_route_loaded = any(
         link[0] == "rog-worker"
         for link in getattr(mind.llm, "_deep_chain", ())
@@ -8259,6 +8262,7 @@ def brain_graph() -> dict:
         "soul_agent_count": len(soul_mod.SUBAGENT_SPECS),
         "soul_perspective_vector": soul_vector,
         "soul_runtime": mind.soul_runtime_status(),
+        "hyfuser_soul": rog_worker_runtime_mod.hyfuser_status(ROG_WORKER_URL),
         "temporal_memory": mind.temporal_memory_status(),
         "senses": _sense_status(),
         "discord_configured": bool(_discord_bot_token() or DISCORD_CLIENT_ID),
