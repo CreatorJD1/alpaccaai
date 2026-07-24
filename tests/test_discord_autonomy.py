@@ -91,6 +91,19 @@ def test_autonomous_draft_rejects_generic_assistant_self_descriptions():
     assert discord_autonomy.publishable_draft("[pass]") is False
 
 
+def test_autonomous_media_draft_accepts_only_the_approved_portrait_marker():
+    assert discord_autonomy.split_media_draft(
+        "[attach:approved-portrait] This is my approved portrait."
+    ) == ("This is my approved portrait.", "portrait")
+    assert discord_autonomy.split_media_draft("A normal thought.") == (
+        "A normal thought.",
+        None,
+    )
+    assert discord_autonomy.split_media_draft(
+        "[attach:approved-portrait]"
+    ) == ("", None)
+
+
 def test_decision_context_keeps_recent_tail_under_hard_bound():
     context = "old-marker " + ("x" * 9_000) + " latest-human-cue"
     prompt = discord_autonomy.decision_prompt(context)

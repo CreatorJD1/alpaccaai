@@ -63,6 +63,7 @@ from alpecca.auth import (
 from alpecca import (
     audio_ingress,
     bridge_actor_transport,
+    discord_autonomy,
     discord_creator_identity,
     discord_media,
     discord_observability,
@@ -3988,6 +3989,12 @@ def build_client() -> discord.Client:
                 )
                 prompt = (
                     prompt_prefix
+                    + "Approved autonomous media: the locked Alpecca self-portrait is "
+                    + (
+                        "ready and may be shared if that genuinely adds new value.\n"
+                        if discord_media.resolve_self_portrait() is not None
+                        else "unavailable.\n"
+                    )
                     + "\nRecent room messages:\n"
                     + (context or "[No active Discord conversation is in progress.]")
                     + ("\n\n" + presence_context if presence_context else "")
@@ -4025,7 +4032,9 @@ def build_client() -> discord.Client:
                 ):
                     _diagnostic("proactive_room_yielded", status="human_activity")
                     return
-                raw_reply = (reply or "").strip()
+                raw_reply, autonomous_media_kind = (
+                    discord_autonomy.split_media_draft(reply)
+                )
                 if _room_reply_is_pass(raw_reply):
                     _diagnostic("proactive_room_passed", status="model")
                     return
@@ -4051,11 +4060,39 @@ def build_client() -> discord.Client:
                 ):
                     _diagnostic("proactive_room_passed", status="duplicate")
                     return
+                autonomous_media = None
+                if autonomous_media_kind == "portrait":
+                    autonomous_media = discord_media.resolve_self_portrait()
+                    if autonomous_media is None:
+                        _diagnostic(
+                            "proactive_room_passed",
+                            status="approved_portrait_unavailable",
+                        )
+                        return
                 try:
-                    await ch.send(reply[:MAX_DISCORD_CHARS])
+                    if autonomous_media is None:
+                        await ch.send(reply[:MAX_DISCORD_CHARS])
+                    else:
+                        await ch.send(
+                            reply[:MAX_DISCORD_CHARS],
+                            file=discord.File(
+                                io.BytesIO(autonomous_media.image_bytes),
+                                filename=autonomous_media.filename,
+                            ),
+                        )
                 except Exception:
                     _diagnostic("proactive_send_failed")
                     return
+                if autonomous_media is not None:
+                    await asyncio.to_thread(
+                        discord_media.record_media_event,
+                        "outbound",
+                        status="sent",
+                        mime_type=autonomous_media.mime_type,
+                        size_bytes=autonomous_media.size_bytes,
+                        sha256=autonomous_media.sha256,
+                        kind=autonomous_media.kind,
+                    )
                 sent_at = time.monotonic() if now is None else tick_now
                 last_proactive_at[chan] = sent_at
                 last_reply_at[chan] = sent_at

@@ -1,5 +1,19 @@
 # Alpecca - Handoff (updated 2026-07-24)
 
+## 2026-07-24 autonomous portrait and tool-failure repair
+
+- Discord hidden deliberation can now choose a sixth, typed initiative intent:
+  share Alpecca's approved self-portrait with a grounded first-person explanation.
+  The bridge strips the machine marker, resolves only the locked approved portrait,
+  attaches it to the autonomous message, and records the outbound media receipt.
+  This is an Alpecca-chosen proactive action, not a user command or fixed timer.
+- Rejected tool calls no longer emit the old context-free canned sentence. The
+  fail-closed response names the current request and rejection reason while making
+  clear that nothing ran and no success is being claimed.
+- Focused Discord autonomy, room-awareness, media, and tool-call verification:
+  **134 passed**. The live CoreMind and launcher-owned Discord bridge were reloaded;
+  an actual model-selected autonomous portrait post remains a live behavioral gate.
+
 ## 2026-07-24 temporary local vision recovery
 
 - The exact failed Discord screenshot was successfully described through the

@@ -439,6 +439,19 @@ def _offered_tool_names(tools: list[dict]) -> frozenset[str]:
     return frozenset(names)
 
 
+def _tool_rejection_reply(user_msg: str, reason: str) -> str:
+    """Explain a rejected execution in the current turn instead of canned prose."""
+    request = " ".join(str(user_msg or "").split()).strip()
+    if len(request) > 120:
+        request = request[:117].rstrip() + "..."
+    subject = f' for "{request}"' if request else ""
+    return (
+        f"I stopped the execution step{subject} before anything ran because "
+        f"the call was {reason}. I won't claim it worked; I need to reassess "
+        "that step from the conversation."
+    )
+
+
 _RUNTIME_MODEL_QUESTION_PATTERNS = (
     re.compile(
         r"\b(?:what|which)\s+(?:ai\s+|language\s+)?(?:model|llm)\b"
@@ -1271,9 +1284,9 @@ class _LLM:
                     )
                     if not parsed_calls.ok:
                         msg = {
-                            "content": (
-                                "I could not safely interpret that tool request, "
-                                "so I did not run it."
+                            "content": _tool_rejection_reply(
+                                user_msg,
+                                "malformed",
                             )
                         }
                         break
@@ -1526,9 +1539,9 @@ class _LLM:
                                 f"({rejection_reason})."
                             )
                         else:
-                            blocked_reply = (
-                                "I could not safely interpret that tool request, "
-                                "so I did not run it."
+                            blocked_reply = _tool_rejection_reply(
+                                user_msg,
+                                rejection_reason,
                             )
                         break
                     if not calls:

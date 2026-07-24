@@ -111,7 +111,8 @@ def test_malformed_native_call_fails_closed_without_text_rescue():
     )
 
     assert calls == []
-    assert "did not run it" in result
+    assert 'for "Do it."' in result
+    assert "before anything ran" in result
 
 
 def test_hf_valid_tool_call_executes_then_returns_words():
@@ -145,7 +146,8 @@ def test_hf_malformed_or_non_object_arguments_fail_closed(arguments):
     )
 
     assert calls == []
-    assert "did not run it" in result
+    assert 'for "Run it."' in result
+    assert "before anything ran" in result
 
 
 def test_hf_provider_tool_call_batch_is_hard_capped():
@@ -164,7 +166,8 @@ def test_hf_provider_tool_call_batch_is_hard_capped():
     )
 
     assert calls == []
-    assert "did not run it" in result
+    assert 'for "Run all calls."' in result
+    assert "before anything ran" in result
 
 
 def test_hf_valid_then_overlimit_chain_reports_partial_execution_honestly():
@@ -239,4 +242,5 @@ def test_hf_unknown_tool_rejects_entire_batch_without_execution():
     )
 
     assert calls == []
-    assert "did not run it" in result
+    assert 'for "Run both calls."' in result
+    assert "unknown or unoffered" in result
