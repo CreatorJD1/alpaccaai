@@ -136,14 +136,13 @@ os.environ.setdefault("ALPECCA_DISCORD_VOICE_RECEIVE", "1")
 os.environ.setdefault("ALPECCA_CHAT_VOICE_TIMEOUT", "3.0")
 os.environ.setdefault("ALPECCA_CLOUD_TTS_TIMEOUT_SECONDS", "2.5")
 os.environ.setdefault("ALPECCA_LIVE_TTS_TIMEOUT", "3.0")
-os.environ.setdefault("ALPECCA_DISCORD_VOICE_TIMEOUT", "4.0")
+os.environ.setdefault("ALPECCA_DISCORD_VOICE_TIMEOUT", "10.0")
 os.environ.setdefault("ALPECCA_DISCORD_TRANSCRIBE_TIMEOUT", "30.0")
-# Discord voice uses her local Kokoro af_heart voice -- her clean, canonical,
-# emotion-modulated "alive" voice (the same one House HQ leads with) -- rather
-# than the flatter cloud route or the GPU-heavy F5 clone, which distorts on this
-# hardware. Local Kokoro also runs on the full synth budget, so it never hits
-# the short cloud live-timeout that could leave voice silent.
-os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "kokoro")
+# Discord voice uses her Edge neural voice (ALPECCA_TTS_VOICE, e.g.
+# en-US-AriaNeural) -- a natural-sounding woman voice that streams the whole line
+# as one continuous, pause-free clip. This is her preferred voice over Kokoro
+# af_heart (more synthetic) and the F5 clone (distorts on this hardware).
+os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "edge")
 
 def _lan_access_point(port: int) -> str:
     """The URL another device on this network uses to reach THIS computer.

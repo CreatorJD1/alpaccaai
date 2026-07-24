@@ -161,7 +161,7 @@ IMAGE_INBOUND_TIMEOUT = max(
 )
 VOICE_SYNTH_TIMEOUT = max(
     1.0,
-    min(15.0, float(os.environ.get("ALPECCA_DISCORD_VOICE_TIMEOUT", "4"))),
+    min(15.0, float(os.environ.get("ALPECCA_DISCORD_VOICE_TIMEOUT", "10"))),
 )
 VOICE_TRANSCRIBE_TIMEOUT = max(
     1.0,
@@ -178,10 +178,10 @@ VOICE_PLAYBACK_CALLBACK_TIMEOUT = max(
     ),
 )
 DISCORD_VOICE_ENGINE = os.environ.get(
-    "ALPECCA_DISCORD_TTS_ENGINE", "kokoro"
+    "ALPECCA_DISCORD_TTS_ENGINE", "edge"
 ).strip().lower()
-if DISCORD_VOICE_ENGINE not in {"auto", "cloud", "kokoro", "f5", "f5-tts"}:
-    DISCORD_VOICE_ENGINE = "auto"
+if DISCORD_VOICE_ENGINE not in {"auto", "cloud", "kokoro", "edge", "f5", "f5-tts"}:
+    DISCORD_VOICE_ENGINE = "edge"
 MAX_DISCORD_CHARS = 2000
 MAX_BACKEND_RESPONSE_BYTES = 1024 * 1024
 MAX_BACKEND_ERROR_BYTES = 16 * 1024
