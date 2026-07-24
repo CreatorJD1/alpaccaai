@@ -317,3 +317,37 @@ def test_run_full_derives_only_cloud_endpoint_and_does_not_invent_secret() -> No
     assert 'os.environ["ALPECCA_CLOUD_STANDBY_URL"].rstrip("/")' in source
     assert '"/voice/tts"' in source
     assert "ALPECCA_CLOUD_TTS_AUTHORIZATION" not in source
+
+
+def test_kokoro_load_failure_recovers_after_cooldown(monkeypatch) -> None:
+    """A transient Kokoro load failure must not silence her voice permanently.
+
+    It used to latch OFF for the whole process; now it re-probes after a
+    cooldown so her voice keeps running without a restart.
+    """
+    import sys
+    import types
+    from alpecca import tts
+
+    # Simulate a prior load failure that latched Kokoro off.
+    monkeypatch.setattr(tts, "_kokoro", None)
+    monkeypatch.setattr(tts, "_kokoro_ready", False)
+    monkeypatch.setattr(tts, "_KOKORO_RETRY_COOLDOWN_SECONDS", 60.0)
+
+    # Within the cooldown it must not hammer the failed loader -- stays off.
+    monkeypatch.setattr(tts, "_kokoro_failed_at", tts.time.monotonic())
+    assert tts._kokoro_pipeline() is None
+    assert tts._kokoro_ready is False
+
+    # After the cooldown a now-healthy loader recovers her voice on its own.
+    class _FakePipeline:
+        pass
+
+    fake_kokoro = types.ModuleType("kokoro")
+    fake_kokoro.KPipeline = lambda **_kwargs: _FakePipeline()
+    monkeypatch.setitem(sys.modules, "kokoro", fake_kokoro)
+    monkeypatch.setattr(tts, "_kokoro_failed_at", tts.time.monotonic() - 120.0)
+
+    pipeline = tts._kokoro_pipeline()
+    assert isinstance(pipeline, _FakePipeline)
+    assert tts._kokoro_ready is True

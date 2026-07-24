@@ -130,13 +130,27 @@ def voice_params_for(state) -> dict:
 
 # --- Kokoro (best free local voice) -----------------------------------------
 _kokoro = None
-_kokoro_ready = None        # None untried, then True/False (latched)
+_kokoro_ready = None        # None untried, then True/False
+_kokoro_failed_at = 0.0     # monotonic time of the last load failure
+# A failed Kokoro load used to latch OFF for the whole process, so ONE transient
+# failure (a momentarily busy/exhausted GPU, a model-load hiccup) silenced her
+# voice until a full restart. Re-probe after a cooldown so her voice keeps
+# running all the time; a genuinely-missing package still fails fast and simply
+# retries slowly rather than every turn.
+_KOKORO_RETRY_COOLDOWN_SECONDS = float(
+    os.environ.get("ALPECCA_KOKORO_RETRY_COOLDOWN", "120")
+)
 
 
 def _kokoro_pipeline():
-    global _kokoro, _kokoro_ready
+    global _kokoro, _kokoro_ready, _kokoro_failed_at
     if _kokoro_ready is False:
-        return None
+        # Recover instead of latching off forever: a transient load failure must
+        # not silence her voice until the process is restarted. Re-probe once the
+        # cooldown has elapsed.
+        if (time.monotonic() - _kokoro_failed_at) < _KOKORO_RETRY_COOLDOWN_SECONDS:
+            return None
+        _kokoro_ready = None
     if _kokoro is None:
         started = time.monotonic()
         try:
@@ -150,6 +164,7 @@ def _kokoro_pipeline():
                   f"install with: python -m pip install kokoro soundfile  "
                   f"(and espeak-ng on the system).", file=sys.stderr)
             _kokoro_ready = False
+            _kokoro_failed_at = time.monotonic()
             _kokoro_metrics["last_startup_seconds"] = round(time.monotonic() - started, 3)
             _kokoro_metrics["last_error"] = f"{type(exc).__name__}: {exc}"
             return None

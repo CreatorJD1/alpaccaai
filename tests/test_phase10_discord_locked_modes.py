@@ -1583,6 +1583,59 @@ def test_voice_synthesis_accepts_only_bounded_audio(monkeypatch):
     ]
 
 
+def test_voice_synthesis_drops_truncated_audio_instead_of_playing_static(monkeypatch):
+    # A body shorter than its declared Content-Length is a truncated audio
+    # stream; FFmpeg renders its misframed tail as audible static. The fetch must
+    # drop it (return None -> silence, recoverable) rather than play noise.
+    class TruncatedResponse:
+        status = 200
+
+        def __init__(self, payload: bytes, declared: int) -> None:
+            self.payload = payload
+            self._declared = declared
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, limit: int) -> bytes:
+            return self.payload[:limit]
+
+        def getheader(self, name, default=None):
+            if name.lower() == "content-length":
+                return str(self._declared)
+            return default
+
+    diagnostics: list[str] = []
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "MAX_VOICE_RESPONSE_BYTES", 65536)
+    monkeypatch.setattr(discord_bridge, "DISCORD_VOICE_ENGINE", "kokoro")
+    monkeypatch.setattr(
+        discord_bridge,
+        "_diagnostic",
+        lambda event, **_fields: diagnostics.append(event),
+    )
+
+    # A complete body (declared length matches what arrived) is accepted.
+    monkeypatch.setattr(
+        discord_bridge,
+        "_open_backend_request",
+        lambda request, **kwargs: TruncatedResponse(b"a" * 4096, 4096),
+    )
+    assert discord_bridge._synth_voice_wav("full") == b"a" * 4096
+
+    # A truncated body (declared far exceeds what arrived) is dropped to silence.
+    monkeypatch.setattr(
+        discord_bridge,
+        "_open_backend_request",
+        lambda request, **kwargs: TruncatedResponse(b"a" * 2000, 9000),
+    )
+    assert discord_bridge._synth_voice_wav("truncated") is None
+    assert "voice_response_truncated" in diagnostics
+
+
 def test_voice_playback_uses_local_tts_and_cleans_temp_file(monkeypatch):
     monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", True)
     monkeypatch.setattr(discord_bridge, "PHASE10_GUILD_MODES_LOCKED", False)

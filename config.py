@@ -264,6 +264,31 @@ ROG_WORKER_FAILURE_COOLDOWN_SECONDS = max(
     ),
 )
 
+# --- ROG voice offload -----------------------------------------------------
+# When HOLYROG (the ROG box) is running the voice service, her TTS (Kokoro + F5)
+# synthesizes THERE instead of on this machine's small GPU; when HOLYROG is
+# unreachable, synthesis falls back to local. Tailscale provides the private,
+# encrypted transport, so a shared bearer secret gates the endpoint. Empty URL
+# (the default) leaves the whole feature dormant -- local voice is unchanged.
+ROG_VOICE_URL = os.environ.get("ALPECCA_ROG_VOICE_URL", "").strip().rstrip("/")
+ROG_VOICE_SECRET = os.environ.get("ALPECCA_ROG_VOICE_SECRET", "")
+ROG_VOICE_ENABLED = bool(ROG_VOICE_URL) and os.environ.get(
+    "ALPECCA_ROG_VOICE", "1"
+) not in ("", "0", "false", "False")
+ROG_VOICE_TIMEOUT_SECONDS = max(
+    1.0, min(120.0, float(os.environ.get("ALPECCA_ROG_VOICE_TIMEOUT_SECONDS", "20")))
+)
+ROG_VOICE_HEALTH_TIMEOUT_SECONDS = max(
+    0.3, min(10.0, float(os.environ.get("ALPECCA_ROG_VOICE_HEALTH_TIMEOUT_SECONDS", "2")))
+)
+ROG_VOICE_FAILURE_COOLDOWN_SECONDS = max(
+    5.0,
+    min(
+        300.0,
+        float(os.environ.get("ALPECCA_ROG_VOICE_FAILURE_COOLDOWN_SECONDS", "60")),
+    ),
+)
+
 # The Ollama cloud model for the deep tier. EMPTY by default so no cloud model
 # runs without an explicit choice. Jason's approved setup (2026-07-09) wires
 # gemma4:cloud here via START_HERE.bat (ALPECCA_OLLAMA_CLOUD_MODEL=gemma4:cloud,
@@ -473,6 +498,15 @@ LIVE_TTS_ROUTE_TIMEOUT = max(
 # fresh boot while the load quietly continued.
 VOICE_WARMUP = os.environ.get("ALPECCA_VOICE_WARMUP", "1") not in ("", "0", "false", "False")
 VOICE_WARMUP_TIMEOUT = float(os.environ.get("ALPECCA_VOICE_WARMUP_TIMEOUT", "90"))
+# Keep her voice WARM after startup: a small periodic touch of the voice engine
+# so the first spoken line after an idle stretch is instant instead of paying a
+# cold model load (~40s for Kokoro). Gentle by design -- the loop defers while a
+# real chat/voice turn is active so it never fights the brain model for VRAM on
+# a small GPU. Set ALPECCA_VOICE_KEEPWARM=0 to disable.
+VOICE_KEEPWARM = os.environ.get("ALPECCA_VOICE_KEEPWARM", "1") not in ("", "0", "false", "False")
+VOICE_KEEPWARM_INTERVAL = max(
+    60.0, float(os.environ.get("ALPECCA_VOICE_KEEPWARM_INTERVAL", "240"))
+)
 F5_WORKER_ENABLED = os.environ.get("ALPECCA_F5_WORKER", "1") not in ("", "0", "false", "False")
 F5_WORKER_HOST = os.environ.get("ALPECCA_F5_WORKER_HOST", "127.0.0.1")
 F5_WORKER_PORT = int(os.environ.get("ALPECCA_F5_WORKER_PORT", "8776"))

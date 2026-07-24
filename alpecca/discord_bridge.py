@@ -1657,10 +1657,26 @@ def _synth_voice_wav(text: str) -> "bytes | None":
             if resp.status != 200:
                 return None
             data = resp.read(MAX_VOICE_RESPONSE_BYTES + 1)
+            # Reconcile against the declared length: a body shorter than its
+            # Content-Length is a TRUNCATED audio stream, and FFmpeg renders the
+            # misframed tail as audible STATIC. Dropping it here keeps the voice
+            # channel silent (recoverable) instead of playing noise. getheader is
+            # accessed defensively so lightweight test doubles without it are
+            # unaffected (they simply skip the check).
+            declared = getattr(resp, "getheader", lambda *_a, **_k: None)("Content-Length")
     except Exception:
         _diagnostic("voice_synthesis_failed")
         return None
-    return data if (1024 < len(data) <= MAX_VOICE_RESPONSE_BYTES) else None
+    if not (1024 < len(data) <= MAX_VOICE_RESPONSE_BYTES):
+        return None
+    if declared is not None:
+        try:
+            if len(data) < int(declared):
+                _diagnostic("voice_response_truncated")
+                return None
+        except (TypeError, ValueError):
+            pass
+    return data
 
 
 def build_client() -> discord.Client:

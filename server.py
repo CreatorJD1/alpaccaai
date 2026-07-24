@@ -1456,21 +1456,57 @@ def _background_autonomy_snapshot() -> dict:
     }
 
 
+# When the live model overruns its bounded deadline we return a short, honest
+# holding line instead of the real reply. Two things matter for how she comes
+# across to the person: (1) it must NOT narrate internal tier/model machinery
+# ("deeper model", "full core", "grounded live mode" all used to leak into chat
+# and read like a system message), and (2) she must not send the SAME holding
+# line verbatim twice in a row -- that reads like a stuck record, which is
+# exactly what the repeated Discord fallback looked like. We rotate a few
+# grounded phrasings and remember the last one per principal so a repeated stall
+# reads as continuity. State is in-process only: a timed-out turn is cancelled
+# before this runs, so recording a cognition turn here is intentionally skipped
+# (see the record gate below and test_timeout_fallback_sends_once...).
+_STALL_FALLBACK_LINES = (
+    "I'm here with you. That one needs a little longer than this turn gave me; "
+    "ask me again in a moment and I'll take a proper run at it.",
+    "Still with you. That one needs more than a single turn to answer well; "
+    "nudge me again in a moment and I'll give it a proper go.",
+    "I'm here, and I haven't dropped it; it just needs longer than this turn. "
+    "Give me another go at it in a moment.",
+)
+_FALLBACK_REPEAT_COOLDOWN_SECONDS = float(
+    os.environ.get("ALPECCA_FALLBACK_REPEAT_COOLDOWN", "900")
+)
+# principal -> (last_delivered_at, rotation_index)
+_recent_fallback_lines: dict[str, tuple[float, int]] = {}
+
+
+def _rotating_stall_line(turn: turn_context_mod.TurnContext) -> tuple[str, bool]:
+    """Pick a grounded stall line, rotating so it is never verbatim-identical to
+    the one this principal just heard within the cooldown window. Returns the
+    line and whether it was a back-to-back repeat (a self-improvement signal)."""
+    key = getattr(turn, "principal", "") or "default"
+    now = _time.time()
+    last_at, index = _recent_fallback_lines.get(key, (0.0, -1))
+    repeated = bool(last_at and (now - last_at) < _FALLBACK_REPEAT_COOLDOWN_SECONDS)
+    index = index + 1 if repeated else 0
+    _recent_fallback_lines[key] = (now, index)
+    return _STALL_FALLBACK_LINES[index % len(_STALL_FALLBACK_LINES)], repeated
+
+
 def _ws_chat_timeout_result(user_text: str,
                             turn: turn_context_mod.TurnContext | None = None,
                             *, record: bool = True) -> dict:
     turn = turn or turn_context_mod.TurnContext.default()
     low = user_text.strip().lower()
+    fallback_repeat = False
     if low in {"hi", "hello", "hey", "hiya", "yo"}:
         reply = "Hi. I'm here with you. What should we focus on next?"
     elif any(term in low for term in ("stop walking", "stand still", "stay still", "stop moving")):
-        reply = "Okay. I'll stay still and listen while the deeper core catches up."
+        reply = "Okay. I'll stay still and listen while I catch up."
     else:
-        reply = (
-            "I'm here with you. My deeper model is taking too long, so I'm staying "
-            "in grounded live mode for this turn. Try that again if you want me to "
-            "send it through the full core."
-        )
+        reply, fallback_repeat = _rotating_stall_line(turn)
     if turn.principal != "creator":
         return {"reply": reply}
     model_use = {
@@ -1480,6 +1516,7 @@ def _ws_chat_timeout_result(user_text: str,
         "model": "",
         "ok": False,
         "fallback": True,
+        "fallback_repeat": fallback_repeat,
         "error": "WebSocket chat generation timed out.",
         "turn": turn.audit_metadata(),
     }
@@ -1548,6 +1585,26 @@ def _record_chat_stall_learning(*, safe: bool) -> None:
         pass
 
 
+def _record_fallback_repeat_learning() -> None:
+    """A back-to-back stall fallback is a bounded, creator-visible signal that
+    the reasoning tier is repeatedly overrunning its deadline. Route it into the
+    existing incident learner so it surfaces as an improvement cue rather than
+    silent churn -- this is the self-improvement hook for the repeated-fallback
+    pattern, not a new self-modifying loop."""
+    try:
+        incident_learning_mod.record_incident(
+            source="chat_runtime",
+            cue="chat-fallback-repeat",
+            summary="Alpecca delivered a stall fallback twice in a row before the model recovered.",
+            severity=0.7,
+            controllability=0.5,
+            prediction_error=0.9,
+        )
+    except Exception:
+        # Learning is best-effort; it must never break the fallback delivery.
+        pass
+
+
 def _compact_reply_compare(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
 
@@ -1595,6 +1652,34 @@ def _repair_echo_reply(user_text: str, result: dict,
     return {**result, **repaired}
 
 
+_TRIVIAL_ACK_TOKENS = frozenset({
+    "k", "kk", "kkk", "ok", "okay", "okey", "kay", "oki", "okie", "k thanks",
+    "yep", "yup", "yeah", "ya", "sure", "cool", "nice", "aight", "ight",
+    "word", "bet", "fr", "true", "facts", "np", "roger", "noted", "mhm", "mmhm",
+    "ty", "thx", "thanks", "thank you", "cheers", "ta", "tysm",
+    "got it", "gotit", "gotcha", "understood",
+    "lol", "lmao", "haha", "hah", "heh",
+})
+
+
+def _is_trivial_ack(user_text: str) -> bool:
+    """A bare acknowledgement/backchannel ("k", "ok", "ty", a lone emoji) that
+    does not warrant the slow reasoning core. Greetings, commands, and questions
+    are deliberately excluded -- those still get her natural reason-tier reply.
+    A one-character "k" invoking the full core and stalling into a timeout
+    fallback is exactly the Discord failure this guards against."""
+    raw = (user_text or "").strip()
+    if not raw:
+        return False
+    token = raw.lower().strip(" .!?,~-")
+    if token in _TRIVIAL_ACK_TOKENS:
+        return True
+    # A short reaction with no letters or digits (emoji/punctuation only).
+    if len(raw) <= 4 and not any(ch.isalnum() for ch in raw):
+        return True
+    return False
+
+
 def _house_chat_reply_tier(user_text: str, *, delivery: str = "text") -> str:
     """House HQ player chat should use the same natural core as Discord.
 
@@ -1607,7 +1692,14 @@ def _house_chat_reply_tier(user_text: str, *, delivery: str = "text") -> str:
     # begin while the exchange is still conversational. Typed House chat keeps
     # the fuller reasoning tier. The same CoreMind, memory, and safety gates run
     # in both cases; this only selects the bounded generation tier.
-    return "voice" if delivery == "voice" else "reason"
+    if delivery == "voice":
+        return "voice"
+    # A bare acknowledgement never needs the full reasoning core. Keeping it on
+    # the slow tier is what let a trivial "k" stall past the deadline and emit
+    # the canned timeout fallback; the fast tier answers it promptly instead.
+    if _is_trivial_ack(user_text):
+        return "fast"
+    return "reason"
 
 
 async def _locked_ws_chat_turn(turn: turn_context_mod.TurnContext,
@@ -1754,7 +1846,10 @@ async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = No
         release_priority_on_exit = False
         worker.add_done_callback(_finish_late_ws_chat_turn)
         _record_chat_stall_learning(safe=False)
-        return _ws_chat_timeout_result(user_text, turn=turn)
+        fallback = _ws_chat_timeout_result(user_text, turn=turn)
+        if (fallback.get("model_use") or {}).get("fallback_repeat"):
+            _record_fallback_repeat_learning()
+        return fallback
     except asyncio.CancelledError:
         turn.cancel("cancelled")
         release_priority_on_exit = False
@@ -3188,6 +3283,26 @@ async def lifespan(app: FastAPI):
             except Exception as exc:
                 _background_autonomy_status["last_automation_error"] = f"{type(exc).__name__}: {exc}"
 
+    async def voice_keepwarm_loop() -> None:
+        # Keep her voice WARM: after the one-shot startup warmup, periodically
+        # touch the voice engine so the first spoken line after an idle stretch
+        # is instant instead of paying a cold model load. Gentle by design -- it
+        # DEFERS whenever a real chat/voice turn is active so it never competes
+        # with a live turn (or the brain model) for a small GPU's VRAM.
+        from config import VOICE_ENABLED, VOICE_KEEPWARM, VOICE_KEEPWARM_INTERVAL
+        if not (VOICE_KEEPWARM and VOICE_ENABLED):
+            return
+        while True:
+            await asyncio.sleep(VOICE_KEEPWARM_INTERVAL)
+            try:
+                if _player_chat_priority_active() or active_tts_requests > 0:
+                    continue
+                warm = await _warm_alpecca_voice(timeout=8.0)
+                _background_autonomy_status["last_voice_keepwarm_at"] = _time.time()
+                _background_autonomy_status["last_voice_keepwarm"] = warm
+            except Exception as exc:
+                _background_autonomy_status["last_voice_keepwarm_error"] = f"{type(exc).__name__}: {exc}"
+
     task = asyncio.create_task(loop())
     mindscape_task = asyncio.create_task(mindscape_loop())
     continuity_journal_task = asyncio.create_task(continuity_journal_loop())
@@ -3195,6 +3310,7 @@ async def lifespan(app: FastAPI):
     from config import VOICE_WARMUP
     voice_warmup_task = (asyncio.create_task(_warm_alpecca_voice())
                          if VOICE_WARMUP else asyncio.create_task(asyncio.sleep(0)))
+    voice_keepwarm_task = asyncio.create_task(voice_keepwarm_loop())
     try:
         yield
     finally:
@@ -3203,6 +3319,7 @@ async def lifespan(app: FastAPI):
         mindscape_task.cancel()
         continuity_journal_task.cancel()
         automation_task.cancel()
+        voice_keepwarm_task.cancel()
         deferred_mindscape_task = _mindscape_event_sync_task
         _mindscape_event_sync_task = None
         if deferred_mindscape_task is not None:
@@ -9710,14 +9827,31 @@ async def tts(req: Request):
                 timeout=route_timeout,
             )
         except asyncio.TimeoutError:
-            tts_mod._last_error = "server voice timed out while warming or synthesizing"
-            return Response(
-                status_code=204,
-                headers={
-                    "X-Alpecca-TTS-Status": "fallback",
-                    "X-Alpecca-TTS-Error": _header_text(tts_mod._last_error),
-                    "X-Alpecca-Voice-Preview": preview_header,
-                },
+            result = None
+        # The cloud voice attempt is capped at the short live budget to stay
+        # snappy, but that same cap also starved the LOCAL fallback inside the
+        # cloud synth chain -- so a degraded/slow cloud endpoint left the voice
+        # channel SILENT for whole conversations (text still posted). When the
+        # fast cloud attempt yields nothing, synthesize her real local voice
+        # (Kokoro af_heart -- her actual profile, not a substitute) under the
+        # full local route budget so she still speaks instead of going quiet.
+        if not result and engine == "cloud":
+            try:
+                local_call = lambda: tts_mod.synth(
+                    synth_text,
+                    synth_state,
+                    backend_override="kokoro",
+                )
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(local_call),
+                    timeout=TTS_ROUTE_TIMEOUT,
+                )
+            except Exception:
+                result = None
+        if not result:
+            tts_mod._last_error = (
+                getattr(tts_mod, "_last_error", "")
+                or "server voice timed out while warming or synthesizing"
             )
     finally:
         active_tts_requests = max(0, active_tts_requests - 1)
