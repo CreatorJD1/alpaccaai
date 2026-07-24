@@ -36,7 +36,7 @@ from alpecca.experiment_trials import (
     ValidatedTrialSpecification,
     validate_trial_spec,
 )
-from alpecca.qualified_response_ledger import METRIC_NAME
+from alpecca.qualified_response_ledger import METRIC_NAME, QualifiedResponseLedger
 from config import DB_PATH
 
 
@@ -445,12 +445,21 @@ class BehaviorTrialCandidateStore:
         baseline: Mapping[str, Any],
         *,
         issued_at: float,
+        committed_evidence: Mapping[str, Any] | None = None,
     ) -> cognition.ActionProposal:
         completed = _count(baseline.get("completed"), name="baseline completed")
         qualified = _count(
             baseline.get("qualified_responses"), name="baseline qualified responses"
         )
         rate = _number(baseline.get("rate"), name="baseline rate")
+        provenance = ""
+        if committed_evidence is not None:
+            provenance = (
+                f"; source={committed_evidence['source']}; "
+                f"rows={committed_evidence['row_count']}; "
+                f"resolved={committed_evidence['resolved_count']}; "
+                f"evidence_sha256={committed_evidence['sha256']}"
+            )
         return cognition.ActionProposal(
             action="Consider a bounded proactive chatter trial",
             reason=(
@@ -462,7 +471,7 @@ class BehaviorTrialCandidateStore:
             status="testing",
             evidence=(
                 f"metric={PROFILE_METRIC}; qualified={qualified}; completed={completed}; "
-                f"rate={rate:.4f}; profile={CANDIDATE_KIND}"
+                f"rate={rate:.4f}; profile={CANDIDATE_KIND}{provenance}"
             ),
             result=(
                 "Creator may accept the plan, then separately register, approve, "
@@ -525,6 +534,57 @@ class BehaviorTrialCandidateStore:
         in one transaction.  The caller receives no path that can provide a
         candidate payload directly.
         """
+        return self._issue_from_baseline(
+            baseline,
+            preimage_value=preimage_value,
+            issued_at=issued_at,
+            committed_evidence=None,
+        )
+
+    def activate_from_committed_evidence(
+        self,
+        *,
+        preimage_value: object,
+        since: float | None = None,
+        issued_at: float | None = None,
+    ) -> dict[str, Any]:
+        """Issue one review-only candidate from durable outcome rows.
+
+        This model-free entrypoint intentionally accepts no baseline mapping.
+        It reads the SQLite evidence authority itself and cannot approve,
+        register, start, retain, or apply a trial.
+        """
+        committed = QualifiedResponseLedger(self.db_path).committed_baseline_evidence(
+            since=since
+        )
+        baseline = committed["baseline"]
+        result = self._issue_from_baseline(
+            baseline,
+            preimage_value=preimage_value,
+            issued_at=issued_at,
+            committed_evidence=committed,
+        )
+        return {
+            **result,
+            "activation": {
+                "source": committed["source"],
+                "row_count": committed["row_count"],
+                "resolved_count": committed["resolved_count"],
+                "evidence_sha256": committed["sha256"],
+                "model_calls": 0,
+                "authorizes_trial_start": False,
+                "authorizes_source_edits": False,
+            },
+        }
+
+    def _issue_from_baseline(
+        self,
+        baseline: Mapping[str, Any],
+        *,
+        preimage_value: object,
+        issued_at: float | None,
+        committed_evidence: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
         self._ensure_schema()
         try:
             assert_chatter_trial_feasible(
@@ -545,7 +605,11 @@ class BehaviorTrialCandidateStore:
             return {"issued": False, "reason": reason}
         stamp = _timestamp(time.time() if issued_at is None else issued_at, name="issued_at")
         candidate_json = _canonical_json(payload, name="candidate payload")
-        proposal = self._proposal_for_candidate(baseline, issued_at=stamp)
+        proposal = self._proposal_for_candidate(
+            baseline,
+            issued_at=stamp,
+            committed_evidence=committed_evidence,
+        )
         with connect(self.db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
             active = self._active_issued_candidate_in_transaction(conn)

@@ -7,6 +7,8 @@ delivery can become part of the metric denominator.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import sqlite3
 import time
@@ -535,6 +537,67 @@ class QualifiedResponseLedger:
             "definition_version": DEFINITION_VERSION,
             "since": cutoff,
             **self._finalize_bucket(bucket),
+        }
+
+    def committed_baseline_evidence(self, *, since: float | None = None) -> dict[str, Any]:
+        """Return a content-free proof that a baseline came from committed rows.
+
+        The digest binds the exact durable outcome rows without exposing their
+        delivery or response identifiers to the RSI candidate surface. Pending
+        rows remain visible in the aggregate and therefore prevent activation.
+        """
+        cutoff = None if since is None else _timestamp(since, name="since")
+        database_uri = self.db_path.resolve().as_uri() + "?mode=ro"
+        query = (
+            "SELECT delivery_id, state, dispatched_at, delivered_at, deadline_at, "
+            "response_turn_id, response_at, resolved_at "
+            "FROM qualified_response_outcomes WHERE metric=? "
+            "AND definition_version=? AND cohort='baseline'"
+        )
+        params: list[object] = [METRIC_NAME, DEFINITION_VERSION]
+        if cutoff is not None:
+            query += " AND dispatched_at>=?"
+            params.append(cutoff)
+        query += " ORDER BY delivery_id"
+        with sqlite3.connect(database_uri, uri=True) as conn:
+            rows = conn.execute(query, params).fetchall()
+        canonical_rows = [list(row) for row in rows]
+        material = json.dumps(
+            canonical_rows,
+            ensure_ascii=True,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        bucket = self._summary_bucket()
+        for row in canonical_rows:
+            state = str(row[1])
+            if state not in _STATES:
+                continue
+            key = {
+                DISPATCHING: "dispatching",
+                PENDING: "pending",
+                RESPONDED: "qualified_responses",
+                UNANSWERED: "unanswered",
+                CANCELLED: "cancelled",
+            }[state]
+            bucket[key] += 1
+        baseline = {
+            "metric": METRIC_NAME,
+            "definition_version": DEFINITION_VERSION,
+            "since": cutoff,
+            **self._finalize_bucket(bucket),
+        }
+        return {
+            "source": "sqlite:qualified_response_outcomes",
+            "metric": METRIC_NAME,
+            "definition_version": DEFINITION_VERSION,
+            "since": cutoff,
+            "row_count": len(canonical_rows),
+            "resolved_count": sum(
+                1 for row in canonical_rows if row[1] in {RESPONDED, UNANSWERED}
+            ),
+            "sha256": hashlib.sha256(material).hexdigest(),
+            "baseline": baseline,
         }
 
     def trial_summary(self, trial_id: int) -> dict[str, Any]:

@@ -304,6 +304,7 @@ SENSE_AGENTS = tuple(s.name for s in SUBAGENT_SPECS if s.kind == "sense")
 REASON_AGENTS = tuple(s.name for s in SUBAGENT_SPECS if s.kind == "reason")
 
 PERSPECTIVE_VECTOR_SCHEMA = "alpecca.soul-perspective-vector.v1"
+ESCALATION_ELIGIBILITY_SCHEMA = "alpecca.soul-escalation-eligibility.v1"
 PERSPECTIVE_ORDER = tuple(s.name for s in SUBAGENT_SPECS)
 CONTRADICTION_SCORE_MIN = 0.40
 
@@ -473,6 +474,14 @@ class MasterAgent:
             for pair in _CONTRADICTORY_DIRECTIONS
         )
         pressure = _combined_pressure_mode(snap)
+        reason_codes: list[str] = []
+        if contradiction:
+            reason_codes.append("perspective_contradiction")
+        if pressure == "high":
+            reason_codes.append("measured_pressure_high")
+        elif pressure == "overflow":
+            reason_codes.append("measured_pressure_overflow")
+        escalation_eligible = bool(reason_codes)
         focus_index = (
             PERSPECTIVE_ORDER.index(focus.subagent)
             if focus is not None and focus.subagent in PERSPECTIVE_ORDER
@@ -487,7 +496,14 @@ class MasterAgent:
             "focus_index": focus_index,
             "contradiction": contradiction,
             "pressure": pressure,
-            "escalate": contradiction or pressure != "none",
+            "escalate": escalation_eligible,
+            "escalation_eligibility": {
+                "schema": ESCALATION_ELIGIBILITY_SCHEMA,
+                "eligible": escalation_eligible,
+                "reason_codes": reason_codes,
+                "requires_committed_evidence": True,
+                "authorizes_action": False,
+            },
             "source": "deterministic",
             "model_calls": 0,
             "independent_transformers": False,

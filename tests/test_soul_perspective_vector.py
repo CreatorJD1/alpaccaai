@@ -54,6 +54,13 @@ def test_vector_exposes_all_seven_perspectives_in_stable_order() -> None:
     assert first["source"] == "deterministic"
     assert first["model_calls"] == 0
     assert first["independent_transformers"] is False
+    assert first["escalation_eligibility"] == {
+        "schema": soul.ESCALATION_ELIGIBILITY_SCHEMA,
+        "eligible": False,
+        "reason_codes": [],
+        "requires_committed_evidence": True,
+        "authorizes_action": False,
+    }
     assert len(json.dumps(first, separators=(",", ":"))) < 700
 
 
@@ -81,6 +88,9 @@ def test_vector_values_remain_bounded_for_extreme_grounded_inputs() -> None:
     assert all(0 <= rank <= 4 for rank in vector["ranks"])
     assert vector["pressure"] == "overflow"
     assert vector["escalate"] is True
+    assert vector["escalation_eligibility"]["eligible"] is True
+    assert "measured_pressure_overflow" in vector["escalation_eligibility"]["reason_codes"]
+    assert vector["escalation_eligibility"]["authorizes_action"] is False
     focus_name = plan["focus"]["subagent"]
     assert vector["order"][vector["focus_index"]] == focus_name
 
@@ -126,6 +136,12 @@ def test_memory_and_host_pressure_are_evidence_without_changing_scores_source() 
     assert memory_vector["escalate"] is True
     assert host_vector["pressure"] == "overflow"
     assert host_vector["escalate"] is True
+    assert memory_vector["escalation_eligibility"]["reason_codes"] == [
+        "measured_pressure_high"
+    ]
+    assert host_vector["escalation_eligibility"]["reason_codes"] == [
+        "measured_pressure_overflow"
+    ]
     assert memory_vector["source"] == host_vector["source"] == "deterministic"
 
 
