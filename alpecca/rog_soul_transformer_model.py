@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 from typing import Any, Mapping, Sequence
 
+from alpecca.multimodal_affect_fusion import EMOTION_ORDER
 from alpecca.soul import PERSPECTIVE_ORDER
 
 
@@ -33,6 +34,7 @@ EXPECTED_HEAD_ORDER = (
     "Reflector",
     "Improver",
 )
+EXPECTED_EMOTION_ORDER = tuple(EMOTION_ORDER)
 if PERSPECTIVE_ORDER != EXPECTED_HEAD_ORDER:
     raise RuntimeError("Soul perspective order changed; transformer contract needs review")
 
@@ -104,8 +106,8 @@ def _exact_head_order(value: object) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class ModelDimensions:
-    text_emotion_dim: int = 8
-    speech_emotion_dim: int = 8
+    text_emotion_dim: int = len(EXPECTED_EMOTION_ORDER)
+    speech_emotion_dim: int = len(EXPECTED_EMOTION_ORDER)
     model_dim: int = 32
     attention_heads: int = 4
     backbone_layers: int = 1
@@ -509,6 +511,7 @@ class SoulTransformerBackend:
             "runtime_id": self.runtime_id,
             "weights_sha256": self.weights_sha256,
             "perspectives": list(EXPECTED_HEAD_ORDER),
+            "emotion_order": list(EXPECTED_EMOTION_ORDER),
             "text_emotion_dim": self.metadata.dimensions.text_emotion_dim,
             "speech_emotion_dim": self.metadata.dimensions.speech_emotion_dim,
         }
@@ -528,8 +531,11 @@ class SoulTransformerBackend:
         text_emotion: Sequence[float],
         speech_emotion: Sequence[float],
         timeout_seconds: float,
+        emotion_order: Sequence[str] = EXPECTED_EMOTION_ORDER,
     ) -> dict[str, object]:
         _number(timeout_seconds, "timeout_seconds", 0.05, 60.0)
+        if tuple(emotion_order) != EXPECTED_EMOTION_ORDER:
+            raise SoulTransformerContractError("emotion order does not match checkpoint")
         dims = self.metadata.dimensions
         if len(text_emotion) != dims.text_emotion_dim or len(speech_emotion) != dims.speech_emotion_dim:
             raise SoulTransformerContractError("inference dimensions do not match checkpoint")
@@ -568,6 +574,7 @@ def create_backend(
     perspectives: Sequence[str],
     text_emotion_dim: int,
     speech_emotion_dim: int,
+    emotion_order: Sequence[str] = EXPECTED_EMOTION_ORDER,
     evaluation_manifest_path: str | None = None,
     device: str | None = None,
 ) -> SoulTransformerBackend:
@@ -575,6 +582,8 @@ def create_backend(
 
     if architecture != ARCHITECTURE or tuple(perspectives) != EXPECTED_HEAD_ORDER:
         raise SoulTransformerContractError("worker architecture contract does not match")
+    if tuple(emotion_order) != EXPECTED_EMOTION_ORDER:
+        raise SoulTransformerContractError("worker emotion order does not match")
     if not _SHA256_RE.fullmatch(weights_sha256):
         raise SoulTransformerContractError("weights SHA-256 is invalid")
     path = Path(weights_path).expanduser().resolve(strict=True)
@@ -623,6 +632,7 @@ __all__ = [
     "ARCHITECTURE",
     "CHECKPOINT_SCHEMA",
     "EVALUATION_SCHEMA",
+    "EXPECTED_EMOTION_ORDER",
     "EXPECTED_HEAD_ORDER",
     "CalibrationMetadata",
     "CheckpointMetadata",

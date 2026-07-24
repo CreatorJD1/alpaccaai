@@ -56,7 +56,7 @@ def test_normal_import_preserves_exact_soul_order_without_requiring_torch() -> N
 
 def test_checkpoint_metadata_is_strict_versioned_calibrated_and_unqualified() -> None:
     parsed = model_mod.parse_checkpoint_metadata(_metadata())
-    assert parsed.dimensions.text_emotion_dim == 8
+    assert parsed.dimensions.text_emotion_dim == 7
     assert parsed.calibration.method == "per-head-temperature-v1"
     assert parsed.qualified is False
     assert parsed.as_dict()["authorizes_action"] is False
@@ -157,8 +157,9 @@ def test_checkpoint_round_trip_stays_shadow_only(tmp_path) -> None:
         weights_sha256=digest,
         architecture=model_mod.ARCHITECTURE,
         perspectives=model_mod.EXPECTED_HEAD_ORDER,
-        text_emotion_dim=8,
-        speech_emotion_dim=8,
+        emotion_order=model_mod.EXPECTED_EMOTION_ORDER,
+        text_emotion_dim=7,
+        speech_emotion_dim=7,
         device="cpu",
     )
     assert backend.qualification_report() == {
@@ -169,8 +170,9 @@ def test_checkpoint_round_trip_stays_shadow_only(tmp_path) -> None:
         "authorizes_action": False,
     }
     result = backend.infer(
-        text_emotion=[0.0] * 8,
-        speech_emotion=[0.0] * 8,
+        text_emotion=[1.0] + [0.0] * 6,
+        speech_emotion=[1.0] + [0.0] * 6,
+        emotion_order=model_mod.EXPECTED_EMOTION_ORDER,
         timeout_seconds=1.0,
     )
     assert len(result["scores"]) == 7
