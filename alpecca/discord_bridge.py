@@ -240,6 +240,12 @@ EMPTY_ROOM_NUDGE_QUIET = max(
     5.0 * 60.0,
     float(os.environ.get("ALPECCA_DISCORD_EMPTY_ROOM_NUDGE_QUIET", "1200")),
 )
+# A known direct-message surface is also an outbound presence channel. Alpecca
+# may decide to start a new topic there without pretending a human spoke first.
+DIRECT_INITIATIVE_QUIET = max(
+    60.0,
+    float(os.environ.get("ALPECCA_DISCORD_DIRECT_INITIATIVE_QUIET", "300")),
+)
 # Recursive self-continuation: when the room goes quiet after SHE spoke, she may
 # continue her own train of thought a little deeper -- bounded, paced, and it
 # yields the instant any human speaks, so it never becomes a monologue/spam.
@@ -1848,16 +1854,11 @@ def build_client() -> discord.Client:
         restored_users: set[str] = set()
 
         async def restore(channel: object, participant: object) -> None:
-            channel_id = getattr(channel, "id", None)
-            participant_id = getattr(participant, "id", None)
-            if channel_id is None or participant_id is None:
+            direct_room = _register_direct_room(channel, participant)
+            if direct_room is None:
                 return
-            direct_room = {
-                "channel_id": str(channel_id),
-                "user_id": str(participant_id),
-            }
-            direct_rooms[int(channel_id)] = direct_room
-            restored_users.add(str(participant_id))
+            channel_id = int(direct_room["channel_id"])
+            restored_users.add(direct_room["user_id"])
             # The common history loader only needs a numeric scope for optional
             # voice-memory lookup. Zero denotes a DM and has no guild records.
             await _seed_room_history(
@@ -2017,6 +2018,7 @@ def build_client() -> discord.Client:
     channel_obj: dict[int, "discord.abc.Messageable"] = {}   # channel -> where to post
     history_buf: dict[int, list] = {}             # channel -> [(author, content), ...] recent
     direct_rooms: dict[int, dict[str, str]] = {}  # DM channel -> participant binding
+    direct_ready_at: dict[int, float] = {}         # DM channel -> outbound surface ready ts
     last_participate_eval: dict[int, float] = {}  # channel -> ts she last weighed chiming in
     _sweepers_started = {"recursive": False, "proactive": False}
     _proactive_global_eval = {"at": 0.0}
@@ -2025,6 +2027,28 @@ def build_client() -> discord.Client:
     voice_locks: dict[int, asyncio.Lock] = {}
     voice_transcribe_lock = asyncio.Lock()
     voice_receive_sessions: dict[int, dict[str, object]] = {}
+
+    def _register_direct_room(
+        channel: object,
+        participant: object,
+        *,
+        observed_at: float | None = None,
+    ) -> dict[str, str] | None:
+        channel_id = getattr(channel, "id", None)
+        participant_id = getattr(participant, "id", None)
+        if channel_id is None or participant_id is None:
+            return None
+        chan = int(channel_id)
+        room = direct_rooms.setdefault(
+            chan,
+            {"channel_id": str(chan), "user_id": str(participant_id)},
+        )
+        channel_obj[chan] = channel
+        direct_ready_at.setdefault(
+            chan,
+            time.monotonic() if observed_at is None else float(observed_at),
+        )
+        return room
 
     def _model_room_history(chan_id: int) -> list[tuple[str, str]]:
         """Remove resolved bridge media exchanges from model-facing context."""
@@ -3146,11 +3170,7 @@ def build_client() -> discord.Client:
             media_request_text = text
             channel_label = "discord-dm"
             chan = int(message.channel.id)
-            direct_rooms.setdefault(
-                chan,
-                {"channel_id": str(chan), "user_id": str(message.author.id)},
-            )
-            channel_obj[chan] = message.channel
+            _register_direct_room(message.channel, message.author, observed_at=now)
             author_label = str(
                 getattr(message.author, "display_name", None)
                 or getattr(message.author, "name", None)
@@ -3830,7 +3850,7 @@ def build_client() -> discord.Client:
                         continue
                     await _seed_room_history(ch, room, observed_at=tick_now)
                 context = _recent_context(chan).strip()
-                if len(context) < max(1, PROACTIVE_MIN_LEN):
+                if not is_direct and len(context) < max(1, PROACTIVE_MIN_LEN):
                     continue
                 human_evidence = _room_human_evidence_supports_autonomy(
                     history_buf.get(chan, [])
@@ -3841,6 +3861,7 @@ def build_client() -> discord.Client:
                     human_snapshot,
                     her_last_ts.get(chan, 0.0),
                     last_reply_at.get(chan, 0.0),
+                    direct_ready_at.get(chan, 0.0) if is_direct else 0.0,
                 )
                 if (
                     latest_activity <= 0.0
@@ -3857,6 +3878,13 @@ def build_client() -> discord.Client:
                     last_initiative_human_ts.get(chan, 0.0),
                 ) and human_evidence:
                     initiative_kind = "human-turn"
+                elif (
+                    is_direct
+                    and tick_now - latest_activity >= DIRECT_INITIATIVE_QUIET
+                    and tick_now - last_empty_room_nudge_at.get(chan, 0.0)
+                    >= DIRECT_INITIATIVE_QUIET
+                ):
+                    initiative_kind = "direct-idle"
                 elif (
                     human_evidence
                     and human_snapshot > 0.0
@@ -3906,6 +3934,15 @@ def build_client() -> discord.Client:
                         "otherwise pass. Do not imply anyone replied, revive an old "
                         "capability issue, or repeat a previous question.\n"
                     )
+                elif initiative_kind == "direct-idle":
+                    prompt_prefix = (
+                        "Initiative kind: self-started direct conversation.\n"
+                        "No active conversation or new human message is required. "
+                        "Decide whether to start one short, natural topic grounded "
+                        "in Alpecca's current state, time awareness, remembered "
+                        "interests, or a genuine question. Otherwise pass. Do not "
+                        "pretend anyone just spoke or continue an imaginary dialogue.\n"
+                    )
                 else:
                     prompt_prefix = (
                         "Initiative kind: quiet-room opener after a new human turn.\n"
@@ -3917,7 +3954,7 @@ def build_client() -> discord.Client:
                 prompt = (
                     prompt_prefix
                     + "\nRecent room messages:\n"
-                    + context
+                    + (context or "[No active Discord conversation is in progress.]")
                     + ("\n\n" + presence_context if presence_context else "")
                 )[:7_500]
                 try:
@@ -3948,7 +3985,7 @@ def build_client() -> discord.Client:
                 if _room_reply_is_pass(raw_reply):
                     _diagnostic("proactive_room_passed", status="model")
                     return
-                if initiative_kind == "empty-room" and (
+                if initiative_kind in {"empty-room", "direct-idle"} and (
                     len(raw_reply) > 180
                     or raw_reply.count("\n") > 0
                     or _EMPTY_ROOM_FALSE_DIALOGUE_RE.search(raw_reply) is not None
@@ -4136,5 +4173,6 @@ def build_client() -> discord.Client:
     setattr(client, "_alpecca_proactive_sweep_once", _proactive_sweep_once)
     setattr(client, "_alpecca_recursive_sweep_once", _recursive_sweep_once)
     setattr(client, "_alpecca_seed_room_history", _seed_room_history)
+    setattr(client, "_alpecca_register_direct_room", _register_direct_room)
     setattr(client, "_alpecca_recent_context", _recent_context)
     return client

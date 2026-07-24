@@ -321,6 +321,64 @@ def test_creator_dm_can_receive_one_bounded_unprompted_follow_up(
     assert channel.sent == ["One more thought: how are you doing?"]
     assert len(prompts) == 1
     assert "Initiative kind: quiet-room opener after a new human turn." in prompts[0]
+    assert "Alpecca: I heard you." in prompts[0]
+
+
+def test_known_creator_dm_can_start_without_an_active_conversation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(discord_bridge, "DEBUG", False)
+    monkeypatch.setattr(discord_bridge, "_load_social_rooms", lambda: {})
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_IDS", {"42"})
+    monkeypatch.setattr(discord_bridge, "DM_ALLOW_NAMES", set())
+    monkeypatch.setattr(discord_bridge, "VOICE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "RECURSIVE_ENABLED", False)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_ENABLED", True)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_COOLDOWN", 0.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_GLOBAL_COOLDOWN", 0.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_QUIET_MIN", 1.0)
+    monkeypatch.setattr(discord_bridge, "DIRECT_INITIATIVE_QUIET", 5.0)
+    monkeypatch.setattr(discord_bridge, "PROACTIVE_MIN_LEN", 999)
+    monkeypatch.setattr(
+        discord_bridge.random,
+        "random",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("direct initiative must be a model decision")
+        ),
+    )
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        discord_bridge,
+        "_ask_room_autonomy",
+        lambda prompt, _scope: prompts.append(prompt) or "Jason, what are you up to today?",
+    )
+
+    client = discord_bridge.build_client()
+    client._connection.user = SimpleNamespace(
+        id=_BOT_ID,
+        name="Alpecca",
+        display_name="Alpecca",
+    )
+    channel = _Channel()
+    channel.guild = None
+    participant = SimpleNamespace(
+        id=42,
+        name="realcreatorjd",
+        display_name="CreatorJD",
+        bot=False,
+    )
+    client._alpecca_register_direct_room(channel, participant, observed_at=1.0)
+
+    async def scenario() -> None:
+        await client._alpecca_proactive_sweep_once(now=10.0)
+        await client._alpecca_proactive_sweep_once(now=11.0)
+
+    asyncio.run(scenario())
+
+    assert channel.sent == ["Jason, what are you up to today?"]
+    assert len(prompts) == 1
+    assert "Initiative kind: self-started direct conversation." in prompts[0]
+    assert "[No active Discord conversation is in progress.]" in prompts[0]
 
 
 def test_proactive_voice_contradiction_is_corrected_once_without_self_repeat(
