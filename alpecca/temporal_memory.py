@@ -24,6 +24,7 @@ FACTS_TABLE = "temporal_memory_facts"
 OBSERVATIONS_TABLE = "temporal_memory_observations"
 EVIDENCE_TABLE = "temporal_memory_fact_evidence"
 CONTRADICTIONS_TABLE = "temporal_memory_contradictions"
+SOURCE_CURSORS_TABLE = "temporal_memory_source_cursors"
 
 MAX_IDENTIFIER_CHARS = 200
 MAX_FACT_PART_CHARS = 4_000
@@ -249,6 +250,12 @@ def init_db(db_path: Path) -> None:
                 FOREIGN KEY(fact_id) REFERENCES {FACTS_TABLE}(id) ON DELETE CASCADE,
                 FOREIGN KEY(contradicts_fact_id) REFERENCES {FACTS_TABLE}(id) ON DELETE CASCADE,
                 FOREIGN KEY(observation_id) REFERENCES {OBSERVATIONS_TABLE}(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS {SOURCE_CURSORS_TABLE} (
+                source_name  TEXT PRIMARY KEY,
+                last_row_id  INTEGER NOT NULL DEFAULT 0,
+                updated_at   REAL NOT NULL
             );
             """
         )
@@ -761,12 +768,93 @@ class TemporalMemoryStore:
             ).fetchall()
         return [self._contradiction_from_row(row) for row in rows]
 
+    def source_cursor(self, source_name: str) -> int:
+        """Return the durable high-water mark for a committed evidence source."""
+
+        source = _clean_text(
+            source_name, name="source_name", maximum=MAX_IDENTIFIER_CHARS,
+        )
+        with self._connection() as conn:
+            row = conn.execute(
+                f"SELECT last_row_id FROM {SOURCE_CURSORS_TABLE} WHERE source_name=?",
+                (source,),
+            ).fetchone()
+        return 0 if row is None else int(row["last_row_id"])
+
+    def advance_source_cursor(
+        self,
+        source_name: str,
+        row_id: int,
+        *,
+        updated_at: float | None = None,
+    ) -> int:
+        """Monotonically checkpoint a scanned source row, safe under replay."""
+
+        source = _clean_text(
+            source_name, name="source_name", maximum=MAX_IDENTIFIER_CHARS,
+        )
+        if type(row_id) is not int or row_id <= 0:
+            raise TemporalMemoryError("row_id must be a positive integer")
+        stamp = _timestamp(
+            time.time() if updated_at is None else updated_at,
+            name="updated_at",
+        )
+        with self._connection() as conn:
+            conn.execute(
+                f"INSERT INTO {SOURCE_CURSORS_TABLE} "
+                "(source_name, last_row_id, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(source_name) DO UPDATE SET "
+                "last_row_id=max(last_row_id, excluded.last_row_id), "
+                "updated_at=CASE WHEN excluded.last_row_id>=last_row_id "
+                "THEN excluded.updated_at ELSE updated_at END",
+                (source, row_id, stamp),
+            )
+            row = conn.execute(
+                f"SELECT last_row_id FROM {SOURCE_CURSORS_TABLE} WHERE source_name=?",
+                (source,),
+            ).fetchone()
+        assert row is not None
+        return int(row["last_row_id"])
+
+    def prune_unreferenced_observations(
+        self,
+        *,
+        before: float,
+        limit: int = 256,
+    ) -> int:
+        """Delete old observations only when no fact or contradiction uses them."""
+
+        cutoff = _timestamp(before, name="before")
+        if type(limit) is not int or not 1 <= limit <= 1_000:
+            raise TemporalMemoryError("limit must be between 1 and 1000")
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"SELECT observation.id FROM {OBSERVATIONS_TABLE} AS observation "
+                "WHERE observation.recorded_at<? "
+                f"AND NOT EXISTS (SELECT 1 FROM {EVIDENCE_TABLE} AS evidence "
+                "WHERE evidence.observation_id=observation.id) "
+                f"AND NOT EXISTS (SELECT 1 FROM {CONTRADICTIONS_TABLE} AS contradiction "
+                "WHERE contradiction.observation_id=observation.id) "
+                "ORDER BY observation.recorded_at, observation.id LIMIT ?",
+                (cutoff, limit),
+            ).fetchall()
+            ids = tuple(int(row["id"]) for row in rows)
+            if not ids:
+                return 0
+            cursor = conn.execute(
+                f"DELETE FROM {OBSERVATIONS_TABLE} WHERE id IN "
+                f"({','.join('?' for _ in ids)})",
+                ids,
+            )
+        return int(cursor.rowcount)
+
 
 __all__ = [
     "CONTRADICTIONS_TABLE",
     "EVIDENCE_TABLE",
     "FACTS_TABLE",
     "OBSERVATIONS_TABLE",
+    "SOURCE_CURSORS_TABLE",
     "ContradictionLink",
     "EvidenceObservation",
     "FactEvidence",

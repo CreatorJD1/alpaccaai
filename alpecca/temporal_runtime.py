@@ -12,10 +12,12 @@ from dataclasses import dataclass
 from hashlib import sha256
 import json
 import math
+from pathlib import Path
+import sqlite3
 from threading import RLock
 import time
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from alpecca.temporal_derivation import (
     BoundedObservation,
@@ -27,6 +29,7 @@ from alpecca.temporal_derivation import (
     ShadowRecallComparison,
     TemporalDerivationError,
     compare_shadow_recall,
+    contains_explicit_temporal_statement,
     derive_and_apply,
 )
 from alpecca.temporal_memory import EvidenceObservation, TemporalMemoryStore
@@ -101,6 +104,18 @@ class TemporalRuntimeStatus:
     max_derivation_attempts: int
     pending_queue_rehydrated: bool
     restart_policy: str
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedEvidenceResult:
+    scanned_rows: int
+    eligible_rows: int
+    ingested_rows: int
+    duplicate_rows: int
+    facts_derived: int
+    cancelled: bool
+    exhausted: bool
+    source_cursors: Mapping[str, int]
 
 
 class TemporalRuntime:
@@ -329,6 +344,139 @@ class TemporalRuntime:
         with self._lock:
             return tuple(self._dead_letters)
 
+    def derive_committed_evidence(
+        self,
+        *,
+        source_db_path: Path | None = None,
+        max_rows: int = 16,
+        max_chars: int = MAX_TOTAL_CHARS,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> CommittedEvidenceResult:
+        """Derive explicit facts from bounded, already-committed local rows.
+
+        Only SQLite-visible ``chat_turns`` and ``memories`` rows are read.
+        Ordinary prose advances a durable cursor but is never guessed into a
+        fact or copied into temporal storage.
+        """
+
+        if type(max_rows) is not int or not 1 <= max_rows <= 64:
+            raise ValueError("max_rows must be between 1 and 64")
+        if type(max_chars) is not int or not 1 <= max_chars <= MAX_TOTAL_CHARS:
+            raise ValueError(f"max_chars must be between 1 and {MAX_TOTAL_CHARS}")
+        if cancelled is not None and not callable(cancelled):
+            raise TypeError("cancelled must be callable")
+        is_cancelled = cancelled or (lambda: False)
+        source_path = Path(source_db_path or self._store.db_path)
+        source_names = ("committed_chat_turn", "committed_memory")
+        cursors = {name: self._store.source_cursor(name) for name in source_names}
+        if is_cancelled():
+            return CommittedEvidenceResult(
+                0, 0, 0, 0, 0, True, False, MappingProxyType(cursors),
+            )
+
+        rows = self._committed_rows(source_path, cursors, max_rows=max_rows)
+        scanned = eligible = ingested = duplicates = facts = chars = 0
+        stopped = False
+        for item in rows:
+            if is_cancelled():
+                stopped = True
+                break
+            text = str(item["text"])
+            if chars + len(text) > max_chars:
+                break
+            chars += len(text)
+            scanned += 1
+            source = str(item["source"])
+            row_id = int(item["row_id"])
+            if contains_explicit_temporal_statement(text):
+                eligible += 1
+                result = self.ingest_observation(
+                    text,
+                    source=source,
+                    channel=str(item["surface"]),
+                    actor_id=str(item["actor_id"]),
+                    scope=str(item["scope"]),
+                    observed_at=float(item["observed_at"]),
+                    observation_uid=f"{source}-{row_id}",
+                    raw_reference=f"{item['table']}:{row_id}",
+                    metadata={
+                        "committed_row": True,
+                        "row_id": row_id,
+                        "table": str(item["table"]),
+                    },
+                )
+                if result.duplicate:
+                    duplicates += 1
+                elif result.queued:
+                    ingested += 1
+                    facts += len(self.process_batch(limit=1).outcomes)
+            cursors[source] = self._store.advance_source_cursor(source, row_id)
+        return CommittedEvidenceResult(
+            scanned_rows=scanned,
+            eligible_rows=eligible,
+            ingested_rows=ingested,
+            duplicate_rows=duplicates,
+            facts_derived=facts,
+            cancelled=stopped,
+            exhausted=not stopped and scanned == len(rows) and len(rows) < max_rows,
+            source_cursors=MappingProxyType(dict(cursors)),
+        )
+
+    @staticmethod
+    def _committed_rows(
+        db_path: Path,
+        cursors: Mapping[str, int],
+        *,
+        max_rows: int,
+    ) -> tuple[dict[str, object], ...]:
+        """Read a bounded merged stream from committed source tables."""
+
+        with sqlite3.connect(db_path, timeout=5.0) as conn:
+            conn.row_factory = sqlite3.Row
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            values: list[dict[str, object]] = []
+            if "chat_turns" in tables:
+                for row in conn.execute(
+                    "SELECT id,ts,room,user_text,reply,scope FROM chat_turns "
+                    "WHERE id>? ORDER BY id LIMIT ?",
+                    (cursors["committed_chat_turn"], max_rows),
+                ):
+                    values.append({
+                        "source": "committed_chat_turn",
+                        "table": "chat_turns",
+                        "row_id": int(row["id"]),
+                        "observed_at": float(row["ts"]),
+                        "surface": str(row["room"] or "chat"),
+                        "actor_id": "committed-conversation",
+                        "scope": str(row["scope"] or "shared"),
+                        "text": f"{row['user_text']}\n{row['reply']}",
+                    })
+            if "memories" in tables:
+                for row in conn.execute(
+                    "SELECT id,ts,kind,content,scope FROM memories "
+                    "WHERE id>? ORDER BY id LIMIT ?",
+                    (cursors["committed_memory"], max_rows),
+                ):
+                    values.append({
+                        "source": "committed_memory",
+                        "table": "memories",
+                        "row_id": int(row["id"]),
+                        "observed_at": float(row["ts"]),
+                        "surface": "memory",
+                        "actor_id": "committed-memory",
+                        "scope": str(row["scope"] or "shared"),
+                        "text": str(row["content"]),
+                    })
+        values.sort(key=lambda item: (
+            float(item["observed_at"]), str(item["source"]), int(item["row_id"]),
+        ))
+        return tuple(values[:max_rows])
+
     def compare_shadow_recall(
         self,
         legacy_results: Sequence[object],
@@ -509,6 +657,7 @@ TemporalRuntimeAdapter = TemporalRuntime
 
 
 __all__ = [
+    "CommittedEvidenceResult",
     "ObservationIngestion",
     "ObservationProvenance",
     "TemporalBatchResult",

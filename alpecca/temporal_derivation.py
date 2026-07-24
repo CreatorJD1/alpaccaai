@@ -39,6 +39,14 @@ _LINE = re.compile(
 )
 
 
+def contains_explicit_temporal_statement(text: object) -> bool:
+    """Whether persisted text contains a statement the safe extractor accepts."""
+
+    if not isinstance(text, str):
+        return False
+    return any(_LINE.fullmatch(line) is not None for line in text.splitlines())
+
+
 class TemporalDerivationError(ValueError):
     """A bounded input or extraction candidate was rejected."""
 

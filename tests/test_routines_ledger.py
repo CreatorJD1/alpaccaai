@@ -395,3 +395,38 @@ def test_legacy_due_and_mark_ran_are_idempotent():
         assert [r["id"] for r in routines.due(now=now, db_path=db)] == [row["id"]]
         routines.mark_ran(row["id"], now=now, db_path=db)
         assert routines.due(now=now, db_path=db) == []
+
+
+def test_empty_catalog_bootstraps_internal_maintenance_once():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = _fresh_db(tmp)
+
+        created = routines.bootstrap_safe_internal(db_path=db)
+        replay = routines.bootstrap_safe_internal(db_path=db)
+
+        assert [row["kind"] for row in created] == [
+            "consolidate_observations",
+            "embed_backfill",
+            "vacuum",
+        ]
+        assert all(row["enabled"] == 1 and row["weekday"] == -1 for row in created)
+        assert replay == []
+        assert len(routines.list_all(db_path=db)) == 3
+
+
+def test_cancelled_or_preconfigured_catalog_is_not_bootstrapped():
+    with tempfile.TemporaryDirectory() as tmp:
+        cancelled_db = _fresh_db(tmp)
+        assert routines.bootstrap_safe_internal(
+            db_path=cancelled_db,
+            cancelled=lambda: True,
+        ) == []
+        assert routines.list_all(db_path=cancelled_db) == []
+
+    with tempfile.TemporaryDirectory() as tmp:
+        configured_db = _fresh_db(tmp)
+        existing = _add_daily(configured_db, hour=9)
+        assert routines.bootstrap_safe_internal(db_path=configured_db) == []
+        assert [row["id"] for row in routines.list_all(db_path=configured_db)] == [
+            existing["id"]
+        ]
