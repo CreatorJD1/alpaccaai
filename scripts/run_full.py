@@ -138,12 +138,12 @@ os.environ.setdefault("ALPECCA_CLOUD_TTS_TIMEOUT_SECONDS", "2.5")
 os.environ.setdefault("ALPECCA_LIVE_TTS_TIMEOUT", "3.0")
 os.environ.setdefault("ALPECCA_DISCORD_VOICE_TIMEOUT", "10.0")
 os.environ.setdefault("ALPECCA_DISCORD_TRANSCRIBE_TIMEOUT", "30.0")
-# Her voice is her expressive F5 voice-clone (her own cloned voice -- the one
-# that sounded good on short proactive lines) on BOTH House HQ and Discord. F5
-# morphs on long generations, so open_tts now renders it in short sentence
-# chunks and stitches them, keeping the clone stable and emotional at any length.
-os.environ.setdefault("ALPECCA_TTS_BACKEND", "f5")
-os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "f5")
+# Her voice is her LOCAL Kokoro af_heart "original voice" on BOTH House HQ and
+# Discord. It is verified-clean (proper WAV, no clipping), carries emotion via
+# her naturalize + mood modulation, and -- unlike the F5 clone -- never morphs,
+# never needs the network, and stays warm via the keep-warm loop.
+os.environ.setdefault("ALPECCA_TTS_BACKEND", "kokoro")
+os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "kokoro")
 
 def _lan_access_point(port: int) -> str:
     """The URL another device on this network uses to reach THIS computer.

@@ -178,10 +178,10 @@ VOICE_PLAYBACK_CALLBACK_TIMEOUT = max(
     ),
 )
 DISCORD_VOICE_ENGINE = os.environ.get(
-    "ALPECCA_DISCORD_TTS_ENGINE", "edge"
+    "ALPECCA_DISCORD_TTS_ENGINE", "kokoro"
 ).strip().lower()
 if DISCORD_VOICE_ENGINE not in {"auto", "cloud", "kokoro", "edge", "f5", "f5-tts"}:
-    DISCORD_VOICE_ENGINE = "edge"
+    DISCORD_VOICE_ENGINE = "kokoro"
 MAX_DISCORD_CHARS = 2000
 MAX_BACKEND_RESPONSE_BYTES = 1024 * 1024
 MAX_BACKEND_ERROR_BYTES = 16 * 1024
