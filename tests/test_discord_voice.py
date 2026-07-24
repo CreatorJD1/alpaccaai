@@ -1416,15 +1416,15 @@ def test_cloud_tts_readiness_accepts_ready_local_f5_fallback(monkeypatch):
     assert readiness["status"] == "ready"
 
 
-def test_full_launcher_defaults_discord_tts_to_edge_neural_voice():
-    # Discord voice uses her Edge neural voice (ALPECCA_TTS_VOICE, e.g.
-    # en-US-AriaNeural) -- a natural woman voice that streams the whole line as
-    # one continuous, pause-free clip -- not Kokoro af_heart or the F5 clone.
+def test_full_launcher_locks_voice_to_local_kokoro():
+    # Her voice is locked to the warm LOCAL Kokoro af_heart voice on both House HQ
+    # and Discord -- reliable, never morphs, never waits on the cloud.
     source = (discord_bridge.ROOT / "scripts" / "run_full.py").read_text(
         encoding="utf-8"
     )
 
-    assert 'os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "edge")' in source
+    assert 'os.environ.setdefault("ALPECCA_TTS_BACKEND", "kokoro")' in source
+    assert 'os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "kokoro")' in source
     assert 'os.environ.setdefault("ALPECCA_CHAT_VOICE_TIMEOUT", "3.0")' in source
     assert 'os.environ.setdefault("ALPECCA_CLOUD_TTS_TIMEOUT_SECONDS", "2.5")' in source
 

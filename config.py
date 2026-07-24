@@ -75,8 +75,9 @@ OLLAMA_NUM_GPU = int(_num_gpu_raw) if _num_gpu_raw.lstrip("-").isdigit() else No
 
 # Keep live conversation from becoming a long monologue. This is the response
 # token budget Ollama sees for normal local turns; larger reflective/deep jobs
-# can still use external tiers or override this later.
-OLLAMA_NUM_PREDICT = int(os.environ.get("ALPECCA_NUM_PREDICT", "120"))
+# can still use external tiers or override this later. Kept short on purpose so
+# her replies stay brief (a couple of sentences) instead of long paragraphs.
+OLLAMA_NUM_PREDICT = int(os.environ.get("ALPECCA_NUM_PREDICT", "80"))
 
 # How many recent chat messages ride along with every reply -- HER WORKING
 # MEMORY of the conversation. This, not num_ctx, is what makes her feel
