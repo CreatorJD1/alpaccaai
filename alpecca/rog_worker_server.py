@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 import hashlib
 import hmac
 import http.client
+import importlib
 import ipaddress
 import json
 import logging
@@ -38,6 +39,26 @@ REASON_REQUEST_SCHEMA = "alpecca.rog-worker.reason.request.v1"
 REASON_RESPONSE_SCHEMA = "alpecca.rog-worker.reason.response.v1"
 BLENDER_REQUEST_SCHEMA = "alpecca.rog-worker.blender.request.v1"
 BLENDER_RESPONSE_SCHEMA = "alpecca.rog-worker.blender.response.v1"
+HYFUSER_HEALTH_SCHEMA = "alpecca.rog-worker.hyfuser.health.v1"
+HYFUSER_REQUEST_SCHEMA = "alpecca.rog-worker.hyfuser.request.v1"
+HYFUSER_RESPONSE_SCHEMA = "alpecca.rog-worker.hyfuser.response.v1"
+HYFUSER_HEALTH_PATH = "/v1/soul/hyfuser/health"
+HYFUSER_SCORE_PATH = "/v1/soul/hyfuser/score"
+HYFUSER_ARCHITECTURE = "hyfuser-shared-backbone-seven-heads"
+HYFUSER_PERSPECTIVES = (
+    "Feeler",
+    "Expressor",
+    "Carer",
+    "Doer",
+    "Wanderer",
+    "Reflector",
+    "Improver",
+)
+HYFUSER_VECTOR_DIM = 8
+HYFUSER_RUNTIME_MODULE = "alpecca_hyfuser_runtime"
+HYFUSER_WEIGHTS_ENV = "ALPECCA_ROG_HYFUSER_WEIGHTS"
+HYFUSER_WEIGHTS_SHA256_ENV = "ALPECCA_ROG_HYFUSER_WEIGHTS_SHA256"
+HYFUSER_MODE_ENV = "ALPECCA_ROG_HYFUSER_MODE"
 CREDENTIAL_TARGET_ENV = "ALPECCA_ROG_WORKER_CREDENTIAL_TARGET"
 DEFAULT_CREDENTIAL_TARGET = "Alpecca/Jason_HOLYROG/ComputeWorker"
 CREDENTIAL_TARGET = DEFAULT_CREDENTIAL_TARGET
@@ -60,6 +81,7 @@ NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{16,96}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 BLEND_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,119}\.blend$")
 HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+SAFE_RUNTIME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 LOGGER = logging.getLogger("alpecca.rog_worker")
 
@@ -369,6 +391,7 @@ class WorkerSettings:
     ollama_num_ctx: int = 8_192
     reason_timeout_seconds: float = 120.0
     render_timeout_seconds: float = 600.0
+    hyfuser_timeout_seconds: float = 8.0
     timestamp_skew_seconds: int = 90
     idempotency_ttl_seconds: int = 3_600
     idempotency_entries: int = 128
@@ -422,6 +445,7 @@ class WorkerSettings:
         for value, minimum, maximum, label in (
             (self.reason_timeout_seconds, 1.0, 600.0, "reason_timeout_seconds"),
             (self.render_timeout_seconds, 5.0, 1_800.0, "render_timeout_seconds"),
+            (self.hyfuser_timeout_seconds, 0.2, 15.0, "hyfuser_timeout_seconds"),
         ):
             if not math.isfinite(float(value)) or not minimum <= float(value) <= maximum:
                 raise WorkerConfigurationError(f"{label} is outside its safe range")
@@ -467,6 +491,9 @@ class WorkerSettings:
             ),
             render_timeout_seconds=_env_float(
                 env, "ALPECCA_ROG_WORKER_RENDER_TIMEOUT", 600.0, 5.0, 1_800.0
+            ),
+            hyfuser_timeout_seconds=_env_float(
+                env, "ALPECCA_ROG_WORKER_HYFUSER_TIMEOUT_SECONDS", 8.0, 0.2, 15.0
             ),
             timestamp_skew_seconds=_env_int(
                 env, "ALPECCA_ROG_WORKER_TIMESTAMP_SKEW", 90, 10, 300
@@ -602,6 +629,51 @@ class BlenderJob:
     request_id: str
     project: str
     frame: int
+
+
+@dataclass(frozen=True)
+class HyfuserJob:
+    request_id: str
+    text_emotion: tuple[float, ...]
+    speech_emotion: tuple[float, ...]
+
+
+def _emotion_vector(value: object, label: str) -> tuple[float, ...]:
+    if not isinstance(value, list) or len(value) != HYFUSER_VECTOR_DIM:
+        raise WorkerRequestError(422, f"invalid_{label}")
+    cleaned: list[float] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            raise WorkerRequestError(422, f"invalid_{label}")
+        number = float(item)
+        if not math.isfinite(number) or not -1.0 <= number <= 1.0:
+            raise WorkerRequestError(422, f"invalid_{label}")
+        cleaned.append(number)
+    return tuple(cleaned)
+
+
+def _hyfuser_job(payload: Mapping[str, Any]) -> HyfuserJob:
+    _exact_keys(
+        payload,
+        frozenset(
+            {
+                "schema",
+                "request_id",
+                "mode",
+                "text_emotion",
+                "speech_emotion",
+            }
+        ),
+    )
+    if payload["schema"] != HYFUSER_REQUEST_SCHEMA or payload["mode"] != "shadow":
+        raise WorkerRequestError(422, "invalid_schema")
+    return HyfuserJob(
+        request_id=_request_id(payload["request_id"]),
+        text_emotion=_emotion_vector(payload["text_emotion"], "text_emotion"),
+        speech_emotion=_emotion_vector(
+            payload["speech_emotion"], "speech_emotion"
+        ),
+    )
 
 
 def _reasoning_job(payload: Mapping[str, Any], settings: WorkerSettings) -> ReasoningJob:
@@ -874,6 +946,107 @@ ProcessRunner = Callable[..., Any]
 AuditSink = Callable[[Mapping[str, Any]], None]
 
 
+def _load_hyfuser_backend(
+    environment: Mapping[str, str] | None = None,
+) -> object | None:
+    """Load one fixed optional runtime only after verifying external weights."""
+
+    env = os.environ if environment is None else environment
+    raw_path = str(env.get(HYFUSER_WEIGHTS_ENV, "")).strip()
+    expected_digest = str(env.get(HYFUSER_WEIGHTS_SHA256_ENV, "")).strip()
+    if (
+        str(env.get(HYFUSER_MODE_ENV, "")).strip() != "shadow-only"
+        or not raw_path
+        or not HEX_SHA256_RE.fullmatch(expected_digest)
+    ):
+        return None
+    try:
+        weights = Path(raw_path).expanduser().resolve(strict=True)
+        repository = Path(__file__).resolve().parents[1]
+        weights.relative_to(repository)
+        return None
+    except ValueError:
+        pass
+    except OSError:
+        return None
+    try:
+        size = weights.stat().st_size
+    except OSError:
+        return None
+    if not weights.is_file() or size <= 0 or size > 8 * 1024 * 1024 * 1024:
+        return None
+    digest = hashlib.sha256()
+    try:
+        with weights.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+    except OSError:
+        return None
+    if not hmac.compare_digest(digest.hexdigest(), expected_digest):
+        return None
+    try:
+        module = importlib.import_module(HYFUSER_RUNTIME_MODULE)
+        factory = getattr(module, "create_backend", None)
+        if not callable(factory):
+            return None
+        return factory(
+            weights_path=str(weights),
+            weights_sha256=expected_digest,
+            architecture=HYFUSER_ARCHITECTURE,
+            perspectives=HYFUSER_PERSPECTIVES,
+            text_emotion_dim=HYFUSER_VECTOR_DIM,
+            speech_emotion_dim=HYFUSER_VECTOR_DIM,
+        )
+    except Exception:
+        return None
+
+
+def _hyfuser_readiness(backend: object | None) -> dict[str, Any] | None:
+    if backend is None:
+        return None
+    probe = getattr(backend, "probe", None)
+    if not callable(probe):
+        return None
+    try:
+        value = probe()
+    except Exception:
+        return None
+    if not isinstance(value, Mapping) or set(value) != {
+        "ready",
+        "architecture",
+        "runtime_id",
+        "weights_sha256",
+        "perspectives",
+        "text_emotion_dim",
+        "speech_emotion_dim",
+    }:
+        return None
+    if value.get("ready") is not True:
+        return None
+    if value.get("architecture") != HYFUSER_ARCHITECTURE:
+        return None
+    if tuple(value.get("perspectives", ())) != HYFUSER_PERSPECTIVES:
+        return None
+    if (
+        value.get("text_emotion_dim") != HYFUSER_VECTOR_DIM
+        or value.get("speech_emotion_dim") != HYFUSER_VECTOR_DIM
+    ):
+        return None
+    runtime_id = value.get("runtime_id")
+    weights_sha256 = value.get("weights_sha256")
+    if (
+        not isinstance(runtime_id, str)
+        or not SAFE_RUNTIME_RE.fullmatch(runtime_id)
+        or not isinstance(weights_sha256, str)
+        or not HEX_SHA256_RE.fullmatch(weights_sha256)
+    ):
+        return None
+    return {
+        "runtime_id": runtime_id,
+        "weights_sha256": weights_sha256,
+    }
+
+
 class ROGComputeWorker:
     def __init__(
         self,
@@ -884,6 +1057,7 @@ class ROGComputeWorker:
         connection_factory: ConnectionFactory = http.client.HTTPConnection,
         process_runner: ProcessRunner = subprocess.run,
         audit_sink: AuditSink | None = None,
+        hyfuser_backend: object | None = None,
     ) -> None:
         self.settings = settings
         self._clock = clock
@@ -891,6 +1065,11 @@ class ROGComputeWorker:
         self._connection_factory = connection_factory
         self._process_runner = process_runner
         self._audit_sink = audit_sink
+        self._hyfuser_backend = (
+            hyfuser_backend
+            if hyfuser_backend is not None
+            else _load_hyfuser_backend()
+        )
         self._slots = threading.BoundedSemaphore(settings.max_concurrency)
         self._nonces = _NonceStore(
             settings.timestamp_skew_seconds * 2,
@@ -949,6 +1128,107 @@ class ROGComputeWorker:
             "capabilities": {
                 "reasoning": {"ready": reasoning_ready},
                 "blender": {"ready": blender_ready},
+            },
+        }
+
+    def hyfuser_health(self, request_id: str) -> dict[str, Any]:
+        readiness = _hyfuser_readiness(self._hyfuser_backend)
+        ready = readiness is not None
+        return {
+            "schema": HYFUSER_HEALTH_SCHEMA,
+            "ok": True,
+            "request_id": request_id,
+            "ready": ready,
+            "state": "ready" if ready else "unavailable",
+            "architecture": HYFUSER_ARCHITECTURE,
+            "perspectives": list(HYFUSER_PERSPECTIVES),
+            "advisory": True,
+            "shadow_only": True,
+            "speaking": False,
+            "state_mutation": False,
+        }
+
+    def run_hyfuser(self, job: HyfuserJob) -> dict[str, Any]:
+        readiness = _hyfuser_readiness(self._hyfuser_backend)
+        if readiness is None:
+            raise WorkerRequestError(503, "hyfuser_unavailable")
+        infer = getattr(self._hyfuser_backend, "infer", None)
+        if not callable(infer):
+            raise WorkerRequestError(503, "hyfuser_unavailable")
+        started = self._monotonic()
+        try:
+            output = infer(
+                text_emotion=job.text_emotion,
+                speech_emotion=job.speech_emotion,
+                timeout_seconds=self.settings.hyfuser_timeout_seconds,
+            )
+        except TimeoutError as exc:
+            raise WorkerRequestError(504, "hyfuser_timeout") from exc
+        except Exception as exc:
+            raise WorkerRequestError(502, "hyfuser_inference_failed") from exc
+        if not isinstance(output, Mapping) or set(output) != {
+            "scores", "confidences", "runtime_id", "weights_sha256"
+        }:
+            raise WorkerRequestError(502, "hyfuser_invalid_response")
+        if (
+            output.get("runtime_id") != readiness["runtime_id"]
+            or output.get("weights_sha256") != readiness["weights_sha256"]
+        ):
+            raise WorkerRequestError(502, "hyfuser_provenance_mismatch")
+        scores = output.get("scores")
+        confidences = output.get("confidences")
+        if (
+            not isinstance(scores, (list, tuple))
+            or not isinstance(confidences, (list, tuple))
+            or len(scores) != len(HYFUSER_PERSPECTIVES)
+            or len(confidences) != len(HYFUSER_PERSPECTIVES)
+        ):
+            raise WorkerRequestError(502, "hyfuser_invalid_response")
+        heads: list[dict[str, Any]] = []
+        for name, raw_score, raw_confidence in zip(
+            HYFUSER_PERSPECTIVES, scores, confidences, strict=True
+        ):
+            if (
+                isinstance(raw_score, bool)
+                or not isinstance(raw_score, (int, float))
+                or isinstance(raw_confidence, bool)
+                or not isinstance(raw_confidence, (int, float))
+            ):
+                raise WorkerRequestError(502, "hyfuser_invalid_response")
+            score = float(raw_score)
+            confidence = float(raw_confidence)
+            if (
+                not math.isfinite(score)
+                or not -1.0 <= score <= 1.0
+                or not math.isfinite(confidence)
+                or not 0.0 <= confidence <= 1.0
+            ):
+                raise WorkerRequestError(502, "hyfuser_invalid_response")
+            heads.append(
+                {"name": name, "score": score, "confidence": confidence}
+            )
+        return {
+            "schema": HYFUSER_RESPONSE_SCHEMA,
+            "ok": True,
+            "request_id": job.request_id,
+            "result": {
+                "architecture": HYFUSER_ARCHITECTURE,
+                "heads": heads,
+                "provenance": {
+                    "runtime_id": readiness["runtime_id"],
+                    "weights_sha256": readiness["weights_sha256"],
+                    "input_dimensions": {
+                        "text_emotion": HYFUSER_VECTOR_DIM,
+                        "speech_emotion": HYFUSER_VECTOR_DIM,
+                    },
+                },
+                "elapsed_ms": max(
+                    0, int((self._monotonic() - started) * 1000)
+                ),
+                "advisory": True,
+                "shadow_only": True,
+                "speaking": False,
+                "state_mutation": False,
             },
         }
 
@@ -1362,6 +1642,7 @@ def create_app(
     connection_factory: ConnectionFactory = http.client.HTTPConnection,
     process_runner: ProcessRunner = subprocess.run,
     audit_sink: AuditSink | None = None,
+    hyfuser_backend: object | None = None,
 ) -> FastAPI:
     worker = ROGComputeWorker(
         settings or WorkerSettings.from_env(),
@@ -1370,6 +1651,7 @@ def create_app(
         connection_factory=connection_factory,
         process_runner=process_runner,
         audit_sink=audit_sink,
+        hyfuser_backend=hyfuser_backend,
     )
     application = FastAPI(
         title="Alpecca ROG Compute Worker",
@@ -1390,6 +1672,20 @@ def create_app(
             return _error_response(exc)
         return JSONResponse(
             await asyncio.to_thread(worker.health, request_id),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get(HYFUSER_HEALTH_PATH)
+    async def hyfuser_health(request: Request) -> JSONResponse:
+        try:
+            _require_secure_transport(request, worker.settings)
+            if request.url.query:
+                raise WorkerRequestError(400, "query_not_allowed")
+            request_id = worker.authenticate(request, b"")
+        except WorkerRequestError as exc:
+            return _error_response(exc)
+        return JSONResponse(
+            await asyncio.to_thread(worker.hyfuser_health, request_id),
             headers={"Cache-Control": "no-store"},
         )
 
@@ -1439,6 +1735,31 @@ def create_app(
                 lambda: worker.run_blender(job),
                 audit_event="blender_render",
             )
+        except WorkerRequestError as exc:
+            return _error_response(exc)
+        headers = {"Cache-Control": "no-store"}
+        if replay:
+            headers["X-Alpecca-Idempotent-Replay"] = "1"
+        return JSONResponse(response, status_code=status, headers=headers)
+
+    @application.post(HYFUSER_SCORE_PATH)
+    async def hyfuser_score(request: Request) -> JSONResponse:
+        try:
+            body, payload, _request_id_header = await authenticated_payload(request)
+            job = _hyfuser_job(payload)
+            status, response, replay = await asyncio.wait_for(
+                asyncio.to_thread(
+                    worker.execute,
+                    HYFUSER_SCORE_PATH,
+                    job.request_id,
+                    hashlib.sha256(body).hexdigest(),
+                    lambda: worker.run_hyfuser(job),
+                    audit_event="hyfuser_shadow_score",
+                ),
+                timeout=worker.settings.hyfuser_timeout_seconds + 0.1,
+            )
+        except asyncio.TimeoutError:
+            return _error_response(WorkerRequestError(504, "hyfuser_timeout"))
         except WorkerRequestError as exc:
             return _error_response(exc)
         headers = {"Cache-Control": "no-store"}

@@ -9,6 +9,8 @@ from alpecca.rog_worker_client import RogWorkerClient, RogWorkerError
 
 STATUS_SCHEMA = "alpecca.rog-worker.primary-status.v1"
 RENDER_RECEIPT_SCHEMA = "alpecca.rog-worker.render-receipt.v1"
+HYFUSER_STATUS_SCHEMA = "alpecca.rog-worker.hyfuser-status.v1"
+HYFUSER_RECEIPT_SCHEMA = "alpecca.rog-worker.hyfuser-receipt.v1"
 
 ClientFactory = Callable[[], RogWorkerClient]
 
@@ -89,9 +91,94 @@ def render_blender(
     }
 
 
+def hyfuser_status(
+    configured_url: str,
+    *,
+    client_factory: ClientFactory = RogWorkerClient.from_environment,
+) -> dict[str, object]:
+    """Return content-free readiness for the advisory seven-head service."""
+
+    if not str(configured_url or "").strip():
+        return {
+            "schema": HYFUSER_STATUS_SCHEMA,
+            "configured": False,
+            "ready": False,
+            "state": "disabled",
+            "advisory": True,
+            "shadow_only": True,
+            "speaking": False,
+            "state_mutation": False,
+        }
+    try:
+        health = client_factory().hyfuser_health()
+    except RogWorkerError as exc:
+        return {
+            "schema": HYFUSER_STATUS_SCHEMA,
+            "configured": True,
+            "ready": False,
+            "state": "unavailable",
+            "advisory": True,
+            "shadow_only": True,
+            "speaking": False,
+            "state_mutation": False,
+            "error": type(exc).__name__,
+        }
+    return {
+        "schema": HYFUSER_STATUS_SCHEMA,
+        "configured": True,
+        "ready": bool(health.ready),
+        "state": health.state,
+        "architecture": health.architecture,
+        "perspectives": list(health.perspectives),
+        "advisory": True,
+        "shadow_only": True,
+        "speaking": False,
+        "state_mutation": False,
+        "error": "",
+    }
+
+
+def score_hyfuser_shadow(
+    text_emotion: list[float],
+    speech_emotion: list[float],
+    *,
+    client_factory: ClientFactory = RogWorkerClient.from_environment,
+) -> dict[str, object]:
+    """Return metadata-bound advisory scores without applying them."""
+
+    result = client_factory().score_soul(text_emotion, speech_emotion)
+    return {
+        "schema": HYFUSER_RECEIPT_SCHEMA,
+        "ok": True,
+        "request_id": result.request_id,
+        "architecture": result.architecture,
+        "heads": [
+            {
+                "name": head.name,
+                "score": head.score,
+                "confidence": head.confidence,
+            }
+            for head in result.heads
+        ],
+        "provenance": {
+            "runtime_id": result.runtime_id,
+            "weights_sha256": result.weights_sha256,
+        },
+        "elapsed_ms": result.elapsed_ms,
+        "advisory": True,
+        "shadow_only": True,
+        "speaking": False,
+        "state_mutation": False,
+    }
+
+
 __all__ = [
     "RENDER_RECEIPT_SCHEMA",
+    "HYFUSER_RECEIPT_SCHEMA",
+    "HYFUSER_STATUS_SCHEMA",
     "STATUS_SCHEMA",
+    "hyfuser_status",
     "render_blender",
+    "score_hyfuser_shadow",
     "status_snapshot",
 ]

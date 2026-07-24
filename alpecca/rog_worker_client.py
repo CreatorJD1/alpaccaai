@@ -34,6 +34,8 @@ from urllib.request import (
 HEALTH_PATH = "/v1/health"
 REASON_PATH = "/v1/reason"
 BLENDER_PATH = "/v1/render/blender"
+HYFUSER_HEALTH_PATH = "/v1/soul/hyfuser/health"
+HYFUSER_SCORE_PATH = "/v1/soul/hyfuser/score"
 
 TIMESTAMP_HEADER = "X-Alpecca-Worker-Timestamp"
 NONCE_HEADER = "X-Alpecca-Worker-Nonce"
@@ -49,6 +51,7 @@ TIMEOUT_COMPAT_ENV = "ALPECCA_ROG_WORKER_TIMEOUT"
 HEALTH_TIMEOUT_ENV = "ALPECCA_ROG_WORKER_HEALTH_TIMEOUT_SECONDS"
 REASON_TIMEOUT_ENV = "ALPECCA_ROG_WORKER_REASON_TIMEOUT_SECONDS"
 RENDER_TIMEOUT_ENV = "ALPECCA_ROG_WORKER_RENDER_TIMEOUT_SECONDS"
+HYFUSER_TIMEOUT_ENV = "ALPECCA_ROG_WORKER_HYFUSER_TIMEOUT_SECONDS"
 MAX_REQUEST_BYTES_ENV = "ALPECCA_ROG_WORKER_MAX_REQUEST_BYTES"
 MAX_RESPONSE_BYTES_ENV = "ALPECCA_ROG_WORKER_MAX_RESPONSE_BYTES"
 MODEL_ENV = "ALPECCA_ROG_WORKER_MODEL"
@@ -62,12 +65,14 @@ DEFAULT_CREDENTIAL_TARGET = "Alpecca/Jason_HOLYROG/ComputeWorker"
 DEFAULT_HEALTH_TIMEOUT_SECONDS = 2.0
 DEFAULT_REASON_TIMEOUT_SECONDS = 180.0
 DEFAULT_RENDER_TIMEOUT_SECONDS = 650.0
+DEFAULT_HYFUSER_TIMEOUT_SECONDS = 8.0
 DEFAULT_TIMEOUT_SECONDS = DEFAULT_REASON_TIMEOUT_SECONDS
 DEFAULT_MAX_REQUEST_BYTES = 65_536
 DEFAULT_MAX_RESPONSE_BYTES = 128 * 1024
 MAX_HEALTH_TIMEOUT_SECONDS = 5.0
 MAX_REASON_TIMEOUT_SECONDS = 180.0
 MAX_RENDER_TIMEOUT_SECONDS = 900.0
+MAX_HYFUSER_TIMEOUT_SECONDS = 15.0
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_SYSTEM_PROMPT_BYTES = 8 * 1024
@@ -83,6 +88,19 @@ REASON_REQUEST_SCHEMA = "alpecca.rog-worker.reason.request.v1"
 REASON_RESPONSE_SCHEMA = "alpecca.rog-worker.reason.response.v1"
 BLENDER_REQUEST_SCHEMA = "alpecca.rog-worker.blender.request.v1"
 BLENDER_RESPONSE_SCHEMA = "alpecca.rog-worker.blender.response.v1"
+HYFUSER_HEALTH_SCHEMA = "alpecca.rog-worker.hyfuser.health.v1"
+HYFUSER_REQUEST_SCHEMA = "alpecca.rog-worker.hyfuser.request.v1"
+HYFUSER_RESPONSE_SCHEMA = "alpecca.rog-worker.hyfuser.response.v1"
+HYFUSER_PERSPECTIVES = (
+    "Feeler",
+    "Expressor",
+    "Carer",
+    "Doer",
+    "Wanderer",
+    "Reflector",
+    "Improver",
+)
+HYFUSER_VECTOR_DIM = 8
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$")
 _NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{16,96}$")
@@ -156,6 +174,40 @@ class WorkerHealth:
     role: str = "compute-only"
     speaking: bool = False
     discord: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class HyfuserHealth:
+    request_id: str
+    ready: bool
+    state: str
+    architecture: str
+    perspectives: tuple[str, ...]
+    advisory: bool = True
+    shadow_only: bool = True
+    speaking: bool = False
+    state_mutation: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class HyfuserHeadResult:
+    name: str
+    score: float
+    confidence: float
+
+
+@dataclass(frozen=True, slots=True)
+class HyfuserScoreResult:
+    request_id: str
+    heads: tuple[HyfuserHeadResult, ...]
+    architecture: str
+    runtime_id: str
+    weights_sha256: str
+    elapsed_ms: int
+    advisory: bool = True
+    shadow_only: bool = True
+    speaking: bool = False
+    state_mutation: bool = False
 
 @dataclass(frozen=True, slots=True)
 class ReasoningResult:
@@ -238,6 +290,7 @@ class RogWorkerClient:
         "_clock",
         "_default_model",
         "_health_timeout_seconds",
+        "_hyfuser_timeout_seconds",
         "_max_request_bytes",
         "_max_response_bytes",
         "_nonce_factory",
@@ -259,6 +312,7 @@ class RogWorkerClient:
         health_timeout_seconds: float = DEFAULT_HEALTH_TIMEOUT_SECONDS,
         reason_timeout_seconds: float | None = None,
         render_timeout_seconds: float = DEFAULT_RENDER_TIMEOUT_SECONDS,
+        hyfuser_timeout_seconds: float = DEFAULT_HYFUSER_TIMEOUT_SECONDS,
         max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
         default_model: str = DEFAULT_MODEL,
@@ -311,6 +365,12 @@ class RogWorkerClient:
             "render_timeout_seconds",
             minimum=1.0,
             maximum=MAX_RENDER_TIMEOUT_SECONDS,
+        )
+        self._hyfuser_timeout_seconds = _bounded_float(
+            hyfuser_timeout_seconds,
+            "hyfuser_timeout_seconds",
+            minimum=0.2,
+            maximum=MAX_HYFUSER_TIMEOUT_SECONDS,
         )
         self._max_request_bytes = _bounded_int(
             max_request_bytes,
@@ -369,6 +429,7 @@ class RogWorkerClient:
             f"health_timeout_seconds={self._health_timeout_seconds!r}, "
             f"reason_timeout_seconds={self._reason_timeout_seconds!r}, "
             f"render_timeout_seconds={self._render_timeout_seconds!r}, "
+            f"hyfuser_timeout_seconds={self._hyfuser_timeout_seconds!r}, "
             f"max_request_bytes={self._max_request_bytes!r}, "
             f"max_response_bytes={self._max_response_bytes!r}, "
             "secret=<redacted>)"
@@ -426,6 +487,11 @@ class RogWorkerClient:
                 values,
                 RENDER_TIMEOUT_ENV,
                 DEFAULT_RENDER_TIMEOUT_SECONDS,
+            ),
+            hyfuser_timeout_seconds=_env_float(
+                values,
+                HYFUSER_TIMEOUT_ENV,
+                DEFAULT_HYFUSER_TIMEOUT_SECONDS,
             ),
             max_request_bytes=_env_int(
                 values,
@@ -583,6 +649,146 @@ class RogWorkerClient:
                 result,
                 "completion_tokens",
             ),
+            elapsed_ms=_required_nonnegative_int(result, "elapsed_ms"),
+        )
+
+    def hyfuser_health(self) -> HyfuserHealth:
+        """Return truthful readiness for the optional seven-head shadow model."""
+
+        request_id = self._new_request_id()
+        payload = self._request_json(
+            "GET",
+            HYFUSER_HEALTH_PATH,
+            None,
+            request_id=request_id,
+            timeout_seconds=self._health_timeout_seconds,
+        )
+        _exact_response_keys(
+            payload,
+            {
+                "schema", "ok", "request_id", "ready", "state",
+                "architecture", "perspectives", "advisory", "shadow_only",
+                "speaking", "state_mutation",
+            },
+        )
+        if (
+            payload.get("schema") != HYFUSER_HEALTH_SCHEMA
+            or payload.get("ok") is not True
+        ):
+            raise RogWorkerProtocolError(
+                "worker HyFusER health schema did not match"
+            )
+        self._expect_request_id(payload, request_id)
+        perspectives = _required_perspectives(payload)
+        ready = _required_bool(payload, "ready")
+        state = _required_text(payload, "state", maximum=32)
+        if state not in {"ready", "unavailable"} or ready != (state == "ready"):
+            raise RogWorkerProtocolError(
+                "worker HyFusER readiness was inconsistent"
+            )
+        _require_shadow_contract(payload)
+        return HyfuserHealth(
+            request_id=request_id,
+            ready=ready,
+            state=state,
+            architecture=_required_text(payload, "architecture", maximum=64),
+            perspectives=perspectives,
+        )
+
+    def score_soul(
+        self,
+        text_emotion: Sequence[float],
+        speech_emotion: Sequence[float],
+    ) -> HyfuserScoreResult:
+        """Request seven advisory scores without action or mutation authority."""
+
+        request_id = self._new_request_id()
+        request_payload: dict[str, object] = {
+            "schema": HYFUSER_REQUEST_SCHEMA,
+            "request_id": request_id,
+            "mode": "shadow",
+            "text_emotion": _validated_emotion_vector(
+                text_emotion, "text_emotion"
+            ),
+            "speech_emotion": _validated_emotion_vector(
+                speech_emotion, "speech_emotion"
+            ),
+        }
+        payload = self._request_json(
+            "POST",
+            HYFUSER_SCORE_PATH,
+            request_payload,
+            request_id=request_id,
+            timeout_seconds=self._hyfuser_timeout_seconds,
+        )
+        _exact_response_keys(payload, {"schema", "ok", "request_id", "result"})
+        if (
+            payload.get("schema") != HYFUSER_RESPONSE_SCHEMA
+            or payload.get("ok") is not True
+        ):
+            raise RogWorkerProtocolError(
+                "worker HyFusER response schema did not match"
+            )
+        self._expect_request_id(payload, request_id)
+        result = _required_mapping(payload, "result")
+        _exact_response_keys(
+            result,
+            {
+                "architecture", "heads", "provenance", "elapsed_ms",
+                "advisory", "shadow_only", "speaking", "state_mutation",
+            },
+        )
+        _require_shadow_contract(result)
+        raw_heads = result.get("heads")
+        if (
+            not isinstance(raw_heads, list)
+            or len(raw_heads) != len(HYFUSER_PERSPECTIVES)
+        ):
+            raise RogWorkerProtocolError("worker HyFusER heads were invalid")
+        heads: list[HyfuserHeadResult] = []
+        for expected_name, raw in zip(
+            HYFUSER_PERSPECTIVES, raw_heads, strict=True
+        ):
+            if (
+                not isinstance(raw, Mapping)
+                or set(raw) != {"name", "score", "confidence"}
+                or raw.get("name") != expected_name
+            ):
+                raise RogWorkerProtocolError(
+                    "worker HyFusER head order did not match"
+                )
+            heads.append(
+                HyfuserHeadResult(
+                    name=expected_name,
+                    score=_protocol_float(raw, "score", -1.0, 1.0),
+                    confidence=_protocol_float(raw, "confidence", 0.0, 1.0),
+                )
+            )
+        provenance = _required_mapping(result, "provenance")
+        if set(provenance) != {
+            "runtime_id", "weights_sha256", "input_dimensions"
+        }:
+            raise RogWorkerProtocolError(
+                "worker HyFusER provenance was invalid"
+            )
+        if provenance.get("input_dimensions") != {
+            "text_emotion": HYFUSER_VECTOR_DIM,
+            "speech_emotion": HYFUSER_VECTOR_DIM,
+        }:
+            raise RogWorkerProtocolError(
+                "worker HyFusER dimensions did not match"
+            )
+        digest = _required_text(provenance, "weights_sha256", maximum=64)
+        if not _HEX_64_RE.fullmatch(digest):
+            raise RogWorkerProtocolError(
+                "worker HyFusER weights digest was invalid"
+            )
+        return HyfuserScoreResult(
+            request_id=request_id,
+            heads=tuple(heads),
+            architecture=_required_text(result, "architecture", maximum=64),
+            runtime_id=_required_safe_token(provenance, "runtime_id"),
+            weights_sha256=digest,
             elapsed_ms=_required_nonnegative_int(result, "elapsed_ms"),
         )
 
@@ -923,7 +1129,13 @@ def _validated_method(method: str) -> str:
 
 
 def _validated_path(path: str) -> str:
-    if path not in {HEALTH_PATH, REASON_PATH, BLENDER_PATH}:
+    if path not in {
+        HEALTH_PATH,
+        REASON_PATH,
+        BLENDER_PATH,
+        HYFUSER_HEALTH_PATH,
+        HYFUSER_SCORE_PATH,
+    }:
         raise RogWorkerConfigurationError("worker path is not allowed")
     return path
 
@@ -1154,6 +1366,19 @@ def _bounded_float(
     return number
 
 
+def _validated_emotion_vector(value: object, name: str) -> list[float]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise RogWorkerConfigurationError(f"{name} must be a numeric vector")
+    if len(value) != HYFUSER_VECTOR_DIM:
+        raise RogWorkerConfigurationError(
+            f"{name} must contain {HYFUSER_VECTOR_DIM} values"
+        )
+    return [
+        _bounded_float(item, name, minimum=-1.0, maximum=1.0)
+        for item in value
+    ]
+
+
 def _env_bool(values: Mapping[str, str], name: str, default: bool) -> bool:
     raw = values.get(name)
     if raw is None or raw == "":
@@ -1275,6 +1500,42 @@ def _required_bool(payload: Mapping[str, object], key: str) -> bool:
     return value
 
 
+def _required_perspectives(payload: Mapping[str, object]) -> tuple[str, ...]:
+    value = payload.get("perspectives")
+    if not isinstance(value, list) or tuple(value) != HYFUSER_PERSPECTIVES:
+        raise RogWorkerProtocolError(
+            "worker HyFusER perspectives did not match"
+        )
+    return HYFUSER_PERSPECTIVES
+
+
+def _require_shadow_contract(payload: Mapping[str, object]) -> None:
+    if (
+        _required_bool(payload, "advisory") is not True
+        or _required_bool(payload, "shadow_only") is not True
+        or _required_bool(payload, "speaking") is not False
+        or _required_bool(payload, "state_mutation") is not False
+    ):
+        raise RogWorkerProtocolError(
+            "worker HyFusER shadow contract did not match"
+        )
+
+
+def _protocol_float(
+    payload: Mapping[str, object],
+    key: str,
+    minimum: float,
+    maximum: float,
+) -> float:
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RogWorkerProtocolError(f"worker {key} was invalid")
+    number = float(value)
+    if not math.isfinite(number) or not minimum <= number <= maximum:
+        raise RogWorkerProtocolError(f"worker {key} was invalid")
+    return number
+
+
 def _required_nonnegative_int(payload: Mapping[str, object], key: str) -> int:
     value = payload.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -1327,6 +1588,17 @@ __all__ = [
     "HEALTH_PATH",
     "HEALTH_SCHEMA",
     "HEALTH_TIMEOUT_ENV",
+    "HYFUSER_HEALTH_PATH",
+    "HYFUSER_HEALTH_SCHEMA",
+    "HYFUSER_PERSPECTIVES",
+    "HYFUSER_REQUEST_SCHEMA",
+    "HYFUSER_RESPONSE_SCHEMA",
+    "HYFUSER_SCORE_PATH",
+    "HYFUSER_TIMEOUT_ENV",
+    "HYFUSER_VECTOR_DIM",
+    "HyfuserHeadResult",
+    "HyfuserHealth",
+    "HyfuserScoreResult",
     "MODEL_ENV",
     "NONCE_HEADER",
     "REASON_REQUEST_SCHEMA",
