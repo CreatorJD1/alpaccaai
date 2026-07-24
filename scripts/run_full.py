@@ -138,13 +138,12 @@ os.environ.setdefault("ALPECCA_CLOUD_TTS_TIMEOUT_SECONDS", "2.5")
 os.environ.setdefault("ALPECCA_LIVE_TTS_TIMEOUT", "3.0")
 os.environ.setdefault("ALPECCA_DISCORD_VOICE_TIMEOUT", "10.0")
 os.environ.setdefault("ALPECCA_DISCORD_TRANSCRIBE_TIMEOUT", "30.0")
-# Her voice is her Edge neural voice (ALPECCA_TTS_VOICE, e.g. en-US-AriaNeural)
-# on BOTH House HQ and Discord. edge streams a duration-less MP3 that the
-# playback path garbled into morphing voices, so tts transcodes it to a clean
-# WAV; this locks in the natural Aria voice and avoids the F5 clone (which morphs
-# on longer lines) and the flaky cloud entirely.
-os.environ.setdefault("ALPECCA_TTS_BACKEND", "edge")
-os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "edge")
+# Her voice is her expressive F5 voice-clone (her own cloned voice -- the one
+# that sounded good on short proactive lines) on BOTH House HQ and Discord. F5
+# morphs on long generations, so open_tts now renders it in short sentence
+# chunks and stitches them, keeping the clone stable and emotional at any length.
+os.environ.setdefault("ALPECCA_TTS_BACKEND", "f5")
+os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "f5")
 
 def _lan_access_point(port: int) -> str:
     """The URL another device on this network uses to reach THIS computer.
