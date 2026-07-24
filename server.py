@@ -3394,6 +3394,7 @@ _NOTIFICATION_PUSH_SUBSCRIPTIONS_TARGET = "Alpecca/NotificationPushSubscriptions
 _NOTIFICATION_PUSH_SUBSCRIPTIONS_ANCHOR_TARGET = (
     "Alpecca/NotificationPushSubscriptionsAnchor"
 )
+_NOTIFICATION_PUSH_ACK_ANCHOR_KEY_TARGET = "Alpecca/NotificationPushAckAnchorSeal"
 _NOTIFICATION_PUSH_ACK_ANCHOR_TARGET = "Alpecca/NotificationPushAckAnchor"
 _NOTIFICATION_PUSH_VAPID_TARGET = "Alpecca/NotificationPushVapid"
 
@@ -3518,6 +3519,12 @@ def _notification_runtime() -> dict[str, object]:
                         "Alpecca private Web Push store seal",
                     )
                 )
+                ack_anchor_key = web_push_runtime_mod.load_or_create_protected_secret(
+                    _notification_credential(
+                        _NOTIFICATION_PUSH_ACK_ANCHOR_KEY_TARGET,
+                        "Alpecca Web Push acknowledgement anchor seal",
+                    )
+                )
                 anchor_backend = (
                     notification_anchor_mod.WindowsCredentialManagerBackend(
                         _NOTIFICATION_ANCHOR_STATE_TARGET
@@ -3539,7 +3546,7 @@ def _notification_runtime() -> dict[str, object]:
                     notification_anchor_mod.WindowsCredentialManagerBackend(
                         _NOTIFICATION_PUSH_ACK_ANCHOR_TARGET
                     ),
-                    anchor_key=push_store_key,
+                    anchor_key=ack_anchor_key,
                 )
                 policy = notification_outbox_mod.OutboxPolicy(
                     policy_id="creator_app_push",

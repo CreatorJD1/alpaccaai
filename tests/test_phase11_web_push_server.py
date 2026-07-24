@@ -895,3 +895,103 @@ def test_phase11_web_push_routes_are_registered_with_exact_methods():
             registered[route.path].update(route.methods or set())
 
     assert registered == expected
+
+
+def test_notification_runtime_wires_a_distinct_ack_consumption_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    backends: list[object] = []
+    anchors: list[object] = []
+    loaded_secret_targets: list[str] = []
+    store_kwargs: dict[str, object] = {}
+
+    class Backend:
+        def __init__(self, target: str) -> None:
+            self.target = target
+            backends.append(self)
+
+    class Anchor:
+        def __init__(self, backend: Backend, *, anchor_key: object) -> None:
+            self.backend = backend
+            self.anchor_key = anchor_key
+            anchors.append(self)
+
+    class Store:
+        def __init__(self, _path: Path, **kwargs: object) -> None:
+            store_kwargs.update(kwargs)
+
+    monkeypatch.setattr(server, "HOME", tmp_path)
+    monkeypatch.setattr(server, "_NOTIFICATION_RUNTIME", None)
+    monkeypatch.setattr(
+        server,
+        "_notification_runtime_mutex",
+        lambda: _InjectedProcessMutex(),
+    )
+    monkeypatch.setattr(server.os, "name", "nt")
+    monkeypatch.setattr(server.importlib.util, "find_spec", lambda _name: object())
+    monkeypatch.setattr(
+        server,
+        "_notification_credential",
+        lambda target, _comment: target,
+    )
+    monkeypatch.setattr(
+        server.web_push_runtime_mod,
+        "load_or_create_protected_secret",
+        lambda target: (
+            loaded_secret_targets.append(target)
+            or f"secret:{target}".encode("ascii")
+        ),
+    )
+    monkeypatch.setattr(
+        server.notification_anchor_mod,
+        "WindowsCredentialManagerBackend",
+        Backend,
+    )
+    monkeypatch.setattr(
+        server.notification_anchor_mod,
+        "CredentialMonotonicAnchor",
+        Anchor,
+    )
+    monkeypatch.setattr(
+        server.notification_outbox_mod,
+        "NotificationOutbox",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(server.web_push_runtime_mod, "WebPushPrivateStore", Store)
+    monkeypatch.setattr(
+        server.web_push_runtime_mod,
+        "load_or_create_vapid",
+        lambda _record: object(),
+    )
+    monkeypatch.setattr(
+        server.web_push_runtime_mod,
+        "PyWebPushTransport",
+        lambda _vapid: object(),
+    )
+    monkeypatch.setattr(
+        server.web_push_adapter_mod,
+        "WebPushAdapter",
+        lambda *_args: object(),
+    )
+
+    runtime = server._notification_runtime()
+
+    subscription_anchor = store_kwargs["subscription_anchor"]
+    ack_anchor = store_kwargs["ack_anchor"]
+    assert runtime["store"].__class__ is Store
+    assert subscription_anchor is not ack_anchor
+    assert isinstance(subscription_anchor, Anchor)
+    assert isinstance(ack_anchor, Anchor)
+    assert subscription_anchor.anchor_key != ack_anchor.anchor_key
+    assert subscription_anchor.backend.target == (
+        server._NOTIFICATION_PUSH_SUBSCRIPTIONS_ANCHOR_TARGET
+    )
+    assert ack_anchor.backend.target == server._NOTIFICATION_PUSH_ACK_ANCHOR_TARGET
+    assert server._NOTIFICATION_PUSH_ACK_ANCHOR_TARGET == (
+        "Alpecca/NotificationPushAckAnchor"
+    )
+    assert len({backend.target for backend in backends}) == 3
+    assert server._NOTIFICATION_PUSH_ACK_ANCHOR_KEY_TARGET in loaded_secret_targets
+    assert len(backends) == 3
+    assert len(anchors) == 3

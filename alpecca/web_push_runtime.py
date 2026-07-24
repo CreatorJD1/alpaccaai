@@ -57,11 +57,14 @@ _SUBSCRIPTION_META_DOMAIN = b"alpecca.notification-push-meta.v1\x00"
 _SUBSCRIPTION_POLICY_DIGEST = hashlib.sha256(
     b"alpecca.notification-push-subscriptions-policy.v1"
 ).hexdigest()
-# The acknowledgement-consumption anchor lives in a distinct failure domain
-# (its own credential record) and never reuses the subscription domains above.
+# The acknowledgement-consumption anchor uses its own protected storage record
+# and never reuses the subscription domains above.
 _ACK_META_DOMAIN = b"alpecca.notification-push-ack-meta.v1\x00"
 _ACK_CHAIN_DOMAIN = b"alpecca.notification-push-ack-chain.v1\x00"
 _ACK_META_ROW_DOMAIN = b"alpecca.notification-push-ack-meta-row.v1\x00"
+_ACK_CONSUMPTION_ROW_DOMAIN = (
+    b"alpecca.notification-push-ack-consumption-row.v1\x00"
+)
 _ACK_POLICY_ID = "push_ack_consumption"
 _ACK_POLICY_DIGEST = hashlib.sha256(
     b"alpecca.notification-push-ack-consumption-policy.v1"
@@ -244,7 +247,17 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
             and subscription_anchor is ack_anchor
         ):
             raise ValueError(
-                "ack_anchor must be a distinct failure domain from subscription_anchor"
+                "ack_anchor must use a distinct storage record from subscription_anchor"
+            )
+        subscription_domain = getattr(subscription_anchor, "storage_domain", None)
+        ack_domain = getattr(ack_anchor, "storage_domain", None)
+        if (
+            type(subscription_domain) is str
+            and type(ack_domain) is str
+            and subscription_domain.casefold() == ack_domain.casefold()
+        ):
+            raise ValueError(
+                "ack_anchor must use a distinct storage record from subscription_anchor"
             )
         self._subscription_anchor = subscription_anchor
         self._ack_anchor = ack_anchor
@@ -265,6 +278,15 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
                         raise
                     else:
                         conn.commit()
+        else:
+            with connect(self.db_path) as conn:
+                enabled = conn.execute(
+                    "SELECT 1 FROM notification_push_ack_meta WHERE singleton=1"
+                ).fetchone()
+            if enabled is not None:
+                raise WebPushRuntimeError(
+                    "protected acknowledgement state requires its monotonic anchor"
+                )
 
     def _ensure_schema(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -293,6 +315,14 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
                     singleton INTEGER PRIMARY KEY CHECK(singleton=1),
                     consume_sequence INTEGER NOT NULL CHECK(consume_sequence>=0),
                     head_seal TEXT NOT NULL,
+                    row_seal TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS notification_push_ack_consumptions (
+                    consume_sequence INTEGER PRIMARY KEY CHECK(consume_sequence>0),
+                    receipt_hmac TEXT NOT NULL UNIQUE,
+                    consumed_at REAL NOT NULL CHECK(consumed_at>=0),
+                    previous_head TEXT NOT NULL,
+                    head_seal TEXT NOT NULL UNIQUE,
                     row_seal TEXT NOT NULL
                 );
                 """
@@ -656,6 +686,7 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
         subscription_id: str,
         transport_idempotency_key: str,
     ) -> str:
+        self._guard_ack_state()
         clean_event = adapter_mod._event_id(event_id)
         clean_subscription = adapter_mod._subscription_id(subscription_id)
         if type(transport_idempotency_key) is not str or not transport_idempotency_key.startswith("txi_"):
@@ -733,6 +764,7 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
         return row
 
     def verify_ack_receipt(self, *, event_id: str, receipt: str) -> bool:
+        self._guard_ack_state()
         row = self._receipt_row(event_id=event_id, receipt=receipt)
         return bool(
             row is not None
@@ -744,6 +776,7 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
         )
 
     def reserve_ack_receipt(self, *, event_id: str, receipt: str) -> bool:
+        self._guard_ack_state()
         row = self._receipt_row(event_id=event_id, receipt=receipt)
         if row is None:
             return False
@@ -810,13 +843,15 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
         }
         return _domain_hmac(self._key, _ACK_META_ROW_DOMAIN, _canonical(material))
 
-    def _read_ack_meta(self, conn: sqlite3.Connection) -> tuple[int, str]:
+    def _read_ack_meta(
+        self, conn: sqlite3.Connection
+    ) -> tuple[int, str] | None:
         row = conn.execute(
             "SELECT consume_sequence,head_seal,row_seal "
             "FROM notification_push_ack_meta WHERE singleton=1"
         ).fetchone()
         if row is None:
-            return 0, ""
+            return None
         seq = row["consume_sequence"]
         head = row["head_seal"]
         if type(seq) is not int or seq < 0 or type(head) is not str:
@@ -829,6 +864,142 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
         if not hmac.compare_digest(str(row["row_seal"]), expected):
             raise WebPushRuntimeError("acknowledgement consumption meta is corrupt")
         return seq, head
+
+    def _ack_consumption_row_seal(
+        self,
+        consume_sequence: int,
+        receipt_hmac: str,
+        consumed_at: float,
+        previous_head: str,
+        head_seal: str,
+    ) -> str:
+        material = {
+            "consume_sequence": consume_sequence,
+            "receipt_hmac": receipt_hmac,
+            "consumed_at": consumed_at,
+            "previous_head": previous_head,
+            "head_seal": head_seal,
+        }
+        return _domain_hmac(
+            self._key, _ACK_CONSUMPTION_ROW_DOMAIN, _canonical(material)
+        )
+
+    def _write_ack_consumption(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        consume_sequence: int,
+        receipt_hmac: str,
+        consumed_at: float,
+        previous_head: str,
+        head_seal: str,
+    ) -> None:
+        row_seal = self._ack_consumption_row_seal(
+            consume_sequence,
+            receipt_hmac,
+            consumed_at,
+            previous_head,
+            head_seal,
+        )
+        conn.execute(
+            "INSERT INTO notification_push_ack_consumptions"
+            "(consume_sequence,receipt_hmac,consumed_at,previous_head,head_seal,row_seal) "
+            "VALUES(?,?,?,?,?,?)",
+            (
+                consume_sequence,
+                receipt_hmac,
+                consumed_at,
+                previous_head,
+                head_seal,
+                row_seal,
+            ),
+        )
+
+    def _validate_ack_consumptions(
+        self,
+        conn: sqlite3.Connection,
+        consume_sequence: int,
+        head_seal: str,
+    ) -> None:
+        rows = conn.execute(
+            "SELECT consume_sequence,receipt_hmac,consumed_at,previous_head,"
+            "head_seal,row_seal FROM notification_push_ack_consumptions "
+            "ORDER BY consume_sequence"
+        ).fetchall()
+        if len(rows) != consume_sequence:
+            raise WebPushRuntimeError(
+                "acknowledgement consumption journal does not match its checkpoint"
+            )
+        previous = ""
+        for expected_sequence, row in enumerate(rows, start=1):
+            sequence = row["consume_sequence"]
+            receipt_hmac = row["receipt_hmac"]
+            consumed_at = row["consumed_at"]
+            stored_previous = row["previous_head"]
+            stored_head = row["head_seal"]
+            if (
+                type(sequence) is not int
+                or sequence != expected_sequence
+                or type(receipt_hmac) is not str
+                or _HEX64_RE.fullmatch(receipt_hmac) is None
+                or isinstance(consumed_at, bool)
+                or not isinstance(consumed_at, (int, float))
+                or not math.isfinite(float(consumed_at))
+                or float(consumed_at) < 0.0
+                or type(stored_previous) is not str
+                or stored_previous != previous
+                or (
+                    sequence == 1
+                    and stored_previous != ""
+                )
+                or (
+                    sequence > 1
+                    and _HEX64_RE.fullmatch(stored_previous) is None
+                )
+                or type(stored_head) is not str
+                or _HEX64_RE.fullmatch(stored_head) is None
+            ):
+                raise WebPushRuntimeError(
+                    "acknowledgement consumption journal is malformed"
+                )
+            consumed = float(consumed_at)
+            expected_head = self._next_ack_head(
+                previous, receipt_hmac, consumed, sequence
+            )
+            expected_row_seal = self._ack_consumption_row_seal(
+                sequence,
+                receipt_hmac,
+                consumed,
+                previous,
+                expected_head,
+            )
+            if not hmac.compare_digest(
+                stored_head, expected_head
+            ) or not hmac.compare_digest(
+                str(row["row_seal"]), expected_row_seal
+            ):
+                raise WebPushRuntimeError(
+                    "acknowledgement consumption journal is corrupt"
+                )
+            receipt_row = conn.execute(
+                "SELECT consumed_at FROM notification_push_ack_receipts "
+                "WHERE receipt_hmac=?",
+                (receipt_hmac,),
+            ).fetchone()
+            if (
+                receipt_row is None
+                or isinstance(receipt_row["consumed_at"], bool)
+                or not isinstance(receipt_row["consumed_at"], (int, float))
+                or float(receipt_row["consumed_at"]) != consumed
+            ):
+                raise WebPushRuntimeError(
+                    "acknowledgement receipt does not match its consumption journal"
+                )
+            previous = stored_head
+        if previous != head_seal:
+            raise WebPushRuntimeError(
+                "acknowledgement consumption journal head does not match"
+            )
 
     def _write_ack_meta(
         self, conn: sqlite3.Connection, consume_sequence: int, head_seal: str
@@ -871,7 +1042,37 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
         anchor = self._ack_anchor
         if anchor is None:
             return
-        seq, head = self._read_ack_meta(conn)
+        meta = self._read_ack_meta(conn)
+        if meta is None:
+            checkpoint = self._ack_checkpoint(0, "")
+            snapshot = anchor.snapshot()
+            if snapshot.pending is not None:
+                if snapshot.pending == checkpoint and snapshot.current is None:
+                    anchor.commit(checkpoint)
+                elif snapshot.current == checkpoint:
+                    anchor.abort(snapshot.pending)
+                else:
+                    raise WebPushRuntimeError(
+                        "acknowledgement migration does not match its monotonic anchor"
+                    )
+                snapshot = anchor.snapshot()
+            if snapshot.current is None:
+                anchor.prepare(None, checkpoint)
+                anchor.commit(checkpoint)
+                snapshot = anchor.snapshot()
+            if snapshot.current != checkpoint or snapshot.pending is not None:
+                raise WebPushRuntimeError(
+                    "acknowledgement migration does not match its monotonic anchor"
+                )
+            # Legacy receipts predate external rollback evidence and cannot be
+            # proven retroactively. Invalidate them once instead of adopting
+            # replayable state.
+            conn.execute("DELETE FROM notification_push_ack_receipts")
+            conn.execute("DELETE FROM notification_push_ack_consumptions")
+            self._write_ack_meta(conn, 0, "")
+            return
+        seq, head = meta
+        self._validate_ack_consumptions(conn, seq, head)
         checkpoint = self._ack_checkpoint(seq, head)
         snapshot = anchor.snapshot()
         if snapshot.pending is not None:
@@ -885,17 +1086,27 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
                 )
             snapshot = anchor.snapshot()
         if snapshot.current is None:
-            if seq != 0:
-                raise WebPushRuntimeError(
-                    "protected acknowledgement anchor is missing for consumed state"
-                )
-            anchor.prepare(None, checkpoint)
-            anchor.commit(checkpoint)
-            snapshot = anchor.snapshot()
+            raise WebPushRuntimeError(
+                "protected acknowledgement anchor is missing for enabled state"
+            )
         if snapshot.current != checkpoint or snapshot.pending is not None:
             raise WebPushRuntimeError(
                 "acknowledgement consumption does not match its monotonic anchor"
             )
+
+    def _guard_ack_state(self) -> None:
+        if self._ack_anchor is None:
+            return
+        with self._lock:
+            with connect(self.db_path) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    self._reconcile_ack_anchor(conn)
+                except BaseException:
+                    conn.rollback()
+                    raise
+                else:
+                    conn.commit()
 
     def consume_ack_receipt(self, *, event_id: str, receipt: str) -> bool:
         if self._ack_anchor is not None:
@@ -960,7 +1171,12 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
                     # SQLite commit so a crash leaves the anchor able to roll the
                     # committed database forward or the uncommitted attempt back.
                     self._reconcile_ack_anchor(conn)
-                    seq, head = self._read_ack_meta(conn)
+                    meta = self._read_ack_meta(conn)
+                    if meta is None:
+                        raise WebPushRuntimeError(
+                            "protected acknowledgement state is not initialized"
+                        )
+                    seq, head = meta
                     next_seq = seq + 1
                     next_head = self._next_ack_head(
                         head, str(row["receipt_hmac"]), now, next_seq
@@ -983,6 +1199,14 @@ class WebPushPrivateStore(adapter_mod.WebPushRuntimeStore):
                         conn.rollback()
                         anchor.abort(candidate_ckpt)
                         return False
+                    self._write_ack_consumption(
+                        conn,
+                        consume_sequence=next_seq,
+                        receipt_hmac=str(row["receipt_hmac"]),
+                        consumed_at=now,
+                        previous_head=head,
+                        head_seal=next_head,
+                    )
                     self._write_ack_meta(conn, next_seq, next_head)
                     conn.commit()
                     committed_candidate = candidate_ckpt

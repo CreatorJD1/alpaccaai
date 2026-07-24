@@ -292,6 +292,12 @@ class CredentialMonotonicAnchor:
         self._observed_current: object | LedgerCheckpoint | None = _UNSET
         self._initialize_record()
 
+    @property
+    def storage_domain(self) -> str | None:
+        """Stable protected-record identity when the backend exposes one."""
+        value = getattr(self._backend, "storage_domain", None)
+        return value if type(value) is str and value else None
+
     def _require_available(self) -> None:
         if self._failed_reason is not None:
             raise NotificationAnchorUnavailable(
@@ -752,6 +758,10 @@ class WindowsCredentialManagerBackend:
     @property
     def target(self) -> str:
         return self._target
+
+    @property
+    def storage_domain(self) -> str:
+        return "windows-credential-manager:" + self._target.casefold()
 
     @property
     def mutex_name(self) -> str:
