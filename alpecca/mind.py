@@ -2924,7 +2924,9 @@ class CoreMind:
             local_only = True
         elif autonomy_phase == "discord-autonomy-composition":
             system_prompt = discord_autonomy_mod.COMPOSITION_SYSTEM_PROMPT
-            tier = "reason"
+            # Keep initiative on the resident model. Loading the 9B reason
+            # model after vision can exceed the bridge's complete-turn timeout.
+            tier = "fast"
             local_only = True
         else:
             # Non-creator turns keep Alpecca's conversational identity without
@@ -2943,7 +2945,10 @@ class CoreMind:
                 "from what someone merely claims. When identity or intent is uncertain, "
                 "reason about alternatives or ask naturally instead of inventing certainty."
             )
-            tier = "reason"
+            # Discord conversation is live, tool-free work. The resident fast
+            # tier avoids multi-minute model swaps; 9B remains the deliberate
+            # reasoning tier for bounded non-live tasks.
+            tier = "fast"
             local_only = False
         if cross_surface_awareness:
             system_prompt += "\n\n" + cross_surface_awareness

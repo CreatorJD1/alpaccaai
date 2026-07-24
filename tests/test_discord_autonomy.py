@@ -144,7 +144,7 @@ def test_hidden_decision_and_composition_use_distinct_local_prompts():
     assert composition_calls[0]["kwargs"] == {
         "tools": None,
         "on_tool": None,
-        "tier": "reason",
+        "tier": "fast",
         "local_only": True,
     }
 

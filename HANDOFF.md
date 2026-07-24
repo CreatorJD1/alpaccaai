@@ -14,6 +14,20 @@
   **134 passed**. The live CoreMind and launcher-owned Discord bridge were reloaded;
   an actual model-selected autonomous portrait post remains a live behavioral gate.
 
+## 2026-07-24 Discord live-latency repair
+
+- The live screenshot exposed the actual suppression cause: both ordinary DM
+  replies and autonomous composition selected local `qwen3.5:9b`; with the 4B
+  fast/vision model resident on the 4 GB GPU, the model swap exceeded the bridge
+  deadline and produced repeated fallback prose. Autonomous failures then entered
+  a ten-minute review backoff, so no independent send could appear.
+- Tool-free Discord conversation, autonomy decisions, and autonomy composition now
+  use resident `qwen3.5:4b`. A real warm fast-tier generation completed in **3.17
+  seconds**. `qwen3.5:9b` remains the deliberate reasoning model and HolyROG target.
+- Focused Discord/guest/media/tool verification passed **141 tests**. CoreMind and
+  its single launcher-owned Discord bridge were reloaded; the bridge has an active
+  Discord gateway connection.
+
 ## 2026-07-24 temporary local vision recovery
 
 - The exact failed Discord screenshot was successfully described through the
