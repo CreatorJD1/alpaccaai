@@ -1845,28 +1845,51 @@ def build_client() -> discord.Client:
     async def _resync_creator_dm_history() -> None:
         """Restore creator DM context so restart does not erase initiative."""
 
-        for channel in list(getattr(client, "private_channels", ()) or ()):
-            participant = getattr(channel, "recipient", None)
+        restored_users: set[str] = set()
+
+        async def restore(channel: object, participant: object) -> None:
             channel_id = getattr(channel, "id", None)
             participant_id = getattr(participant, "id", None)
-            if (
-                participant is None
-                or channel_id is None
-                or participant_id is None
-                or not _dm_author_allowed(participant)
-            ):
-                continue
+            if channel_id is None or participant_id is None:
+                return
             direct_room = {
                 "channel_id": str(channel_id),
                 "user_id": str(participant_id),
             }
             direct_rooms[int(channel_id)] = direct_room
+            restored_users.add(str(participant_id))
             # The common history loader only needs a numeric scope for optional
             # voice-memory lookup. Zero denotes a DM and has no guild records.
             await _seed_room_history(
                 channel,
                 {"guild_id": "0", "channel_id": str(channel_id)},
             )
+
+        for channel in list(getattr(client, "private_channels", ()) or ()):
+            participant = getattr(channel, "recipient", None)
+            if (
+                participant is None
+                or not _dm_author_allowed(participant)
+            ):
+                continue
+            await restore(channel, participant)
+
+        # Discord may omit existing DMs from READY. Resolve only stable numeric
+        # creator bindings already present in the allowlist, then reopen their
+        # existing DM channel without sending a message.
+        for configured_id in sorted(DM_ALLOW_IDS):
+            if configured_id in restored_users or not configured_id.isdecimal():
+                continue
+            try:
+                participant = client.get_user(int(configured_id))
+                if participant is None:
+                    participant = await client.fetch_user(int(configured_id))
+                channel = getattr(participant, "dm_channel", None)
+                if channel is None:
+                    channel = await participant.create_dm()
+                await restore(channel, participant)
+            except Exception:
+                _diagnostic("dm_history_unavailable")
 
     def _room_model_text(chan_id: int, latest: str, *, invite: bool = False) -> str:
         history = _model_room_history(chan_id)[-CONTEXT_MESSAGES:]
@@ -1956,6 +1979,7 @@ def build_client() -> discord.Client:
                     "event": "bridge_ready",
                     "guild_count": len(client.guilds),
                     "dm_allow_configured": bool(DM_ALLOW_IDS or DM_ALLOW_NAMES),
+                    "direct_room_count": len(direct_rooms),
                     "social_room_count": len(social_rooms),
                     "media": media_readiness(),
                     "voice": voice_status,
