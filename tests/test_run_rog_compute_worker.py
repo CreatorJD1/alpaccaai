@@ -24,6 +24,46 @@ def tls_environment():
         yield environ, cert_path, key_path
 
 
+def _write_single_san_identity(folder: Path) -> tuple[Path, Path]:
+    from datetime import datetime, timedelta, timezone
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    cert_path = folder / "legacy-jason-holyrog.crt"
+    key_path = folder / "legacy-jason-holyrog.key"
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, worker.EXPECTED_HOST)]
+    )
+    now = datetime.now(timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.DNSName(worker.EXPECTED_HOST)]),
+            critical=False,
+        )
+        .sign(private_key, hashes.SHA256())
+    )
+    cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    return cert_path, key_path
+
+
 class MissingCredentialError(Exception):
     winerror = 1168
 
@@ -281,7 +321,7 @@ def test_credential_install_and_removal_touch_only_dedicated_target() -> None:
     ]
 
 
-def test_generated_tls_identity_is_self_signed_for_exact_worker_dns_and_idempotent(
+def test_generated_tls_identity_is_self_signed_for_both_worker_dns_names_and_idempotent(
     tls_environment,
 ) -> None:
     from cryptography import x509
@@ -292,7 +332,7 @@ def test_generated_tls_identity_is_self_signed_for_exact_worker_dns_and_idempote
         x509.SubjectAlternativeName
     ).value.get_values_for_type(x509.DNSName)
 
-    assert names == [worker.EXPECTED_HOST]
+    assert names == list(worker.REQUIRED_DNS_SANS)
     assert cert_path.is_file()
     assert key_path.is_file()
     assert not worker._is_within(key_path, worker.ROOT.resolve())
@@ -300,8 +340,10 @@ def test_generated_tls_identity_is_self_signed_for_exact_worker_dns_and_idempote
     assert worker.install_tls_identity(environ) == (cert_path, key_path)
 
 
-def test_generated_tls_identity_completes_exact_hostname_handshake(
+@pytest.mark.parametrize("server_hostname", worker.REQUIRED_DNS_SANS)
+def test_generated_tls_identity_completes_each_required_hostname_handshake(
     tls_environment,
+    server_hostname: str,
 ) -> None:
     _, cert_path, key_path = tls_environment
     server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -326,7 +368,7 @@ def test_generated_tls_identity_completes_exact_hostname_handshake(
     try:
         with client_context.wrap_socket(
             client_socket,
-            server_hostname=worker.EXPECTED_HOST,
+            server_hostname=server_hostname,
         ) as secure:
             secure.sendall(b"x")
             assert secure.recv(1) == b"y"
@@ -335,6 +377,31 @@ def test_generated_tls_identity_completes_exact_hostname_handshake(
 
     assert errors == []
     assert received == [b"x"]
+
+
+def test_existing_single_san_identity_requires_rotation() -> None:
+    with tempfile.TemporaryDirectory(prefix="alpecca-rog-legacy-tls-") as folder:
+        cert_path, key_path = _write_single_san_identity(Path(folder))
+
+        with pytest.raises(
+            worker.WorkerStartupError, match="needs rotation"
+        ) as exc_info:
+            worker._validate_tls_material(cert_path, key_path)
+
+    assert worker.EXPECTED_FQDN in str(exc_info.value)
+
+
+def test_install_tls_identity_refuses_to_reuse_single_san_identity() -> None:
+    with tempfile.TemporaryDirectory(prefix="alpecca-rog-legacy-install-") as folder:
+        environ = {"LOCALAPPDATA": folder}
+        cert_path, _key_path = worker._tls_paths(environ)
+        cert_path.parent.mkdir(parents=True)
+        generated_cert, generated_key = _write_single_san_identity(cert_path.parent)
+        generated_cert.replace(cert_path)
+        generated_key.replace(worker._tls_paths(environ)[1])
+
+        with pytest.raises(worker.WorkerStartupError, match="needs rotation"):
+            worker.install_tls_identity(environ)
 
 
 def test_launcher_imports_only_the_isolated_worker_app() -> None:

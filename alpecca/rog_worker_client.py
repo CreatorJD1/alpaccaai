@@ -62,7 +62,9 @@ CREDENTIAL_TARGET_ENV = "ALPECCA_ROG_WORKER_CREDENTIAL_TARGET"
 CA_CERT_ENV = "ALPECCA_ROG_WORKER_CA_CERT"
 
 DEFAULT_MODEL = "qwen3.5:9b"
-DEFAULT_BASE_URL = "https://Jason_HOLYROG:8788"
+MAGICDNS_HOSTNAME = "jason-holyrog.tailda0108.ts.net"
+LEGACY_HOSTNAME = "Jason_HOLYROG"
+DEFAULT_BASE_URL = f"https://{MAGICDNS_HOSTNAME}:8788"
 DEFAULT_CREDENTIAL_TARGET = "Alpecca/Jason_HOLYROG/ComputeWorker"
 DEFAULT_HEALTH_TIMEOUT_SECONDS = 2.0
 DEFAULT_REASON_TIMEOUT_SECONDS = 180.0
@@ -83,7 +85,10 @@ MAX_HISTORY_MESSAGES = 32
 MAX_HISTORY_MESSAGE_BYTES = 12 * 1024
 MAX_REASON_TEXT_BYTES = 32 * 1024
 MAX_TOKENS_LIMIT = 2048
-EXPECTED_HOSTNAME = "Jason_HOLYROG"
+EXPECTED_HOSTNAME = LEGACY_HOSTNAME
+ALLOWED_REMOTE_HOSTNAMES = frozenset(
+    {LEGACY_HOSTNAME.casefold(), MAGICDNS_HOSTNAME.casefold()}
+)
 
 HEALTH_SCHEMA = "alpecca.rog-worker.health.v1"
 REASON_REQUEST_SCHEMA = "alpecca.rog-worker.reason.request.v1"
@@ -1201,9 +1206,9 @@ def _validated_base_url(value: object, *, allow_private_lan_http: bool) -> str:
                 "non-loopback ROG worker connections require authenticated TLS"
             )
     elif not _is_loopback_host(parsed.hostname):
-        if parsed.hostname.rstrip(".").casefold() != EXPECTED_HOSTNAME.casefold():
+        if parsed.hostname.rstrip(".").casefold() not in ALLOWED_REMOTE_HOSTNAMES:
             raise RogWorkerConfigurationError(
-                "remote ROG worker URL must use the Jason_HOLYROG DNS name"
+                "remote ROG worker URL must use the HolyROG MagicDNS or legacy DNS name"
             )
     return value[:-1] if value.endswith("/") else value
 
@@ -1619,6 +1624,8 @@ __all__ = [
     "CREDENTIAL_TARGET_ENV",
     "DEFAULT_BASE_URL",
     "DEFAULT_CREDENTIAL_TARGET",
+    "LEGACY_HOSTNAME",
+    "MAGICDNS_HOSTNAME",
     "HEALTH_PATH",
     "HEALTH_SCHEMA",
     "HEALTH_TIMEOUT_ENV",

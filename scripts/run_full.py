@@ -78,7 +78,15 @@ os.environ.setdefault("ALPECCA_CHAT_ZEROGPU", "0")
 # Prefer the separate non-speaking ROG worker for background deep work. If its
 # exact shared credential is absent or the host is unavailable, CoreMind walks
 # straight on to hosted Gemma and then the existing local Qwen fallback.
-os.environ.setdefault("ALPECCA_ROG_WORKER_URL", "https://Jason_HOLYROG:8788")
+_ROG_WORKER_LEGACY_URL = "https://Jason_HOLYROG:8788"
+_ROG_WORKER_MAGICDNS_URL = "https://jason-holyrog.tailda0108.ts.net:8788"
+_configured_rog_worker_url = os.environ.get("ALPECCA_ROG_WORKER_URL", "")
+if _configured_rog_worker_url.casefold() == _ROG_WORKER_LEGACY_URL.casefold():
+    # Older launchers still supply the NetBIOS-style name. Route that known
+    # default through Tailscale MagicDNS so Windows cannot select a LAN record.
+    os.environ["ALPECCA_ROG_WORKER_URL"] = _ROG_WORKER_MAGICDNS_URL
+else:
+    os.environ.setdefault("ALPECCA_ROG_WORKER_URL", _ROG_WORKER_MAGICDNS_URL)
 os.environ.setdefault(
     "ALPECCA_ROG_WORKER_CA_CERT",
     str(Path(os.environ.get("LOCALAPPDATA", Path.home()))

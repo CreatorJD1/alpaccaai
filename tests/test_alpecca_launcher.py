@@ -157,7 +157,7 @@ def test_full_stack_pins_the_hosted_and_local_workload_split_with_overridable_de
         "ALPECCA_FAST_MODEL": "qwen3.5:9b",
         "ALPECCA_CHAT_CLOUD_MODEL": "gemma4:cloud",
         "ALPECCA_CHAT_CLOUD_PAGED_MEMORY": "1",
-        "ALPECCA_ROG_WORKER_URL": "https://Jason_HOLYROG:8788",
+        "ALPECCA_ROG_WORKER_URL": "https://jason-holyrog.tailda0108.ts.net:8788",
         "ALPECCA_ROG_WORKER_MODEL": "qwen3.5:9b",
         "ALPECCA_DEEP_BACKEND": "rog-worker,ollama-cloud",
         "ALPECCA_ROG_SSH_ENABLED": "0",
@@ -174,7 +174,16 @@ def test_full_stack_pins_the_hosted_and_local_workload_split_with_overridable_de
         "ALPECCA_VISION_TIMEOUT": "60",
     }
     for name, value in expected_defaults.items():
-        assert f'os.environ.setdefault("{name}", "{value}")' in source
+        if name == "ALPECCA_ROG_WORKER_URL":
+            assert f'_ROG_WORKER_MAGICDNS_URL = "{value}"' in source
+            assert (
+                'os.environ.setdefault("ALPECCA_ROG_WORKER_URL", '
+                "_ROG_WORKER_MAGICDNS_URL)" in source
+            )
+        else:
+            assert f'os.environ.setdefault("{name}", "{value}")' in source
+    assert '_ROG_WORKER_LEGACY_URL = "https://Jason_HOLYROG:8788"' in source
+    assert "_configured_rog_worker_url.casefold()" in source
     assert '"ALPECCA_ROG_WORKER_CA_CERT"' in source
     assert '"jason-holyrog.crt"' in source
     assert 'os.environ.setdefault("ALPECCA_ROG_SSH_HOST", "Jason_HOLYROG")' in source

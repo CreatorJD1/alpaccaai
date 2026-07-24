@@ -16,6 +16,7 @@ from alpecca import rog_worker_client as rog
 SECRET = "worker-secret-0123456789-abcdefghijklmnopqrstuvwxyz"
 SECRET_BYTES = SECRET.encode("utf-8")
 BASE_URL = "https://Jason_HOLYROG:8788"
+MAGICDNS_BASE_URL = "https://jason-holyrog.tailda0108.ts.net:8788"
 TEST_CA = Path(__file__).resolve()
 REQUEST_ID = "request-00000001"
 NONCE = "nonce-0000000000000001"
@@ -453,7 +454,7 @@ def test_environment_uses_tls_holyrog_default_and_primary_ca_file(
         request_id_factory=lambda: REQUEST_ID,
     )
     assert worker.health().ready is True
-    assert calls == ["https://Jason_HOLYROG:8788/v1/health"]
+    assert calls == [MAGICDNS_BASE_URL + rog.HEALTH_PATH]
     with pytest.raises(rog.RogWorkerConfigurationError, match="certificate"):
         rog.RogWorkerClient.from_environment(
             {
@@ -685,13 +686,55 @@ def test_loopback_http_remains_available_for_local_smoke() -> None:
 def test_remote_https_requires_exact_worker_dns_and_ca_file() -> None:
     with pytest.raises(rog.RogWorkerConfigurationError, match="certificate"):
         rog.RogWorkerClient(BASE_URL, SECRET, opener=lambda *args, **kwargs: None)
-    with pytest.raises(rog.RogWorkerConfigurationError, match="Jason_HOLYROG"):
+    with pytest.raises(rog.RogWorkerConfigurationError, match="MagicDNS or legacy"):
         rog.RogWorkerClient(
             "https://192.168.12.165:8788",
             SECRET,
             ca_cert=TEST_CA,
             opener=lambda *args, **kwargs: None,
         )
+
+
+def test_magicdns_is_the_preferred_default_and_legacy_dns_remains_accepted() -> None:
+    assert rog.DEFAULT_BASE_URL == MAGICDNS_BASE_URL
+    assert rog.MAGICDNS_HOSTNAME == "jason-holyrog.tailda0108.ts.net"
+
+    magicdns = rog.RogWorkerClient(
+        MAGICDNS_BASE_URL,
+        SECRET,
+        ca_cert=TEST_CA,
+        opener=lambda *args, **kwargs: None,
+    )
+    legacy = rog.RogWorkerClient(
+        BASE_URL,
+        SECRET,
+        ca_cert=TEST_CA,
+        opener=lambda *args, **kwargs: None,
+    )
+
+    assert MAGICDNS_BASE_URL in repr(magicdns)
+    assert BASE_URL in repr(legacy)
+
+
+def test_environment_without_url_routes_requests_to_magicdns() -> None:
+    calls: list[str] = []
+
+    def opener(request, timeout):
+        calls.append(request.full_url)
+        return Response(health_payload(), url=request.full_url)
+
+    worker = rog.RogWorkerClient.from_environment(
+        {
+            rog.SECRET_ENV: SECRET,
+            rog.CA_CERT_ENV: str(TEST_CA),
+        },
+        opener=opener,
+        clock=lambda: NOW,
+        nonce_factory=lambda: NONCE,
+        request_id_factory=lambda: REQUEST_ID,
+    )
+    assert worker.health().ready is True
+    assert calls == [MAGICDNS_BASE_URL + rog.HEALTH_PATH]
 
 
 def test_default_https_opener_enforces_ca_hostname_and_tls12(monkeypatch) -> None:

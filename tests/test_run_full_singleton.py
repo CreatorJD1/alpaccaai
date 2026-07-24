@@ -63,6 +63,27 @@ def test_full_launcher_disables_rog_ssh_by_default_but_preserves_explicit_opt_in
     assert opted_in.os.environ["ALPECCA_ROG_SSH_ENABLED"] == "1"
 
 
+def test_full_launcher_prefers_magicdns_and_upgrades_only_legacy_url(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("ALPECCA_ROG_WORKER_URL", raising=False)
+    launcher = _load_launcher(monkeypatch, tmp_path / "default")
+    assert launcher.os.environ["ALPECCA_ROG_WORKER_URL"] == (
+        "https://jason-holyrog.tailda0108.ts.net:8788"
+    )
+
+    monkeypatch.setenv("ALPECCA_ROG_WORKER_URL", "https://Jason_HOLYROG:8788")
+    migrated = _load_launcher(monkeypatch, tmp_path / "legacy")
+    assert migrated.os.environ["ALPECCA_ROG_WORKER_URL"] == (
+        "https://jason-holyrog.tailda0108.ts.net:8788"
+    )
+
+    custom_url = "https://127.0.0.1:9443"
+    monkeypatch.setenv("ALPECCA_ROG_WORKER_URL", custom_url)
+    custom = _load_launcher(monkeypatch, tmp_path / "custom")
+    assert custom.os.environ["ALPECCA_ROG_WORKER_URL"] == custom_url
+
+
 def test_second_full_launcher_never_enters_startup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     launcher = _load_launcher(monkeypatch, tmp_path)
     first_started = threading.Event()

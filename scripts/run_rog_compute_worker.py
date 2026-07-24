@@ -27,6 +27,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 EXPECTED_HOST = "Jason_HOLYROG"
+EXPECTED_FQDN = "jason-holyrog.tailda0108.ts.net"
+REQUIRED_DNS_SANS: tuple[str, ...] = (EXPECTED_HOST, EXPECTED_FQDN)
 DEFAULT_MODEL = "qwen3.5:9b"
 DEFAULT_PORT = 8788
 SECRET_ENV = "ALPECCA_ROG_WORKER_SECRET"
@@ -161,9 +163,14 @@ def _validate_tls_material(cert_path: Path, key_path: Path) -> tuple[Path, Path]
         ).value.get_values_for_type(x509.DNSName)
     except (OSError, ValueError, x509.ExtensionNotFound):
         raise WorkerStartupError("the ROG TLS certificate is invalid") from None
-    if EXPECTED_HOST.casefold() not in {name.casefold() for name in names}:
+    observed_names = {name.casefold() for name in names}
+    missing_names = [
+        name for name in REQUIRED_DNS_SANS if name.casefold() not in observed_names
+    ]
+    if missing_names:
         raise WorkerStartupError(
-            f"the ROG TLS certificate must contain DNS SAN {EXPECTED_HOST}"
+            "the ROG TLS certificate needs rotation; missing required DNS SAN(s): "
+            + ", ".join(missing_names)
         )
     return cert, key
 
@@ -210,7 +217,9 @@ def install_tls_identity(
         .not_valid_before(issued_at - timedelta(minutes=5))
         .not_valid_after(issued_at + timedelta(days=825))
         .add_extension(
-            x509.SubjectAlternativeName([x509.DNSName(EXPECTED_HOST)]),
+            x509.SubjectAlternativeName(
+                [x509.DNSName(name) for name in REQUIRED_DNS_SANS]
+            ),
             critical=False,
         )
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
@@ -564,7 +573,7 @@ def _parser() -> argparse.ArgumentParser:
         "--install-tls",
         action="store_true",
         help=(
-            "create or validate a self-signed Jason_HOLYROG TLS identity "
+            "create or validate a self-signed dual-SAN HolyROG TLS identity "
             "under LocalAppData"
         ),
     )
