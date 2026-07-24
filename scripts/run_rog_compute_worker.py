@@ -16,6 +16,7 @@ import getpass
 import importlib
 import os
 from pathlib import Path
+import shutil
 import socket
 import ssl
 import sys
@@ -193,6 +194,18 @@ def install_tls_identity(
         if cert_path.is_file() and key_path.is_file():
             return _validate_tls_material(cert_path, key_path)
         raise WorkerStartupError("incomplete ROG TLS material already exists")
+    _generate_tls_identity(cert_path, key_path, now=now)
+    return _validate_tls_material(cert_path, key_path)
+
+
+def _generate_tls_identity(
+    cert_path: Path,
+    key_path: Path,
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Generate a new dual-SAN identity at paths that must not exist."""
+
     try:
         from cryptography import x509
         from cryptography.hazmat.primitives import hashes, serialization
@@ -254,7 +267,151 @@ def install_tls_identity(
             except OSError:
                 pass
         raise WorkerStartupError("could not install ROG TLS material") from exc
-    return _validate_tls_material(cert_path, key_path)
+    _validate_tls_material(cert_path, key_path)
+
+
+def _reserve_tls_archive_paths(
+    tls_dir: Path,
+    *,
+    now: datetime | None = None,
+) -> tuple[Path, Path]:
+    archive_dir = tls_dir / "archive"
+    try:
+        archive_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise WorkerStartupError("could not create the ROG TLS archive") from exc
+    archived_at = now or datetime.now(timezone.utc)
+    if archived_at.tzinfo is None:
+        archived_at = archived_at.replace(tzinfo=timezone.utc)
+    stamp = archived_at.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    for collision in range(10_000):
+        suffix = "" if collision == 0 else f"-{collision}"
+        cert_archive = archive_dir / f"jason-holyrog-{stamp}{suffix}.crt"
+        key_archive = archive_dir / f"jason-holyrog-{stamp}{suffix}.key"
+        try:
+            cert_archive.touch(exist_ok=False)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise WorkerStartupError("could not reserve the ROG TLS archive") from exc
+        try:
+            key_archive.touch(exist_ok=False)
+        except FileExistsError:
+            cert_archive.unlink(missing_ok=True)
+            continue
+        except OSError as exc:
+            cert_archive.unlink(missing_ok=True)
+            raise WorkerStartupError("could not reserve the ROG TLS archive") from exc
+        return cert_archive, key_archive
+    raise WorkerStartupError("could not reserve collision-safe ROG TLS archive paths")
+
+
+def _archive_tls_pair(
+    cert_path: Path,
+    key_path: Path,
+    *,
+    now: datetime | None = None,
+) -> tuple[Path, Path]:
+    cert_archive, key_archive = _reserve_tls_archive_paths(cert_path.parent, now=now)
+    try:
+        shutil.copyfile(cert_path, cert_archive)
+        shutil.copyfile(key_path, key_archive)
+        os.chmod(key_archive, 0o600)
+    except OSError as exc:
+        cert_archive.unlink(missing_ok=True)
+        key_archive.unlink(missing_ok=True)
+        raise WorkerStartupError("could not archive the current ROG TLS identity") from exc
+    return cert_archive, key_archive
+
+
+def _restore_tls_pair(
+    cert_archive: Path,
+    key_archive: Path,
+    cert_path: Path,
+    key_path: Path,
+) -> None:
+    cert_restore = cert_path.with_name(cert_path.name + ".restore")
+    key_restore = key_path.with_name(key_path.name + ".restore")
+    try:
+        for temporary in (cert_restore, key_restore):
+            temporary.unlink(missing_ok=True)
+        shutil.copyfile(cert_archive, cert_restore)
+        shutil.copyfile(key_archive, key_restore)
+        os.chmod(key_restore, 0o600)
+        os.replace(key_restore, key_path)
+        os.replace(cert_restore, cert_path)
+    except OSError as exc:
+        for temporary in (cert_restore, key_restore):
+            temporary.unlink(missing_ok=True)
+        raise WorkerStartupError(
+            "ROG TLS rotation failed and the prior identity could not be restored"
+        ) from exc
+
+
+def rotate_tls_identity(
+    environ: Mapping[str, str] | None,
+    *,
+    expected_host: str,
+    now: datetime | None = None,
+    hostname_provider: Callable[[], str] = socket.gethostname,
+) -> tuple[Path, Path, Path, Path]:
+    """Transactionally replace the worker identity after explicit host confirmation."""
+
+    if str(expected_host or "").strip().casefold() != EXPECTED_HOST.casefold():
+        raise WorkerStartupError(
+            f"TLS rotation requires explicit host confirmation: {EXPECTED_HOST}"
+        )
+    observed_host = str(hostname_provider() or "").strip()
+    if observed_host.casefold() != EXPECTED_HOST.casefold():
+        raise WorkerStartupError(
+            f"TLS rotation is assigned to {EXPECTED_HOST}, not "
+            f"{observed_host or 'an unknown host'}"
+        )
+    active_env = os.environ if environ is None else environ
+    cert_path, key_path = _tls_paths(active_env)
+    cert_path = cert_path.expanduser().resolve(strict=False)
+    key_path = key_path.expanduser().resolve(strict=False)
+    if _is_within(cert_path, ROOT.resolve()) or _is_within(key_path, ROOT.resolve()):
+        raise WorkerStartupError("ROG TLS material cannot be stored in the repository")
+    if not cert_path.is_file() or not key_path.is_file():
+        raise WorkerStartupError("TLS rotation requires a complete existing ROG identity")
+
+    # Loading the pair proves that the current certificate and key match while
+    # still allowing an explicit rotation of the legacy single-SAN identity.
+    try:
+        current_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        current_context.load_cert_chain(str(cert_path), str(key_path))
+    except (OSError, ssl.SSLError, ValueError):
+        raise WorkerStartupError("the current ROG TLS certificate and key are invalid") from None
+
+    cert_archive, key_archive = _archive_tls_pair(
+        cert_path, key_path, now=now
+    )
+    rotation_id = cert_archive.stem.removeprefix("jason-holyrog-")
+    candidate_cert = cert_path.with_name(cert_path.name + f".rotate-{rotation_id}")
+    candidate_key = key_path.with_name(key_path.name + f".rotate-{rotation_id}")
+    for candidate in (candidate_cert, candidate_key):
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError as exc:
+            raise WorkerStartupError("could not prepare ROG TLS rotation") from exc
+    try:
+        _generate_tls_identity(candidate_cert, candidate_key, now=now)
+        _validate_tls_material(candidate_cert, candidate_key)
+        os.replace(candidate_key, key_path)
+        os.replace(candidate_cert, cert_path)
+        _validate_tls_material(cert_path, key_path)
+    except (OSError, WorkerStartupError) as exc:
+        for candidate in (candidate_cert, candidate_key):
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                pass
+        _restore_tls_pair(cert_archive, key_archive, cert_path, key_path)
+        if isinstance(exc, WorkerStartupError):
+            raise
+        raise WorkerStartupError("could not rotate the ROG TLS identity") from exc
+    return cert_path, key_path, cert_archive, key_archive
 
 
 def _validate_secret(value: object, *, source: str) -> str:
@@ -578,6 +735,14 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     actions.add_argument(
+        "--rotate-tls",
+        metavar="EXPECTED_HOST",
+        help=(
+            "archive and transactionally replace the ROG TLS identity; "
+            f"requires the explicit value {EXPECTED_HOST}"
+        ),
+    )
+    actions.add_argument(
         "--check",
         action="store_true",
         help="validate host, secret, and isolated app without opening a listener",
@@ -612,6 +777,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             cert_path, _key_path = install_tls_identity(os.environ)
             print(f"ROG worker TLS identity ready. Copy only this public certificate: {cert_path}")
             print(f"On the primary, set {CA_CERT_ENV} to the copied certificate path.")
+            return 0
+        if args.rotate_tls is not None:
+            cert_path, _key_path, cert_archive, _key_archive = rotate_tls_identity(
+                os.environ,
+                expected_host=args.rotate_tls,
+            )
+            print(f"ROG worker TLS identity rotated: {cert_path}")
+            print(f"Prior public certificate archived: {cert_archive}")
+            print(f"On the primary, replace {CA_CERT_ENV} with the new public certificate.")
             return 0
         return run_worker(check_only=args.check)
     except WorkerStartupError as exc:

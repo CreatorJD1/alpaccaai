@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from datetime import datetime, timezone
 from pathlib import Path
 import socket
 import ssl
@@ -402,6 +403,125 @@ def test_install_tls_identity_refuses_to_reuse_single_san_identity() -> None:
 
         with pytest.raises(worker.WorkerStartupError, match="needs rotation"):
             worker.install_tls_identity(environ)
+
+
+def test_rotate_tls_identity_archives_prior_pair_and_installs_dual_san() -> None:
+    from cryptography import x509
+
+    with tempfile.TemporaryDirectory(prefix="alpecca-rog-rotate-success-") as folder:
+        environ = {"LOCALAPPDATA": folder}
+        cert_path, key_path = worker._tls_paths(environ)
+        cert_path.parent.mkdir(parents=True)
+        legacy_cert, legacy_key = _write_single_san_identity(cert_path.parent)
+        legacy_cert.replace(cert_path)
+        legacy_key.replace(key_path)
+        prior_cert = cert_path.read_bytes()
+        prior_key = key_path.read_bytes()
+
+        active_cert, active_key, archived_cert, archived_key = (
+            worker.rotate_tls_identity(
+                environ,
+                expected_host=worker.EXPECTED_HOST,
+                now=datetime(2026, 7, 23, 18, 30, tzinfo=timezone.utc),
+                hostname_provider=lambda: worker.EXPECTED_HOST,
+            )
+        )
+
+        assert (active_cert, active_key) == (cert_path, key_path)
+        assert archived_cert.parent == cert_path.parent / "archive"
+        assert archived_key.parent == cert_path.parent / "archive"
+        assert archived_cert.read_bytes() == prior_cert
+        assert archived_key.read_bytes() == prior_key
+        assert active_cert.read_bytes() != prior_cert
+        assert active_key.read_bytes() != prior_key
+        certificate = x509.load_pem_x509_certificate(active_cert.read_bytes())
+        names = certificate.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName
+        ).value.get_values_for_type(x509.DNSName)
+        assert names == list(worker.REQUIRED_DNS_SANS)
+        assert worker._validate_tls_material(active_cert, active_key) == (
+            active_cert,
+            active_key,
+        )
+
+
+def test_rotate_tls_identity_uses_collision_safe_archive_names() -> None:
+    with tempfile.TemporaryDirectory(prefix="alpecca-rog-rotate-collision-") as folder:
+        environ = {"LOCALAPPDATA": folder}
+        worker.install_tls_identity(environ)
+        fixed_now = datetime(2026, 7, 23, 18, 31, tzinfo=timezone.utc)
+
+        first = worker.rotate_tls_identity(
+            environ,
+            expected_host=worker.EXPECTED_HOST,
+            now=fixed_now,
+            hostname_provider=lambda: worker.EXPECTED_HOST,
+        )
+        second = worker.rotate_tls_identity(
+            environ,
+            expected_host=worker.EXPECTED_HOST,
+            now=fixed_now,
+            hostname_provider=lambda: worker.EXPECTED_HOST,
+        )
+
+        assert first[2:] != second[2:]
+        assert first[2].is_file() and first[3].is_file()
+        assert second[2].is_file() and second[3].is_file()
+        assert second[2].stem.endswith("-1")
+        assert second[3].stem.endswith("-1")
+
+
+def test_rotate_tls_identity_restores_prior_pair_when_candidate_validation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="alpecca-rog-rotate-rollback-") as folder:
+        environ = {"LOCALAPPDATA": folder}
+        cert_path, key_path = worker.install_tls_identity(environ)
+        prior_cert = cert_path.read_bytes()
+        prior_key = key_path.read_bytes()
+        original_validate = worker._validate_tls_material
+
+        def reject_candidate(cert: Path, key: Path) -> tuple[Path, Path]:
+            if ".rotate-" in cert.name:
+                raise worker.WorkerStartupError("candidate validation failed")
+            return original_validate(cert, key)
+
+        monkeypatch.setattr(worker, "_validate_tls_material", reject_candidate)
+
+        with pytest.raises(worker.WorkerStartupError, match="candidate validation failed"):
+            worker.rotate_tls_identity(
+                environ,
+                expected_host=worker.EXPECTED_HOST,
+                now=datetime(2026, 7, 23, 18, 32, tzinfo=timezone.utc),
+                hostname_provider=lambda: worker.EXPECTED_HOST,
+            )
+
+        assert cert_path.read_bytes() == prior_cert
+        assert key_path.read_bytes() == prior_key
+        assert not list(cert_path.parent.glob(cert_path.name + ".rotate-*"))
+        assert not list(key_path.parent.glob(key_path.name + ".rotate-*"))
+        archived = sorted((cert_path.parent / "archive").iterdir())
+        assert len(archived) == 2
+        assert prior_cert in {path.read_bytes() for path in archived}
+        assert prior_key in {path.read_bytes() for path in archived}
+
+
+def test_rotate_tls_requires_explicit_expected_host() -> None:
+    with tempfile.TemporaryDirectory(prefix="alpecca-rog-rotate-host-") as folder:
+        environ = {"LOCALAPPDATA": folder}
+        worker.install_tls_identity(environ)
+
+        with pytest.raises(worker.WorkerStartupError, match=worker.EXPECTED_HOST):
+            worker.rotate_tls_identity(environ, expected_host="another-host")
+        with pytest.raises(worker.WorkerStartupError, match="assigned"):
+            worker.rotate_tls_identity(
+                environ,
+                expected_host=worker.EXPECTED_HOST,
+                hostname_provider=lambda: "RygenART",
+            )
+
+    with pytest.raises(SystemExit):
+        worker._parser().parse_args(["--rotate-tls"])
 
 
 def test_launcher_imports_only_the_isolated_worker_app() -> None:
