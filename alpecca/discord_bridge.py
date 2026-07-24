@@ -3882,7 +3882,11 @@ def build_client() -> discord.Client:
                 _proactive_cursor["index"] = (start + offset + 1) % len(rooms)
                 last_proactive_eval_at[chan] = tick_now
                 _proactive_global_eval["at"] = tick_now
-                if random.random() >= PROACTIVE_CHANCE:
+                # An established direct conversation should always reach the
+                # bounded model decision once eligible; the model can still
+                # choose [pass]. Shared rooms retain the probabilistic social
+                # gate so Alpecca does not dominate group conversation.
+                if not is_direct and random.random() >= PROACTIVE_CHANCE:
                     _diagnostic("proactive_room_passed", status="chance")
                     return
                 # Reserve this eligibility before model work. A backend failure,

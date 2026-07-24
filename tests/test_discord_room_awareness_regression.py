@@ -272,7 +272,13 @@ def test_creator_dm_can_receive_one_bounded_unprompted_follow_up(
     monkeypatch.setattr(discord_bridge, "PROACTIVE_QUIET_MIN", 1.0)
     monkeypatch.setattr(discord_bridge, "PROACTIVE_MIN_LEN", 1)
     monkeypatch.setattr(discord_bridge, "PROACTIVE_CHANCE", 1.0)
-    monkeypatch.setattr(discord_bridge.random, "random", lambda: 0.0)
+    monkeypatch.setattr(
+        discord_bridge.random,
+        "random",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("an established DM must not use a random initiative gate")
+        ),
+    )
     monkeypatch.setattr(discord_bridge, "_ask_alpecca", lambda *_a, **_k: "I heard you.")
     monkeypatch.setattr(
         discord_bridge.discord_media,
