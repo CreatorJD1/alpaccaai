@@ -28,7 +28,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional
 
 from config import (
     Vision as VisionCfg,
@@ -52,6 +52,34 @@ class VisionDescription:
     processing_location: str
     cloud_egress: str
 
+
+FrameSource = Literal["attachment", "video-frame"]
+MAX_EVENT_FRAME_BYTES = 12 * 1024 * 1024
+MAX_VIDEO_FRAME_AGE_SECONDS = 15.0
+MAX_ATTACHMENT_FRAME_AGE_SECONDS = 300.0
+
+
+@dataclass(frozen=True, slots=True)
+class EventFrame:
+    """One ephemeral image-bearing event with bounded provenance."""
+
+    image_bytes: bytes
+    source: FrameSource
+    source_id: str
+    captured_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class FrameVisibility:
+    """Truthful result: ``visible`` only when a backend saw these pixels."""
+
+    status: Literal["visible", "stale", "invalid", "unavailable"]
+    source: FrameSource
+    source_id: str
+    captured_at: float
+    description: VisionDescription | None = None
+    reason: str = ""
+
 _DESCRIBE_PROMPT = (
     "Describe this image in two or three sentences, plainly and concretely: "
     "what it shows, any visible text worth knowing, and the overall feel."
@@ -69,6 +97,50 @@ _FACE_PROMPT = (
 )
 
 _VISION_CALL_LOCK = threading.Lock()
+_VISION_STATE_LOCK = threading.Lock()
+_VISION_STATE: dict[str, object] = {
+    "attempts": 0,
+    "successes": 0,
+    "last_status": "unverified",
+    "last_source": "",
+    "last_observed_at": 0.0,
+}
+
+
+def _record_vision_outcome(*, success: bool, source: str) -> None:
+    with _VISION_STATE_LOCK:
+        _VISION_STATE["attempts"] = int(_VISION_STATE["attempts"]) + 1
+        if success:
+            _VISION_STATE["successes"] = int(_VISION_STATE["successes"]) + 1
+        _VISION_STATE["last_status"] = "ready" if success else "unavailable"
+        _VISION_STATE["last_source"] = source[:32]
+        _VISION_STATE["last_observed_at"] = time.time()
+
+
+def vision_readiness() -> dict[str, object]:
+    """Return measured local-vision posture without claiming a live sensor."""
+
+    configured = verified_local_ollama_target(
+        OLLAMA_HOST,
+        VisionCfg.MODEL,
+        known_cloud_models={VISION_CLOUD_MODEL},
+    )
+    with _VISION_STATE_LOCK:
+        observed = dict(_VISION_STATE)
+    status = str(observed["last_status"])
+    if not configured:
+        status = "unavailable"
+    elif not int(observed["attempts"]):
+        status = "unverified"
+    return {
+        "status": status,
+        "configured_local_target": configured,
+        "model": str(VisionCfg.MODEL),
+        "processing": "local-only",
+        "sensor_attached": False,
+        "event_frames_supported": ("attachment", "video-frame"),
+        **observed,
+    }
 
 
 def _timeout_seconds(name: str, default: float) -> float:
@@ -205,6 +277,7 @@ def describe_image_result(
     consent grant before it invokes either private provider helper.
     """
     local = _describe_local(image_bytes, prompt)
+    _record_vision_outcome(success=bool(local), source="direct-image")
     return (
         VisionDescription(local, "local-ollama", "local-only", "denied")
         if local else None
@@ -359,6 +432,67 @@ def describe_and_recognize_result(
     )
 
 
+def _valid_event_image(payload: bytes) -> bool:
+    if not payload or len(payload) > MAX_EVENT_FRAME_BYTES:
+        return False
+    return bool(
+        payload.startswith(b"\xff\xd8\xff")
+        or payload.startswith(b"\x89PNG\r\n\x1a\n")
+        or (payload.startswith(b"RIFF") and payload[8:12] == b"WEBP")
+        or payload.startswith((b"GIF87a", b"GIF89a"))
+    )
+
+
+def describe_event_frame(
+    frame: EventFrame,
+    *,
+    prompt: str = _DESCRIBE_PROMPT,
+    now: float | None = None,
+) -> FrameVisibility:
+    """Describe one attachment/video frame, fencing stale and invalid events.
+
+    No camera or screen capability is inferred.  ``visible`` means the exact
+    supplied bytes reached a verified vision backend during this call.
+    """
+
+    if not isinstance(frame, EventFrame):
+        raise TypeError("frame must be EventFrame")
+    observed = time.monotonic() if now is None else float(now)
+    source_id = " ".join(str(frame.source_id or "").split())[:128]
+    if frame.source not in {"attachment", "video-frame"} or not source_id:
+        return FrameVisibility(
+            "invalid", frame.source, source_id, frame.captured_at, reason="invalid-source"
+        )
+    if not _valid_event_image(frame.image_bytes):
+        return FrameVisibility(
+            "invalid", frame.source, source_id, frame.captured_at, reason="invalid-image"
+        )
+    age = observed - float(frame.captured_at)
+    max_age = (
+        MAX_VIDEO_FRAME_AGE_SECONDS
+        if frame.source == "video-frame"
+        else MAX_ATTACHMENT_FRAME_AGE_SECONDS
+    )
+    if age < -1.0 or age > max_age:
+        return FrameVisibility(
+            "stale", frame.source, source_id, frame.captured_at, reason="stale-frame"
+        )
+    result = describe_image_result(frame.image_bytes, prompt=prompt)
+    if result is None:
+        return FrameVisibility(
+            "unavailable",
+            frame.source,
+            source_id,
+            frame.captured_at,
+            reason="vision-backend-unavailable",
+        )
+    with _VISION_STATE_LOCK:
+        _VISION_STATE["last_source"] = frame.source
+    return FrameVisibility(
+        "visible", frame.source, source_id, frame.captured_at, description=result
+    )
+
+
 def describe_and_recognize_via_consent(
     image_bytes: bytes,
     *,
@@ -452,10 +586,14 @@ class _GlimpseThread:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.available = False
+        self.last_capture_at = 0.0
+        self.last_description_at = 0.0
+        self.last_error = "disabled" if not enabled else "unverified"
         if not enabled:
             return
         if self._probe():
             self.available = True
+            self.last_error = ""
             self._thread = threading.Thread(target=self._loop, daemon=True,
                                             name=type(self).__name__)
             self._thread.start()
@@ -472,11 +610,21 @@ class _GlimpseThread:
                 if self._gate is None or self._gate():
                     self._glimpse()
             except Exception:
-                pass  # a failed glimpse is a blink, not a crash
+                self.last_error = "capture-or-inference-failed"
             self._stop.wait(self._interval)
 
     def close(self) -> None:
         self._stop.set()
+
+    def readiness(self) -> dict[str, object]:
+        return {
+            "capture_ready": bool(self.available),
+            "last_capture_at": float(getattr(self, "last_capture_at", 0.0)),
+            "last_description_at": float(
+                getattr(self, "last_description_at", 0.0)
+            ),
+            "reason": str(getattr(self, "last_error", "unverified")),
+        }
 
 
 class ScreenSight(_GlimpseThread):
@@ -497,6 +645,7 @@ class ScreenSight(_GlimpseThread):
         import io
         from PIL import ImageGrab
         shot = ImageGrab.grab()
+        self.last_capture_at = time.time()
         # Downscale: the model doesn't need 4K to say "they're editing Python".
         shot.thumbnail((1280, 1280))
         buf = io.BytesIO()
@@ -504,6 +653,10 @@ class ScreenSight(_GlimpseThread):
         desc = describe_image(buf.getvalue(), prompt=_SCREEN_PROMPT, ambient=True)
         if desc:
             self.latest = desc
+            self.last_description_at = time.time()
+            self.last_error = ""
+        else:
+            self.last_error = "vision-backend-unavailable"
 
 
 class FaceSense(_GlimpseThread):
@@ -533,14 +686,21 @@ class FaceSense(_GlimpseThread):
         finally:
             cap.release()
         if not ok:
+            self.last_error = "camera-frame-unavailable"
             return
+        self.last_capture_at = time.time()
         ok, jpg = cv2.imencode(".jpg", frame)
         if not ok:
+            self.last_error = "camera-encode-failed"
             return
         label = describe_image(jpg.tobytes(), prompt=_FACE_PROMPT, ambient=True)
         if label:
             self.expression = label.strip().lower().rstrip(".")
             self.weary = weary_from_label(label)
+            self.last_description_at = time.time()
+            self.last_error = ""
+        else:
+            self.last_error = "vision-backend-unavailable"
 
     def annotate(self, obs) -> None:
         """Fold the latest expression read into an Observation. No-op when the

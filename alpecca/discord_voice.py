@@ -88,6 +88,72 @@ class SpeakerVoiceUtterance:
     wav_bytes: bytes = field(repr=False)
     pcm_bytes: int
     duration_seconds: float
+    listener_epoch: int = 0
+    turn_sequence: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceTurnToken:
+    """Opaque receive-generation token for dropping superseded voice work."""
+
+    listener_epoch: int
+    turn_sequence: int
+
+
+class VoiceTurnFence:
+    """Fence listener restarts and newer completed utterances.
+
+    Completing one utterance does not stop the listener.  A newer utterance in
+    the same listener epoch supersedes model/transcription work carrying an
+    older token, while a listener restart invalidates every prior token.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._listener_epoch = 0
+        self._turn_sequence = 0
+        self._active = False
+
+    def activate(self) -> int:
+        with self._lock:
+            self._listener_epoch += 1
+            self._turn_sequence = 0
+            self._active = True
+            return self._listener_epoch
+
+    def commit_turn(self, listener_epoch: int) -> VoiceTurnToken | None:
+        with self._lock:
+            if not self._active or listener_epoch != self._listener_epoch:
+                return None
+            self._turn_sequence += 1
+            return VoiceTurnToken(self._listener_epoch, self._turn_sequence)
+
+    def is_current(self, token: VoiceTurnToken) -> bool:
+        if not isinstance(token, VoiceTurnToken):
+            return False
+        with self._lock:
+            return bool(
+                self._active
+                and token.listener_epoch == self._listener_epoch
+                and token.turn_sequence == self._turn_sequence
+            )
+
+    def deactivate(self, listener_epoch: int | None = None) -> bool:
+        with self._lock:
+            if listener_epoch is not None and listener_epoch != self._listener_epoch:
+                return False
+            changed = self._active
+            self._active = False
+            self._turn_sequence += 1
+            return changed
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "active": self._active,
+                "listener_epoch": self._listener_epoch,
+                "turn_sequence": self._turn_sequence,
+            }
 
 
 def _increment_dave_stat(name: str) -> None:
@@ -344,6 +410,13 @@ def voice_runtime_state(
         if transcriber_ready is False
         else "unverified"
     )
+    is_listening = getattr(voice_client, "is_listening", None)
+    transport_listening = (
+        _voice_client_flag(voice_client, "is_listening")
+        if callable(is_listening)
+        else listener_active is True
+    )
+    receiving = bool(receive_capable and listener_active is True and transport_listening)
     can_transcribe = receive_capable and transcriber_ready is True
     can_speak = bool(
         connected
@@ -355,7 +428,7 @@ def voice_runtime_state(
     return {
         "connected": connected,
         "can_receive": receive_capable,
-        "receiving": receive_capable and listener_active is True,
+        "receiving": receiving,
         "can_transcribe": can_transcribe,
         "transcription_status": transcription_status,
         "can_speak": can_speak,
@@ -590,6 +663,12 @@ class RoomPcmCollector:
         self._lock = threading.Lock()
         self._collectors: dict[int, CreatorPcmCollector] = {}
         self._speaker_names: dict[int, str] = {}
+        self._turn_fence = VoiceTurnFence()
+        self._listener_epoch = self._turn_fence.activate()
+
+    @property
+    def turn_fence(self) -> VoiceTurnFence:
+        return self._turn_fence
 
     @staticmethod
     def _speaker(user: object) -> tuple[int, str] | None:
@@ -608,6 +687,9 @@ class RoomPcmCollector:
     def _emit(self, user_id: int, utterance: VoiceUtterance) -> None:
         with self._lock:
             name = self._speaker_names.get(user_id, "Discord participant")
+        token = self._turn_fence.commit_turn(self._listener_epoch)
+        if token is None:
+            return
         self._on_utterance(
             SpeakerVoiceUtterance(
                 user_id=user_id,
@@ -615,6 +697,8 @@ class RoomPcmCollector:
                 wav_bytes=utterance.wav_bytes,
                 pcm_bytes=utterance.pcm_bytes,
                 duration_seconds=utterance.duration_seconds,
+                listener_epoch=token.listener_epoch,
+                turn_sequence=token.turn_sequence,
             )
         )
 
@@ -661,6 +745,7 @@ class RoomPcmCollector:
         return sum(1 for collector in collectors if collector.flush_stale(now=now))
 
     def cleanup(self) -> None:
+        self._turn_fence.deactivate(self._listener_epoch)
         with self._lock:
             collectors = list(self._collectors.values())
             self._collectors.clear()
@@ -812,6 +897,8 @@ __all__ = [
     "VAD_THRESHOLD",
     "SpeakerVoiceUtterance",
     "VoiceUtterance",
+    "VoiceTurnFence",
+    "VoiceTurnToken",
     "build_sink",
     "dave_receive_status",
     "install_dave_receive_compat",

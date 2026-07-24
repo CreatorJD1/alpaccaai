@@ -357,3 +357,19 @@ def test_non_cpu_backend_is_rejected(tmp_path):
             decrypt=_open,
             backend=backend,
         )
+
+
+def test_inference_failure_invalidates_subsequent_health(worker):
+    worker.backend.observe = lambda _packet: (_ for _ in ()).throw(
+        RuntimeError("camera inference stopped")
+    )
+
+    failed = face_worker.protocol_response(
+        worker, _request("enroll", profile_id="creator", image=_image())
+    )
+    status = worker.handle(_request("status"))
+
+    assert failed["ok"] is False
+    assert status["status"] == "unavailable"
+    assert status["reason"] == "face_backend_inference_failed"
+    assert status["inference_verified"] is False

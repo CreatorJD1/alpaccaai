@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import threading
+import time
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -426,6 +427,9 @@ class SpeakerWorker:
         self._probe_checked = False
         self._probe_ready = False
         self._probe_reason = "speaker_recognition_probe_pending"
+        self._worker_generation = 1
+        self._successful_inferences = 0
+        self._last_inference_at = 0.0
 
     def _recognition_state(self) -> tuple[bool, str]:
         if not bool(getattr(self.backend, "recognition_capable", False)):
@@ -455,6 +459,7 @@ class SpeakerWorker:
             self._probe_checked = True
             self._probe_ready = False
             self._probe_reason = reason
+            self._worker_generation += 1
 
     def _embed_if_ready(self, packet: AudioPacket) -> tuple[float, ...] | None:
         with self._inference_lock:
@@ -462,10 +467,13 @@ class SpeakerWorker:
             if not ready:
                 return None
             try:
-                return self.backend.embed(packet)
+                embedding = self.backend.embed(packet)
             except Exception:
                 self._invalidate_recognition("speaker_recognition_backend_failed")
                 return None
+            self._successful_inferences += 1
+            self._last_inference_at = time.time()
+            return embedding
 
     def _safety(self, ready: bool) -> dict[str, object]:
         return {
@@ -499,6 +507,33 @@ class SpeakerWorker:
             "sherpa_onnx_available": sherpa_onnx_available(),
             "enrolled_profiles": len(profiles),
             "max_audio_seconds": MAX_AUDIO_SECONDS,
+            "worker_generation": self._worker_generation,
+            "inference_verified": self._successful_inferences > 0,
+            "successful_inferences": self._successful_inferences,
+            "last_inference_at": self._last_inference_at,
+            **self._safety(ready),
+        }
+
+    def _stale_request(
+        self, request: Mapping[str, object], operation: str
+    ) -> dict[str, object] | None:
+        expected = request.get("expected_generation")
+        if expected is None:
+            return None
+        if type(expected) is not int or expected <= 0:
+            raise SpeakerWorkerError(
+                "invalid_generation", "expected_generation must be a positive integer"
+            )
+        if expected == self._worker_generation:
+            return None
+        ready, _reason = self._recognition_state()
+        return {
+            "status": "stale",
+            "operation": operation,
+            "backend": self.backend.name,
+            "reason": "worker-generation-changed",
+            "expected_generation": expected,
+            "worker_generation": self._worker_generation,
             **self._safety(ready),
         }
 
@@ -561,8 +596,14 @@ class SpeakerWorker:
         if operation == "status":
             return self._status()
         if operation == "enroll":
+            stale = self._stale_request(request, operation)
+            if stale is not None:
+                return stale
             return self._enroll(request)
         if operation == "compare":
+            stale = self._stale_request(request, operation)
+            if stale is not None:
+                return stale
             return self._compare(request)
         raise SpeakerWorkerError("invalid_operation", "operation must be status, enroll, or compare")
 

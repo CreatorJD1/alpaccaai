@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import threading
+import time
 from typing import Callable, Mapping, Protocol, TextIO
 
 
@@ -532,19 +533,41 @@ class FaceWorker:
             Path(store_path), encrypt=encrypt, decrypt=decrypt
         )
         self._lock = threading.RLock()
+        self._runtime_failure = ""
+        self._successful_inferences = 0
+        self._last_inference_at = 0.0
+
+    def _mark_runtime_failure(self, reason: str = "face_backend_inference_failed") -> None:
+        with self._lock:
+            self._runtime_failure = str(reason or "face_backend_inference_failed")[:64]
+
+    def _mark_runtime_success(self) -> None:
+        with self._lock:
+            self._successful_inferences += 1
+            self._last_inference_at = time.time()
 
     def _backend_ready(self) -> bool:
+        if self._runtime_failure:
+            return False
         ensure_available = getattr(self.backend, "ensure_available", None)
-        if callable(ensure_available):
-            return bool(ensure_available())
-        return bool(self.backend.available)
+        try:
+            if callable(ensure_available):
+                return bool(ensure_available())
+            return bool(self.backend.available)
+        except Exception:
+            self._mark_runtime_failure("face_backend_probe_failed")
+            return False
 
     def _unavailable(self, operation: str) -> dict[str, object]:
         return {
             "status": "unavailable",
             "operation": operation,
             "backend": self.backend.name,
-            "reason": self.backend.unavailable_reason or "backend_unavailable",
+            "reason": (
+                self._runtime_failure
+                or self.backend.unavailable_reason
+                or "backend_unavailable"
+            ),
             **_familiarity_safety(),
         }
 
@@ -554,10 +577,13 @@ class FaceWorker:
             "status": "ready" if ready else "unavailable",
             "device": "cpu",
             "backend": self.backend.name,
-            "reason": self.backend.unavailable_reason,
+            "reason": self._runtime_failure or self.backend.unavailable_reason,
             "opencv_available": opencv_available(),
             "max_image_bytes": MAX_IMAGE_BYTES,
             "max_image_pixels": MAX_IMAGE_PIXELS,
+            "inference_verified": self._successful_inferences > 0,
+            "successful_inferences": self._successful_inferences,
+            "last_inference_at": self._last_inference_at,
             **_familiarity_safety(),
         }
         return result
@@ -567,7 +593,12 @@ class FaceWorker:
             return self._unavailable("enroll")
         profile = _profile_id(request.get("profile_id"))
         packet = parse_image(request.get("image"))
-        observation = self.backend.observe(packet)
+        try:
+            observation = self.backend.observe(packet)
+        except Exception:
+            self._mark_runtime_failure()
+            raise
+        self._mark_runtime_success()
         with self._lock:
             profiles = self.store.load()
             if profile not in profiles and len(profiles) >= MAX_PROFILES:
@@ -599,13 +630,23 @@ class FaceWorker:
             raise FaceWorkerError(
                 "template_mismatch", "stored face template uses a different backend"
             )
-        observation = self.backend.observe(packet)
+        try:
+            observation = self.backend.observe(packet)
+        except Exception:
+            self._mark_runtime_failure()
+            raise
         enrolled = tuple(float(value) for value in record["template"])  # type: ignore[arg-type]
-        score = self.backend.similarity(enrolled, observation.template)
+        try:
+            score = self.backend.similarity(enrolled, observation.template)
+        except Exception:
+            self._mark_runtime_failure()
+            raise
         if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+            self._mark_runtime_failure()
             raise FaceWorkerError(
                 "backend_error", "SFace similarity must be between 0 and 1"
             )
+        self._mark_runtime_success()
         return {
             "status": "ready",
             "profile_id": profile,

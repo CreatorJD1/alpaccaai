@@ -489,3 +489,44 @@ def test_sherpa_factory_can_supply_a_lazy_cpu_extractor(monkeypatch):
     assert backend.recognition_capable is True
     assert len(vector) == 3
     assert observed and observed[0][1] == 16_000
+
+
+def test_worker_generation_fences_stale_audio_after_backend_failure(tmp_path):
+    calls = 0
+
+    def extractor(_pcm_f32: bytes, _sample_rate_hz: int):
+        nonlocal calls
+        calls += 1
+        if calls >= 2:
+            raise RuntimeError("speaker backend stopped")
+        return [1.0, 0.5]
+
+    probed = speaker_worker.SpeakerWorker(
+        tmp_path / "stale-generation.sealed",
+        encrypt=_seal,
+        decrypt=_open,
+        backend=speaker_worker.SherpaOnnxBackend(extractor),
+    )
+    status = probed.handle(_request("status"))
+    generation = status["worker_generation"]
+    failed = probed.handle(
+        _request(
+            "enroll",
+            profile_id="creator",
+            audio=_audio(_pcm()),
+            expected_generation=generation,
+        )
+    )
+    stale = probed.handle(
+        _request(
+            "enroll",
+            profile_id="creator",
+            audio=_audio(_pcm()),
+            expected_generation=generation,
+        )
+    )
+
+    assert failed["status"] == "unavailable"
+    assert stale["status"] == "stale"
+    assert stale["reason"] == "worker-generation-changed"
+    assert stale["worker_generation"] > generation
