@@ -1,0 +1,37 @@
+{
+  "schema": "alpecca.emotion-llama-qualification.v1",
+  "enabled": false,
+  "host": "Jason_HOLYROG",
+  "policy": {
+    "research_only": true,
+    "normal_runtime_import": false,
+    "conversational_generation": false,
+    "action_authority": false
+  },
+  "source": {
+    "repository": "https://github.com/ZebangCheng/Emotion-LLaMA",
+    "paper": "https://proceedings.neurips.cc/paper_files/paper/2024/file/c7f43ada17acc234f568dc66da527418-Paper-Conference.pdf"
+  },
+  "licensing": {
+    "code": "BSD-3-Clause",
+    "mer_data": "research-only-EULA",
+    "mer_data_used": false,
+    "eula_accepted": false,
+    "note": "Repository code and MER-derived data have different terms. Dataset access is not implied by the code license."
+  },
+  "dependencies": [
+    {"name": "python", "official_spec": "3.9", "observed_version": "", "qualified": false},
+    {"name": "torch", "official_spec": "2.0.0", "observed_version": "", "qualified": false},
+    {"name": "transformers", "official_spec": "4.30.0", "observed_version": "", "qualified": false},
+    {"name": "opencv-python", "official_spec": "4.7.0.72", "observed_version": "", "qualified": false},
+    {"name": "moviepy", "official_spec": "1.0.3", "observed_version": "", "qualified": false},
+    {"name": "soundfile", "official_spec": "0.12.1", "observed_version": "", "qualified": false}
+  ],
+  "assets": [
+    {"id": "emotion_llama_checkout", "path": "", "sha256": ""},
+    {"id": "emotion_llama_checkpoint", "path": "", "sha256": ""},
+    {"id": "llama2_7b_chat_hf", "path": "", "sha256": ""},
+    {"id": "minigpt_v2_checkpoint", "path": "", "sha256": ""},
+    {"id": "hubert_large", "path": "", "sha256": ""}
+  ]
+}
