@@ -138,7 +138,11 @@ os.environ.setdefault("ALPECCA_CLOUD_TTS_TIMEOUT_SECONDS", "2.5")
 os.environ.setdefault("ALPECCA_LIVE_TTS_TIMEOUT", "3.0")
 os.environ.setdefault("ALPECCA_DISCORD_VOICE_TIMEOUT", "4.0")
 os.environ.setdefault("ALPECCA_DISCORD_TRANSCRIBE_TIMEOUT", "30.0")
-os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "cloud")
+# Discord voice uses her full 'auto' voice (F5 identity-clone + Kokoro blended by
+# emotion) -- the same expressive, "alive" voice House HQ uses -- instead of the
+# flatter cloud-only route. 'auto' also runs on the full local synth budget, so
+# it does not hit the short cloud live-timeout that could leave voice silent.
+os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "auto")
 
 def _lan_access_point(port: int) -> str:
     """The URL another device on this network uses to reach THIS computer.
