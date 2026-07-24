@@ -601,9 +601,7 @@ class RogWorkerClient:
             request_id=request_id,
             timeout_seconds=self._health_timeout_seconds,
         )
-        _exact_response_keys(
-            payload,
-            {
+        legacy_health_keys = {
                 "schema",
                 "ok",
                 "request_id",
@@ -612,11 +610,14 @@ class RogWorkerClient:
                 "ready",
                 "speaking",
                 "discord",
-                "vision_ready",
-                "vision_model",
                 "capabilities",
-            },
-        )
+            }
+        response_keys = set(payload)
+        if response_keys not in {
+            frozenset(legacy_health_keys),
+            frozenset({*legacy_health_keys, "vision_ready", "vision_model"}),
+        }:
+            raise RogWorkerProtocolError("worker response fields did not match")
         if payload.get("schema") != HEALTH_SCHEMA:
             raise RogWorkerProtocolError("worker response schema did not match")
         self._expect_request_id(payload, request_id)
@@ -628,7 +629,13 @@ class RogWorkerClient:
         ready = _required_bool(payload, "ready")
         speaking = _required_bool(payload, "speaking")
         discord = _required_bool(payload, "discord")
-        vision_ready = _required_bool(payload, "vision_ready")
+        # Rolling deployment compatibility: a pre-vision worker remains valid
+        # for reasoning and Blender while the primary is upgraded first.
+        vision_ready = (
+            _required_bool(payload, "vision_ready")
+            if "vision_ready" in payload
+            else False
+        )
         vision_model_value = payload.get("vision_model")
         if vision_model_value is not None and (
             not isinstance(vision_model_value, str)

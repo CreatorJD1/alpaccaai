@@ -202,6 +202,21 @@ def test_health_uses_exact_server_headers_endpoint_and_compute_only_shape() -> N
     assert captured["timeout"] == 2.0
 
 
+def test_health_accepts_pre_vision_worker_during_rolling_deployment() -> None:
+    payload = health_payload()
+    payload.pop("vision_ready")
+    payload.pop("vision_model")
+
+    result = make_client(
+        lambda request, timeout: Response(payload, url=request.full_url)
+    ).health()
+
+    assert result.ready is True
+    assert result.reasoning_ready is True
+    assert result.vision_ready is False
+    assert result.vision_model is None
+
+
 @pytest.mark.parametrize(
     ("overrides", "match"),
     [

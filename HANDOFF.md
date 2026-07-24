@@ -28,6 +28,21 @@
   its single launcher-owned Discord bridge were reloaded; the bridge has an active
   Discord gateway connection.
 
+## 2026-07-24 initiative scheduling and private-vision integration
+
+- A second live gate conflict was corrected: direct DMs scheduled their first
+  self-review at 60 seconds, but the generic 180-second room cooldown overrode
+  it. Direct-idle reviews now obey `direct_next_review_at`; every later review
+  remains model-scheduled through the bounded `revisit_minutes` decision.
+- Applied Claude Session A patch `ab0729b`, adding the authenticated HolyROG
+  `/v1/vision` client/server contract with strict image bounds and verified-local
+  fallback. Its focused integration gate passed **172 tests**.
+- Rolling deployment exposed an old-worker compatibility break in the new health
+  parser. The client now accepts the exact pre-vision health shape as
+  `vision_ready=false` while preserving strict validation. Live HolyROG health is
+  again valid for reasoning; private vision remains disabled until the remote
+  worker is upgraded and reports its new vision endpoint ready.
+
 ## 2026-07-24 temporary local vision recovery
 
 - The exact failed Discord screenshot was successfully described through the
