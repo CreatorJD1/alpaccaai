@@ -19,7 +19,9 @@ SETUP ON HOLYROG (one time):
 
 RUN ON HOLYROG:
     set ALPECCA_HOLYROG_VOICE_SECRET=<same secret her main machine uses>
-    set ALPECCA_HOLYROG_VOICE_REF=<path to a 6-15s clean clip of her voice>
+    set ALPECCA_HOLYROG_VOICE_REF=<a clean clip OR a FOLDER of clean clips>
+        # A folder is best: XTTS averages the clips into a robust, consistent voice.
+        # Use the curated set: data/voice_references/xtts_reference_set/
     set COQUI_TOS_AGREED=1
     .venv-xtts\\Scripts\\python.exe scripts\\run_holyrog_voice_server.py
 
@@ -50,8 +52,28 @@ MAX_TEXT = int(os.environ.get("ALPECCA_HOLYROG_VOICE_MAX_TEXT", "600"))
 # Cloud is fast; keep pieces short so XTTS stays stable and low-latency.
 MAX_CHUNK = int(os.environ.get("ALPECCA_HOLYROG_VOICE_MAX_CHUNK", "220"))
 AUTH_HEADER = "X-Alpecca-Voice-Authorization"
+# Max reference clips to average when REFERENCE is a folder (more = more robust, slower warm).
+MAX_REF_CLIPS = int(os.environ.get("ALPECCA_HOLYROG_VOICE_MAX_REFS", "20"))
 
 _tts = None
+_speaker_cache = None
+
+
+def _speaker_refs():
+    """REFERENCE may be one clip or a FOLDER of clean clips (averaged for a robust voice)."""
+    global _speaker_cache
+    if _speaker_cache is not None:
+        return _speaker_cache
+    if not REFERENCE:
+        _speaker_cache = None
+        return None
+    if os.path.isdir(REFERENCE):
+        import glob
+        clips = sorted(glob.glob(os.path.join(REFERENCE, "*.wav")))[:MAX_REF_CLIPS]
+        _speaker_cache = clips or None
+    else:
+        _speaker_cache = REFERENCE
+    return _speaker_cache
 
 
 def _load_model():
@@ -98,9 +120,10 @@ def _synthesize(text: str) -> bytes:
     model = _load_model()
     sr = int(getattr(getattr(model, "synthesizer", None), "output_sample_rate", 24000) or 24000)
     chunks = _split(text)
+    refs = _speaker_refs()
     frames: list[bytes] = []
     for chunk in chunks:
-        wav = model.tts(text=chunk, speaker_wav=REFERENCE or None, language=LANGUAGE)
+        wav = model.tts(text=chunk, speaker_wav=refs, language=LANGUAGE)
         arr = np.asarray(wav, dtype="float32")
         arr = np.clip(arr, -1.0, 1.0)
         frames.append((arr * 32767.0).astype("<i2").tobytes())
@@ -138,6 +161,7 @@ def _build_app():
             "device": DEVICE,
             "loaded": _tts is not None,
             "reference_configured": bool(REFERENCE),
+            "reference_clips": (len(r) if isinstance((r := _speaker_refs()), list) else (1 if r else 0)),
         }
 
     @app.post("/synth")
