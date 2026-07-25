@@ -77,6 +77,18 @@ def _load_model():
                 "COQUI_TOS_AGREED=1 required to accept Coqui's non-commercial "
                 "license before the first XTTS-v2 download")
         import torch
+        # torch>=2.6 defaults torch.load(weights_only=True), which rejects the
+        # official XTTS-v2 checkpoint's config globals. The weights come from
+        # Coqui's trusted model download, so allowlist the XTTS config classes
+        # so the checkpoint loads under weights_only.
+        try:
+            from TTS.tts.configs.xtts_config import XttsConfig
+            from TTS.tts.models.xtts import XttsAudioConfig, XttsArgs
+            from TTS.config.shared_configs import BaseDatasetConfig
+            torch.serialization.add_safe_globals(
+                [XttsConfig, XttsAudioConfig, XttsArgs, BaseDatasetConfig])
+        except Exception:  # noqa: BLE001 -- older torch lacks add_safe_globals
+            pass
         from TTS.api import TTS
         _device = os.environ.get("ALPECCA_HOLYROG_VOICE_DEVICE") or (
             "cuda" if torch.cuda.is_available() else "cpu")
