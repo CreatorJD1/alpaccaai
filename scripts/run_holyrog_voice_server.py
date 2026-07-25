@@ -6,9 +6,9 @@ Loads Coqui XTTS-v2 once, clones Alpecca's voice from the reference clips in
 ``audio/wav``) gated by the shared secret ``ALPECCA_HOLYROG_VOICE_SECRET``.
 
 COMPUTE-ONLY: starts no CoreMind, Discord bridge, autonomy loop, memory writer,
-tunnel, or second Alpecca instance. Binds 127.0.0.1 by default; if you bind a
-non-loopback host the shared-secret gate still applies (but scope the firewall
-like the 8788 worker before exposing it to the tailnet).
+tunnel, or second Alpecca instance. Binds 0.0.0.0 so the RygenART primary can
+reach it over Tailscale; Windows' default-inbound-block plus the Tailscale-In
+rule keep it tailnet-only, and the shared-secret gate applies on every request.
 
 SECURITY:
   * Refuses to start unless ALPECCA_HOLYROG_VOICE_SECRET is set (fail closed).
@@ -16,9 +16,9 @@ SECURITY:
     ``X-Alpecca-Voice-Secret: <secret>`` (constant-time compare). 401 otherwise.
   * The secret is NEVER logged or returned; startup prints only its length.
 
-LICENSE: the first synthesis downloads the ~1.8 GB XTTS-v2 weights and requires
+LICENSE: the first run downloads the ~1.8 GB XTTS-v2 weights and requires
 ``COQUI_TOS_AGREED=1`` (Coqui non-commercial license). This server does not set
-that for you.
+that for you. On successful warm-up it prints ``XTTS-v2 ready.``.
 
 Run:
     $env:COQUI_TOS_AGREED="1"
@@ -50,11 +50,12 @@ REFS_DIR = Path(os.environ.get(
 SECRET = os.environ.get("ALPECCA_HOLYROG_VOICE_SECRET", "")
 MODEL = os.environ.get("ALPECCA_HOLYROG_VOICE_MODEL",
                        "tts_models/multilingual/multi-dataset/xtts_v2")
-HOST = os.environ.get("ALPECCA_HOLYROG_VOICE_HOST", "127.0.0.1")
+HOST = os.environ.get("ALPECCA_HOLYROG_VOICE_HOST", "0.0.0.0")
 PORT = int(os.environ.get("ALPECCA_HOLYROG_VOICE_PORT", "8123"))
 DEFAULT_LANG = os.environ.get("ALPECCA_HOLYROG_VOICE_LANGUAGE", "en")
 
 _tts = None
+_device = ""
 _load_lock = threading.Lock()
 _load_error = ""
 
@@ -63,30 +64,35 @@ def _refs() -> List[str]:
     return sorted(glob.glob(str(REFS_DIR / "*.wav")))
 
 
-def _load():
-    """Load XTTS-v2 once (thread-safe). Honors the Coqui license gate."""
-    global _tts, _load_error
+def _load_model():
+    """Load XTTS-v2 once (thread-safe). Raises plain exceptions; license-gated."""
+    global _tts, _device
     if _tts is not None:
         return _tts
     with _load_lock:
         if _tts is not None:
             return _tts
         if os.environ.get("COQUI_TOS_AGREED") != "1":
-            raise HTTPException(
-                status_code=503,
-                detail=("model not loaded: set COQUI_TOS_AGREED=1 to accept "
-                        "Coqui's non-commercial license before first download."),
-            )
-        try:
-            import torch
-            from TTS.api import TTS
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            _tts = TTS(MODEL).to(device)
-        except Exception as exc:  # noqa: BLE001
-            _load_error = type(exc).__name__
-            raise HTTPException(status_code=503,
-                                detail=f"model load failed: {_load_error}")
-    return _tts
+            raise RuntimeError(
+                "COQUI_TOS_AGREED=1 required to accept Coqui's non-commercial "
+                "license before the first XTTS-v2 download")
+        import torch
+        from TTS.api import TTS
+        _device = os.environ.get("ALPECCA_HOLYROG_VOICE_DEVICE") or (
+            "cuda" if torch.cuda.is_available() else "cpu")
+        _tts = TTS(MODEL).to(_device)
+        return _tts
+
+
+def _load():
+    """Request-time loader: wraps load errors as HTTP 503."""
+    global _load_error
+    try:
+        return _load_model()
+    except Exception as exc:  # noqa: BLE001
+        _load_error = f"{type(exc).__name__}: {exc}"
+        raise HTTPException(status_code=503,
+                            detail=f"model load failed: {type(exc).__name__}")
 
 
 def _authorized(request: Request) -> bool:
@@ -114,6 +120,7 @@ def healthz() -> dict:
         "ok": True,
         "role": "compute-only-holyrog-voice",
         "model": MODEL,
+        "device": _device or None,
         "refs": len(_refs()),
         "loaded": _tts is not None,
         "load_error": _load_error or None,
@@ -145,11 +152,25 @@ def synthesize(req: SynthRequest, request: Request) -> Response:
 def main() -> int:
     if not SECRET:
         print("REFUSING TO START: ALPECCA_HOLYROG_VOICE_SECRET is not set "
-              "(the /synthesize endpoint must be secret-gated).")
+              "(the /synthesize endpoint must be secret-gated).", flush=True)
         return 2
-    print(f"Alpecca HolyROG voice server binding {HOST}:{PORT} | model={MODEL} | "
-          f"refs={len(_refs())} in {REFS_DIR} | secret=set(len={len(SECRET)}) | "
-          f"license_accepted={os.environ.get('COQUI_TOS_AGREED') == '1'}")
+    refs = _refs()
+    print(f"Alpecca HolyROG voice server | model={MODEL} | refs={len(refs)} in "
+          f"{REFS_DIR} | secret=set(len={len(SECRET)}) | "
+          f"license_accepted={os.environ.get('COQUI_TOS_AGREED') == '1'}",
+          flush=True)
+    if not refs:
+        print(f"WARNING: no voice references found in {REFS_DIR}", flush=True)
+    # Prewarm: download + load the model so the first request is fast.
+    try:
+        tts = _load_model()
+        sr = tts.synthesizer.output_sample_rate
+    except Exception as exc:  # noqa: BLE001
+        print(f"XTTS-v2 load FAILED: {type(exc).__name__}: {exc}", flush=True)
+        return 3
+    print(f"XTTS-v2 ready. device={_device} refs={len(refs)} sample_rate={sr}",
+          flush=True)
+    print(f"Serving on {HOST}:{PORT}", flush=True)
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")
     return 0
 
