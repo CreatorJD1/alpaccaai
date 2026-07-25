@@ -9902,6 +9902,9 @@ def _record_discord_autonomy_outcome(
                 metadata={
                     "outcome": str(outcome)[:40],
                     "intent_index": decision.pick if decision is not None else None,
+                    "revisit_minutes": (
+                        decision.revisit_minutes if decision is not None else None
+                    ),
                     "model_calls": max(0, min(2, int(calls))),
                     "content_retained": False,
                 },
@@ -9912,7 +9915,10 @@ def _record_discord_autonomy_outcome(
     return observation_id is not None
 
 
-async def _deliberated_discord_autonomy(text: str, room_scope: str) -> str:
+async def _deliberated_discord_autonomy(
+    text: str,
+    room_scope: str,
+) -> tuple[str, int]:
     """Run a compact local decision gate before composing autonomous speech."""
     privacy_scope = f"guest-discord-room-{room_scope}"
     decision_turn = turn_context_mod.TurnContext.create(
@@ -9938,7 +9944,7 @@ async def _deliberated_discord_autonomy(text: str, room_scope: str) -> str:
             "invalid-decision-pass",
             calls=1,
         )
-        return "[pass]"
+        return "[pass]", 600
     if not decision.speak:
         _record_discord_autonomy_outcome(
             room_scope,
@@ -9946,7 +9952,7 @@ async def _deliberated_discord_autonomy(text: str, room_scope: str) -> str:
             decision=decision,
             calls=1,
         )
-        return "[pass]"
+        return "[pass]", decision.revisit_minutes * 60
 
     composition_turn = turn_context_mod.TurnContext.create(
         f"discord-autonomy-composition-{room_scope}",
@@ -9970,15 +9976,15 @@ async def _deliberated_discord_autonomy(text: str, room_scope: str) -> str:
             decision=decision,
             calls=2,
         )
-        return "[pass]"
+        return "[pass]", decision.revisit_minutes * 60
     if not _record_discord_autonomy_outcome(
         room_scope,
         "approved",
         decision=decision,
         calls=2,
     ):
-        return "[pass]"
-    return draft
+        return "[pass]", decision.revisit_minutes * 60
+    return draft, decision.revisit_minutes * 60
 
 
 @app.post("/channel/discord/autonomy")
@@ -10008,8 +10014,10 @@ async def discord_autonomy_turn(req: Request, response: Response) -> dict:
             detail="invalid Discord autonomy request",
             headers={"Cache-Control": "no-store"},
         )
-    reply = await _deliberated_discord_autonomy(text.strip(), room_scope)
-    return {"reply": reply}
+    reply, revisit_seconds = await _deliberated_discord_autonomy(
+        text.strip(), room_scope
+    )
+    return {"reply": reply, "revisit_seconds": revisit_seconds}
 
 
 @app.post("/channel/inbound")

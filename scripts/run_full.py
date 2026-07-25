@@ -107,9 +107,10 @@ os.environ.setdefault("ALPECCA_DISCORD_CREATOR_CLOUD_VISION", "0")
 os.environ.setdefault("ALPECCA_VISION_CLOUD_TRANSPORT_ROUTE", "https://ollama.com/api/chat")
 os.environ.setdefault("ALPECCA_VISION_CLOUD_DEPLOYMENT", "ollama-cloud")
 os.environ.setdefault("ALPECCA_VISION_CLOUD_PROCESSING_LOCATION", "provider-managed")
-os.environ.setdefault("ALPECCA_VISION_MODEL", "qwen3.5:9b")
+os.environ.setdefault("ALPECCA_VISION_MODEL", "qwen3.5:4b")
 os.environ.setdefault("ALPECCA_VISION_NUM_GPU", "99")
-os.environ.setdefault("ALPECCA_VISION_TIMEOUT", "60")
+os.environ.setdefault("ALPECCA_VISION_TIMEOUT", "120")
+os.environ.setdefault("ALPECCA_VISION_KEEP_ALIVE", "30m")
 os.environ.setdefault("ALPECCA_CLOUD_STANDBY_URL", "https://creatorjd-alpecca-survival-core.hf.space")
 os.environ.setdefault(
     "ALPECCA_CLOUD_TTS_ENDPOINT",

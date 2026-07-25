@@ -1,5 +1,50 @@
 # Alpecca - Handoff (updated 2026-07-24)
 
+## 2026-07-24 temporary local vision recovery
+
+- The exact failed Discord screenshot was successfully described through the
+  verified-local route. `qwen3.5:9b` required 63.92 seconds, while the installed
+  `qwen3.5:4b` took 30.69 seconds cold and 3.56 seconds warm with a correct
+  Discord/participant description and no pixel egress.
+- Production vision now defaults to `qwen3.5:4b` and keeps it resident for 30
+  minutes. This changes only sight; `qwen3.5:9b` remains Alpecca's reasoning
+  model. The HolyROG `qwen3-vl` work order remains the long-term replacement.
+
+## 2026-07-24 dual-host vision acceleration handoff
+
+- The active work order is
+  `docs/FOR_CLAUDE_DUAL_HOST_VISION_ACCELERATION.md`. Claude on RygenART owns
+  the authenticated worker/client and Alpecca integration; Claude on
+  `Jason_HOLYROG` owns model installation, GPU benchmarks, and worker
+  deployment. Their file ownership must not overlap.
+- First candidate is `qwen3-vl:4b` (3.3 GB, Apache-2.0 upstream), followed by
+  `qwen3-vl:2b` (1.9 GB). Promotion requires five resident same-image runs and
+  an authenticated end-to-end request at or below 30 seconds with screenshot
+  reading accuracy. `qwen3.5:9b` remains the reasoning model.
+- The current RygenART local vision path is functional but measured at about
+  60 seconds on the reported Discord screenshot after its timeout was raised
+  from 60 to 120 seconds. This is fallback evidence, not completion of the
+  under-30-second target.
+
+## 2026-07-24 HolyROG live compute checkpoint
+
+- Replaced RygenART's stale HolyROG public trust certificate with the live
+  dual-SAN public certificate. No private key or shared credential was copied,
+  logged, committed, or exposed.
+- Authenticated health passed for the compute-only worker. Direct inference
+  initially failed with `reasoning_upstream_error` because HolyROG's Ollama
+  runtime was stale; updating and restarting Ollama cleared the HTTP 502.
+- Verified receipts: one bounded direct `qwen3.5:9b` reasoning request
+  completed, then Alpecca's production-configured `_LLM` chain loaded
+  `rog-worker` before `ollama-cloud` and returned a deep-tier route with
+  `backend=rog-worker`, `model=qwen3.5:9b`, and `fallback=false`.
+- Restarted the local coordinator so the long-lived worker client loaded the
+  corrected trust state. One core listener (8765), one F5 listener (8776), and
+  one Discord bridge lock (8779) are active. Keep `ollama-cloud` after
+  `rog-worker`; it is the required fallback when HolyROG is off.
+- Remaining HolyROG work is operational soak and the separately gated,
+  untrained HyFusER seven-head research path. Do not describe HyFusER as live.
+
 ## 2026-07-24 internal review and runtime checkpoint
 
 - Repaired the production Python install and both dormant voice virtual
