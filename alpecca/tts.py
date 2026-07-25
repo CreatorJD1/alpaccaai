@@ -742,6 +742,20 @@ def _prefers_clone_voice(state=None) -> bool:
                float(dyn.get("arousal", 0.5))) >= VOICE_MIX_INTENSITY
 
 
+def _synth_holyrog(text: str, state=None):
+    """Synthesize on the HOLYROG XTTS-v2 voice server (her cloned voice on the ROG
+    GPU). Returns None when it is unconfigured or unreachable so the local engines
+    take over -- so enabling HOLYROG only ever upgrades quality, never breaks."""
+    del state
+    global _last_error
+    from alpecca import holyrog_voice
+
+    result = holyrog_voice.client().synthesize(text)
+    if not result:
+        return None
+    return (result[0], result[1], {"engine": "holyrog-xtts", "profile": "xtts_v2_clone"})
+
+
 def synth(text: str, state=None, *, backend_override: str = ""):
     """Return (mime_type, audio_bytes) for `text`, or None to let the browser
     voice handle it. `state` is her live EmotionalState so the voice carries
@@ -807,6 +821,15 @@ def synth(text: str, state=None, *, backend_override: str = ""):
                 order = (_synth_kokoro,)
             if _cloud_tts_client.status().configured:
                 order = (_synth_cloud,) + order
+        # When the HOLYROG XTTS voice server is configured it LEADS (highest
+        # quality, her cloned voice on the ROG GPU); the local engines above stay
+        # the automatic fallback whenever HOLYROG is unreachable. Explicit
+        # single-engine overrides ('edge'/'f5') are left untouched.
+        if backend in {"auto", "kokoro"}:
+            from alpecca import holyrog_voice
+
+            if holyrog_voice.client().enabled:
+                order = (_synth_holyrog,) + order
         for fn in order:
             try:
                 r = fn(text, state)
