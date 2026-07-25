@@ -28,6 +28,8 @@ output/
 # Redundant local ROG probe venv (cu124/torch2.6.0); canonical HyFusER runtime
 # lives outside the repo under %LOCALAPPDATA%\Alpecca\rog-worker\venvs.
 .venv-rog311/
+# XTTS (Coqui TTS) voice synthesis venv -- heavy deps, machine-local only.
+.venv-xtts/
 
 # Alpecca source/generated/runtime art blobs live in Hugging Face datasets.
 # Keep code and JSON manifests in GitHub, but do not commit large image/audio/video
