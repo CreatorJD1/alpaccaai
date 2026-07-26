@@ -24,6 +24,8 @@ $ServiceCertPath = Join-Path $ServiceTlsDir 'jason-holyrog.crt'
 $ServiceKeyPath = Join-Path $ServiceTlsDir 'jason-holyrog.key'
 $ServiceReplayPath = Join-Path $ServiceDataDir 'worker-ops.sqlite3'
 $ServiceToolPathFile = Join-Path $ServiceDataDir 'tool-paths.txt'
+$ServiceVenv = Join-Path $ServiceDataDir 'venv'
+$ServicePython = Join-Path $ServiceVenv 'Scripts\python.exe'
 $LogDir = Join-Path $ServiceDataDir 'logs'
 $LogPath = Join-Path $LogDir 'dedicated-server.log'
 $BlenderMarker = Join-Path $ServiceDataDir 'blender-enabled'
@@ -102,6 +104,31 @@ function Add-ServiceToolPaths {
     $env:PATH = ($directories + @($env:PATH)) -join [System.IO.Path]::PathSeparator
 }
 
+function Install-ServicePython {
+    param([Parameter(Mandatory = $true)][string]$BootstrapPython)
+
+    if (-not (Test-Path -LiteralPath $ServicePython -PathType Leaf)) {
+        & $BootstrapPython -m venv $ServiceVenv
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Could not create the dedicated ROG worker Python environment.'
+        }
+    }
+    & $ServicePython -c "import cryptography, fastapi, uvicorn" *> $null
+    if ($LASTEXITCODE -eq 0) {
+        return
+    }
+    Write-Host 'Installing dedicated ROG worker Python dependencies...' -ForegroundColor Cyan
+    $env:PIP_DISABLE_PIP_VERSION_CHECK = '1'
+    & $ServicePython -m pip install 'cryptography>=43.0' 'fastapi>=0.110' 'uvicorn>=0.29'
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not install the dedicated ROG worker Python dependencies.'
+    }
+    & $ServicePython -c "import cryptography, fastapi, uvicorn" *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The dedicated ROG worker Python environment is incomplete.'
+    }
+}
+
 if (-not [string]::Equals($ObservedHost, $ExpectedHost, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "The dedicated compute server is assigned to $ExpectedHost; this machine is $ObservedHost."
 }
@@ -115,6 +142,7 @@ if ($RunWorker) {
     $env:ALPECCA_ROG_WORKER_TLS_CERT = $ServiceCertPath
     $env:ALPECCA_ROG_WORKER_TLS_KEY = $ServiceKeyPath
     $env:ALPECCA_ROG_WORKER_REPLAY_DB = $ServiceReplayPath
+    $env:ALPECCA_ROG_WORKER_PYTHON = $ServicePython
     # The task runs as SYSTEM while this checkout is owned by Jason. Scope the
     # Git trust exception to this worker process so qualification can verify
     # clean committed source without changing machine-wide Git settings.
@@ -193,6 +221,8 @@ if ($Install) {
     Protect-ServiceDataDirectory
     Sync-ServiceTlsIdentity
     Write-ServiceToolPaths
+    Install-ServicePython -BootstrapPython $Python
+    $env:ALPECCA_ROG_WORKER_PYTHON = $ServicePython
 
     $env:ALPECCA_ROG_WORKER_LAN = '1'
     & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `

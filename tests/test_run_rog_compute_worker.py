@@ -671,6 +671,10 @@ def test_dedicated_server_task_remains_compute_only_and_restartable() -> None:
     assert "add-servicetoolpaths" in lowered
     assert "write-servicetoolpaths" in lowered
     assert "dedicated worker exited with code" in lowered
+    assert "install-servicepython" in lowered
+    assert "servicepython" in lowered
+    assert "cryptography>=43.0" in lowered
+    assert "alpecca_rog_worker_python" in lowered
     for forbidden in (
         "server.py",
         "run_full.py",

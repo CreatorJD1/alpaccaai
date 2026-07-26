@@ -41,7 +41,13 @@ if (-not [string]::Equals($ObservedHost, $ExpectedHost, [System.StringComparison
 }
 
 $VenvPython = Join-Path $RepoRoot '.venv\Scripts\python.exe'
-if (Test-Path -LiteralPath $VenvPython -PathType Leaf) {
+$ConfiguredPython = [string]$env:ALPECCA_ROG_WORKER_PYTHON
+if (-not [string]::IsNullOrWhiteSpace($ConfiguredPython)) {
+    if (-not (Test-Path -LiteralPath $ConfiguredPython -PathType Leaf)) {
+        throw 'The configured dedicated worker Python executable was not found.'
+    }
+    $Python = $ConfiguredPython
+} elseif (Test-Path -LiteralPath $VenvPython -PathType Leaf) {
     $Python = $VenvPython
 } else {
     $PythonCommand = Get-Command python -ErrorAction SilentlyContinue
