@@ -1,8 +1,9 @@
 # Jason_HOLYROG Compute Worker
 
 Status: authenticated health and `qwen3.5:9b` reasoning were live-verified from
-the primary on 2026-07-23. Persistent dedicated-server installation remains a
-separate ROG-side step until the scheduled task below is installed and checked.
+the primary on 2026-07-23. A dedicated-server installation requires current
+ROG-side task, listener, firewall, and authenticated-primary evidence; source
+presence alone is not deployment evidence.
 
 Current source verification: 156 focused worker/client/launcher/host-role tests
 and 371 core regression tests pass. This is not a substitute for the live ROG
@@ -128,9 +129,9 @@ Automatic artifact transfer back to the primary is not part of this first
 slice; use the ROG output folder as the render authority.
 
 The default port is `8788`. A different unprivileged port can be selected for
-that process with `ALPECCA_ROG_WORKER_PORT`. Restrict the Windows Firewall rule
-to the Private profile and the primary computer's IP. Do not publish this port
-through a public tunnel or router port-forward.
+that foreground process with `ALPECCA_ROG_WORKER_PORT`. Dedicated-server mode
+enforces its own Tailscale-interface firewall rule for the primary computer;
+do not publish this port through a public tunnel or router port-forward.
 
 On the primary computer, set the endpoint for the current launch session:
 
@@ -163,17 +164,25 @@ render lane during installation:
 powershell -ExecutionPolicy Bypass -File scripts\install_rog_compute_server.ps1 -Install -EnableBlender
 ```
 
-This creates only `%LOCALAPPDATA%\Alpecca\rog-worker\blend-input` and
+This creates only `%PROGRAMDATA%\Alpecca\rog-worker\blend-input` and
 `render-output`, plus a local enable marker. The scheduled worker resolves the
 installed `blender.exe` on every start and exposes only projects placed directly
 in the approved input root. It does not accept arbitrary paths or Blender
 scripts.
 
-This separate installer performs worker qualification again, registers one
-hidden task named `Alpecca ROG Compute Server`, starts it at the dedicated
-Windows account's logon, and restarts it one minute after a failure. It keeps
-the existing authenticated HTTPS listener on port 8788 and writes operational
-output under `%LOCALAPPDATA%\Alpecca\rog-worker\logs`.
+This separate installer performs worker qualification again, provisions an
+isolated service Python environment under
+`%PROGRAMDATA%\Alpecca\rog-worker\venv`, and registers the hidden
+`Alpecca ROG Compute Server` task. The task runs as `SYSTEM` at Windows startup
+(not user logon), survives logout, and restarts one minute after a bounded
+failure. It keeps the existing authenticated HTTPS listener on port 8788 and
+writes operational output under
+`%PROGRAMDATA%\Alpecca\rog-worker\logs`.
+
+During installation, it replaces only firewall rules whose display name starts
+with `Alpecca ROG worker 8788` with one inbound allow rule scoped to the
+Tailscale interface and RygenART's current Tailscale address `100.96.54.97`.
+Do not add a broad LAN, public, or router port-forward rule for 8788.
 
 It launches only `setup_rog_worker.ps1 -CheckWorker -StartWorker`. It does not
 launch CoreMind, Discord, memory, continuity, Cloudflare, or another Alpecca

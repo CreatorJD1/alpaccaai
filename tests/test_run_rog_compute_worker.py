@@ -677,6 +677,11 @@ def test_dedicated_server_task_remains_compute_only_and_restartable() -> None:
     assert "alpecca_rog_worker_python" in lowered
     assert "ensurepip --upgrade" in lowered
     assert "pip install --no-input" in lowered
+    assert "set-workerfirewallrule" in lowered
+    assert "new-netfirewallrule" in lowered
+    assert "100.96.54.97" in lowered
+    assert "-interfacealias 'tailscale'" in lowered
+    assert "-remoteaddress $primarytailscaleaddress" in lowered
     for forbidden in (
         "server.py",
         "run_full.py",

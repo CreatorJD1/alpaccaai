@@ -14,6 +14,8 @@ $ErrorActionPreference = 'Stop'
 
 $ExpectedHost = 'Jason_HOLYROG'
 $TaskName = 'Alpecca ROG Compute Server'
+$PrimaryTailscaleAddress = '100.96.54.97'
+$FirewallRulePrefix = 'Alpecca ROG worker 8788'
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $SetupScript = Join-Path $PSScriptRoot 'setup_rog_worker.ps1'
 $Runner = Join-Path $PSScriptRoot 'run_rog_compute_worker.py'
@@ -130,6 +132,26 @@ function Install-ServicePython {
     }
 }
 
+function Set-WorkerFirewallRule {
+    # The worker binds 0.0.0.0 only so its one trusted primary can reach it
+    # over the tailnet. Replace only rules owned by this installer; never
+    # create a general LAN or public inbound exception for the worker port.
+    $existing = @(Get-NetFirewallRule -DisplayName "$FirewallRulePrefix*" -ErrorAction SilentlyContinue)
+    if ($existing.Count -gt 0) {
+        $existing | Remove-NetFirewallRule
+    }
+    New-NetFirewallRule `
+        -DisplayName "$FirewallRulePrefix (primary only)" `
+        -Description "Allow TCP 8788 only from the RygenART Tailscale address ($PrimaryTailscaleAddress)." `
+        -Direction Inbound `
+        -Action Allow `
+        -Protocol TCP `
+        -LocalPort 8788 `
+        -RemoteAddress $PrimaryTailscaleAddress `
+        -InterfaceAlias 'Tailscale' `
+        -Profile Any | Out-Null
+}
+
 if (-not [string]::Equals($ObservedHost, $ExpectedHost, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "The dedicated compute server is assigned to $ExpectedHost; this machine is $ObservedHost."
 }
@@ -235,6 +257,7 @@ if ($Install) {
     if ($LASTEXITCODE -ne 0) {
         throw 'The dedicated ROG worker service secret could not be staged.'
     }
+    Set-WorkerFirewallRule
 
     $arguments = @(
         '-NoProfile',
@@ -289,6 +312,7 @@ if ($Install) {
         Start-ScheduledTask -TaskName $TaskName
     }
     Write-Host "Dedicated compute server installed and started: $TaskName" -ForegroundColor Green
+    Write-Host "TCP 8788 is restricted to $PrimaryTailscaleAddress on the Tailscale interface."
     Write-Host 'It starts at system boot, survives user logout, and restarts after bounded failures.'
     Write-Host "Log: $LogPath"
     exit 0
