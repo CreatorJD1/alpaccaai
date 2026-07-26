@@ -122,11 +122,11 @@ function Install-ServicePython {
     Write-Host 'Installing dedicated ROG worker Python dependencies...' -ForegroundColor Cyan
     $env:PIP_DISABLE_PIP_VERSION_CHECK = '1'
     & $ServicePython -m pip install --no-input `
-        'cryptography>=43.0' 'fastapi>=0.110' 'uvicorn>=0.29'
+        'cryptography>=43.0' 'fastapi>=0.110' 'uvicorn>=0.29' 'pillow>=10.0'
     if ($LASTEXITCODE -ne 0) {
         throw 'Could not install the dedicated ROG worker Python dependencies.'
     }
-    & $ServicePython -c "import cryptography, fastapi, uvicorn" *> $null
+    & $ServicePython -c "import cryptography, fastapi, uvicorn, PIL" *> $null
     if ($LASTEXITCODE -ne 0) {
         throw 'The dedicated ROG worker Python environment is incomplete.'
     }

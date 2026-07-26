@@ -1,5 +1,53 @@
 # Alpecca - Handoff (updated 2026-07-24)
 
+## 2026-07-24 autonomous portrait and tool-failure repair
+
+- Discord hidden deliberation can now choose a sixth, typed initiative intent:
+  share Alpecca's approved self-portrait with a grounded first-person explanation.
+  The bridge strips the machine marker, resolves only the locked approved portrait,
+  attaches it to the autonomous message, and records the outbound media receipt.
+  This is an Alpecca-chosen proactive action, not a user command or fixed timer.
+- Rejected tool calls no longer emit the old context-free canned sentence. The
+  fail-closed response names the current request and rejection reason while making
+  clear that nothing ran and no success is being claimed.
+- Focused Discord autonomy, room-awareness, media, and tool-call verification:
+  **134 passed**. The live CoreMind and launcher-owned Discord bridge were reloaded;
+  an actual model-selected autonomous portrait post remains a live behavioral gate.
+
+## 2026-07-24 Discord live-latency repair
+
+- The live screenshot exposed the actual suppression cause: both ordinary DM
+  replies and autonomous composition selected local `qwen3.5:9b`; with the 4B
+  fast/vision model resident on the 4 GB GPU, the model swap exceeded the bridge
+  deadline and produced repeated fallback prose. Autonomous failures then entered
+  a ten-minute review backoff, so no independent send could appear.
+- Tool-free Discord conversation, autonomy decisions, and autonomy composition now
+  use resident `qwen3.5:4b`. A real warm fast-tier generation completed in **3.17
+  seconds**. `qwen3.5:9b` remains the deliberate reasoning model and HolyROG target.
+- Focused Discord/guest/media/tool verification passed **141 tests**. CoreMind and
+  its single launcher-owned Discord bridge were reloaded; the bridge has an active
+  Discord gateway connection.
+
+## 2026-07-24 initiative scheduling and private-vision integration
+
+- A second live gate conflict was corrected: direct DMs scheduled their first
+  self-review at 60 seconds, but the generic 180-second room cooldown overrode
+  it. Direct-idle reviews now obey `direct_next_review_at`; every later review
+  remains model-scheduled through the bounded `revisit_minutes` decision.
+- Applied Claude Session A patch `ab0729b`, adding the authenticated HolyROG
+  `/v1/vision` client/server contract with strict image bounds and verified-local
+  fallback. Its focused integration gate passed **172 tests**.
+- Rolling deployment exposed an old-worker compatibility break in the new health
+  parser. The client now accepts the exact pre-vision health shape as
+  `vision_ready=false` while preserving strict validation. Live HolyROG health is
+  again valid for reasoning; private vision remains disabled until the remote
+  worker is upgraded and reports its new vision endpoint ready.
+- Live verification after reloading the single stack passed the initiative gate:
+  Discord message `1530285492971503826` was authored by Alpecca after the latest
+  human/Alpecca exchange, with no newer human prompt. This proves direct-DM
+  self-initiation is operating. The line's content quality remains a separate
+  personality/grounding refinement; do not conflate delivery proof with ideal prose.
+
 ## 2026-07-24 temporary local vision recovery
 
 - The exact failed Discord screenshot was successfully described through the

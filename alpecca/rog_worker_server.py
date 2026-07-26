@@ -9,11 +9,14 @@ speaking loop.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 from dataclasses import dataclass, field
 import hashlib
 import hmac
 import http.client
 import importlib
+import io
 import ipaddress
 import json
 import logging
@@ -41,6 +44,9 @@ REASON_REQUEST_SCHEMA = "alpecca.rog-worker.reason.request.v1"
 REASON_RESPONSE_SCHEMA = "alpecca.rog-worker.reason.response.v1"
 BLENDER_REQUEST_SCHEMA = "alpecca.rog-worker.blender.request.v1"
 BLENDER_RESPONSE_SCHEMA = "alpecca.rog-worker.blender.response.v1"
+VISION_REQUEST_SCHEMA = "alpecca.rog-worker.vision.request.v1"
+VISION_RESPONSE_SCHEMA = "alpecca.rog-worker.vision.response.v1"
+VISION_PATH = "/v1/vision"
 HYFUSER_HEALTH_SCHEMA = "alpecca.rog-worker.hyfuser.health.v1"
 HYFUSER_REQUEST_SCHEMA = "alpecca.rog-worker.hyfuser.request.v1"
 HYFUSER_RESPONSE_SCHEMA = "alpecca.rog-worker.hyfuser.response.v1"
@@ -85,6 +91,14 @@ MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 BLEND_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,119}\.blend$")
 HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SAFE_RUNTIME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+# The vision endpoint accepts only these raster pixel formats. URLs, SVG, HTML,
+# archives, and any container whose leading bytes do not match one of these is
+# rejected before an image ever reaches a decoder.
+VISION_ALLOWED_MIME = ("image/png", "image/jpeg", "image/webp")
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_JPEG_MAGIC = b"\xff\xd8\xff"
+VISION_BASE64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
 
 LOGGER = logging.getLogger("alpecca.rog_worker")
 
@@ -307,6 +321,17 @@ def _model_allowlist(environment: Mapping[str, str]) -> frozenset[str]:
     return models
 
 
+def _optional_vision_model(environment: Mapping[str, str]) -> str | None:
+    """Return the opt-in vision model tag, or ``None`` when it is unset."""
+
+    raw = str(environment.get("ALPECCA_ROG_WORKER_VISION_MODEL", "")).strip()
+    if not raw:
+        return None
+    if not MODEL_RE.fullmatch(raw):
+        raise WorkerConfigurationError("worker vision model is invalid")
+    return raw
+
+
 def _loopback_ollama_route(url: str, route: str) -> tuple[str, int, str]:
     parsed = urlsplit(url)
     if parsed.scheme != "http" or parsed.username or parsed.password:
@@ -404,6 +429,15 @@ class WorkerSettings:
     tls_cert_path: Path | None = None
     tls_key_path: Path | None = field(default=None, repr=False)
     replay_db_path: Path | None = None
+    # Vision is a bounded fourth operation. ``vision_model`` stays ``None`` until
+    # an operator opts a benchmarked model in, so the endpoint is fail-closed and
+    # the reasoning path is never silently promoted into a sight backend.
+    vision_model: str | None = None
+    vision_timeout_seconds: float = 30.0
+    vision_max_tokens: int = 512
+    vision_long_edge_max: int = 1600
+    max_vision_image_bytes: int = 2 * 1024 * 1024
+    max_vision_body_bytes: int = 4 * 1024 * 1024
 
     def __post_init__(self) -> None:
         if self.secret is not None and not 32 <= len(self.secret) <= 512:
@@ -412,6 +446,13 @@ class WorkerSettings:
             raise WorkerConfigurationError("worker model allowlist is invalid")
         if any(not MODEL_RE.fullmatch(model) for model in self.model_allowlist):
             raise WorkerConfigurationError("worker model allowlist contains an invalid model")
+        if self.vision_model is not None:
+            if not MODEL_RE.fullmatch(self.vision_model):
+                raise WorkerConfigurationError("worker vision model is invalid")
+            if self.vision_model not in self.model_allowlist:
+                raise WorkerConfigurationError(
+                    "worker vision model must be on the model allowlist"
+                )
         _loopback_ollama_parts(self.ollama_url)
         _validated_bind_host(self.bind_host, self.allow_lan)
         if self.allow_lan:
@@ -441,14 +482,23 @@ class WorkerSettings:
             (self.idempotency_ttl_seconds, 60, 86_400, "idempotency_ttl_seconds"),
             (self.idempotency_entries, 8, 1_024, "idempotency_entries"),
             (self.bind_port, 1, 65_535, "bind_port"),
+            (self.vision_max_tokens, 1, 2_048, "vision_max_tokens"),
+            (self.vision_long_edge_max, 64, 4_096, "vision_long_edge_max"),
+            (self.max_vision_image_bytes, 1_024, 8 * 1024 * 1024, "max_vision_image_bytes"),
+            (self.max_vision_body_bytes, 1_024, 16 * 1024 * 1024, "max_vision_body_bytes"),
         )
         for value, minimum, maximum, label in bounded_values:
             if not minimum <= int(value) <= maximum:
                 raise WorkerConfigurationError(f"{label} is outside its safe range")
+        if self.max_vision_body_bytes <= self.max_vision_image_bytes:
+            raise WorkerConfigurationError(
+                "max_vision_body_bytes must exceed max_vision_image_bytes"
+            )
         for value, minimum, maximum, label in (
             (self.reason_timeout_seconds, 1.0, 600.0, "reason_timeout_seconds"),
             (self.render_timeout_seconds, 5.0, 1_800.0, "render_timeout_seconds"),
             (self.hyfuser_timeout_seconds, 0.2, 15.0, "hyfuser_timeout_seconds"),
+            (self.vision_timeout_seconds, 1.0, 60.0, "vision_timeout_seconds"),
         ):
             if not math.isfinite(float(value)) or not minimum <= float(value) <= maximum:
                 raise WorkerConfigurationError(f"{label} is outside its safe range")
@@ -497,6 +547,30 @@ class WorkerSettings:
             ),
             hyfuser_timeout_seconds=_env_float(
                 env, "ALPECCA_ROG_WORKER_HYFUSER_TIMEOUT_SECONDS", 8.0, 0.2, 15.0
+            ),
+            vision_model=_optional_vision_model(env),
+            vision_timeout_seconds=_env_float(
+                env, "ALPECCA_ROG_WORKER_VISION_TIMEOUT", 30.0, 1.0, 60.0
+            ),
+            vision_max_tokens=_env_int(
+                env, "ALPECCA_ROG_WORKER_VISION_MAX_TOKENS", 512, 1, 2_048
+            ),
+            vision_long_edge_max=_env_int(
+                env, "ALPECCA_ROG_WORKER_VISION_LONG_EDGE", 1_600, 64, 4_096
+            ),
+            max_vision_image_bytes=_env_int(
+                env,
+                "ALPECCA_ROG_WORKER_MAX_VISION_IMAGE",
+                2 * 1024 * 1024,
+                1_024,
+                8 * 1024 * 1024,
+            ),
+            max_vision_body_bytes=_env_int(
+                env,
+                "ALPECCA_ROG_WORKER_MAX_VISION_BODY",
+                4 * 1024 * 1024,
+                1_024,
+                16 * 1024 * 1024,
             ),
             timestamp_skew_seconds=_env_int(
                 env, "ALPECCA_ROG_WORKER_TIMESTAMP_SKEW", 90, 10, 300
@@ -641,6 +715,16 @@ class HyfuserJob:
     speech_emotion: tuple[float, ...]
 
 
+@dataclass(frozen=True)
+class VisionJob:
+    request_id: str
+    model: str
+    mime: str
+    image_base64: str
+    prompt: str
+    max_tokens: int
+
+
 def _emotion_vector(value: object, label: str) -> tuple[float, ...]:
     if not isinstance(value, list) or len(value) != HYFUSER_VECTOR_DIM:
         raise WorkerRequestError(422, f"invalid_{label}")
@@ -779,6 +863,122 @@ def _blender_job(payload: Mapping[str, Any]) -> BlenderJob:
         request_id=_request_id(payload["request_id"]),
         project=project,
         frame=frame,
+    )
+
+
+def _sniff_image_mime(data: bytes) -> str | None:
+    """Return the raster MIME implied by the leading bytes, or ``None``.
+
+    Only real PNG/JPEG/WebP pixel containers match. SVG, HTML, GIF, archives,
+    and anything whose magic does not match are rejected by returning ``None``.
+    """
+
+    if data.startswith(_PNG_MAGIC):
+        return "image/png"
+    if data.startswith(_JPEG_MAGIC):
+        return "image/jpeg"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _enforce_vision_dimensions(data: bytes, settings: WorkerSettings) -> None:
+    """Fail closed on decompression bombs by bounding the true raster size.
+
+    The header is inspected without a full decode so a small payload that
+    advertises enormous dimensions is rejected before any decoder allocates for
+    it. Pillow must be present on the compute host; if it is missing the endpoint
+    reports itself unavailable rather than trusting an unverified image.
+    """
+
+    try:
+        from PIL import Image
+    except Exception as exc:  # pragma: no cover - host without Pillow
+        raise WorkerRequestError(503, "vision_decoder_unavailable") from exc
+    max_pixels = settings.vision_long_edge_max * settings.vision_long_edge_max
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            width, height = image.size
+            image.verify()
+    except WorkerRequestError:
+        raise
+    except Exception as exc:
+        raise WorkerRequestError(422, "invalid_image") from exc
+    if not isinstance(width, int) or not isinstance(height, int) or width <= 0 or height <= 0:
+        raise WorkerRequestError(422, "invalid_image")
+    if max(width, height) > settings.vision_long_edge_max:
+        raise WorkerRequestError(422, "image_dimensions_too_large")
+    if width * height > max_pixels:
+        raise WorkerRequestError(422, "image_decompression_limit")
+
+
+def _vision_job(payload: Mapping[str, Any], settings: WorkerSettings) -> VisionJob:
+    _exact_keys(
+        payload,
+        frozenset(
+            {
+                "schema",
+                "request_id",
+                "model",
+                "mime",
+                "image_base64",
+                "prompt",
+                "max_tokens",
+            }
+        ),
+    )
+    if payload["schema"] != VISION_REQUEST_SCHEMA:
+        raise WorkerRequestError(422, "invalid_schema")
+    if settings.vision_model is None:
+        raise WorkerRequestError(503, "vision_not_configured")
+    model = payload["model"]
+    if not isinstance(model, str) or model != settings.vision_model:
+        raise WorkerRequestError(403, "model_not_allowed")
+    mime = payload["mime"]
+    if not isinstance(mime, str) or mime not in VISION_ALLOWED_MIME:
+        raise WorkerRequestError(415, "unsupported_media_type")
+    max_tokens = payload["max_tokens"]
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int):
+        raise WorkerRequestError(422, "invalid_max_tokens")
+    if not 1 <= max_tokens <= settings.vision_max_tokens:
+        raise WorkerRequestError(422, "invalid_max_tokens")
+    prompt = _bounded_text(
+        payload["prompt"],
+        maximum=settings.max_prompt_chars,
+        label="prompt",
+        allow_empty=False,
+    )
+    image_b64 = payload["image_base64"]
+    if not isinstance(image_b64, str) or not image_b64:
+        raise WorkerRequestError(422, "invalid_image")
+    # Reject before decoding when the encoded envelope alone exceeds the pixel
+    # budget, so an oversized payload never reaches the base64 decoder.
+    max_encoded = 4 * ((settings.max_vision_image_bytes + 2) // 3)
+    if len(image_b64) > max_encoded:
+        raise WorkerRequestError(413, "image_too_large")
+    if len(image_b64) % 4 != 0 or not VISION_BASE64_RE.fullmatch(image_b64):
+        raise WorkerRequestError(422, "invalid_image_encoding")
+    try:
+        raw = base64.b64decode(image_b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise WorkerRequestError(422, "invalid_image_encoding") from exc
+    if not raw:
+        raise WorkerRequestError(422, "invalid_image")
+    if len(raw) > settings.max_vision_image_bytes:
+        raise WorkerRequestError(413, "image_too_large")
+    sniffed = _sniff_image_mime(raw)
+    if sniffed is None:
+        raise WorkerRequestError(415, "unsupported_media_type")
+    if sniffed != mime:
+        raise WorkerRequestError(422, "image_mime_mismatch")
+    _enforce_vision_dimensions(raw, settings)
+    return VisionJob(
+        request_id=_request_id(payload["request_id"]),
+        model=model,
+        mime=mime,
+        image_base64=image_b64,
+        prompt=prompt,
+        max_tokens=max_tokens,
     )
 
 
@@ -1131,7 +1331,14 @@ class ROGComputeWorker:
 
     def health(self, request_id: str) -> dict[str, Any]:
         blender_ready = self._blender_configuration() is not None
-        reasoning_ready = self._ollama_reasoning_ready()
+        # One tags query answers both reasoning and vision readiness so health
+        # stays a single bounded loopback call.
+        installed = self._ollama_installed_models()
+        reasoning_ready = any(
+            model in self.settings.model_allowlist for model in installed
+        )
+        vision_model = self.settings.vision_model
+        vision_ready = bool(vision_model is not None and vision_model in installed)
         ready = reasoning_ready or blender_ready
         return {
             "schema": HEALTH_SCHEMA,
@@ -1142,6 +1349,8 @@ class ROGComputeWorker:
             "ready": ready,
             "speaking": False,
             "discord": False,
+            "vision_ready": vision_ready,
+            "vision_model": vision_model,
             "capabilities": {
                 "reasoning": {"ready": reasoning_ready},
                 "blender": {"ready": blender_ready},
@@ -1252,8 +1461,12 @@ class ROGComputeWorker:
             },
         }
 
-    def _ollama_reasoning_ready(self) -> bool:
-        """Confirm one allowed model is installed without exposing inventory."""
+    def _ollama_installed_models(self) -> frozenset[str]:
+        """Return the installed Ollama model tags, bounded, or an empty set.
+
+        Kept internal: callers derive booleans from it so health never exposes
+        the raw model inventory in a response.
+        """
 
         host, port, path = _loopback_ollama_route(
             self.settings.ollama_url,
@@ -1274,21 +1487,22 @@ class ROGComputeWorker:
             response = connection.getresponse()
             raw = response.read(min(self.settings.max_ollama_response_bytes, 131_072) + 1)
             if int(getattr(response, "status", 500)) != 200:
-                return False
+                return frozenset()
             if len(raw) > min(self.settings.max_ollama_response_bytes, 131_072):
-                return False
+                return frozenset()
             decoded = json.loads(raw.decode("utf-8", errors="strict"))
             models = decoded.get("models") if isinstance(decoded, Mapping) else None
             if not isinstance(models, list) or len(models) > 512:
-                return False
+                return frozenset()
+            names: set[str] = set()
             for model in models:
                 if not isinstance(model, Mapping):
                     continue
                 for field_name in ("name", "model"):
                     name = model.get(field_name)
-                    if isinstance(name, str) and name in self.settings.model_allowlist:
-                        return True
-            return False
+                    if isinstance(name, str):
+                        names.add(name)
+            return frozenset(names)
         except (
             UnicodeDecodeError,
             json.JSONDecodeError,
@@ -1296,13 +1510,19 @@ class ROGComputeWorker:
             OSError,
             http.client.HTTPException,
         ):
-            return False
+            return frozenset()
         finally:
             if connection is not None:
                 try:
                     connection.close()
                 except Exception:
                     pass
+
+    def _ollama_reasoning_ready(self) -> bool:
+        """Confirm one allowed model is installed without exposing inventory."""
+
+        installed = self._ollama_installed_models()
+        return any(model in self.settings.model_allowlist for model in installed)
 
     def authenticate(self, request: Request, body: bytes) -> str:
         if self.settings.secret is None:
@@ -1467,6 +1687,86 @@ class ROGComputeWorker:
             "ok": True,
             "request_id": job.request_id,
             "result": visible,
+        }
+
+    def run_vision(self, job: VisionJob) -> dict[str, Any]:
+        if self.settings.vision_model is None:
+            raise WorkerRequestError(503, "vision_not_configured")
+        if job.model != self.settings.vision_model:
+            raise WorkerRequestError(403, "model_not_allowed")
+        started = self._monotonic()
+        host, port, path = _loopback_ollama_parts(self.settings.ollama_url)
+        upstream_body = json.dumps(
+            {
+                "model": job.model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": job.prompt,
+                        "images": [job.image_base64],
+                    }
+                ],
+                "stream": False,
+                # Low-latency sight path: no separate thinking field, bounded
+                # output, and no chain-of-thought ever leaves this worker.
+                "think": False,
+                "options": {
+                    "temperature": 0.2,
+                    "num_predict": job.max_tokens,
+                    "num_ctx": self.settings.ollama_num_ctx,
+                },
+                "keep_alive": "30m",
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        connection = None
+        try:
+            connection = self._connection_factory(
+                host,
+                port,
+                timeout=self.settings.vision_timeout_seconds,
+            )
+            connection.request(
+                "POST",
+                path,
+                body=upstream_body,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+            )
+            response = connection.getresponse()
+            raw = response.read(self.settings.max_ollama_response_bytes + 1)
+        except (TimeoutError, OSError, http.client.HTTPException) as exc:
+            raise WorkerRequestError(504, "vision_unavailable") from exc
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+        if len(raw) > self.settings.max_ollama_response_bytes:
+            raise WorkerRequestError(502, "vision_response_too_large")
+        if int(getattr(response, "status", 500)) != 200:
+            raise WorkerRequestError(502, "vision_upstream_error")
+        try:
+            decoded = json.loads(raw.decode("utf-8"))
+            description = decoded["message"]["content"]
+        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise WorkerRequestError(502, "vision_invalid_response") from exc
+        if not isinstance(description, str):
+            raise WorkerRequestError(502, "vision_invalid_response")
+        if not description.strip():
+            raise WorkerRequestError(502, "vision_no_visible_content")
+        if len(description.encode("utf-8")) > self.settings.max_result_chars:
+            raise WorkerRequestError(502, "vision_result_too_large")
+        return {
+            "schema": VISION_RESPONSE_SCHEMA,
+            "ok": True,
+            "request_id": job.request_id,
+            "result": {
+                "model": job.model,
+                "description": description,
+                "elapsed_ms": max(0, int((self._monotonic() - started) * 1000)),
+            },
         }
 
     def run_blender(self, job: BlenderJob) -> dict[str, Any]:
@@ -1780,6 +2080,42 @@ def create_app(
             )
         except asyncio.TimeoutError:
             return _error_response(WorkerRequestError(504, "hyfuser_timeout"))
+        except WorkerRequestError as exc:
+            return _error_response(exc)
+        headers = {"Cache-Control": "no-store"}
+        if replay:
+            headers["X-Alpecca-Idempotent-Replay"] = "1"
+        return JSONResponse(response, status_code=status, headers=headers)
+
+    @application.post(VISION_PATH)
+    async def vision(request: Request) -> JSONResponse:
+        try:
+            _require_secure_transport(request, worker.settings)
+            if request.url.query:
+                raise WorkerRequestError(400, "query_not_allowed")
+            # Vision bodies carry a bounded base64 image, so they read against
+            # the larger vision cap rather than the small JSON-only body cap.
+            body = await _read_bounded_body(
+                request, worker.settings.max_vision_body_bytes
+            )
+            request_id = worker.authenticate(request, body)
+            payload = _json_with_no_duplicates(body)
+            if payload.get("request_id") != request_id:
+                raise WorkerRequestError(409, "request_id_mismatch")
+            job = _vision_job(payload, worker.settings)
+            status, response, replay = await asyncio.wait_for(
+                asyncio.to_thread(
+                    worker.execute,
+                    VISION_PATH,
+                    job.request_id,
+                    hashlib.sha256(body).hexdigest(),
+                    lambda: worker.run_vision(job),
+                    audit_event="vision",
+                ),
+                timeout=worker.settings.vision_timeout_seconds + 1.0,
+            )
+        except asyncio.TimeoutError:
+            return _error_response(WorkerRequestError(504, "vision_timeout"))
         except WorkerRequestError as exc:
             return _error_response(exc)
         headers = {"Cache-Control": "no-store"}

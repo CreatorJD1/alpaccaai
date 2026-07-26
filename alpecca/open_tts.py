@@ -370,6 +370,77 @@ def status() -> dict:
     }
 
 
+def _split_for_f5(text: str, max_chars: int = 180) -> list[str]:
+    """Split text into short sentence chunks. F5-TTS degrades/morphs on long
+    generations, so we render each short piece (like her clean short lines) and
+    stitch them. Word/punctuation order is preserved exactly."""
+    import re
+    text = " ".join((text or "").split())
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+    sentences = re.findall(r"[^.!?]*[.!?]+|\S[^.!?]*$", text)
+    chunks: list[str] = []
+    cur = ""
+    for raw in sentences:
+        s = raw.strip()
+        if not s:
+            continue
+        if len(s) > max_chars:
+            if cur:
+                chunks.append(cur)
+                cur = ""
+            part = ""
+            for w in s.split():
+                if part and len(part) + 1 + len(w) > max_chars:
+                    chunks.append(part)
+                    part = w
+                else:
+                    part = f"{part} {w}".strip()
+            if part:
+                cur = part
+        elif cur and len(cur) + 1 + len(s) > max_chars:
+            chunks.append(cur)
+            cur = s
+        else:
+            cur = f"{cur} {s}".strip()
+    if cur:
+        chunks.append(cur)
+    return chunks or [text]
+
+
+def _synth_f5_chunks(chunks: list[str], state, preview: str):
+    """Synthesize each short chunk with F5 and concatenate the PCM into one clean
+    WAV, so the clone voice stays stable across a long reply."""
+    import io
+    import wave
+    frames: list[bytes] = []
+    meta: dict = {}
+    sr = ch = sw = None
+    for chunk in chunks:
+        result = synth(chunk, state, preview)
+        if not result:
+            return None
+        data = result[1]
+        meta = (result[2] if len(result) > 2 else {}) or meta
+        try:
+            reader = wave.open(io.BytesIO(data))
+            sr, ch, sw = reader.getframerate(), reader.getnchannels(), reader.getsampwidth()
+            frames.append(reader.readframes(reader.getnframes()))
+        except Exception:
+            return None
+    if not frames or sr is None:
+        return None
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as writer:
+        writer.setnchannels(ch)
+        writer.setsampwidth(sw)
+        writer.setframerate(sr)
+        writer.writeframes(b"".join(frames))
+    return ("audio/wav", buf.getvalue(), {**meta, "chunks": len(chunks)})
+
+
 def synth(text: str, state=None, preview: str = ""):
     """Return (mime, bytes, metadata) or None.
 
@@ -385,6 +456,10 @@ def synth(text: str, state=None, preview: str = ""):
     if OPEN_TTS_ENGINE not in ("auto", "f5", "f5-tts"):
         _last_error = f"open TTS engine {OPEN_TTS_ENGINE!r} is not enabled"
         return None
+    # Long text morphs the F5 clone; render it as short sentence chunks and stitch.
+    _chunks = _split_for_f5(text)
+    if len(_chunks) > 1:
+        return _synth_f5_chunks(_chunks, state, preview)
     ref = select_reference(state, preview)
     if not ref:
         _last_error = "No Alpecca open TTS reference manifest is available."

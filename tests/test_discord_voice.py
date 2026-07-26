@@ -1416,14 +1416,33 @@ def test_cloud_tts_readiness_accepts_ready_local_f5_fallback(monkeypatch):
     assert readiness["status"] == "ready"
 
 
-def test_full_launcher_defaults_discord_tts_to_bounded_cloud_voice():
+def test_full_launcher_locks_voice_to_local_kokoro():
+    # Her voice is her local Kokoro af_heart voice on both House HQ and Discord.
     source = (discord_bridge.ROOT / "scripts" / "run_full.py").read_text(
         encoding="utf-8"
     )
 
-    assert 'os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "cloud")' in source
+    assert 'os.environ.setdefault("ALPECCA_TTS_BACKEND", "kokoro")' in source
+    assert 'os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "kokoro")' in source
     assert 'os.environ.setdefault("ALPECCA_CHAT_VOICE_TIMEOUT", "3.0")' in source
     assert 'os.environ.setdefault("ALPECCA_CLOUD_TTS_TIMEOUT_SECONDS", "2.5")' in source
+
+
+def test_split_for_f5_chunks_long_text_and_preserves_words():
+    from alpecca import open_tts
+
+    short = "Hey Jason."
+    assert open_tts._split_for_f5(short) == [short]
+
+    long_text = (
+        "First sentence here. Second sentence that adds some more words to it. "
+        "Third one keeps going. Fourth sentence pushes this well past the chunk "
+        "limit so it must split into more than one piece for the clone to stay clean."
+    )
+    chunks = open_tts._split_for_f5(long_text, max_chars=80)
+    assert len(chunks) > 1
+    assert all(len(c) <= 80 for c in chunks)
+    assert " ".join(chunks) == " ".join(long_text.split())
 
 
 def test_voice_sentence_segments_preserve_words_order_and_bound_requests():

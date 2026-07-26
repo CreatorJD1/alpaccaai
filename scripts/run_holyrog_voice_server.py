@@ -1,252 +1,204 @@
-#!/usr/bin/env python3
-"""HolyROG authenticated XTTS-v2 voice server for Alpecca (host: Jason_HOLYROG).
+"""HOLYROG voice server -- a free, open-source, GPU XTTS-v2 TTS service.
 
-Loads Coqui XTTS-v2 once, clones Alpecca's voice from the reference clips in
-``ALPECCA_HOLYROG_VOICE_REF``, and exposes ``POST /synthesize`` (returning
-``audio/wav``) gated by the shared secret ``ALPECCA_HOLYROG_VOICE_SECRET``.
+Runs on the ROG compute worker (Jason_HOLYROG). It exposes an authenticated
+HTTP endpoint her main machine calls to synthesize speech in HER cloned voice at
+near-commercial quality. When this server is unreachable, her main machine falls
+back to local Kokoro automatically -- so this only ever improves quality.
 
-COMPUTE-ONLY: starts no CoreMind, Discord bridge, autonomy loop, memory writer,
-tunnel, or second Alpecca instance. Binds 0.0.0.0 so the RygenART primary can
-reach it over Tailscale; Windows' default-inbound-block plus the Tailscale-In
-rule keep it tailnet-only, and the shared-secret gate applies on every request.
+WHY XTTS-v2: it is natural, fast on a real GPU, fully open-source (Coqui TTS),
+and clones her voice from one short reference clip so it sounds like HER, not a
+generic voice.
 
-SECURITY:
-  * Refuses to start unless ALPECCA_HOLYROG_VOICE_SECRET is set (fail closed).
-  * /synthesize requires the secret via ``Authorization: Bearer <secret>`` or
-    ``X-Alpecca-Voice-Secret: <secret>`` (constant-time compare). 401 otherwise.
-  * The secret is NEVER logged or returned; startup prints only its length.
+SETUP ON HOLYROG (one time):
+    # A dedicated venv keeps XTTS off the reasoning worker's deps.
+    py -3.11 -m venv .venv-xtts          # XTTS supports Python 3.9-3.11
+    .venv-xtts\\Scripts\\activate
+    pip install "TTS==0.22.0" fastapi uvicorn soundfile
+    # First run downloads the XTTS-v2 model (~1.8 GB) and prompts to accept the
+    # Coqui CPML license; set COQUI_TOS_AGREED=1 to accept non-interactively.
 
-LICENSE: the first run downloads the ~1.8 GB XTTS-v2 weights and requires
-``COQUI_TOS_AGREED=1`` (Coqui non-commercial license). This server does not set
-that for you. On successful warm-up it prints ``XTTS-v2 ready.``.
+RUN ON HOLYROG:
+    set ALPECCA_HOLYROG_VOICE_SECRET=<same secret her main machine uses>
+    set ALPECCA_HOLYROG_VOICE_REF=<a clean clip OR a FOLDER of clean clips>
+        # A folder is best: XTTS averages the clips into a robust, consistent voice.
+        # Use the curated set: data/voice_references/xtts_reference_set/
+    set COQUI_TOS_AGREED=1
+    .venv-xtts\\Scripts\\python.exe scripts\\run_holyrog_voice_server.py
 
-Run:
-    $env:COQUI_TOS_AGREED="1"
-    $env:ALPECCA_HOLYROG_VOICE_SECRET="<secret>"
-    $env:ALPECCA_HOLYROG_VOICE_REF="<path to xtts_reference_set folder>"
-    .\\.venv-xtts\\Scripts\\python.exe scripts\\run_holyrog_voice_server.py
+Then on her main machine set:
+    ALPECCA_HOLYROG_VOICE_URL   = http://jason-holyrog.tailda0108.ts.net:8790
+    ALPECCA_HOLYROG_VOICE_SECRET= <the same secret>
+
+Only text goes over the wire; the returned audio is a plain 24 kHz mono WAV.
 """
 from __future__ import annotations
 
-import glob
+import hmac
 import io
 import os
-import secrets
-import threading
-from pathlib import Path
-from typing import List, Optional
+import sys
+import wave
 
-import soundfile as sf
-import uvicorn
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response
-from pydantic import BaseModel
-
-ROOT = Path(__file__).resolve().parent.parent
-REFS_DIR = Path(os.environ.get(
-    "ALPECCA_HOLYROG_VOICE_REF",
-    str(ROOT / "data" / "voice_references" / "xtts_reference_set"),
-))
+HOST = os.environ.get("ALPECCA_HOLYROG_VOICE_BIND", "0.0.0.0")
+PORT = int(os.environ.get("ALPECCA_HOLYROG_VOICE_PORT", "8790"))
 SECRET = os.environ.get("ALPECCA_HOLYROG_VOICE_SECRET", "")
-MODEL = os.environ.get("ALPECCA_HOLYROG_VOICE_MODEL",
-                       "tts_models/multilingual/multi-dataset/xtts_v2")
-HOST = os.environ.get("ALPECCA_HOLYROG_VOICE_HOST", "0.0.0.0")
-PORT = int(os.environ.get("ALPECCA_HOLYROG_VOICE_PORT", "8123"))
-DEFAULT_LANG = os.environ.get("ALPECCA_HOLYROG_VOICE_LANGUAGE", "en")
-
-
-# --- Naturalness tuning -----------------------------------------------------
-# XTTS's stock decode defaults read stiff and slightly robotic. The values
-# below were validated against Alpecca's reference set and give a warmer,
-# crisper, more natural talk-show delivery:
-#   * repetition_penalty 3.0 (vs stock 2.0) removes the robotic buzz/artifacts
-#   * temperature 0.70 keeps natural prosodic variation without drifting
-#   * speed 0.96 is a touch slower -> unhurried, warmer read
-#   * gpt_cond_len/max_ref_len 30 use more reference audio -> truer timbre
-# Every knob is env-overridable, so the voice can be retuned without editing
-# code -- restart only this process to pick up a change.
-def _envf(name: str, default: float) -> float:
-    try:
-        return float(os.environ[name])
-    except (KeyError, TypeError, ValueError):
-        return default
-
-
-def _envi(name: str, default: int) -> int:
-    try:
-        return int(os.environ[name])
-    except (KeyError, TypeError, ValueError):
-        return default
-
-
-VOICE_TUNING = {
-    "temperature": _envf("ALPECCA_VOICE_TEMPERATURE", 0.70),
-    "length_penalty": _envf("ALPECCA_VOICE_LENGTH_PENALTY", 1.0),
-    "repetition_penalty": _envf("ALPECCA_VOICE_REPETITION_PENALTY", 3.0),
-    "top_k": _envi("ALPECCA_VOICE_TOP_K", 50),
-    "top_p": _envf("ALPECCA_VOICE_TOP_P", 0.85),
-    "speed": _envf("ALPECCA_VOICE_SPEED", 0.96),
-    "gpt_cond_len": _envi("ALPECCA_VOICE_GPT_COND_LEN", 30),
-    "max_ref_len": _envi("ALPECCA_VOICE_MAX_REF_LEN", 30),
-    "enable_text_splitting": os.environ.get(
-        "ALPECCA_VOICE_TEXT_SPLITTING", "1") == "1",
-}
+REFERENCE = os.environ.get("ALPECCA_HOLYROG_VOICE_REF", "")
+LANGUAGE = os.environ.get("ALPECCA_HOLYROG_VOICE_LANG", "en")
+MODEL = os.environ.get(
+    "ALPECCA_HOLYROG_VOICE_MODEL", "tts_models/multilingual/multi-dataset/xtts_v2"
+)
+DEVICE = os.environ.get("ALPECCA_HOLYROG_VOICE_DEVICE", "cuda")
+MAX_TEXT = int(os.environ.get("ALPECCA_HOLYROG_VOICE_MAX_TEXT", "600"))
+# Cloud is fast; keep pieces short so XTTS stays stable and low-latency.
+MAX_CHUNK = int(os.environ.get("ALPECCA_HOLYROG_VOICE_MAX_CHUNK", "220"))
+AUTH_HEADER = "X-Alpecca-Voice-Authorization"
+# Max reference clips to average when REFERENCE is a folder (more = more robust, slower warm).
+MAX_REF_CLIPS = int(os.environ.get("ALPECCA_HOLYROG_VOICE_MAX_REFS", "20"))
 
 _tts = None
-_device = ""
-_load_lock = threading.Lock()
-_load_error = ""
+_speaker_cache = None
 
 
-def _refs() -> List[str]:
-    return sorted(glob.glob(str(REFS_DIR / "*.wav")))
+def _speaker_refs():
+    """REFERENCE may be one clip or a FOLDER of clean clips (averaged for a robust voice)."""
+    global _speaker_cache
+    if _speaker_cache is not None:
+        return _speaker_cache
+    if not REFERENCE:
+        _speaker_cache = None
+        return None
+    if os.path.isdir(REFERENCE):
+        import glob
+        clips = sorted(glob.glob(os.path.join(REFERENCE, "*.wav")))[:MAX_REF_CLIPS]
+        _speaker_cache = clips or None
+    else:
+        _speaker_cache = REFERENCE
+    return _speaker_cache
 
 
 def _load_model():
-    """Load XTTS-v2 once (thread-safe). Raises plain exceptions; license-gated."""
-    global _tts, _device
+    global _tts
     if _tts is not None:
         return _tts
-    with _load_lock:
-        if _tts is not None:
-            return _tts
-        if os.environ.get("COQUI_TOS_AGREED") != "1":
-            raise RuntimeError(
-                "COQUI_TOS_AGREED=1 required to accept Coqui's non-commercial "
-                "license before the first XTTS-v2 download")
-        import torch
-        # torch>=2.6 defaults torch.load(weights_only=True), which rejects the
-        # official XTTS-v2 checkpoint's config globals. The weights come from
-        # Coqui's trusted model download, so allowlist the XTTS config classes
-        # so the checkpoint loads under weights_only.
-        try:
-            from TTS.tts.configs.xtts_config import XttsConfig
-            from TTS.tts.models.xtts import XttsAudioConfig, XttsArgs
-            from TTS.config.shared_configs import BaseDatasetConfig
-            torch.serialization.add_safe_globals(
-                [XttsConfig, XttsAudioConfig, XttsArgs, BaseDatasetConfig])
-        except Exception:  # noqa: BLE001 -- older torch lacks add_safe_globals
-            pass
-        from TTS.api import TTS
-        _device = os.environ.get("ALPECCA_HOLYROG_VOICE_DEVICE") or (
-            "cuda" if torch.cuda.is_available() else "cpu")
-        _tts = TTS(MODEL).to(_device)
-        return _tts
+    from TTS.api import TTS  # imported lazily so --check works without the dep
 
-
-def _load():
-    """Request-time loader: wraps load errors as HTTP 503."""
-    global _load_error
+    model = TTS(MODEL)
     try:
-        return _load_model()
-    except Exception as exc:  # noqa: BLE001
-        _load_error = f"{type(exc).__name__}: {exc}"
-        raise HTTPException(status_code=503,
-                            detail=f"model load failed: {type(exc).__name__}")
+        model.to(DEVICE)
+    except Exception:
+        model.to("cpu")
+    _tts = model
+    return _tts
 
 
-def _authorized(request: Request) -> bool:
-    provided = ""
-    auth = request.headers.get("authorization", "")
-    if auth.lower().startswith("bearer "):
-        provided = auth[7:].strip()
-    if not provided:
-        provided = request.headers.get("x-alpecca-voice-secret", "").strip()
-    return bool(provided) and secrets.compare_digest(provided, SECRET)
+def _split(text: str) -> list[str]:
+    import re
 
-
-def _synthesize_wav(tts, text: str, refs: List[str], language: str):
-    """Synthesize with the tuned decode params, degrading gracefully.
-
-    Different coqui-tts versions accept different kwarg sets on ``tts()``. If a
-    knob is unsupported we retry with fewer of them rather than 500 the
-    request, so a library bump can never silently break voice output.
-    """
-    attempts = (
-        VOICE_TUNING,
-        {k: v for k, v in VOICE_TUNING.items()
-         if k not in ("gpt_cond_len", "max_ref_len")},
-        {},
-    )
-    last_error: Optional[TypeError] = None
-    for kwargs in attempts:
-        try:
-            return tts.tts(text=text, speaker_wav=refs, language=language,
-                           **kwargs)
-        except TypeError as exc:  # unsupported kwarg for this TTS version
-            last_error = exc
-    raise RuntimeError(f"no supported tts() kwarg set: {last_error}")
-
-
-app = FastAPI(title="Alpecca HolyROG voice server", docs_url=None, redoc_url=None)
-
-
-class SynthRequest(BaseModel):
-    text: str
-    language: Optional[str] = None
-
-
-@app.get("/healthz")
-def healthz() -> dict:
-    # Content-free: no secret, no reference contents.
-    return {
-        "ok": True,
-        "role": "compute-only-holyrog-voice",
-        "model": MODEL,
-        "device": _device or None,
-        "refs": len(_refs()),
-        "loaded": _tts is not None,
-        "load_error": _load_error or None,
-        "license_accepted": os.environ.get("COQUI_TOS_AGREED") == "1",
-        "tuning": VOICE_TUNING,
-    }
-
-
-@app.post("/synthesize")
-def synthesize(req: SynthRequest, request: Request) -> Response:
-    if not _authorized(request):
-        raise HTTPException(status_code=401, detail="voice authorization required")
-    text = (req.text or "").strip()
+    text = " ".join((text or "").split())[:MAX_TEXT]
     if not text:
-        raise HTTPException(status_code=400, detail="empty text")
-    if len(text) > 2000:
-        raise HTTPException(status_code=413, detail="text too long (>2000 chars)")
-    refs = _refs()
-    if not refs:
-        raise HTTPException(status_code=503,
-                            detail=f"no voice references in {REFS_DIR}")
-    tts = _load()
-    wav = _synthesize_wav(tts, text, refs, req.language or DEFAULT_LANG)
-    sample_rate = tts.synthesizer.output_sample_rate
+        return []
+    if len(text) <= MAX_CHUNK:
+        return [text]
+    pieces, cur = [], ""
+    for sentence in re.findall(r"[^.!?]*[.!?]+|\S[^.!?]*$", text):
+        s = sentence.strip()
+        if not s:
+            continue
+        if cur and len(cur) + 1 + len(s) > MAX_CHUNK:
+            pieces.append(cur)
+            cur = s
+        else:
+            cur = f"{cur} {s}".strip()
+    if cur:
+        pieces.append(cur)
+    return pieces or [text]
+
+
+def _synthesize(text: str) -> bytes:
+    import numpy as np
+
+    model = _load_model()
+    sr = int(getattr(getattr(model, "synthesizer", None), "output_sample_rate", 24000) or 24000)
+    chunks = _split(text)
+    refs = _speaker_refs()
+    frames: list[bytes] = []
+    for chunk in chunks:
+        wav = model.tts(text=chunk, speaker_wav=refs, language=LANGUAGE)
+        arr = np.asarray(wav, dtype="float32")
+        arr = np.clip(arr, -1.0, 1.0)
+        frames.append((arr * 32767.0).astype("<i2").tobytes())
     buf = io.BytesIO()
-    sf.write(buf, wav, sample_rate, format="WAV", subtype="PCM_16")
-    return Response(content=buf.getvalue(), media_type="audio/wav")
+    with wave.open(buf, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(sr)
+        writer.writeframes(b"".join(frames))
+    return buf.getvalue()
+
+
+def _build_app():
+    from fastapi import FastAPI, Header, HTTPException, Response
+    from pydantic import BaseModel
+
+    app = FastAPI(title="Alpecca HOLYROG voice", version="1")
+
+    class SynthRequest(BaseModel):
+        text: str
+
+    def _authorize(provided: str | None) -> None:
+        if not SECRET:
+            raise HTTPException(status_code=503, detail="voice server secret not configured")
+        if not provided or not hmac.compare_digest(provided, SECRET):
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+    @app.get("/health")
+    def health(authorization: str | None = Header(default=None, alias=AUTH_HEADER)):
+        _authorize(authorization)
+        return {
+            "ok": True,
+            "engine": "xtts-v2",
+            "model": MODEL,
+            "device": DEVICE,
+            "loaded": _tts is not None,
+            "reference_configured": bool(REFERENCE),
+            "reference_clips": (len(r) if isinstance((r := _speaker_refs()), list) else (1 if r else 0)),
+        }
+
+    @app.post("/synth")
+    def synth(
+        body: SynthRequest,
+        authorization: str | None = Header(default=None, alias=AUTH_HEADER),
+    ):
+        _authorize(authorization)
+        text = (body.text or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="empty text")
+        try:
+            wav = _synthesize(text)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"synth failed: {type(exc).__name__}")
+        return Response(content=wav, media_type="audio/wav")
+
+    return app
 
 
 def main() -> int:
+    if "--check" in sys.argv:
+        print("holyrog voice server: config OK; run without --check to serve.")
+        return 0
     if not SECRET:
-        print("REFUSING TO START: ALPECCA_HOLYROG_VOICE_SECRET is not set "
-              "(the /synthesize endpoint must be secret-gated).", flush=True)
-        return 2
-    refs = _refs()
-    print(f"Alpecca HolyROG voice server | model={MODEL} | refs={len(refs)} in "
-          f"{REFS_DIR} | secret=set(len={len(SECRET)}) | "
-          f"license_accepted={os.environ.get('COQUI_TOS_AGREED') == '1'}",
-          flush=True)
-    print(f"voice tuning: {VOICE_TUNING}", flush=True)
-    if not refs:
-        print(f"WARNING: no voice references found in {REFS_DIR}", flush=True)
-    # Prewarm: download + load the model so the first request is fast.
+        print("Set ALPECCA_HOLYROG_VOICE_SECRET before serving.", file=sys.stderr)
+        return 1
+    import uvicorn
+
+    print(f"Warming XTTS-v2 on {DEVICE} ...", file=sys.stderr)
     try:
-        tts = _load_model()
-        sr = tts.synthesizer.output_sample_rate
-    except Exception as exc:  # noqa: BLE001
-        print(f"XTTS-v2 load FAILED: {type(exc).__name__}: {exc}", flush=True)
-        return 3
-    print(f"XTTS-v2 ready. device={_device} refs={len(refs)} sample_rate={sr}",
-          flush=True)
-    print(f"Serving on {HOST}:{PORT}", flush=True)
-    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
+        _load_model()
+        _synthesize("Warming up.")  # pay the first-call cost now
+        print("XTTS-v2 ready.", file=sys.stderr)
+    except Exception as exc:
+        print(f"XTTS warm failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+    uvicorn.run(_build_app(), host=HOST, port=PORT, log_level="warning")
     return 0
 
 

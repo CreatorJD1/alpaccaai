@@ -136,9 +136,14 @@ os.environ.setdefault("ALPECCA_DISCORD_VOICE_RECEIVE", "1")
 os.environ.setdefault("ALPECCA_CHAT_VOICE_TIMEOUT", "3.0")
 os.environ.setdefault("ALPECCA_CLOUD_TTS_TIMEOUT_SECONDS", "2.5")
 os.environ.setdefault("ALPECCA_LIVE_TTS_TIMEOUT", "3.0")
-os.environ.setdefault("ALPECCA_DISCORD_VOICE_TIMEOUT", "4.0")
+os.environ.setdefault("ALPECCA_DISCORD_VOICE_TIMEOUT", "10.0")
 os.environ.setdefault("ALPECCA_DISCORD_TRANSCRIBE_TIMEOUT", "30.0")
-os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "cloud")
+# Her voice is her LOCAL Kokoro af_heart "original voice" on BOTH House HQ and
+# Discord. It is verified-clean (proper WAV, no clipping), carries emotion via
+# her naturalize + mood modulation, and -- unlike the F5 clone -- never morphs,
+# never needs the network, and stays warm via the keep-warm loop.
+os.environ.setdefault("ALPECCA_TTS_BACKEND", "kokoro")
+os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "kokoro")
 
 def _lan_access_point(port: int) -> str:
     """The URL another device on this network uses to reach THIS computer.

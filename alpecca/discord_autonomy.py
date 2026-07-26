@@ -12,7 +12,10 @@ INTENTS = (
     "ask one new question grounded in the recent conversation",
     "offer one concise observation that advances the current topic",
     "acknowledge or support a recent human message without taking over",
+    "share the approved self-portrait with one grounded first-person explanation",
 )
+
+PORTRAIT_MARKER = "[attach:approved-portrait]"
 
 DECISION_SYSTEM_PROMPT = (
     "You are Alpecca's hidden Discord initiative gate. You are not speaking to "
@@ -21,7 +24,8 @@ DECISION_SYSTEM_PROMPT = (
     "spoke last, a question went unanswered, the idea was already expressed, or "
     "the only available text would be a greeting, capability disclaimer, generic "
     "offer to help, or self-introduction. Pick 1 must use speak=false; picks "
-    "2..5 must use speak=true. A supplied initiative kind of "
+    "2..6 must use speak=true. Pick 6 is available only when the supplied "
+    "context explicitly says the approved portrait is ready. A supplied initiative kind of "
     "'deliberate empty-room check-in' is a narrow exception: one short, "
     "non-repetitive, context-grounded presence line may be worthwhile after a "
     "long quiet interval, but silence still wins when no real cue remains. "
@@ -32,7 +36,7 @@ DECISION_SYSTEM_PROMPT = (
     "silence, unanswered outreach, and whether reflection could produce something "
     "new. This schedules the next private review, not a required message. Return "
     "only tiny JSON with exactly these keys: {\"speak\": true|false, "
-    "\"pick\": 1..5, \"revisit_minutes\": 1..120}. Do not provide prose or "
+    "\"pick\": 1..6, \"revisit_minutes\": 1..120}. Do not provide prose or "
     "hidden reasoning."
 )
 
@@ -51,7 +55,9 @@ COMPOSITION_SYSTEM_PROMPT = (
     "characters. For a deliberate empty-room check-in or self-started direct "
     "conversation, write at most one short, non-repetitive line; do not pretend "
     "someone replied or revive stale capability details. Do not include analysis, "
-    "JSON, labels, or meta-commentary."
+    "JSON, labels, or meta-commentary. For the approved self-portrait intent only, "
+    f"begin with {PORTRAIT_MARKER}, then explain who you are, what the portrait "
+    "represents, and only the measured systems supplied in context."
 )
 
 _GENERIC_ASSISTANT_RE = re.compile(
@@ -169,3 +175,14 @@ def publishable_draft(text: str) -> bool:
     if _GENERIC_ASSISTANT_RE.search(policy_text) or _META_OUTPUT_RE.search(policy_text):
         return False
     return True
+
+
+def split_media_draft(text: str) -> tuple[str, str | None]:
+    """Extract the only media action autonomous Discord speech may request."""
+    draft = str(text or "").strip()
+    if not draft.startswith(PORTRAIT_MARKER):
+        return draft, None
+    content = draft[len(PORTRAIT_MARKER):].strip()
+    if not content or PORTRAIT_MARKER in content:
+        return "", None
+    return content, "portrait"

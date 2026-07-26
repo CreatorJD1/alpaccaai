@@ -317,3 +317,69 @@ def test_run_full_derives_only_cloud_endpoint_and_does_not_invent_secret() -> No
     assert 'os.environ["ALPECCA_CLOUD_STANDBY_URL"].rstrip("/")' in source
     assert '"/voice/tts"' in source
     assert "ALPECCA_CLOUD_TTS_AUTHORIZATION" not in source
+
+
+def test_kokoro_load_failure_recovers_after_cooldown(monkeypatch) -> None:
+    """A transient Kokoro load failure must not silence her voice permanently.
+
+    It used to latch OFF for the whole process; now it re-probes after a
+    cooldown so her voice keeps running without a restart.
+    """
+    import sys
+    import types
+    from alpecca import tts
+
+    # Simulate a prior load failure that latched Kokoro off.
+    monkeypatch.setattr(tts, "_kokoro", None)
+    monkeypatch.setattr(tts, "_kokoro_ready", False)
+    monkeypatch.setattr(tts, "_KOKORO_RETRY_COOLDOWN_SECONDS", 60.0)
+
+    # Within the cooldown it must not hammer the failed loader -- stays off.
+    monkeypatch.setattr(tts, "_kokoro_failed_at", tts.time.monotonic())
+    assert tts._kokoro_pipeline() is None
+    assert tts._kokoro_ready is False
+
+    # After the cooldown a now-healthy loader recovers her voice on its own.
+    class _FakePipeline:
+        pass
+
+    fake_kokoro = types.ModuleType("kokoro")
+    fake_kokoro.KPipeline = lambda **_kwargs: _FakePipeline()
+    monkeypatch.setitem(sys.modules, "kokoro", fake_kokoro)
+    monkeypatch.setattr(tts, "_kokoro_failed_at", tts.time.monotonic() - 120.0)
+
+    pipeline = tts._kokoro_pipeline()
+    assert isinstance(pipeline, _FakePipeline)
+    assert tts._kokoro_ready is True
+
+
+def test_holyrog_voice_dormant_until_configured_then_routes(monkeypatch) -> None:
+    from alpecca import tts, holyrog_voice
+
+    # Unconfigured -> dormant; her local voice is unaffected.
+    monkeypatch.delenv("ALPECCA_HOLYROG_VOICE_URL", raising=False)
+    monkeypatch.delenv("ALPECCA_HOLYROG_VOICE_SECRET", raising=False)
+    monkeypatch.setattr(holyrog_voice, "_client", holyrog_voice.HolyrogVoiceClient())
+    assert holyrog_voice.client().enabled is False
+    assert holyrog_voice.client().synthesize("x") is None
+
+    # Configured + reachable -> serves her cloned voice.
+    class _Up:
+        enabled = True
+
+        def synthesize(self, _text):
+            return ("audio/wav", b"RIFF0000WAVE" + b"a" * 4096)
+
+    monkeypatch.setattr(holyrog_voice, "_client", _Up())
+    out = tts._synth_holyrog("hello there")
+    assert out[0] == "audio/wav" and out[2]["engine"] == "holyrog-xtts"
+
+    # Unreachable -> None, so local Kokoro takes over.
+    class _Down:
+        enabled = True
+
+        def synthesize(self, _text):
+            return None
+
+    monkeypatch.setattr(holyrog_voice, "_client", _Down())
+    assert tts._synth_holyrog("hello") is None

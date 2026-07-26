@@ -63,6 +63,7 @@ from alpecca.auth import (
 from alpecca import (
     audio_ingress,
     bridge_actor_transport,
+    discord_autonomy,
     discord_creator_identity,
     discord_media,
     discord_observability,
@@ -160,7 +161,7 @@ IMAGE_INBOUND_TIMEOUT = max(
 )
 VOICE_SYNTH_TIMEOUT = max(
     1.0,
-    min(15.0, float(os.environ.get("ALPECCA_DISCORD_VOICE_TIMEOUT", "4"))),
+    min(15.0, float(os.environ.get("ALPECCA_DISCORD_VOICE_TIMEOUT", "10"))),
 )
 VOICE_TRANSCRIBE_TIMEOUT = max(
     1.0,
@@ -177,10 +178,10 @@ VOICE_PLAYBACK_CALLBACK_TIMEOUT = max(
     ),
 )
 DISCORD_VOICE_ENGINE = os.environ.get(
-    "ALPECCA_DISCORD_TTS_ENGINE", "cloud"
+    "ALPECCA_DISCORD_TTS_ENGINE", "kokoro"
 ).strip().lower()
-if DISCORD_VOICE_ENGINE not in {"auto", "cloud", "kokoro", "f5", "f5-tts"}:
-    DISCORD_VOICE_ENGINE = "auto"
+if DISCORD_VOICE_ENGINE not in {"auto", "cloud", "kokoro", "edge", "f5", "f5-tts"}:
+    DISCORD_VOICE_ENGINE = "kokoro"
 MAX_DISCORD_CHARS = 2000
 MAX_BACKEND_RESPONSE_BYTES = 1024 * 1024
 MAX_BACKEND_ERROR_BYTES = 16 * 1024
@@ -231,6 +232,17 @@ PROACTIVE_SWEEP = max(
 PROACTIVE_GLOBAL_COOLDOWN = max(
     30.0,
     float(os.environ.get("ALPECCA_DISCORD_PROACTIVE_GLOBAL_COOLDOWN", "60")),
+)
+# Grounded overload signal: if many people address her in a short window she
+# says (once per cooldown) that she is swamped. This is measured from REAL
+# inbound load -- distinct speakers and message rate -- never faked emotion.
+OVERLOAD_WINDOW_SECONDS = max(
+    3.0, float(os.environ.get("ALPECCA_DISCORD_OVERLOAD_WINDOW", "15"))
+)
+OVERLOAD_SPEAKERS = max(2, int(os.environ.get("ALPECCA_DISCORD_OVERLOAD_SPEAKERS", "3")))
+OVERLOAD_MESSAGES = max(2, int(os.environ.get("ALPECCA_DISCORD_OVERLOAD_MESSAGES", "5")))
+OVERLOAD_NOTICE_COOLDOWN = max(
+    10.0, float(os.environ.get("ALPECCA_DISCORD_OVERLOAD_COOLDOWN", "45"))
 )
 # A claimed room may get one deliberate check-in after a real quiet stretch,
 # but never a rapid sequence of self-directed messages.  This is distinct from
@@ -1656,10 +1668,26 @@ def _synth_voice_wav(text: str) -> "bytes | None":
             if resp.status != 200:
                 return None
             data = resp.read(MAX_VOICE_RESPONSE_BYTES + 1)
+            # Reconcile against the declared length: a body shorter than its
+            # Content-Length is a TRUNCATED audio stream, and FFmpeg renders the
+            # misframed tail as audible STATIC. Dropping it here keeps the voice
+            # channel silent (recoverable) instead of playing noise. getheader is
+            # accessed defensively so lightweight test doubles without it are
+            # unaffected (they simply skip the check).
+            declared = getattr(resp, "getheader", lambda *_a, **_k: None)("Content-Length")
     except Exception:
         _diagnostic("voice_synthesis_failed")
         return None
-    return data if (1024 < len(data) <= MAX_VOICE_RESPONSE_BYTES) else None
+    if not (1024 < len(data) <= MAX_VOICE_RESPONSE_BYTES):
+        return None
+    if declared is not None:
+        try:
+            if len(data) < int(declared):
+                _diagnostic("voice_response_truncated")
+                return None
+        except (TypeError, ValueError):
+            pass
+    return data
 
 
 def build_client() -> discord.Client:
@@ -2410,6 +2438,10 @@ def build_client() -> discord.Client:
                     if not playback_error:
                         _diagnostic("voice_playback_skipped", status="superseded")
                     return
+            # She finished speaking every segment aloud. Callers use this to
+            # avoid ALSO posting the same line as text (voice-first): only the
+            # early/failed returns above leave this as a falsy None.
+            return True
 
     async def _stop_voice_receive(guild) -> None:
         """Stop and erase one guild's in-memory creator receive session."""
@@ -2789,29 +2821,34 @@ def build_client() -> discord.Client:
                         )
                         _diagnostic("voice_receive_reply_dropped", status="self_repeat")
                         continue
-                    try:
-                        await text_channel.send(reply[:MAX_DISCORD_CHARS])
-                    except Exception:
-                        await asyncio.to_thread(
-                            discord_voice.record_voice_event,
-                            "failed",
-                            duration_seconds=duration_seconds,
-                            size_bytes=audio_size,
-                            reason="discord-send",
-                        )
-                        _diagnostic("voice_receive_reply_failed", status="discord_send")
-                        continue
+                    # Voice-first: since she was addressed BY VOICE, answer by
+                    # voice and do not also mirror the line into the text
+                    # channel. Only fall back to text if she could not actually
+                    # speak it -- so she is never both at once, but never silent.
+                    spoke = await _speak_in_voice(
+                        guild,
+                        reply,
+                        expected_generation=voice_generation_snapshot,
+                    )
+                    if not spoke:
+                        try:
+                            await text_channel.send(reply[:MAX_DISCORD_CHARS])
+                        except Exception:
+                            await asyncio.to_thread(
+                                discord_voice.record_voice_event,
+                                "failed",
+                                duration_seconds=duration_seconds,
+                                size_bytes=audio_size,
+                                reason="discord-send",
+                            )
+                            _diagnostic("voice_receive_reply_failed", status="discord_send")
+                            continue
+                        _diagnostic("voice_receive_text_fallback")
                     sent_at = time.monotonic()
                     last_reply_at[channel_id] = sent_at
                     her_last_ts[channel_id] = sent_at
                     history_buf.setdefault(channel_id, []).append(("Alpecca", reply))
                     del history_buf[channel_id][:-max(CONTEXT_MESSAGES, 1)]
-                    _diagnostic("voice_receive_text_sent")
-                    await _speak_in_voice(
-                        guild,
-                        reply,
-                        expected_generation=voice_generation_snapshot,
-                    )
                 finally:
                     utterance_queue.task_done()
                     utterance = None
@@ -3020,6 +3057,33 @@ def build_client() -> discord.Client:
             )
             return
 
+    _recent_inbound_load: list[tuple[float, int]] = []
+    _overload_notice_state = {"at": 0.0}
+
+    def _register_inbound_overload(author_id: int) -> "str | None":
+        """Record one message addressed to her; if the REAL inbound load (distinct
+        speakers or message rate in a short window) crosses the bounded threshold,
+        return a single honest 'I'm swamped' line, rate-limited. Grounded in
+        measured load, never faked emotion."""
+        now = time.monotonic()
+        _recent_inbound_load.append((now, int(author_id)))
+        cutoff = now - OVERLOAD_WINDOW_SECONDS
+        while _recent_inbound_load and _recent_inbound_load[0][0] < cutoff:
+            _recent_inbound_load.pop(0)
+        speakers = len({a for _, a in _recent_inbound_load})
+        count = len(_recent_inbound_load)
+        if (
+            (speakers >= OVERLOAD_SPEAKERS or count >= OVERLOAD_MESSAGES)
+            and now - _overload_notice_state["at"] >= OVERLOAD_NOTICE_COOLDOWN
+        ):
+            _overload_notice_state["at"] = now
+            _diagnostic("overload_notice", status=f"{speakers}sp_{count}msg")
+            return (
+                "Whoa -- a lot of you at once. Give me a moment and I'll get to "
+                "each of you; one at a time is easier for me to follow."
+            )
+        return None
+
     @client.event
     async def on_message(message: discord.Message) -> None:
         if client.user is None:
@@ -3069,6 +3133,16 @@ def build_client() -> discord.Client:
                     mention_author=False,
                 )
             return
+        # Grounded overload signal: only count messages actually addressed to her
+        # (a DM, or an @mention in a guild) so ambient channel chatter never trips
+        # it. When genuinely swamped she says so once, then keeps handling turns.
+        if is_dm or _message_mentions_user(message, client.user.id):
+            overload_line = _register_inbound_overload(author_id)
+            if overload_line is not None:
+                try:
+                    await message.channel.send(overload_line)
+                except Exception:
+                    pass
         if not is_dm:
             message_content = str(getattr(message, "content", "") or "")
             mentioned = _message_mentions_user(message, client.user.id)
@@ -3617,6 +3691,7 @@ def build_client() -> discord.Client:
                             f"{room_context}"
                         )
                 voice_relevant = False
+                runtime_voice_connected = False
                 if not is_dm and message.guild is not None:
                     runtime_voice_connected = (
                         _voice_runtime_state(message.guild).get("connected") is True
@@ -3628,7 +3703,12 @@ def build_client() -> discord.Client:
                             and _message_is_presence_cue(media_request_text)
                         )
                     )
-                if voice_relevant and message.guild is not None:
+                # Cross-channel voice awareness: while she is in a live voice
+                # session, every text reply -- even in another channel -- should
+                # know it, so she can answer text and hold a call at once and
+                # reference the session honestly instead of forgetting she is in
+                # it.
+                if message.guild is not None and (voice_relevant or runtime_voice_connected):
                     context += f"; {_voice_presence_context(message.guild)}"
                 if outbound_media is not None:
                     context += (
@@ -3930,7 +4010,14 @@ def build_client() -> discord.Client:
                     # deliberate check-in, but not another dialogue turn.
                     continue
                 cooldown = _proactive_backoff_seconds(ignored_streak.get(chan, 0))
-                if tick_now - last_proactive_eval_at.get(chan, tick_now) < cooldown:
+                # A direct idle review already has a model-directed schedule in
+                # direct_next_review_at. Applying the generic room cooldown as
+                # well made the advertised review time unreachable (60 seconds
+                # was silently overridden by the 180-second room cooldown).
+                if (
+                    initiative_kind != "direct-idle"
+                    and tick_now - last_proactive_eval_at.get(chan, tick_now) < cooldown
+                ):
                     continue
                 if tick_now - _proactive_global_eval["at"] < PROACTIVE_GLOBAL_COOLDOWN:
                     return
@@ -3988,6 +4075,12 @@ def build_client() -> discord.Client:
                 )
                 prompt = (
                     prompt_prefix
+                    + "Approved autonomous media: the locked Alpecca self-portrait is "
+                    + (
+                        "ready and may be shared if that genuinely adds new value.\n"
+                        if discord_media.resolve_self_portrait() is not None
+                        else "unavailable.\n"
+                    )
                     + "\nRecent room messages:\n"
                     + (context or "[No active Discord conversation is in progress.]")
                     + ("\n\n" + presence_context if presence_context else "")
@@ -4025,7 +4118,9 @@ def build_client() -> discord.Client:
                 ):
                     _diagnostic("proactive_room_yielded", status="human_activity")
                     return
-                raw_reply = (reply or "").strip()
+                raw_reply, autonomous_media_kind = (
+                    discord_autonomy.split_media_draft(reply)
+                )
                 if _room_reply_is_pass(raw_reply):
                     _diagnostic("proactive_room_passed", status="model")
                     return
@@ -4051,11 +4146,39 @@ def build_client() -> discord.Client:
                 ):
                     _diagnostic("proactive_room_passed", status="duplicate")
                     return
+                autonomous_media = None
+                if autonomous_media_kind == "portrait":
+                    autonomous_media = discord_media.resolve_self_portrait()
+                    if autonomous_media is None:
+                        _diagnostic(
+                            "proactive_room_passed",
+                            status="approved_portrait_unavailable",
+                        )
+                        return
                 try:
-                    await ch.send(reply[:MAX_DISCORD_CHARS])
+                    if autonomous_media is None:
+                        await ch.send(reply[:MAX_DISCORD_CHARS])
+                    else:
+                        await ch.send(
+                            reply[:MAX_DISCORD_CHARS],
+                            file=discord.File(
+                                io.BytesIO(autonomous_media.image_bytes),
+                                filename=autonomous_media.filename,
+                            ),
+                        )
                 except Exception:
                     _diagnostic("proactive_send_failed")
                     return
+                if autonomous_media is not None:
+                    await asyncio.to_thread(
+                        discord_media.record_media_event,
+                        "outbound",
+                        status="sent",
+                        mime_type=autonomous_media.mime_type,
+                        size_bytes=autonomous_media.size_bytes,
+                        sha256=autonomous_media.sha256,
+                        kind=autonomous_media.kind,
+                    )
                 sent_at = time.monotonic() if now is None else tick_now
                 last_proactive_at[chan] = sent_at
                 last_reply_at[chan] = sent_at

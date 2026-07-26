@@ -674,6 +674,7 @@ def test_dedicated_server_task_remains_compute_only_and_restartable() -> None:
     assert "install-servicepython" in lowered
     assert "servicepython" in lowered
     assert "cryptography>=43.0" in lowered
+    assert "pillow>=10.0" in lowered
     assert "alpecca_rog_worker_python" in lowered
     assert "ensurepip --upgrade" in lowered
     assert "pip install --no-input" in lowered

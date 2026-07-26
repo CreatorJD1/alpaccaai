@@ -439,6 +439,19 @@ def _offered_tool_names(tools: list[dict]) -> frozenset[str]:
     return frozenset(names)
 
 
+def _tool_rejection_reply(user_msg: str, reason: str) -> str:
+    """Explain a rejected execution in the current turn instead of canned prose."""
+    request = " ".join(str(user_msg or "").split()).strip()
+    if len(request) > 120:
+        request = request[:117].rstrip() + "..."
+    subject = f' for "{request}"' if request else ""
+    return (
+        f"I stopped the execution step{subject} before anything ran because "
+        f"the call was {reason}. I won't claim it worked; I need to reassess "
+        "that step from the conversation."
+    )
+
+
 _RUNTIME_MODEL_QUESTION_PATTERNS = (
     re.compile(
         r"\b(?:what|which)\s+(?:ai\s+|language\s+)?(?:model|llm)\b"
@@ -1271,9 +1284,9 @@ class _LLM:
                     )
                     if not parsed_calls.ok:
                         msg = {
-                            "content": (
-                                "I could not safely interpret that tool request, "
-                                "so I did not run it."
+                            "content": _tool_rejection_reply(
+                                user_msg,
+                                "malformed",
                             )
                         }
                         break
@@ -1526,9 +1539,9 @@ class _LLM:
                                 f"({rejection_reason})."
                             )
                         else:
-                            blocked_reply = (
-                                "I could not safely interpret that tool request, "
-                                "so I did not run it."
+                            blocked_reply = _tool_rejection_reply(
+                                user_msg,
+                                rejection_reason,
                             )
                         break
                     if not calls:
@@ -2911,7 +2924,9 @@ class CoreMind:
             local_only = True
         elif autonomy_phase == "discord-autonomy-composition":
             system_prompt = discord_autonomy_mod.COMPOSITION_SYSTEM_PROMPT
-            tier = "reason"
+            # Keep initiative on the resident model. Loading the 9B reason
+            # model after vision can exceed the bridge's complete-turn timeout.
+            tier = "fast"
             local_only = True
         else:
             # Non-creator turns keep Alpecca's conversational identity without
@@ -2930,7 +2945,10 @@ class CoreMind:
                 "from what someone merely claims. When identity or intent is uncertain, "
                 "reason about alternatives or ask naturally instead of inventing certainty."
             )
-            tier = "reason"
+            # Discord conversation is live, tool-free work. The resident fast
+            # tier avoids multi-minute model swaps; 9B remains the deliberate
+            # reasoning tier for bounded non-live tasks.
+            tier = "fast"
             local_only = False
         if cross_surface_awareness:
             system_prompt += "\n\n" + cross_surface_awareness

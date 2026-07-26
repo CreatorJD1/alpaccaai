@@ -266,18 +266,76 @@ def _describe_zerogpu(image_bytes: bytes, prompt: str) -> Optional[str]:
                 pass
 
 
+def _private_worker_enabled() -> bool:
+    """True only when the authenticated HolyROG worker path is explicitly on."""
+
+    return str(os.environ.get("ALPECCA_VISION_PRIVATE_WORKER", "0")).strip() not in (
+        "",
+        "0",
+        "false",
+        "False",
+    )
+
+
+def _describe_private_worker(
+    image_bytes: bytes, prompt: str
+) -> Optional[VisionDescription]:
+    """One bounded call to the authenticated private HolyROG worker, or None.
+
+    Runs only when explicitly enabled and a vision model is configured. The
+    pixels cross the private tailnet to an owned compute host -- never a public
+    provider -- so the receipt is labelled ``private-holyrog`` rather than
+    ``local-only``. Any failure (disabled, unconfigured, unreachable, protocol
+    mismatch, empty description) returns ``None`` so the caller falls back to
+    verified-local vision without dropping the image turn.
+    """
+
+    if not _private_worker_enabled():
+        return None
+    model = str(os.environ.get("ALPECCA_ROG_WORKER_VISION_MODEL", "")).strip()
+    if not model:
+        return None
+    try:
+        from alpecca.rog_worker_client import RogWorkerClient
+
+        client = RogWorkerClient.from_environment()
+        result = client.describe_vision(image_bytes, model=model, prompt=prompt)
+    except Exception:
+        return None
+    text = (result.description or "").strip()
+    if not text:
+        return None
+    return VisionDescription(
+        text=text,
+        backend=f"private-holyrog:{result.model}",
+        # Pixels crossed the private tailnet to an owned host; truthful receipt.
+        processing_location="private-holyrog",
+        cloud_egress="private-tailnet",
+    )
+
+
 def describe_image_result(
     image_bytes: bytes,
     prompt: str = _DESCRIBE_PROMPT,
     ambient: bool = False,
 ) -> Optional[VisionDescription]:
-    """Run one verified-local vision call with truthful metadata.
+    """Run one grounded vision call with truthful metadata.
+
+    Routing, in order: the authenticated private HolyROG worker first *when
+    explicitly enabled* (receipt ``private-holyrog``), then the existing
+    verified-local RygenART path (the temporary ``qwen3.5:4b`` sight fallback,
+    receipt ``local-only``). The third tier -- a consent-governed cloud
+    provider -- stays reachable only through ``describe_image_via_consent`` and
+    is never entered from this generic wrapper without an exact consent grant.
 
     `ambient` remains accepted for compatibility with existing sensor callers.
-    Generic wrappers are local-only regardless of that flag or
-    ``config.VISION_BACKEND``. A future remote adapter must consume an exact
-    consent grant before it invokes either private provider helper.
+    A description is returned only when a backend actually saw these pixels, so
+    an unavailable backend yields ``None`` and never a claimed visual fact.
     """
+    private = _describe_private_worker(image_bytes, prompt)
+    if private is not None:
+        _record_vision_outcome(success=True, source="private-holyrog")
+        return private
     local = _describe_local(image_bytes, prompt)
     _record_vision_outcome(success=bool(local), source="direct-image")
     return (

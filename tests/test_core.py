@@ -3161,6 +3161,44 @@ def test_house_live_voice_uses_cloud_first_voice_tier_without_changing_typed_cha
     assert server._house_chat_reply_tier("can you hear me?", delivery="text") == "reason"
 
 
+def test_trivial_acknowledgements_use_fast_tier_not_the_slow_core():
+    import server
+
+    # Bare acks/backchannels/emoji never need the full reasoning core; keeping
+    # a one-character "k" on the slow tier is what let it stall into the canned
+    # timeout fallback seen repeated in Discord.
+    for ack in ("k", "kk", "ok", "okay", "ty", "thanks", "got it", "👍"):
+        assert server._house_chat_reply_tier(ack) == "fast", ack
+    # Greetings, commands, and questions keep her natural reason-tier reply.
+    assert server._house_chat_reply_tier("hi") == "reason"
+    assert server._house_chat_reply_tier("stop walking") == "reason"
+    assert server._house_chat_reply_tier("can you hear me?") == "reason"
+
+
+def test_stall_fallback_never_leaks_internals_or_repeats_verbatim():
+    import server
+
+    server._recent_fallback_lines.clear()
+    turn = server.turn_context_mod.TurnContext.create(
+        "stall-dedup", principal="creator", surface="websocket",
+    )
+    # Cancel first so the fallback takes the timeout path (no cognition write).
+    turn.cancel("timeout")
+    first = server._ws_chat_timeout_result("walk me through the plan", turn=turn)
+    second = server._ws_chat_timeout_result("walk me through the plan", turn=turn)
+
+    for result in (first, second):
+        low = result["reply"].lower()
+        # The internal tier/model machinery must never be narrated to the person.
+        assert "grounded live mode" not in low
+        assert "full core" not in low
+        assert "deeper model" not in low
+    # Back-to-back stalls must not send the identical line verbatim.
+    assert first["reply"] != second["reply"]
+    assert second["model_use"]["fallback_repeat"] is True
+    server._recent_fallback_lines.clear()
+
+
 def test_ws_house_chat_timeout_still_returns_reply(monkeypatch):
     from fastapi.testclient import TestClient
     import server
