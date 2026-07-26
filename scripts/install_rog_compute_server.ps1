@@ -79,6 +79,12 @@ if ($RunWorker) {
     $env:ALPECCA_ROG_WORKER_TLS_CERT = $ServiceCertPath
     $env:ALPECCA_ROG_WORKER_TLS_KEY = $ServiceKeyPath
     $env:ALPECCA_ROG_WORKER_REPLAY_DB = $ServiceReplayPath
+    # The task runs as SYSTEM while this checkout is owned by Jason. Scope the
+    # Git trust exception to this worker process so qualification can verify
+    # clean committed source without changing machine-wide Git settings.
+    $env:GIT_CONFIG_COUNT = '1'
+    $env:GIT_CONFIG_KEY_0 = 'safe.directory'
+    $env:GIT_CONFIG_VALUE_0 = $RepoRoot
     if (Test-Path -LiteralPath $BlenderMarker -PathType Leaf) {
         $blender = Find-BlenderExecutable
         if ([string]::IsNullOrWhiteSpace($blender)) {

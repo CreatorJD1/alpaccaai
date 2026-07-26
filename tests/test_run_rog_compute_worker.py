@@ -665,6 +665,8 @@ def test_dedicated_server_task_remains_compute_only_and_restartable() -> None:
     assert "alpecca_rog_worker_tls_key" in lowered
     assert "stage-secret-file" in lowered
     assert "icacls.exe" in lowered
+    assert "git_config_count" in lowered
+    assert "git_config_value_0" in lowered
     for forbidden in (
         "server.py",
         "run_full.py",
