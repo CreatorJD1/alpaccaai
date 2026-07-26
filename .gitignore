@@ -67,3 +67,12 @@ vendor/
 # Session scratch: rendered PDF/PNG artifacts and remote-attachment photo drops.
 tmp/
 .codex-remote-attachments/
+
+# Alpecca voice renders dropped in the repo root by
+# scripts/synth_alpecca_natural.py. Audio payloads belong in Hugging Face, not
+# GitHub -- same rule as the art blobs above. Also the one-off audio diagnostic
+# output and the scratch quarantine folder.
+alpecca_life_natural*.wav
+alpecca_life_natural*.mp3
+audio_diag*.txt
+_to_delete/

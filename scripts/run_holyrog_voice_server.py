@@ -54,6 +54,44 @@ HOST = os.environ.get("ALPECCA_HOLYROG_VOICE_HOST", "0.0.0.0")
 PORT = int(os.environ.get("ALPECCA_HOLYROG_VOICE_PORT", "8123"))
 DEFAULT_LANG = os.environ.get("ALPECCA_HOLYROG_VOICE_LANGUAGE", "en")
 
+
+# --- Naturalness tuning -----------------------------------------------------
+# XTTS's stock decode defaults read stiff and slightly robotic. The values
+# below were validated against Alpecca's reference set and give a warmer,
+# crisper, more natural talk-show delivery:
+#   * repetition_penalty 3.0 (vs stock 2.0) removes the robotic buzz/artifacts
+#   * temperature 0.70 keeps natural prosodic variation without drifting
+#   * speed 0.96 is a touch slower -> unhurried, warmer read
+#   * gpt_cond_len/max_ref_len 30 use more reference audio -> truer timbre
+# Every knob is env-overridable, so the voice can be retuned without editing
+# code -- restart only this process to pick up a change.
+def _envf(name: str, default: float) -> float:
+    try:
+        return float(os.environ[name])
+    except (KeyError, TypeError, ValueError):
+        return default
+
+
+def _envi(name: str, default: int) -> int:
+    try:
+        return int(os.environ[name])
+    except (KeyError, TypeError, ValueError):
+        return default
+
+
+VOICE_TUNING = {
+    "temperature": _envf("ALPECCA_VOICE_TEMPERATURE", 0.70),
+    "length_penalty": _envf("ALPECCA_VOICE_LENGTH_PENALTY", 1.0),
+    "repetition_penalty": _envf("ALPECCA_VOICE_REPETITION_PENALTY", 3.0),
+    "top_k": _envi("ALPECCA_VOICE_TOP_K", 50),
+    "top_p": _envf("ALPECCA_VOICE_TOP_P", 0.85),
+    "speed": _envf("ALPECCA_VOICE_SPEED", 0.96),
+    "gpt_cond_len": _envi("ALPECCA_VOICE_GPT_COND_LEN", 30),
+    "max_ref_len": _envi("ALPECCA_VOICE_MAX_REF_LEN", 30),
+    "enable_text_splitting": os.environ.get(
+        "ALPECCA_VOICE_TEXT_SPLITTING", "1") == "1",
+}
+
 _tts = None
 _device = ""
 _load_lock = threading.Lock()
@@ -117,6 +155,29 @@ def _authorized(request: Request) -> bool:
     return bool(provided) and secrets.compare_digest(provided, SECRET)
 
 
+def _synthesize_wav(tts, text: str, refs: List[str], language: str):
+    """Synthesize with the tuned decode params, degrading gracefully.
+
+    Different coqui-tts versions accept different kwarg sets on ``tts()``. If a
+    knob is unsupported we retry with fewer of them rather than 500 the
+    request, so a library bump can never silently break voice output.
+    """
+    attempts = (
+        VOICE_TUNING,
+        {k: v for k, v in VOICE_TUNING.items()
+         if k not in ("gpt_cond_len", "max_ref_len")},
+        {},
+    )
+    last_error: Optional[TypeError] = None
+    for kwargs in attempts:
+        try:
+            return tts.tts(text=text, speaker_wav=refs, language=language,
+                           **kwargs)
+        except TypeError as exc:  # unsupported kwarg for this TTS version
+            last_error = exc
+    raise RuntimeError(f"no supported tts() kwarg set: {last_error}")
+
+
 app = FastAPI(title="Alpecca HolyROG voice server", docs_url=None, redoc_url=None)
 
 
@@ -137,6 +198,7 @@ def healthz() -> dict:
         "loaded": _tts is not None,
         "load_error": _load_error or None,
         "license_accepted": os.environ.get("COQUI_TOS_AGREED") == "1",
+        "tuning": VOICE_TUNING,
     }
 
 
@@ -154,7 +216,7 @@ def synthesize(req: SynthRequest, request: Request) -> Response:
         raise HTTPException(status_code=503,
                             detail=f"no voice references in {REFS_DIR}")
     tts = _load()
-    wav = tts.tts(text=text, speaker_wav=refs, language=req.language or DEFAULT_LANG)
+    wav = _synthesize_wav(tts, text, refs, req.language or DEFAULT_LANG)
     sample_rate = tts.synthesizer.output_sample_rate
     buf = io.BytesIO()
     sf.write(buf, wav, sample_rate, format="WAV", subtype="PCM_16")
@@ -171,6 +233,7 @@ def main() -> int:
           f"{REFS_DIR} | secret=set(len={len(SECRET)}) | "
           f"license_accepted={os.environ.get('COQUI_TOS_AGREED') == '1'}",
           flush=True)
+    print(f"voice tuning: {VOICE_TUNING}", flush=True)
     if not refs:
         print(f"WARNING: no voice references found in {REFS_DIR}", flush=True)
     # Prewarm: download + load the model so the first request is fast.

@@ -33,6 +33,7 @@ REQUIRED_DNS_SANS: tuple[str, ...] = (EXPECTED_HOST, EXPECTED_FQDN)
 DEFAULT_MODEL = "qwen3.5:9b"
 DEFAULT_PORT = 8788
 SECRET_ENV = "ALPECCA_ROG_WORKER_SECRET"
+SECRET_FILE_ENV = "ALPECCA_ROG_WORKER_SECRET_FILE"
 CREDENTIAL_TARGET_ENV = "ALPECCA_ROG_WORKER_CREDENTIAL_TARGET"
 DEFAULT_CREDENTIAL_TARGET = "Alpecca/Jason_HOLYROG/ComputeWorker"
 LAN_ENV = "ALPECCA_ROG_WORKER_LAN"
@@ -462,6 +463,42 @@ def _credential_target(environ: Mapping[str, str]) -> str:
     return target
 
 
+def _secret_file_path(environ: Mapping[str, str]) -> Path | None:
+    configured = str(environ.get(SECRET_FILE_ENV, "")).strip()
+    if not configured:
+        return None
+    candidate = Path(configured).expanduser()
+    if not candidate.is_absolute():
+        raise WorkerStartupError(f"{SECRET_FILE_ENV} must be an absolute path")
+    try:
+        resolved = candidate.resolve(strict=False)
+    except OSError as exc:
+        raise WorkerStartupError(f"{SECRET_FILE_ENV} is invalid") from exc
+    if _is_within(resolved, ROOT.resolve()):
+        raise WorkerStartupError("ROG worker secret material cannot be stored in the repository")
+    return resolved
+
+
+def _read_secret_file(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise WorkerStartupError("the staged ROG worker secret file is missing") from None
+    except (OSError, UnicodeError) as exc:
+        raise WorkerStartupError("could not read the staged ROG worker secret file") from exc
+
+
+def _write_secret_file(path: Path, secret: str) -> None:
+    value = _validate_secret(secret, source="the staged ROG worker secret")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.new")
+        temporary.write_text(value, encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError as exc:
+        raise WorkerStartupError("could not stage the ROG worker secret file") from exc
+
+
 def _win32cred_module() -> object:
     if os.name != "nt":
         raise WorkerStartupError(
@@ -538,6 +575,15 @@ def load_worker_secret(
     env_value = active_env.get(SECRET_ENV, "")
     if env_value:
         return _validate_secret(env_value, source=SECRET_ENV), "environment"
+
+    secret_file = _secret_file_path(active_env)
+    if secret_file is not None:
+        return (
+            _validate_secret(
+                _read_secret_file(secret_file), source="the staged ROG worker secret"
+            ),
+            "secret-file",
+        )
 
     target = _credential_target(active_env)
     reader = credential_reader or _read_windows_credential
@@ -727,6 +773,14 @@ def _parser() -> argparse.ArgumentParser:
         help="remove only the dedicated Windows Credential Manager record",
     )
     actions.add_argument(
+        "--stage-secret-file",
+        metavar="PATH",
+        help=(
+            "copy the already-installed user Credential Manager secret to a "
+            "restricted machine service file without printing it"
+        ),
+    )
+    actions.add_argument(
         "--install-tls",
         action="store_true",
         help=(
@@ -772,6 +826,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             removed = _delete_windows_credential(target)
             status = "removed" if removed else "was not present"
             print(f"ROG worker Credential Manager record {status}: {target}.")
+            return 0
+        if args.stage_secret_file:
+            staged_path = _secret_file_path(
+                {SECRET_FILE_ENV: args.stage_secret_file}
+            )
+            assert staged_path is not None
+            target = _credential_target(os.environ)
+            stored = _read_windows_credential(target)
+            if stored is None:
+                raise WorkerStartupError(
+                    "ROG worker authorization is not configured; use --install-secret"
+                )
+            _write_secret_file(staged_path, stored)
+            print("ROG worker service secret staged without printing its value.")
             return 0
         if args.install_tls:
             cert_path, _key_path = install_tls_identity(os.environ)

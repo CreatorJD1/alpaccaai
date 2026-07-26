@@ -16,12 +16,21 @@ $ExpectedHost = 'Jason_HOLYROG'
 $TaskName = 'Alpecca ROG Compute Server'
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $SetupScript = Join-Path $PSScriptRoot 'setup_rog_worker.ps1'
-$LogDir = Join-Path $env:LOCALAPPDATA 'Alpecca\rog-worker\logs'
+$Runner = Join-Path $PSScriptRoot 'run_rog_compute_worker.py'
+$ServiceDataDir = Join-Path $env:ProgramData 'Alpecca\rog-worker'
+$ServiceTlsDir = Join-Path $ServiceDataDir 'tls'
+$ServiceSecretPath = Join-Path $ServiceDataDir 'worker.secret'
+$ServiceCertPath = Join-Path $ServiceTlsDir 'jason-holyrog.crt'
+$ServiceKeyPath = Join-Path $ServiceTlsDir 'jason-holyrog.key'
+$ServiceReplayPath = Join-Path $ServiceDataDir 'worker-ops.sqlite3'
+$LogDir = Join-Path $ServiceDataDir 'logs'
 $LogPath = Join-Path $LogDir 'dedicated-server.log'
-$WorkerDataDir = Join-Path $env:LOCALAPPDATA 'Alpecca\rog-worker'
-$BlenderMarker = Join-Path $WorkerDataDir 'blender-enabled'
-$BlendRoot = Join-Path $WorkerDataDir 'blend-input'
-$OutputRoot = Join-Path $WorkerDataDir 'render-output'
+$BlenderMarker = Join-Path $ServiceDataDir 'blender-enabled'
+$BlendRoot = Join-Path $ServiceDataDir 'blend-input'
+$OutputRoot = Join-Path $ServiceDataDir 'render-output'
+$LegacyWorkerDataDir = Join-Path $env:LOCALAPPDATA 'Alpecca\rog-worker'
+$LegacyBlenderMarker = Join-Path $LegacyWorkerDataDir 'blender-enabled'
+$LegacyTlsDir = Join-Path $LegacyWorkerDataDir 'tls'
 $ObservedHost = [System.Net.Dns]::GetHostName()
 
 function Find-BlenderExecutable {
@@ -38,6 +47,26 @@ function Find-BlenderExecutable {
         Select-Object -First 1 -ExpandProperty FullName
 }
 
+function Protect-ServiceDataDirectory {
+    New-Item -ItemType Directory -Path $ServiceDataDir -Force | Out-Null
+    & icacls.exe $ServiceDataDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not restrict the dedicated worker service-data directory.'
+    }
+}
+
+function Sync-ServiceTlsIdentity {
+    $legacyCert = Join-Path $LegacyTlsDir 'jason-holyrog.crt'
+    $legacyKey = Join-Path $LegacyTlsDir 'jason-holyrog.key'
+    if (-not (Test-Path -LiteralPath $legacyCert -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $legacyKey -PathType Leaf)) {
+        throw 'LAN startup requires the existing ROG TLS identity; run setup_rog_worker.ps1 -InstallTls first.'
+    }
+    New-Item -ItemType Directory -Path $ServiceTlsDir -Force | Out-Null
+    Copy-Item -LiteralPath $legacyCert -Destination $ServiceCertPath -Force
+    Copy-Item -LiteralPath $legacyKey -Destination $ServiceKeyPath -Force
+}
+
 if (-not [string]::Equals($ObservedHost, $ExpectedHost, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "The dedicated compute server is assigned to $ExpectedHost; this machine is $ObservedHost."
 }
@@ -46,6 +75,10 @@ if ($RunWorker) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
     $env:ALPECCA_ROG_WORKER_LAN = '1'
     $env:ALPECCA_ROG_WORKER_MODEL = 'qwen3.5:9b'
+    $env:ALPECCA_ROG_WORKER_SECRET_FILE = $ServiceSecretPath
+    $env:ALPECCA_ROG_WORKER_TLS_CERT = $ServiceCertPath
+    $env:ALPECCA_ROG_WORKER_TLS_KEY = $ServiceKeyPath
+    $env:ALPECCA_ROG_WORKER_REPLAY_DB = $ServiceReplayPath
     if (Test-Path -LiteralPath $BlenderMarker -PathType Leaf) {
         $blender = Find-BlenderExecutable
         if ([string]::IsNullOrWhiteSpace($blender)) {
@@ -83,6 +116,16 @@ if ($Install) {
     if (-not $isAdmin) {
         throw 'Run this installer from an Administrator PowerShell window on Jason_HOLYROG.'
     }
+    $VenvPython = Join-Path $RepoRoot '.venv\Scripts\python.exe'
+    if (Test-Path -LiteralPath $VenvPython -PathType Leaf) {
+        $Python = $VenvPython
+    } else {
+        $PythonCommand = Get-Command python -ErrorAction SilentlyContinue
+        if ($null -eq $PythonCommand) {
+            throw 'Python was not found. Install Python 3.11 or newer, then rerun this setup.'
+        }
+        $Python = $PythonCommand.Source
+    }
 
     if ($EnableBlender) {
         $blender = Find-BlenderExecutable
@@ -97,11 +140,18 @@ if ($Install) {
         Write-Host "Approved output root: $OutputRoot"
     }
 
+    Protect-ServiceDataDirectory
+    Sync-ServiceTlsIdentity
+
     $env:ALPECCA_ROG_WORKER_LAN = '1'
     & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
         -File $SetupScript -CheckWorker
     if ($LASTEXITCODE -ne 0) {
         throw 'Worker qualification failed; the dedicated task was not installed.'
+    }
+    & $Python $Runner --stage-secret-file $ServiceSecretPath
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The dedicated ROG worker service secret could not be staged.'
     }
 
     $arguments = @(
@@ -116,10 +166,10 @@ if ($Install) {
         -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
         -Argument $arguments `
         -WorkingDirectory $RepoRoot
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
+    $trigger = New-ScheduledTaskTrigger -AtStartup
     $principal = New-ScheduledTaskPrincipal `
-        -UserId $identity `
-        -LogonType Interactive `
+        -UserId 'SYSTEM' `
+        -LogonType ServiceAccount `
         -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries `
@@ -131,18 +181,33 @@ if ($Install) {
         -MultipleInstances IgnoreNew
 
     if ($PSCmdlet.ShouldProcess($TaskName, 'install dedicated compute-server task')) {
+        $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        if ($null -ne $existingTask -and $existingTask.State -eq 'Running') {
+            Stop-ScheduledTask -TaskName $TaskName
+            $deadline = (Get-Date).AddSeconds(15)
+            do {
+                $listener = Get-NetTCPConnection -LocalPort 8788 -State Listen -ErrorAction SilentlyContinue
+                if ($null -eq $listener) {
+                    break
+                }
+                Start-Sleep -Seconds 1
+            } while ((Get-Date) -lt $deadline)
+            if ($null -ne $listener) {
+                throw 'The existing ROG worker did not release TCP port 8788; it was not replaced.'
+            }
+        }
         Register-ScheduledTask `
             -TaskName $TaskName `
             -Action $action `
             -Trigger $trigger `
             -Principal $principal `
             -Settings $settings `
-            -Description 'Compute-only Alpecca worker; no CoreMind, Discord, memory, or continuity authority.' `
+        -Description 'Boot-time compute-only Alpecca worker; no CoreMind, Discord, memory, or continuity authority.' `
             -Force | Out-Null
         Start-ScheduledTask -TaskName $TaskName
     }
     Write-Host "Dedicated compute server installed and started: $TaskName" -ForegroundColor Green
-    Write-Host "It starts at $identity logon and restarts after bounded failures."
+    Write-Host 'It starts at system boot, survives user logout, and restarts after bounded failures.'
     Write-Host "Log: $LogPath"
     exit 0
 }

@@ -153,6 +153,34 @@ def test_environment_secret_precedes_credential_manager() -> None:
     assert called is False
 
 
+def test_staged_secret_file_precedes_credential_manager() -> None:
+    with tempfile.TemporaryDirectory(dir=worker.ROOT.parent) as folder:
+        secret_file = Path(folder) / "worker.secret"
+        secret_file.write_text(VALID_SECRET, encoding="utf-8")
+        called = False
+
+        def credential_reader(_target: str) -> str | None:
+            nonlocal called
+            called = True
+            return "c" * worker.MIN_SECRET_BYTES
+
+        secret, source = worker.load_worker_secret(
+            {worker.SECRET_FILE_ENV: str(secret_file)},
+            credential_reader=credential_reader,
+        )
+
+        assert secret == VALID_SECRET
+        assert source == "secret-file"
+        assert called is False
+
+
+def test_staged_secret_file_must_be_outside_repository() -> None:
+    with pytest.raises(worker.WorkerStartupError, match="cannot be stored in the repository"):
+        worker.load_worker_secret(
+            {worker.SECRET_FILE_ENV: str(worker.ROOT / "worker.secret")}
+        )
+
+
 def test_windows_credential_reader_accepts_utf16_blob() -> None:
     fake = FakeWin32Cred(VALID_SECRET.encode("utf-16-le"))
 
@@ -618,7 +646,9 @@ def test_dedicated_server_task_remains_compute_only_and_restartable() -> None:
 
     assert "alpecca rog compute server" in lowered
     assert "register-scheduledtask" in lowered
-    assert "new-scheduledtasktrigger -atlogon" in lowered
+    assert "new-scheduledtasktrigger -atstartup" in lowered
+    assert "-userid 'system'" in lowered
+    assert "-logontype serviceaccount" in lowered
     assert "-restartcount 999" in lowered
     assert "setup_rog_worker.ps1" in lowered
     assert "alpecca_rog_worker_lan = '1'" in lowered
@@ -630,6 +660,11 @@ def test_dedicated_server_task_remains_compute_only_and_restartable() -> None:
     assert "blender-enabled" in lowered
     assert "blend-input" in lowered
     assert "render-output" in lowered
+    assert "alpecca_rog_worker_secret_file" in lowered
+    assert "alpecca_rog_worker_tls_cert" in lowered
+    assert "alpecca_rog_worker_tls_key" in lowered
+    assert "stage-secret-file" in lowered
+    assert "icacls.exe" in lowered
     for forbidden in (
         "server.py",
         "run_full.py",
