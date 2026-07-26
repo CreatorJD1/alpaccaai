@@ -670,6 +670,7 @@ def test_dedicated_server_task_remains_compute_only_and_restartable() -> None:
     assert "tool-paths.txt" in lowered
     assert "add-servicetoolpaths" in lowered
     assert "write-servicetoolpaths" in lowered
+    assert "dedicated worker exited with code" in lowered
     for forbidden in (
         "server.py",
         "run_full.py",

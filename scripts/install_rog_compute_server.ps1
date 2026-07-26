@@ -131,14 +131,22 @@ if ($RunWorker) {
         $env:ALPECCA_ROG_WORKER_OUTPUT_ROOT = $OutputRoot
     }
     "`n=== Dedicated ROG worker start $(Get-Date -Format o) ===" | Add-Content -LiteralPath $LogPath
+    $priorErrorActionPreference = $ErrorActionPreference
+    $workerExitCode = 2
     try {
+        # Native stderr is an ErrorRecord in Windows PowerShell.  Keep it
+        # non-terminating here so the log retains the actual Python refusal.
+        $ErrorActionPreference = 'Continue'
         & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
             -File $SetupScript -CheckWorker -StartWorker *>> $LogPath
-        exit $LASTEXITCODE
-    } catch {
-        "Dedicated worker failed: $($_.Exception.GetType().Name)" | Add-Content -LiteralPath $LogPath
-        exit 2
+        $workerExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $priorErrorActionPreference
     }
+    if ($workerExitCode -ne 0) {
+        "Dedicated worker exited with code $workerExitCode." | Add-Content -LiteralPath $LogPath
+    }
+    exit $workerExitCode
 }
 
 $selected = @($Install, $Remove, $Start, $Stop, $Status | Where-Object { $_ }).Count
