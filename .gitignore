@@ -13,6 +13,9 @@ data/
 # Python
 __pycache__/
 *.pyc
+.pytest_cache/
+.pytest_tmp/
+.pytest_codex_rog_worker/
 
 # Frontend app build/cache output.
 node_modules/

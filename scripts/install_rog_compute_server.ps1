@@ -23,6 +23,7 @@ $ServiceSecretPath = Join-Path $ServiceDataDir 'worker.secret'
 $ServiceCertPath = Join-Path $ServiceTlsDir 'jason-holyrog.crt'
 $ServiceKeyPath = Join-Path $ServiceTlsDir 'jason-holyrog.key'
 $ServiceReplayPath = Join-Path $ServiceDataDir 'worker-ops.sqlite3'
+$ServiceToolPathFile = Join-Path $ServiceDataDir 'tool-paths.txt'
 $LogDir = Join-Path $ServiceDataDir 'logs'
 $LogPath = Join-Path $LogDir 'dedicated-server.log'
 $BlenderMarker = Join-Path $ServiceDataDir 'blender-enabled'
@@ -67,12 +68,47 @@ function Sync-ServiceTlsIdentity {
     Copy-Item -LiteralPath $legacyKey -Destination $ServiceKeyPath -Force
 }
 
+function Write-ServiceToolPaths {
+    $directories = @()
+    foreach ($toolName in @('git', 'node', 'npm', 'ffmpeg', 'ollama', 'python')) {
+        $tool = Get-Command $toolName -ErrorAction SilentlyContinue
+        if ($null -ne $tool -and -not [string]::IsNullOrWhiteSpace($tool.Source)) {
+            $directories += Split-Path -Parent $tool.Source
+        }
+    }
+    $directories = @($directories | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_ -PathType Container)
+    } | Select-Object -Unique)
+    if ($directories.Count -eq 0) {
+        throw 'Could not determine the local executable directories required by the ROG worker.'
+    }
+    Set-Content -LiteralPath $ServiceToolPathFile -Value $directories -Encoding utf8
+}
+
+function Add-ServiceToolPaths {
+    if (-not (Test-Path -LiteralPath $ServiceToolPathFile -PathType Leaf)) {
+        throw 'The dedicated worker tool-path configuration is missing.'
+    }
+    $directories = @(
+        Get-Content -LiteralPath $ServiceToolPathFile | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_) -and
+            [System.IO.Path]::IsPathRooted($_) -and
+            (Test-Path -LiteralPath $_ -PathType Container)
+        } | Select-Object -Unique
+    )
+    if ($directories.Count -eq 0) {
+        throw 'The dedicated worker tool-path configuration is invalid.'
+    }
+    $env:PATH = ($directories + @($env:PATH)) -join [System.IO.Path]::PathSeparator
+}
+
 if (-not [string]::Equals($ObservedHost, $ExpectedHost, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "The dedicated compute server is assigned to $ExpectedHost; this machine is $ObservedHost."
 }
 
 if ($RunWorker) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+    Add-ServiceToolPaths
     $env:ALPECCA_ROG_WORKER_LAN = '1'
     $env:ALPECCA_ROG_WORKER_MODEL = 'qwen3.5:9b'
     $env:ALPECCA_ROG_WORKER_SECRET_FILE = $ServiceSecretPath
@@ -148,6 +184,7 @@ if ($Install) {
 
     Protect-ServiceDataDirectory
     Sync-ServiceTlsIdentity
+    Write-ServiceToolPaths
 
     $env:ALPECCA_ROG_WORKER_LAN = '1'
     & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
