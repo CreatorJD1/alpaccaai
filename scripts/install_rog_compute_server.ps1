@@ -222,8 +222,23 @@ if ($RunOllama) {
         $env:OLLAMA_MODELS = $models
         $env:OLLAMA_HOST = '127.0.0.1:11434'
         $env:OLLAMA_KEEP_ALIVE = '30m'
-        & $executable serve *>> $OllamaLogPath
-        $ollamaExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+        # This isolated runtime never downloads models. Do not inherit proxy
+        # credentials into it or allow them to be included in Ollama's own
+        # startup configuration log.
+        foreach ($proxyVariable in @('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy')) {
+            Remove-Item -LiteralPath "Env:$proxyVariable" -ErrorAction SilentlyContinue
+        }
+        $priorErrorActionPreference = $ErrorActionPreference
+        try {
+            # Ollama emits ordinary startup information on stderr. In Windows
+            # PowerShell, ErrorActionPreference=Stop would otherwise turn that
+            # diagnostic output into a terminating NativeCommandError.
+            $ErrorActionPreference = 'Continue'
+            & $executable serve *>> $OllamaLogPath
+            $ollamaExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+        } finally {
+            $ErrorActionPreference = $priorErrorActionPreference
+        }
     } catch {
         "Dedicated ROG Ollama failed: $($_.Exception.Message)" | Add-Content -LiteralPath $OllamaLogPath
     } finally {

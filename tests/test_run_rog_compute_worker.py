@@ -681,6 +681,9 @@ def test_dedicated_server_task_remains_compute_only_and_restartable() -> None:
     assert "dedicated rog ollama failed" in lowered
     assert "dedicated rog ollama exited with code" in lowered
     assert "modelmanifestpresent" in lowered
+    assert "nativecommanderror" in lowered
+    assert "erroractionpreference = 'continue'" in lowered
+    assert "remove-item -literalpath \"env:$proxyvariable\"" in lowered
     assert "wait-ollamaruntime" in lowered
     assert "wait-ollamaruntime -model 'qwen3.5:9b'" in lowered
     assert "-skipmodelcheck" in lowered
