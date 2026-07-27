@@ -195,22 +195,38 @@ if (-not [string]::Equals($ObservedHost, $ExpectedHost, [System.StringComparison
 
 if ($RunOllama) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
-    if (-not (Test-Path -LiteralPath $OllamaRuntimeConfigPath -PathType Leaf)) {
-        throw 'The dedicated Ollama runtime configuration is missing.'
-    }
-    $runtime = Get-Content -LiteralPath $OllamaRuntimeConfigPath -Raw | ConvertFrom-Json
-    $executable = [string]$runtime.executable
-    $models = [string]$runtime.models
-    if (-not (Test-Path -LiteralPath $executable -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $models -PathType Container)) {
-        throw 'The dedicated Ollama runtime configuration is invalid.'
-    }
-    $env:OLLAMA_MODELS = $models
-    $env:OLLAMA_HOST = '127.0.0.1:11434'
-    $env:OLLAMA_KEEP_ALIVE = '30m'
     "`n=== Dedicated ROG Ollama start $(Get-Date -Format o) ===" | Add-Content -LiteralPath $OllamaLogPath
-    & $executable serve *>> $OllamaLogPath
-    exit $LASTEXITCODE
+    $ollamaExitCode = 1
+    try {
+        if (-not (Test-Path -LiteralPath $OllamaRuntimeConfigPath -PathType Leaf)) {
+            throw 'The dedicated Ollama runtime configuration is missing.'
+        }
+        $runtime = Get-Content -LiteralPath $OllamaRuntimeConfigPath -Raw | ConvertFrom-Json
+        $executable = [string]$runtime.executable
+        $models = [string]$runtime.models
+        $executablePresent = Test-Path -LiteralPath $executable -PathType Leaf
+        $modelsPresent = Test-Path -LiteralPath $models -PathType Container
+        [pscustomobject]@{
+            Identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            ExecutablePresent = $executablePresent
+            ModelsPresent = $modelsPresent
+            ModelManifestPresent = Test-Path -LiteralPath (Join-Path $models 'manifests') -PathType Container
+            BindAddress = '127.0.0.1:11434'
+        } | ConvertTo-Json -Compress | Add-Content -LiteralPath $OllamaLogPath
+        if (-not $executablePresent -or -not $modelsPresent) {
+            throw 'The dedicated Ollama runtime configuration is invalid.'
+        }
+        $env:OLLAMA_MODELS = $models
+        $env:OLLAMA_HOST = '127.0.0.1:11434'
+        $env:OLLAMA_KEEP_ALIVE = '30m'
+        & $executable serve *>> $OllamaLogPath
+        $ollamaExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+    } catch {
+        "Dedicated ROG Ollama failed: $($_.Exception.Message)" | Add-Content -LiteralPath $OllamaLogPath
+    } finally {
+        "Dedicated ROG Ollama exited with code $ollamaExitCode." | Add-Content -LiteralPath $OllamaLogPath
+    }
+    exit $ollamaExitCode
 }
 
 if ($RunWorker) {

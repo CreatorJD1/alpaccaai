@@ -675,6 +675,9 @@ def test_dedicated_server_task_remains_compute_only_and_restartable() -> None:
     assert "runollama" in lowered
     assert "ollama-runtime.json" in lowered
     assert "ollama_models" in lowered
+    assert "dedicated rog ollama failed" in lowered
+    assert "dedicated rog ollama exited with code" in lowered
+    assert "modelmanifestpresent" in lowered
     assert "wait-ollamaruntime" in lowered
     assert "install-servicepython" in lowered
     assert "servicepython" in lowered
