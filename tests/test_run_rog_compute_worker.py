@@ -665,6 +665,7 @@ def test_dedicated_server_task_remains_compute_only_and_restartable() -> None:
     assert "alpecca_rog_worker_tls_cert" in lowered
     assert "alpecca_rog_worker_tls_key" in lowered
     assert "stage-secret-file" in lowered
+    assert "existing rog worker service secret retained" in lowered
     assert "icacls.exe" in lowered
     assert "git_config_count" in lowered
     assert "git_config_value_0" in lowered

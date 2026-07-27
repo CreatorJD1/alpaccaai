@@ -331,9 +331,18 @@ if ($Install) {
     if ($LASTEXITCODE -ne 0) {
         throw 'Worker qualification failed; the dedicated task was not installed.'
     }
-    & $Python $Runner --stage-secret-file $ServiceSecretPath
-    if ($LASTEXITCODE -ne 0) {
-        throw 'The dedicated ROG worker service secret could not be staged.'
+    $existingServiceSecret = Get-Item -LiteralPath $ServiceSecretPath -ErrorAction SilentlyContinue
+    if ($null -ne $existingServiceSecret -and $existingServiceSecret.Length -ge 32) {
+        # A running dedicated worker has already authenticated with this
+        # restricted file.  Keep it through a reinstall rather than needlessly
+        # re-opening Credential Manager, which can be unavailable while a
+        # user-session credential operation is in progress.
+        Write-Host 'Existing ROG worker service secret retained without printing its value.'
+    } else {
+        & $Python $Runner --stage-secret-file $ServiceSecretPath
+        if ($LASTEXITCODE -ne 0) {
+            throw 'The dedicated ROG worker service secret could not be staged.'
+        }
     }
     Set-WorkerFirewallRule
 
