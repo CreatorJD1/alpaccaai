@@ -6,6 +6,7 @@ param(
     [switch]$Stop,
     [switch]$Status,
     [switch]$RunWorker,
+    [switch]$RunOllama,
     [switch]$EnableBlender
 )
 
@@ -14,6 +15,7 @@ $ErrorActionPreference = 'Stop'
 
 $ExpectedHost = 'Jason_HOLYROG'
 $TaskName = 'Alpecca ROG Compute Server'
+$OllamaTaskName = 'Alpecca ROG Ollama Runtime'
 $PrimaryTailscaleAddress = '100.96.54.97'
 $FirewallRulePrefix = 'Alpecca ROG worker 8788'
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -26,10 +28,12 @@ $ServiceCertPath = Join-Path $ServiceTlsDir 'jason-holyrog.crt'
 $ServiceKeyPath = Join-Path $ServiceTlsDir 'jason-holyrog.key'
 $ServiceReplayPath = Join-Path $ServiceDataDir 'worker-ops.sqlite3'
 $ServiceToolPathFile = Join-Path $ServiceDataDir 'tool-paths.txt'
+$OllamaRuntimeConfigPath = Join-Path $ServiceDataDir 'ollama-runtime.json'
 $ServiceVenv = Join-Path $ServiceDataDir 'venv'
 $ServicePython = Join-Path $ServiceVenv 'Scripts\python.exe'
 $LogDir = Join-Path $ServiceDataDir 'logs'
 $LogPath = Join-Path $LogDir 'dedicated-server.log'
+$OllamaLogPath = Join-Path $LogDir 'ollama-runtime.log'
 $BlenderMarker = Join-Path $ServiceDataDir 'blender-enabled'
 $BlendRoot = Join-Path $ServiceDataDir 'blend-input'
 $OutputRoot = Join-Path $ServiceDataDir 'render-output'
@@ -152,8 +156,61 @@ function Set-WorkerFirewallRule {
         -Profile Any | Out-Null
 }
 
+function Write-OllamaRuntimeConfig {
+    param([Parameter(Mandatory = $true)][string]$Executable)
+
+    $models = Join-Path $env:USERPROFILE '.ollama\models'
+    if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
+        throw 'The Ollama executable was not found.'
+    }
+    if (-not (Test-Path -LiteralPath $models -PathType Container)) {
+        throw 'The current user Ollama model directory was not found.'
+    }
+    [pscustomobject]@{
+        executable = $Executable
+        models = $models
+    } | ConvertTo-Json -Compress | Set-Content -LiteralPath $OllamaRuntimeConfigPath -Encoding utf8
+}
+
+function Wait-OllamaRuntime {
+    $deadline = (Get-Date).AddSeconds(30)
+    do {
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing `
+                -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 2
+            if ($response.StatusCode -eq 200) {
+                return
+            }
+        } catch {
+            # The new boot-time process is still starting.
+        }
+        Start-Sleep -Seconds 1
+    } while ((Get-Date) -lt $deadline)
+    throw 'The boot-time Ollama runtime did not become ready on 127.0.0.1:11434.'
+}
+
 if (-not [string]::Equals($ObservedHost, $ExpectedHost, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "The dedicated compute server is assigned to $ExpectedHost; this machine is $ObservedHost."
+}
+
+if ($RunOllama) {
+    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $OllamaRuntimeConfigPath -PathType Leaf)) {
+        throw 'The dedicated Ollama runtime configuration is missing.'
+    }
+    $runtime = Get-Content -LiteralPath $OllamaRuntimeConfigPath -Raw | ConvertFrom-Json
+    $executable = [string]$runtime.executable
+    $models = [string]$runtime.models
+    if (-not (Test-Path -LiteralPath $executable -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $models -PathType Container)) {
+        throw 'The dedicated Ollama runtime configuration is invalid.'
+    }
+    $env:OLLAMA_MODELS = $models
+    $env:OLLAMA_HOST = '127.0.0.1:11434'
+    $env:OLLAMA_KEEP_ALIVE = '30m'
+    "`n=== Dedicated ROG Ollama start $(Get-Date -Format o) ===" | Add-Content -LiteralPath $OllamaLogPath
+    & $executable serve *>> $OllamaLogPath
+    exit $LASTEXITCODE
 }
 
 if ($RunWorker) {
@@ -227,6 +284,10 @@ if ($Install) {
         }
         $Python = $PythonCommand.Source
     }
+    $OllamaCommand = Get-Command ollama -ErrorAction SilentlyContinue
+    if ($null -eq $OllamaCommand -or -not (Test-Path -LiteralPath $OllamaCommand.Source -PathType Leaf)) {
+        throw 'Ollama was not found. Repair the Ollama Windows installation, then rerun this setup.'
+    }
 
     if ($EnableBlender) {
         $blender = Find-BlenderExecutable
@@ -244,6 +305,7 @@ if ($Install) {
     Protect-ServiceDataDirectory
     Sync-ServiceTlsIdentity
     Write-ServiceToolPaths
+    Write-OllamaRuntimeConfig -Executable $OllamaCommand.Source
     Install-ServicePython -BootstrapPython $Python
     $env:ALPECCA_ROG_WORKER_PYTHON = $ServicePython
 
@@ -271,6 +333,18 @@ if ($Install) {
         -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
         -Argument $arguments `
         -WorkingDirectory $RepoRoot
+    $ollamaArguments = @(
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy', 'Bypass',
+        '-WindowStyle', 'Hidden',
+        '-File', ('"{0}"' -f $PSCommandPath),
+        '-RunOllama'
+    ) -join ' '
+    $ollamaAction = New-ScheduledTaskAction `
+        -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -Argument $ollamaArguments `
+        -WorkingDirectory $RepoRoot
     $trigger = New-ScheduledTaskTrigger -AtStartup
     $principal = New-ScheduledTaskPrincipal `
         -UserId 'SYSTEM' `
@@ -285,7 +359,33 @@ if ($Install) {
         -ExecutionTimeLimit ([TimeSpan]::Zero) `
         -MultipleInstances IgnoreNew
 
-    if ($PSCmdlet.ShouldProcess($TaskName, 'install dedicated compute-server task')) {
+    if ($PSCmdlet.ShouldProcess("$OllamaTaskName and $TaskName", 'install dedicated compute-server tasks')) {
+        $existingOllamaTask = Get-ScheduledTask -TaskName $OllamaTaskName -ErrorAction SilentlyContinue
+        if ($null -ne $existingOllamaTask -and $existingOllamaTask.State -eq 'Running') {
+            Stop-ScheduledTask -TaskName $OllamaTaskName
+        }
+        Get-Process -Name ollama -ErrorAction SilentlyContinue | Stop-Process -Force
+        $ollamaDeadline = (Get-Date).AddSeconds(15)
+        do {
+            $ollamaListener = Get-NetTCPConnection -LocalPort 11434 -State Listen -ErrorAction SilentlyContinue
+            if ($null -eq $ollamaListener) {
+                break
+            }
+            Start-Sleep -Seconds 1
+        } while ((Get-Date) -lt $ollamaDeadline)
+        if ($null -ne $ollamaListener) {
+            throw 'The existing Ollama runtime did not release TCP port 11434; it was not replaced.'
+        }
+        Register-ScheduledTask `
+            -TaskName $OllamaTaskName `
+            -Action $ollamaAction `
+            -Trigger $trigger `
+            -Principal $principal `
+            -Settings $settings `
+            -Description 'Boot-time local Ollama runtime for the compute-only Alpecca ROG worker.' `
+            -Force | Out-Null
+        Start-ScheduledTask -TaskName $OllamaTaskName
+        Wait-OllamaRuntime
         $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
         if ($null -ne $existingTask -and $existingTask.State -eq 'Running') {
             Stop-ScheduledTask -TaskName $TaskName
@@ -312,6 +412,7 @@ if ($Install) {
         Start-ScheduledTask -TaskName $TaskName
     }
     Write-Host "Dedicated compute server installed and started: $TaskName" -ForegroundColor Green
+    Write-Host "Boot-time Ollama runtime installed and started: $OllamaTaskName"
     Write-Host "TCP 8788 is restricted to $PrimaryTailscaleAddress on the Tailscale interface."
     Write-Host 'It starts at system boot, survives user logout, and restarts after bounded failures.'
     Write-Host "Log: $LogPath"
@@ -319,23 +420,27 @@ if ($Install) {
 }
 
 if ($Remove) {
-    if ($PSCmdlet.ShouldProcess($TaskName, 'stop and unregister dedicated compute-server task')) {
+    if ($PSCmdlet.ShouldProcess("$OllamaTaskName and $TaskName", 'stop and unregister dedicated compute-server tasks')) {
         Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Stop-ScheduledTask -TaskName $OllamaTaskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $OllamaTaskName -Confirm:$false -ErrorAction SilentlyContinue
     }
     Write-Host 'Dedicated task removed. Credentials, TLS keys, models, and Alpecca data were not changed.'
     exit 0
 }
 
 if ($Start) {
+    Start-ScheduledTask -TaskName $OllamaTaskName
     Start-ScheduledTask -TaskName $TaskName
-    Write-Host "Dedicated compute server start requested: $TaskName"
+    Write-Host "Dedicated compute server and Ollama runtime start requested."
     exit 0
 }
 
 if ($Stop) {
     Stop-ScheduledTask -TaskName $TaskName
-    Write-Host "Dedicated compute server stopped: $TaskName"
+    Stop-ScheduledTask -TaskName $OllamaTaskName -ErrorAction SilentlyContinue
+    Write-Host 'Dedicated compute server and Ollama runtime stopped.'
     exit 0
 }
 
@@ -345,6 +450,8 @@ if ($null -eq $task) {
     exit 1
 }
 $info = Get-ScheduledTaskInfo -TaskName $TaskName
+$ollamaTask = Get-ScheduledTask -TaskName $OllamaTaskName -ErrorAction SilentlyContinue
+$ollamaInfo = if ($null -ne $ollamaTask) { Get-ScheduledTaskInfo -TaskName $OllamaTaskName } else { $null }
 [PSCustomObject]@{
     TaskName = $TaskName
     State = $task.State
@@ -355,4 +462,7 @@ $info = Get-ScheduledTaskInfo -TaskName $TaskName
     BlenderEnabled = Test-Path -LiteralPath $BlenderMarker -PathType Leaf
     BlendRoot = $BlendRoot
     OutputRoot = $OutputRoot
+    OllamaTaskName = if ($null -ne $ollamaTask) { $OllamaTaskName } else { 'not installed' }
+    OllamaState = if ($null -ne $ollamaTask) { $ollamaTask.State } else { 'not installed' }
+    OllamaLastTaskResult = if ($null -ne $ollamaInfo) { $ollamaInfo.LastTaskResult } else { $null }
 } | Format-List

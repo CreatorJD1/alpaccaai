@@ -645,6 +645,7 @@ def test_dedicated_server_task_remains_compute_only_and_restartable() -> None:
     lowered = installer.lower()
 
     assert "alpecca rog compute server" in lowered
+    assert "alpecca rog ollama runtime" in lowered
     assert "register-scheduledtask" in lowered
     assert "new-scheduledtasktrigger -atstartup" in lowered
     assert "-userid 'system'" in lowered
@@ -671,6 +672,10 @@ def test_dedicated_server_task_remains_compute_only_and_restartable() -> None:
     assert "add-servicetoolpaths" in lowered
     assert "write-servicetoolpaths" in lowered
     assert "dedicated worker exited with code" in lowered
+    assert "runollama" in lowered
+    assert "ollama-runtime.json" in lowered
+    assert "ollama_models" in lowered
+    assert "wait-ollamaruntime" in lowered
     assert "install-servicepython" in lowered
     assert "servicepython" in lowered
     assert "cryptography>=43.0" in lowered

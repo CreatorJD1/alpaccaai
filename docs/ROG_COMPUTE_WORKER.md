@@ -173,10 +173,11 @@ scripts.
 This separate installer performs worker qualification again, provisions an
 isolated service Python environment under
 `%PROGRAMDATA%\Alpecca\rog-worker\venv`, and registers the hidden
-`Alpecca ROG Compute Server` task. The task runs as `SYSTEM` at Windows startup
-(not user logon), survives logout, and restarts one minute after a bounded
-failure. It keeps the existing authenticated HTTPS listener on port 8788 and
-writes operational output under
+`Alpecca ROG Compute Server` task and its paired `Alpecca ROG Ollama Runtime`
+task. Both run as `SYSTEM` at Windows startup (not user logon), survive logout,
+and restart one minute after a bounded failure. The runtime uses the existing
+local model store only on loopback; the worker keeps the authenticated HTTPS
+listener on port 8788 and writes operational output under
 `%PROGRAMDATA%\Alpecca\rog-worker\logs`.
 
 During installation, it replaces only firewall rules whose display name starts
