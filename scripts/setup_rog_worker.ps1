@@ -5,6 +5,7 @@ param(
     [switch]$RotateTls,
     [switch]$RemoveCredential,
     [switch]$CheckWorker,
+    [switch]$SkipModelCheck,
     [switch]$StartWorker
 )
 
@@ -30,6 +31,9 @@ if ([string]::IsNullOrWhiteSpace($env:ALPECCA_ROG_WORKER_REPLAY_DB)) {
 
 if ($InstallSecret -and $RemoveCredential) {
     throw 'Choose either -InstallSecret or -RemoveCredential, not both.'
+}
+if ($SkipModelCheck -and (-not $CheckWorker -or $StartWorker)) {
+    throw '-SkipModelCheck is allowed only with -CheckWorker; it cannot bypass model validation for worker startup.'
 }
 if ($RotateTls -and ($InstallSecret -or $InstallTls -or $RemoveCredential -or $CheckWorker -or $StartWorker)) {
     throw 'Run -RotateTls by itself after manually stopping the scheduled worker.'
@@ -136,16 +140,24 @@ $Model = if ([string]::IsNullOrWhiteSpace($env:ALPECCA_ROG_WORKER_MODEL)) {
     $env:ALPECCA_ROG_WORKER_MODEL.Trim()
 }
 
-$OllamaCommand = Get-Command ollama -ErrorAction SilentlyContinue
-$ModelReady = $false
-if ($null -ne $OllamaCommand) {
-    & $OllamaCommand.Source show $Model *> $null
-    $ModelReady = $LASTEXITCODE -eq 0
-}
-if ($ModelReady) {
-    Write-Host "Ollama model ready: $Model" -ForegroundColor Green
+if ($SkipModelCheck) {
+    # The dedicated installer first stops the interactive runtime so SYSTEM
+    # can own 11434.  Defer this network-backed CLI check until that runtime
+    # is running; -StartWorker never accepts this bypass.
+    $ModelReady = $true
+    Write-Host "Ollama model check deferred to the dedicated runtime: $Model" -ForegroundColor Cyan
 } else {
-    Write-Warning "Ollama model is not ready: $Model"
+    $OllamaCommand = Get-Command ollama -ErrorAction SilentlyContinue
+    $ModelReady = $false
+    if ($null -ne $OllamaCommand) {
+        & $OllamaCommand.Source show $Model *> $null
+        $ModelReady = $LASTEXITCODE -eq 0
+    }
+    if ($ModelReady) {
+        Write-Host "Ollama model ready: $Model" -ForegroundColor Green
+    } else {
+        Write-Warning "Ollama model is not ready: $Model"
+    }
 }
 
 if ($CheckWorker) {

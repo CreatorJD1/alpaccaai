@@ -173,12 +173,15 @@ function Write-OllamaRuntimeConfig {
 }
 
 function Wait-OllamaRuntime {
+    param([Parameter(Mandatory = $true)][string]$Model)
+
     $deadline = (Get-Date).AddSeconds(30)
     do {
         try {
             $response = Invoke-WebRequest -UseBasicParsing `
                 -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 2
-            if ($response.StatusCode -eq 200) {
+            $models = @((($response.Content | ConvertFrom-Json).models | ForEach-Object { [string]$_.name }))
+            if ($response.StatusCode -eq 200 -and $models -contains $Model) {
                 return
             }
         } catch {
@@ -186,7 +189,7 @@ function Wait-OllamaRuntime {
         }
         Start-Sleep -Seconds 1
     } while ((Get-Date) -lt $deadline)
-    throw 'The boot-time Ollama runtime did not become ready on 127.0.0.1:11434.'
+    throw "The boot-time Ollama runtime did not become ready with $Model on 127.0.0.1:11434."
 }
 
 if (-not [string]::Equals($ObservedHost, $ExpectedHost, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -327,7 +330,7 @@ if ($Install) {
 
     $env:ALPECCA_ROG_WORKER_LAN = '1'
     & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-        -File $SetupScript -CheckWorker
+        -File $SetupScript -CheckWorker -SkipModelCheck
     if ($LASTEXITCODE -ne 0) {
         throw 'Worker qualification failed; the dedicated task was not installed.'
     }
@@ -410,7 +413,7 @@ if ($Install) {
             -Description 'Boot-time local Ollama runtime for the compute-only Alpecca ROG worker.' `
             -Force | Out-Null
         Start-ScheduledTask -TaskName $OllamaTaskName
-        Wait-OllamaRuntime
+        Wait-OllamaRuntime -Model 'qwen3.5:9b'
         $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
         if ($null -ne $existingTask -and $existingTask.State -eq 'Running') {
             Stop-ScheduledTask -TaskName $TaskName

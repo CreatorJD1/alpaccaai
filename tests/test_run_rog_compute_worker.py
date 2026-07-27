@@ -614,17 +614,19 @@ def test_setup_and_documentation_preserve_worker_only_boundary() -> None:
     setup = (ROOT / "scripts" / "setup_rog_worker.ps1").read_text(encoding="utf-8")
     docs = (ROOT / "docs" / "ROG_COMPUTE_WORKER.md").read_text(encoding="utf-8")
     combined = (setup + "\n" + docs).lower()
+    setup_lower = setup.lower()
 
     assert "jason_holyrog" in combined
     assert "qwen3.5:9b" in combined
     assert "qualify_rog_worker.py" in setup
     assert "run_rog_compute_worker.py" in setup
     assert "alpecca_rog_worker_lan" in combined
+    assert "skipmodelcheck" in setup_lower
+    assert "ollama model check deferred to the dedicated runtime" in setup_lower
     assert "alpecca/jason_holyrog/computeworker" in combined
     retired_model = "qwen3" + ":8b"
     assert retired_model not in combined
 
-    setup_lower = setup.lower()
     forbidden_start_paths = (
         "server.py",
         "run_full.py",
@@ -680,6 +682,8 @@ def test_dedicated_server_task_remains_compute_only_and_restartable() -> None:
     assert "dedicated rog ollama exited with code" in lowered
     assert "modelmanifestpresent" in lowered
     assert "wait-ollamaruntime" in lowered
+    assert "wait-ollamaruntime -model 'qwen3.5:9b'" in lowered
+    assert "-skipmodelcheck" in lowered
     assert "install-servicepython" in lowered
     assert "servicepython" in lowered
     assert "cryptography>=43.0" in lowered
