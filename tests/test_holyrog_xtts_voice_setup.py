@@ -59,6 +59,9 @@ def test_holyrog_xtts_installer_is_separate_restricted_and_unattended() -> None:
     assert "tts_models--multilingual--multi-dataset--xtts_v2" in source
     assert "prepare-xttsmodelcache" in source
     assert "join-path $servicedatadir 'model-data'" in source
+    assert "[switch]$rotatesecret" in source
+    assert "-rotatesecret must be used with -install" in source
+    assert "stage-voicesecret -bootstrappython $bootstrappython -force:$rotatesecret" in source
     assert "voice.secret" in source
     assert "new-netfirewallrule" in source
     assert "-localport 8790" in source

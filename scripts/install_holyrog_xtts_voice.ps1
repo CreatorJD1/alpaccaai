@@ -1,6 +1,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [switch]$Install,
+    [switch]$RotateSecret,
     [switch]$InstallSecret,
     [switch]$DeriveSecret,
     [switch]$RemoveCredential,
@@ -133,10 +134,13 @@ function Prepare-XttsModelCache {
 }
 
 function Stage-VoiceSecret {
-    param([Parameter(Mandatory = $true)][string]$BootstrapPython)
+    param(
+        [Parameter(Mandatory = $true)][string]$BootstrapPython,
+        [switch]$Force
+    )
 
     $existing = Get-Item -LiteralPath $ServiceSecretPath -ErrorAction SilentlyContinue
-    if ($null -ne $existing -and $existing.Length -ge 32) {
+    if (-not $Force -and $null -ne $existing -and $existing.Length -ge 32) {
         Write-Host 'Existing HOLYROG XTTS service secret retained without printing its value.'
         return
     }
@@ -144,6 +148,7 @@ function Stage-VoiceSecret {
     if ($LASTEXITCODE -ne 0) {
         throw 'The HOLYROG XTTS service secret could not be staged.'
     }
+    Write-Host 'HOLYROG XTTS service secret staged without printing its value.'
 }
 
 function Write-RuntimeConfig {
@@ -251,6 +256,10 @@ if ($RunServer) {
     exit $exitCode
 }
 
+if ($RotateSecret -and -not $Install) {
+    throw '-RotateSecret must be used with -Install.'
+}
+
 $selected = @($Install, $InstallSecret, $DeriveSecret, $RemoveCredential, $Remove, $Start, $Stop, $Status | Where-Object { $_ }).Count
 if ($selected -gt 1) {
     throw 'Choose exactly one task action.'
@@ -295,7 +304,7 @@ if ($Install) {
     $references = Resolve-ReferenceDirectory -RequestedPath $ReferencePath
     Protect-ServiceDataDirectory
     Prepare-XttsModelCache
-    Stage-VoiceSecret -BootstrapPython $bootstrapPython
+    Stage-VoiceSecret -BootstrapPython $bootstrapPython -Force:$RotateSecret
     Write-RuntimeConfig -Python $voicePython -References $references
     Set-VoiceFirewallRule
 
