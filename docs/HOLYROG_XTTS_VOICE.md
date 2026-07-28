@@ -20,6 +20,15 @@ process.
   the `X-Alpecca-Voice-Authorization` secret header. Do not publish port 8790.
 - The service requires CUDA. It will not silently switch to CPU, download a model,
   or accept the Coqui license without the explicit installation flag below.
+- The installer copies the already-downloaded XTTS-v2 model into the protected
+  service-owned cache under `%PROGRAMDATA%\Alpecca\holyrog-xtts\model-data`.
+  This prevents the `SYSTEM` task from depending on a user's profile or HKCU
+  registry. The source checkpoint is the locally installed, license-accepted
+  Coqui model; the service does not fetch weights during startup.
+- Coqui 0.22's official XTTS checkpoint contains legacy Python configuration
+  objects. For PyTorch 2.6 compatibility, the task enables legacy checkpoint
+  loading only inside the XTTS child process. Do not replace the protected model
+  files with an untrusted checkpoint.
 
 ## One-time setup on Jason_HOLYROG
 
@@ -71,6 +80,10 @@ $env:ALPECCA_HOLYROG_VOICE_URL = 'http://jason-holyrog.tailda0108.ts.net:8790'
 
 The existing primary client fails closed and falls back to its local Kokoro path
 when this service is unavailable.
+
+The first service start can take several minutes while the model is loaded onto
+CUDA and its reference conditioning is warmed. The installer waits for that warm
+start and fails early if the scheduled process exits.
 
 On the ROG, inspect the task without revealing secret material:
 

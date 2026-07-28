@@ -54,6 +54,11 @@ def test_holyrog_xtts_installer_is_separate_restricted_and_unattended() -> None:
     assert "-restartcount 999" in source
     assert "acceptcoquilicense" in source
     assert "torch.cuda.is_available" in source
+    assert "$env:tts_home = $modeldataroot" in source
+    assert "$env:torch_force_no_weights_only_load = '1'" in source
+    assert "tts_models--multilingual--multi-dataset--xtts_v2" in source
+    assert "prepare-xttsmodelcache" in source
+    assert "join-path $servicedatadir 'model-data'" in source
     assert "voice.secret" in source
     assert "new-netfirewallrule" in source
     assert "-localport 8790" in source

@@ -29,6 +29,9 @@ $ServiceSecretPath = Join-Path $ServiceDataDir 'voice.secret'
 $ConfigPath = Join-Path $ServiceDataDir 'runtime.json'
 $LogDir = Join-Path $ServiceDataDir 'logs'
 $LogPath = Join-Path $LogDir 'voice-server.log'
+$ModelDataRoot = Join-Path $ServiceDataDir 'model-data'
+$ModelDirectoryName = 'tts_models--multilingual--multi-dataset--xtts_v2'
+$ModelCacheDir = Join-Path (Join-Path $ModelDataRoot 'tts') $ModelDirectoryName
 $DefaultReferencePath = Join-Path $RepoRoot 'data\voice_references\xtts_reference_set'
 $ObservedHost = [System.Net.Dns]::GetHostName()
 
@@ -96,6 +99,39 @@ function Resolve-ReferenceDirectory {
     return $resolved
 }
 
+function Test-XttsModelDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    foreach ($name in @('config.json', 'model.pth', 'vocab.json')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Path $name) -PathType Leaf)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Prepare-XttsModelCache {
+    New-Item -ItemType Directory -Path $ModelCacheDir -Force | Out-Null
+    if (Test-XttsModelDirectory -Path $ModelCacheDir) {
+        Write-Host 'Existing protected XTTS model cache retained.'
+        return
+    }
+
+    $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    $source = Join-Path (Join-Path $localAppData 'tts') $ModelDirectoryName
+    if (-not (Test-XttsModelDirectory -Path $source)) {
+        throw "A complete XTTS-v2 model was not found at $source. Download it under the installing account before installing the unattended service."
+    }
+
+    Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $ModelCacheDir -Recurse -Force
+    }
+    if (-not (Test-XttsModelDirectory -Path $ModelCacheDir)) {
+        throw 'The XTTS-v2 model could not be staged into the protected service cache.'
+    }
+    Write-Host 'XTTS-v2 model staged into the protected service cache.'
+}
+
 function Stage-VoiceSecret {
     param([Parameter(Mandatory = $true)][string]$BootstrapPython)
 
@@ -119,6 +155,7 @@ function Write-RuntimeConfig {
     [pscustomobject]@{
         python = $Python
         references = $References
+        tts_home = $ModelDataRoot
         bind = '0.0.0.0'
         port = 8790
         device = 'cuda'
@@ -145,11 +182,18 @@ function Set-VoiceFirewallRule {
 }
 
 function Wait-VoiceListener {
-    $deadline = (Get-Date).AddSeconds(90)
+    $deadline = (Get-Date).AddMinutes(10)
+    $taskStateDeadline = (Get-Date).AddSeconds(10)
     do {
         $listener = Get-NetTCPConnection -LocalPort 8790 -State Listen -ErrorAction SilentlyContinue
         if ($null -ne $listener) {
             return
+        }
+        if ((Get-Date) -ge $taskStateDeadline) {
+            $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+            if ($null -eq $task -or $task.State -ne 'Running') {
+                throw 'The dedicated HOLYROG XTTS service exited before opening TCP 8790. Inspect its service log.'
+            }
         }
         Start-Sleep -Seconds 2
     } while ((Get-Date) -lt $deadline)
@@ -169,10 +213,16 @@ if ($RunServer) {
         $runtime = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
         $python = [string]$runtime.python
         $references = [string]$runtime.references
+        $modelDataRoot = $ModelDataRoot
+        if ($null -ne $runtime.PSObject.Properties['tts_home'] -and
+            -not [string]::IsNullOrWhiteSpace([string]$runtime.tts_home)) {
+            $modelDataRoot = [string]$runtime.tts_home
+        }
         if (-not (Test-Path -LiteralPath $python -PathType Leaf) -or
             -not (Test-Path -LiteralPath $references -PathType Container)) {
             throw 'The dedicated HOLYROG XTTS runtime configuration is invalid.'
         }
+        New-Item -ItemType Directory -Path $modelDataRoot -Force | Out-Null
         $env:ALPECCA_HOLYROG_VOICE_BIND = [string]$runtime.bind
         $env:ALPECCA_HOLYROG_VOICE_PORT = [string]$runtime.port
         $env:ALPECCA_HOLYROG_VOICE_REF = $references
@@ -180,6 +230,11 @@ if ($RunServer) {
         $env:ALPECCA_HOLYROG_VOICE_REQUIRE_CUDA = if ([bool]$runtime.require_cuda) { '1' } else { '0' }
         $env:ALPECCA_HOLYROG_VOICE_SECRET_FILE = $ServiceSecretPath
         $env:COQUI_TOS_AGREED = if ([bool]$runtime.coqui_tos_agreed) { '1' } else { '0' }
+        # Coqui 0.22 otherwise queries an HKCU Explorer key that SYSTEM does not have.
+        $env:TTS_HOME = $modelDataRoot
+        # PyTorch 2.6 changed torch.load's default. The pinned, locally staged
+        # Coqui XTTS checkpoint requires its legacy trusted-config objects.
+        $env:TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD = '1'
         $priorErrorActionPreference = $ErrorActionPreference
         try {
             $ErrorActionPreference = 'Continue'
@@ -239,6 +294,7 @@ if ($Install) {
     Assert-VoicePython -Python $voicePython
     $references = Resolve-ReferenceDirectory -RequestedPath $ReferencePath
     Protect-ServiceDataDirectory
+    Prepare-XttsModelCache
     Stage-VoiceSecret -BootstrapPython $bootstrapPython
     Write-RuntimeConfig -Python $voicePython -References $references
     Set-VoiceFirewallRule
