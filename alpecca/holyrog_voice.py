@@ -18,6 +18,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 AUTH_HEADER = "X-Alpecca-Voice-Authorization"
 _READ_CHUNK = 64 * 1024
+_CREDENTIAL_TARGET = "Alpecca/Jason_HOLYROG/XTTSVoice"
 
 
 def _env_float(name: str, default: float, lo: float, hi: float) -> float:
@@ -25,6 +26,28 @@ def _env_float(name: str, default: float, lo: float, hi: float) -> float:
         return max(lo, min(hi, float(os.environ.get(name, str(default)))))
     except (TypeError, ValueError):
         return default
+
+
+def _credential_secret() -> str:
+    """Read the local primary's dedicated voice credential, if configured."""
+    if os.name != "nt":
+        return ""
+    try:
+        import win32cred
+
+        value = win32cred.CredRead(
+            _CREDENTIAL_TARGET, win32cred.CRED_TYPE_GENERIC, 0
+        ).get("CredentialBlob", b"")
+    except Exception:
+        return ""
+    if isinstance(value, bytes):
+        for encoding in ("utf-8", "utf-16-le"):
+            try:
+                return value.decode(encoding).strip()
+            except UnicodeDecodeError:
+                continue
+        return ""
+    return value.strip() if isinstance(value, str) else ""
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -36,7 +59,7 @@ class HolyrogVoiceClient:
     def __init__(self) -> None:
         self._lock = RLock()
         self._url = os.environ.get("ALPECCA_HOLYROG_VOICE_URL", "").strip().rstrip("/")
-        self._secret = os.environ.get("ALPECCA_HOLYROG_VOICE_SECRET", "")
+        self._secret = os.environ.get("ALPECCA_HOLYROG_VOICE_SECRET", "") or _credential_secret()
         self._timeout = _env_float("ALPECCA_HOLYROG_VOICE_TIMEOUT_SECONDS", 20.0, 1.0, 120.0)
         self._health_timeout = _env_float(
             "ALPECCA_HOLYROG_VOICE_HEALTH_TIMEOUT_SECONDS", 2.0, 0.3, 10.0

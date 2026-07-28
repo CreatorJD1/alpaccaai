@@ -383,3 +383,15 @@ def test_holyrog_voice_dormant_until_configured_then_routes(monkeypatch) -> None
 
     monkeypatch.setattr(holyrog_voice, "_client", _Down())
     assert tts._synth_holyrog("hello") is None
+
+
+def test_holyrog_voice_reads_its_dedicated_credential_when_no_environment_secret(monkeypatch) -> None:
+    from alpecca import holyrog_voice
+
+    monkeypatch.delenv("ALPECCA_HOLYROG_VOICE_SECRET", raising=False)
+    monkeypatch.setattr(holyrog_voice, "_credential_secret", lambda: "v" * 32)
+    monkeypatch.setenv("ALPECCA_HOLYROG_VOICE_URL", "http://voice.example.test:8790")
+
+    client = holyrog_voice.HolyrogVoiceClient()
+
+    assert client.enabled is True

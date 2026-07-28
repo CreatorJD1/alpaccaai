@@ -271,22 +271,22 @@ ROG_WORKER_FAILURE_COOLDOWN_SECONDS = max(
 # unreachable, synthesis falls back to local. Tailscale provides the private,
 # encrypted transport, so a shared bearer secret gates the endpoint. Empty URL
 # (the default) leaves the whole feature dormant -- local voice is unchanged.
-ROG_VOICE_URL = os.environ.get("ALPECCA_ROG_VOICE_URL", "").strip().rstrip("/")
-ROG_VOICE_SECRET = os.environ.get("ALPECCA_ROG_VOICE_SECRET", "")
-ROG_VOICE_ENABLED = bool(ROG_VOICE_URL) and os.environ.get(
-    "ALPECCA_ROG_VOICE", "1"
+HOLYROG_VOICE_URL = os.environ.get("ALPECCA_HOLYROG_VOICE_URL", "").strip().rstrip("/")
+HOLYROG_VOICE_SECRET = os.environ.get("ALPECCA_HOLYROG_VOICE_SECRET", "")
+HOLYROG_VOICE_ENABLED = bool(HOLYROG_VOICE_URL) and os.environ.get(
+    "ALPECCA_HOLYROG_VOICE", "1"
 ) not in ("", "0", "false", "False")
-ROG_VOICE_TIMEOUT_SECONDS = max(
-    1.0, min(120.0, float(os.environ.get("ALPECCA_ROG_VOICE_TIMEOUT_SECONDS", "20")))
+HOLYROG_VOICE_TIMEOUT_SECONDS = max(
+    1.0, min(120.0, float(os.environ.get("ALPECCA_HOLYROG_VOICE_TIMEOUT_SECONDS", "20")))
 )
-ROG_VOICE_HEALTH_TIMEOUT_SECONDS = max(
-    0.3, min(10.0, float(os.environ.get("ALPECCA_ROG_VOICE_HEALTH_TIMEOUT_SECONDS", "2")))
+HOLYROG_VOICE_HEALTH_TIMEOUT_SECONDS = max(
+    0.3, min(10.0, float(os.environ.get("ALPECCA_HOLYROG_VOICE_HEALTH_TIMEOUT_SECONDS", "2")))
 )
-ROG_VOICE_FAILURE_COOLDOWN_SECONDS = max(
+HOLYROG_VOICE_FAILURE_COOLDOWN_SECONDS = max(
     5.0,
     min(
         300.0,
-        float(os.environ.get("ALPECCA_ROG_VOICE_FAILURE_COOLDOWN_SECONDS", "60")),
+        float(os.environ.get("ALPECCA_HOLYROG_VOICE_FAILURE_COOLDOWN_SECONDS", "60")),
     ),
 )
 

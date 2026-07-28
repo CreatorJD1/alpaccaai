@@ -38,16 +38,20 @@ import io
 import os
 import sys
 import wave
+from pathlib import Path
 
 HOST = os.environ.get("ALPECCA_HOLYROG_VOICE_BIND", "0.0.0.0")
 PORT = int(os.environ.get("ALPECCA_HOLYROG_VOICE_PORT", "8790"))
-SECRET = os.environ.get("ALPECCA_HOLYROG_VOICE_SECRET", "")
+SECRET_FILE = os.environ.get("ALPECCA_HOLYROG_VOICE_SECRET_FILE", "").strip()
 REFERENCE = os.environ.get("ALPECCA_HOLYROG_VOICE_REF", "")
 LANGUAGE = os.environ.get("ALPECCA_HOLYROG_VOICE_LANG", "en")
 MODEL = os.environ.get(
     "ALPECCA_HOLYROG_VOICE_MODEL", "tts_models/multilingual/multi-dataset/xtts_v2"
 )
 DEVICE = os.environ.get("ALPECCA_HOLYROG_VOICE_DEVICE", "cuda")
+REQUIRE_CUDA = os.environ.get("ALPECCA_HOLYROG_VOICE_REQUIRE_CUDA", "0").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 MAX_TEXT = int(os.environ.get("ALPECCA_HOLYROG_VOICE_MAX_TEXT", "600"))
 # Cloud is fast; keep pieces short so XTTS stays stable and low-latency.
 MAX_CHUNK = int(os.environ.get("ALPECCA_HOLYROG_VOICE_MAX_CHUNK", "220"))
@@ -57,6 +61,19 @@ MAX_REF_CLIPS = int(os.environ.get("ALPECCA_HOLYROG_VOICE_MAX_REFS", "20"))
 
 _tts = None
 _speaker_cache = None
+
+
+def _load_secret() -> str:
+    """Read a staged service secret without ever reporting its contents."""
+    if SECRET_FILE:
+        try:
+            return Path(SECRET_FILE).read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            return ""
+    return os.environ.get("ALPECCA_HOLYROG_VOICE_SECRET", "")
+
+
+SECRET = _load_secret()
 
 
 def _speaker_refs():
@@ -82,10 +99,17 @@ def _load_model():
         return _tts
     from TTS.api import TTS  # imported lazily so --check works without the dep
 
+    if DEVICE.casefold().startswith("cuda"):
+        import torch
+
+        if not torch.cuda.is_available() and REQUIRE_CUDA:
+            raise RuntimeError("CUDA is required for the dedicated HOLYROG XTTS service")
     model = TTS(MODEL)
     try:
         model.to(DEVICE)
     except Exception:
+        if REQUIRE_CUDA:
+            raise
         model.to("cpu")
     _tts = model
     return _tts
@@ -186,8 +210,14 @@ def main() -> int:
     if "--check" in sys.argv:
         print("holyrog voice server: config OK; run without --check to serve.")
         return 0
-    if not SECRET:
-        print("Set ALPECCA_HOLYROG_VOICE_SECRET before serving.", file=sys.stderr)
+    if len(SECRET.encode("utf-8")) < 32:
+        print("A 32-or-more-byte HOLYROG XTTS secret is required before serving.", file=sys.stderr)
+        return 1
+    if os.environ.get("COQUI_TOS_AGREED") != "1":
+        print("Set COQUI_TOS_AGREED=1 only after accepting the Coqui XTTS license.", file=sys.stderr)
+        return 1
+    if not _speaker_refs():
+        print("A HOLYROG XTTS reference clip or directory is required before serving.", file=sys.stderr)
         return 1
     import uvicorn
 
@@ -198,6 +228,7 @@ def main() -> int:
         print("XTTS-v2 ready.", file=sys.stderr)
     except Exception as exc:
         print(f"XTTS warm failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
     uvicorn.run(_build_app(), host=HOST, port=PORT, log_level="warning")
     return 0
 
