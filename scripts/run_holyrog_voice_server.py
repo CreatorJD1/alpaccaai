@@ -37,6 +37,7 @@ import hmac
 import io
 import os
 import sys
+import traceback
 import wave
 from pathlib import Path
 
@@ -228,6 +229,7 @@ def main() -> int:
         print("XTTS-v2 ready.", file=sys.stderr)
     except Exception as exc:
         print(f"XTTS warm failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         return 2
     uvicorn.run(_build_app(), host=HOST, port=PORT, log_level="warning")
     return 0
