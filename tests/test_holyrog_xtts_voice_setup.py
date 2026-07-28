@@ -43,6 +43,18 @@ def test_holyrog_voice_server_supports_a_staged_secret_and_cuda_requirement(tmp_
     assert "if require_cuda" in source
 
 
+def test_holyrog_synth_endpoint_declares_json_request_body() -> None:
+    module = _server_module()
+    schema = module._build_app().openapi()
+    operation = schema["paths"]["/synth"]["post"]
+
+    assert "requestBody" in operation
+    assert not any(
+        parameter.get("name") == "body"
+        for parameter in operation.get("parameters", [])
+    )
+
+
 def test_holyrog_xtts_installer_is_separate_restricted_and_unattended() -> None:
     source = INSTALLER_PATH.read_text(encoding="utf-8").lower()
 

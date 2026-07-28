@@ -162,13 +162,9 @@ def _synthesize(text: str) -> bytes:
 
 
 def _build_app():
-    from fastapi import FastAPI, Header, HTTPException, Response
-    from pydantic import BaseModel
+    from fastapi import Body, FastAPI, Header, HTTPException, Response
 
     app = FastAPI(title="Alpecca HOLYROG voice", version="1")
-
-    class SynthRequest(BaseModel):
-        text: str
 
     def _authorize(provided: str | None) -> None:
         if not SECRET:
@@ -191,11 +187,12 @@ def _build_app():
 
     @app.post("/synth")
     def synth(
-        body: SynthRequest,
+        body: dict = Body(...),
         authorization: str | None = Header(default=None, alias=AUTH_HEADER),
     ):
         _authorize(authorization)
-        text = (body.text or "").strip()
+        raw_text = body.get("text")
+        text = raw_text.strip() if isinstance(raw_text, str) else ""
         if not text:
             raise HTTPException(status_code=400, detail="empty text")
         try:
