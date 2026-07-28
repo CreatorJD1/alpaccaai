@@ -387,10 +387,18 @@ def engine_status() -> dict:
     open_status = __import__("alpecca.open_tts", fromlist=["status"]).status()
     open_ready = bool(open_status.get("ready"))
     kokoro = kokoro_status()
+    from alpecca import holyrog_voice
+
+    holyrog = holyrog_voice.client().status()
     return {
         "backend": backend,
         "server_enabled": backend not in ("off", "browser", "none"),
-        "primary": "f5-tts-worker" if open_ready else ("kokoro" if importlib.util.find_spec("kokoro") else "edge"),
+        "primary": (
+            "holyrog-xtts"
+            if backend == "auto" and holyrog.get("state") == "ready"
+            else ("f5-tts-worker" if open_ready else ("kokoro" if importlib.util.find_spec("kokoro") else "edge"))
+        ),
+        "holyrog_xtts": holyrog,
         "open_tts": open_status,
         "open_tts_ready": open_ready,
         "f5_worker": (open_status.get("worker") or {}),
@@ -622,6 +630,21 @@ def _prefers_clone_voice(state=None) -> bool:
                float(dyn.get("arousal", 0.5))) >= VOICE_MIX_INTENSITY
 
 
+def _synth_holyrog(text: str, state=None):
+    """Use the dedicated ROG GPU, returning None for the local fallback path."""
+    del state
+    from alpecca import holyrog_voice
+
+    result = holyrog_voice.client().synthesize(text)
+    if not result:
+        return None
+    return (
+        result[0],
+        result[1],
+        {"engine": "holyrog-xtts", "profile": "xtts_v2_clone"},
+    )
+
+
 def synth(text: str, state=None, *, backend_override: str = ""):
     """Return (mime_type, audio_bytes) for `text`, or None to let the browser
     voice handle it. `state` is her live EmotionalState so the voice carries
@@ -671,6 +694,14 @@ def synth(text: str, state=None, *, backend_override: str = ""):
                          else (_synth_kokoro, open_tts.synth))
             else:
                 order = (_synth_kokoro,)
+        # House/default speech may use the dedicated ROG GPU. Explicit engine
+        # requests (including Discord's identity-locked Kokoro route) retain
+        # their requested local engine and are never silently substituted.
+        if backend == "auto":
+            from alpecca import holyrog_voice
+
+            if holyrog_voice.client().enabled:
+                order = (_synth_holyrog,) + order
         for fn in order:
             try:
                 r = fn(text, state)
