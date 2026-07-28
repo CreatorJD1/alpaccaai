@@ -18,6 +18,14 @@ def _server_module():
     return module
 
 
+def _secret_manager_module():
+    spec = importlib.util.spec_from_file_location("holyrog_voice_secret_test", SECRET_MANAGER_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_holyrog_voice_server_supports_a_staged_secret_and_cuda_requirement(tmp_path, monkeypatch) -> None:
     module = _server_module()
     secret_path = tmp_path / "voice.secret"
@@ -64,4 +72,17 @@ def test_voice_secret_manager_uses_a_distinct_credential_record() -> None:
     assert "--stage-secret-file" in source
     assert "cannot be stored in the repository" in source
     assert "without printing its value" in source
-    assert "ComputeWorker" not in source
+    assert "--derive-from-compute-worker" in source
+    assert 'COMPUTE_WORKER_TARGET = "Alpecca/Jason_HOLYROG/ComputeWorker"' in source
+
+
+def test_derived_voice_secret_is_domain_separated_and_never_echoes_parent() -> None:
+    manager = _secret_manager_module()
+    parent = "c" * 32
+
+    first = manager._derive_voice_secret(parent)
+
+    assert first == manager._derive_voice_secret(parent)
+    assert first != parent
+    assert len(first.encode("utf-8")) >= manager.MIN_SECRET_BYTES
+    assert "+" not in first and "/" not in first and "=" not in first

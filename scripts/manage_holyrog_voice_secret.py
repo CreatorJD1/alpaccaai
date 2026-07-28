@@ -7,13 +7,17 @@ service receives only a staged, ACL-restricted copy under ProgramData.
 from __future__ import annotations
 
 import argparse
+import base64
 import getpass
+import hashlib
+import hmac
 import os
 from pathlib import Path
 from typing import Sequence
 
 
 TARGET = "Alpecca/Jason_HOLYROG/XTTSVoice"
+COMPUTE_WORKER_TARGET = "Alpecca/Jason_HOLYROG/ComputeWorker"
 MIN_SECRET_BYTES = 32
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -47,25 +51,51 @@ def _validate(value: str, *, source: str) -> str:
     return normalized
 
 
-def _read() -> str | None:
+def _read_target(target: str, *, source: str) -> str | None:
     win32cred = _win32cred()
     try:
-        credential = win32cred.CredRead(TARGET, win32cred.CRED_TYPE_GENERIC, 0)
+        credential = win32cred.CredRead(target, win32cred.CRED_TYPE_GENERIC, 0)
     except Exception as exc:
         if _credential_error_code(exc) in {2, 1168}:
             return None
-        raise VoiceSecretError("could not read the HOLYROG XTTS credential") from exc
+        raise VoiceSecretError(f"could not read {source}") from exc
     value = credential.get("CredentialBlob", b"")
     if isinstance(value, bytes):
         for encoding in ("utf-8", "utf-16-le"):
             try:
-                return _validate(value.decode(encoding), source="the stored HOLYROG XTTS credential")
+                return _validate(value.decode(encoding), source=source)
             except UnicodeDecodeError:
                 continue
-        raise VoiceSecretError("the stored HOLYROG XTTS credential is unreadable")
+        raise VoiceSecretError(f"{source} is unreadable")
     if isinstance(value, str):
-        return _validate(value, source="the stored HOLYROG XTTS credential")
-    raise VoiceSecretError("the stored HOLYROG XTTS credential is invalid")
+        return _validate(value, source=source)
+    raise VoiceSecretError(f"{source} is invalid")
+
+
+def _read() -> str | None:
+    return _read_target(TARGET, source="the stored HOLYROG XTTS credential")
+
+
+def _derive_voice_secret(compute_secret: str) -> str:
+    """Domain-separate the XTTS credential without exposing the compute secret."""
+    parent = _validate(compute_secret, source="the compute-worker credential")
+    material = hmac.new(
+        parent.encode("utf-8"),
+        b"Alpecca/Jason_HOLYROG/XTTSVoice/v1",
+        hashlib.sha256,
+    ).digest()
+    return base64.urlsafe_b64encode(material).decode("ascii").rstrip("=")
+
+
+def _derive_from_compute_worker() -> str:
+    stored = _read_target(
+        COMPUTE_WORKER_TARGET, source="the existing compute-worker credential"
+    )
+    if stored is None:
+        raise VoiceSecretError(
+            "the existing compute-worker credential is unavailable; use --install-secret"
+        )
+    return _derive_voice_secret(stored)
 
 
 def _write(value: str) -> None:
@@ -106,6 +136,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_mutually_exclusive_group(required=True)
     actions.add_argument("--install-secret", action="store_true")
+    actions.add_argument("--derive-from-compute-worker", action="store_true")
     actions.add_argument("--stage-secret-file", metavar="ABSOLUTE_PATH")
     actions.add_argument("--remove-secret", action="store_true")
     return parser
@@ -122,6 +153,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 2
             _write(first)
             print("HOLYROG XTTS secret stored in Windows Credential Manager without printing its value.")
+            return 0
+        if args.derive_from_compute_worker:
+            _write(_derive_from_compute_worker())
+            print("HOLYROG XTTS secret derived from the local compute-worker credential without printing either value.")
             return 0
         if args.remove_secret:
             win32cred = _win32cred()

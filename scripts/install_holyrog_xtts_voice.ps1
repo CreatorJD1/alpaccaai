@@ -2,6 +2,7 @@
 param(
     [switch]$Install,
     [switch]$InstallSecret,
+    [switch]$DeriveSecret,
     [switch]$RemoveCredential,
     [switch]$Remove,
     [switch]$Start,
@@ -195,7 +196,7 @@ if ($RunServer) {
     exit $exitCode
 }
 
-$selected = @($Install, $InstallSecret, $RemoveCredential, $Remove, $Start, $Stop, $Status | Where-Object { $_ }).Count
+$selected = @($Install, $InstallSecret, $DeriveSecret, $RemoveCredential, $Remove, $Start, $Stop, $Status | Where-Object { $_ }).Count
 if ($selected -gt 1) {
     throw 'Choose exactly one task action.'
 }
@@ -206,6 +207,12 @@ if ($selected -eq 0) {
 if ($InstallSecret) {
     $bootstrapPython = Resolve-BootstrapPython
     & $bootstrapPython $SecretManager --install-secret
+    exit $LASTEXITCODE
+}
+
+if ($DeriveSecret) {
+    $bootstrapPython = Resolve-BootstrapPython
+    & $bootstrapPython $SecretManager --derive-from-compute-worker
     exit $LASTEXITCODE
 }
 

@@ -30,11 +30,18 @@ reference `.wav` clips directly in:
 data\voice_references\xtts_reference_set\
 ```
 
-Store the separate voice secret without displaying it:
+When the existing compute-worker credential is already installed, derive a
+separate, domain-scoped voice credential without displaying either value:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install_holyrog_xtts_voice.ps1 -InstallSecret
+powershell -ExecutionPolicy Bypass -File scripts\install_holyrog_xtts_voice.ps1 -DeriveSecret
 ```
+
+Run the same command on RygenART before enabling its voice client. It derives
+the same value locally from the shared compute-worker credential; the voice
+secret is never copied through chat, a command line, a file, or a log. Use
+`-InstallSecret` only if no compute-worker credential exists and you deliberately
+choose to provide a separate voice secret twice through the hidden prompt.
 
 Then, from an Administrator PowerShell, create the service. `-AcceptCoquiLicense`
 records your explicit acknowledgement for the task; use it only if you agree to
@@ -53,10 +60,10 @@ does not download XTTS weights.
 
 ## Primary configuration and verification
 
-On RygenART, store the **same voice secret** in its own Credential Manager using
-the same `-InstallSecret` command from this repository. The primary client reads
-that record locally; do not add the secret to an environment variable. Configure
-only the endpoint for the current primary process:
+On RygenART, use `-DeriveSecret` (or the matching hidden-prompt alternative) to
+store the **same voice secret** in its own Credential Manager. The primary client
+reads that record locally; do not add the secret to an environment variable.
+Configure only the endpoint for the current primary process:
 
 ```powershell
 $env:ALPECCA_HOLYROG_VOICE_URL = 'http://jason-holyrog.tailda0108.ts.net:8790'
