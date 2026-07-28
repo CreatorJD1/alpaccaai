@@ -33,21 +33,11 @@ def _credential_secret() -> str:
     if os.name != "nt":
         return ""
     try:
-        import win32cred
+        from alpecca.auth import _read_windows_credential
 
-        value = win32cred.CredRead(
-            _CREDENTIAL_TARGET, win32cred.CRED_TYPE_GENERIC, 0
-        ).get("CredentialBlob", b"")
+        return (_read_windows_credential(_CREDENTIAL_TARGET) or "").strip()
     except Exception:
         return ""
-    if isinstance(value, bytes):
-        for encoding in ("utf-8", "utf-16-le"):
-            try:
-                return value.decode(encoding).strip()
-            except UnicodeDecodeError:
-                continue
-        return ""
-    return value.strip() if isinstance(value, str) else ""
 
 
 class _NoRedirect(HTTPRedirectHandler):

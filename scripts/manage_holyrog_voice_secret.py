@@ -51,6 +51,22 @@ def _validate(value: str, *, source: str) -> str:
     return normalized
 
 
+def _decode_credential_blob(value: object, *, source: str) -> str:
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, bytes):
+        # CredWrite stores str blobs as UTF-16-LE. ASCII-range secrets decoded
+        # as UTF-8 would otherwise appear valid but contain embedded NULs.
+        encoding = "utf-16-le" if b"\x00" in value else "utf-8"
+        try:
+            value = value.decode(encoding)
+        except UnicodeDecodeError as exc:
+            raise VoiceSecretError(f"{source} is unreadable") from exc
+    if not isinstance(value, str):
+        raise VoiceSecretError(f"{source} is invalid")
+    return _validate(value.rstrip("\x00"), source=source)
+
+
 def _read_target(target: str, *, source: str) -> str | None:
     win32cred = _win32cred()
     try:
@@ -59,17 +75,9 @@ def _read_target(target: str, *, source: str) -> str | None:
         if _credential_error_code(exc) in {2, 1168}:
             return None
         raise VoiceSecretError(f"could not read {source}") from exc
-    value = credential.get("CredentialBlob", b"")
-    if isinstance(value, bytes):
-        for encoding in ("utf-8", "utf-16-le"):
-            try:
-                return _validate(value.decode(encoding), source=source)
-            except UnicodeDecodeError:
-                continue
-        raise VoiceSecretError(f"{source} is unreadable")
-    if isinstance(value, str):
-        return _validate(value, source=source)
-    raise VoiceSecretError(f"{source} is invalid")
+    return _decode_credential_blob(
+        credential.get("CredentialBlob", b""), source=source
+    )
 
 
 def _read() -> str | None:

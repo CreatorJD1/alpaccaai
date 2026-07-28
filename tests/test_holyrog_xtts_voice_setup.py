@@ -91,3 +91,15 @@ def test_derived_voice_secret_is_domain_separated_and_never_echoes_parent() -> N
     assert first != parent
     assert len(first.encode("utf-8")) >= manager.MIN_SECRET_BYTES
     assert "+" not in first and "/" not in first and "=" not in first
+
+
+def test_voice_secret_manager_decodes_windows_utf16_without_nuls() -> None:
+    manager = _secret_manager_module()
+    value = "d" * 43
+
+    decoded = manager._decode_credential_blob(
+        memoryview((value + "\x00").encode("utf-16-le")), source="test credential"
+    )
+
+    assert decoded == value
+    assert "\x00" not in decoded
