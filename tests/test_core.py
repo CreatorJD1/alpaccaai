@@ -4352,8 +4352,12 @@ def test_actuator_refuses_anything_off_the_list():
 def test_actuator_disabled_offers_no_tools():
     act = actions.Actuator(apps={})
     assert act.enabled is False
+    assert act.can_open_urls is False
     assert act.tools_schema() == []
     assert act.describe() == ""
+    assert "isn't enabled" in act.execute(
+        "open_url", {"url": "https://example.com"}
+    )
 
 def test_actuator_tools_schema_enumerates_granted_names_only():
     act = actions.Actuator(apps={"spotify": "x", "notes": "y"})
@@ -4369,9 +4373,49 @@ def test_open_url_is_https_only():
 
 def test_open_url_offered_alongside_open_app():
     act = actions.Actuator(apps={"notes": "notepad.exe"})
+    assert act.can_open_urls is True
     names = [t["function"]["name"] for t in act.tools_schema()]
     assert names == ["open_app", "open_url"]
     assert "open_url" in act.describe()
+
+
+def test_games_play_keeps_disabled_and_unapproved_urls_inert():
+    import asyncio
+    import server
+
+    class RequestBody:
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        async def json(self):
+            return {"url": self.url}
+
+    class InertActuator:
+        def __init__(self, can_open_urls: bool) -> None:
+            self.can_open_urls = can_open_urls
+
+        def execute(self, *_args, **_kwargs):
+            raise AssertionError("disabled or unapproved game unexpectedly executed")
+
+    original = server.mind.actuator
+    try:
+        server.mind.actuator = InertActuator(False)
+        disabled = asyncio.run(
+            server.games_play(RequestBody("https://lichess.org/"))
+        )
+        assert disabled == {"ok": False, "error": "game launching is disabled"}
+        assert server.games()["can_open"] is False
+
+        server.mind.actuator = InertActuator(True)
+        unapproved = asyncio.run(
+            server.games_play(RequestBody("https://unapproved.example/"))
+        )
+        assert unapproved == {
+            "ok": False,
+            "error": "game url is not in the approved catalog",
+        }
+    finally:
+        server.mind.actuator = original
 
 
 # --- Hearing degrades gracefully ----------------------------------------------
@@ -5329,6 +5373,38 @@ def test_hf_qwen35_fallback_disables_thinking_for_companion_turns(monkeypatch):
     assert seen["extra_body"] == {
         "chat_template_kwargs": {"enable_thinking": False},
     }
+
+
+def test_hf_qwen35_retries_without_optional_parameters_on_provider_400(monkeypatch):
+    from types import SimpleNamespace
+    from alpecca import mind as mind_mod
+
+    class BadRequestError(RuntimeError):
+        response = SimpleNamespace(status_code=400)
+
+    calls = []
+
+    class FakeClient:
+        def chat_completion(self, **kwargs):
+            calls.append(kwargs)
+            if "extra_body" in kwargs:
+                raise BadRequestError("provider rejected optional parameters")
+            message = SimpleNamespace(content="cloud qwen compatibility reply")
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    llm = object.__new__(mind_mod._LLM)
+    llm._hf = FakeClient()
+    llm._last_call = {}
+    monkeypatch.setattr(mind_mod, "HF_MODEL", "Qwen/Qwen3.5-9B")
+
+    reply = llm._generate_hf("You are Alpecca.", "Are you there?")
+
+    assert reply == "cloud qwen compatibility reply"
+    assert len(calls) == 2
+    assert calls[0]["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    assert "extra_body" not in calls[1]
 
 
 def test_zerogpu_deep_tier_is_explicit_opt_in_only():

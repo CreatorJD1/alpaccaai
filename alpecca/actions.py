@@ -49,6 +49,11 @@ class Actuator:
         # on (which lets her find files for the person -- read-only).
         return bool(self.apps) or FilesCfg.ENABLED
 
+    @property
+    def can_open_urls(self) -> bool:
+        """Whether browser navigation was explicitly granted with app access."""
+        return bool(self.apps)
+
     def describe(self) -> str:
         """One line for the system prompt so she knows what she's been given."""
         bits = []
@@ -125,6 +130,10 @@ class Actuator:
         """Run one tool call, returning a short result string for the model.
         Every failure path returns words rather than raising -- the LLM relays
         the outcome to the person either way."""
+        if tool_name in {"open_app", "open_url"} and not self.apps:
+            return "app and website access isn't enabled"
+        if tool_name == "find_file" and not FilesCfg.ENABLED:
+            return "file search isn't enabled"
         if tool_name == "open_app":
             return self._open_app(str(args.get("name", "")).strip().lower())
         if tool_name == "open_url":

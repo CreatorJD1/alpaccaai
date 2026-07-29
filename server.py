@@ -7694,7 +7694,7 @@ def games() -> dict:
     """A small curated set of safe browser games she can play for fun. Her charter
     permits entertainment under supervision; she opens these with her https-only
     open_url tool, or you launch one here. (Edit the list in server.py to taste.)"""
-    return {"games": _GAMES, "can_open": mind.actuator.enabled}
+    return {"games": _GAMES, "can_open": mind.actuator.can_open_urls}
 
 
 @app.post("/games/play")
@@ -7708,9 +7708,12 @@ async def games_play(req: Request) -> dict:
     url = (b.get("url") or "").strip()
     if not url or not url.startswith("https://"):
         return {"ok": False, "error": "https game url required"}
+    if url not in {game["url"] for game in _GAMES}:
+        return {"ok": False, "error": "game url is not in the approved catalog"}
+    if not mind.actuator.can_open_urls:
+        return {"ok": False, "error": "game launching is disabled"}
     result = mind.actuator.execute("open_url", {"url": url})
-    return {"ok": "isn't" not in result.lower() and "only https" not in result.lower(),
-            "result": result}
+    return {"ok": result.startswith("opened https://"), "result": result}
 
 
 @app.post("/sight/push")

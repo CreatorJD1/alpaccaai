@@ -164,6 +164,7 @@ def test_flush_requires_fence_and_sends_exact_lease_headers(tmp_path: Path) -> N
     assert result == {"ok": True, "status": "stored", "pending": 0}
     assert seen["headers"]["X-alpecca-lease-id"] == "lease-7"
     assert seen["headers"]["X-alpecca-fencing-epoch"] == "7"
+    assert seen["headers"]["User-agent"] == "Alpecca-Continuity-Journal/1"
 
 
 def test_failed_flush_reuses_one_sealed_segment(tmp_path: Path) -> None:

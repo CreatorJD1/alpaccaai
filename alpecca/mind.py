@@ -1494,16 +1494,35 @@ class _LLM:
             hf_call["extra_body"] = {
                 "chat_template_kwargs": {"enable_thinking": False},
             }
+
+        def complete(**kwargs):
+            """Retry once without optional provider parameters on HTTP 400 only."""
+            try:
+                return self._hf.chat_completion(**kwargs)
+            except Exception as exc:
+                response = getattr(exc, "response", None)
+                status = getattr(response, "status_code", None)
+                bad_request = status == 400 or type(exc).__name__ == "BadRequestError"
+                if "extra_body" not in kwargs or not bad_request:
+                    raise
+                compatible = dict(kwargs)
+                compatible.pop("extra_body", None)
+                import sys
+                print(
+                    "[mind] HF provider rejected optional Qwen parameters; "
+                    "retrying the same model without them.",
+                    file=sys.stderr,
+                )
+                return self._hf.chat_completion(**compatible)
         try:
             if tools and on_tool:
                 # Offer the tools; if the model calls any, run them and let it
                 # fold the result into a final reply. Not every provider supports
                 # tools for every model, so fall back to a plain call on error.
                 try:
-                    resp = self._hf.chat_completion(
-                        **hf_call, tools=tools, tool_choice="auto")
+                    resp = complete(**hf_call, tools=tools, tool_choice="auto")
                 except Exception:
-                    resp = self._hf.chat_completion(**hf_call)
+                    resp = complete(**hf_call)
                 msg = resp.choices[0].message
                 # Same bounded multi-round chaining as the local path (see there).
                 rounds = max(1, ActionsCfg.MAX_TOOL_ROUNDS)
@@ -1574,9 +1593,9 @@ class _LLM:
                     if not last:
                         kw.update(tools=tools, tool_choice="auto")
                     try:
-                        resp = self._hf.chat_completion(**kw)
+                        resp = complete(**kw)
                     except Exception:
-                        resp = self._hf.chat_completion(**dict(hf_call, messages=messages))
+                        resp = complete(**dict(hf_call, messages=messages))
                     msg = resp.choices[0].message
                 self._mark_model_use(
                     requested="reason",
@@ -1588,7 +1607,7 @@ class _LLM:
                     return blocked_reply
                 content = getattr(msg, "content", "")
                 return strip_think(content or "")
-            resp = self._hf.chat_completion(**hf_call)
+            resp = complete(**hf_call)
             self._mark_model_use(
                 requested="reason",
                 used="reason",
