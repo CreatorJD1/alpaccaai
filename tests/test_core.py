@@ -5407,6 +5407,45 @@ def test_hf_qwen35_retries_without_optional_parameters_on_provider_400(monkeypat
     assert "extra_body" not in calls[1]
 
 
+def test_hf_qwen35_empty_compatibility_response_falls_back_cleanly(monkeypatch):
+    from types import SimpleNamespace
+    from alpecca import mind as mind_mod
+
+    class BadRequestError(RuntimeError):
+        response = SimpleNamespace(status_code=400)
+
+    calls = []
+
+    class FakeClient:
+        def chat_completion(self, **kwargs):
+            calls.append(kwargs)
+            if "extra_body" in kwargs:
+                raise BadRequestError("provider rejected optional parameters")
+            message = SimpleNamespace(content=None)
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    llm = object.__new__(mind_mod._LLM)
+    llm._hf = FakeClient()
+    llm._last_call = {}
+    monkeypatch.setattr(mind_mod, "HF_MODEL", "Qwen/Qwen3.5-9B")
+    monkeypatch.setattr(
+        mind_mod._LLM,
+        "_fallback",
+        lambda self, *_args, **kwargs: f"fallback: {kwargs['error']}",
+    )
+
+    reply = llm._generate_hf("You are Alpecca.", "Are you there?")
+
+    assert reply == (
+        "fallback: Hugging Face provider returned an empty text response"
+    )
+    assert len(calls) == 2
+    assert llm._last_call["fallback"] is True
+    assert llm._last_call["error"] == (
+        "Hugging Face provider returned an empty text response"
+    )
+
+
 def test_zerogpu_deep_tier_is_explicit_opt_in_only():
     # ZeroGPU is supported, but it is a named booster she reaches for only when
     # the owner configured both the backend and a Space. It must not become the

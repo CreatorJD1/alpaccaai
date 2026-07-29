@@ -1606,7 +1606,11 @@ class _LLM:
                 if blocked_reply is not None:
                     return blocked_reply
                 content = getattr(msg, "content", "")
-                return strip_think(content or "")
+                if not isinstance(content, str) or not content.strip():
+                    raise RuntimeError(
+                        "Hugging Face provider returned an empty text response"
+                    )
+                return strip_think(content)
             resp = complete(**hf_call)
             self._mark_model_use(
                 requested="reason",
@@ -1614,7 +1618,12 @@ class _LLM:
                 backend="hf",
                 model=HF_MODEL,
             )
-            return strip_think(resp.choices[0].message.content)
+            content = getattr(resp.choices[0].message, "content", None)
+            if not isinstance(content, str) or not content.strip():
+                raise RuntimeError(
+                    "Hugging Face provider returned an empty text response"
+                )
+            return strip_think(content)
         except Exception as exc:
             import sys
             print(f"[mind] HF cloud call failed -> echo. model={HF_MODEL} "
