@@ -228,7 +228,13 @@ def test_fetch_and_merge_remote_segments(tmp_path: Path) -> None:
 
     def opener(_request, timeout):
         assert timeout == 3.0
-        return _Response({"ok": True, "envelopes": [envelope]})
+        assert "cursor=0" in _request.full_url
+        assert "limit=8" in _request.full_url
+        return _Response({
+            "ok": True,
+            "envelopes": [envelope],
+            "next_cursor": None,
+        })
 
     result = continuity_journal.fetch_and_merge(
         "https://vault.example", "t" * 24, SECRET,
@@ -239,3 +245,84 @@ def test_fetch_and_merge_remote_segments(tmp_path: Path) -> None:
     assert result["merged"] == 1
     with sqlite3.connect(target) as conn:
         assert conn.execute("SELECT content FROM memories").fetchone()[0] == "cloud-created memory"
+
+
+def test_fetch_and_merge_pages_without_buffering_all_segments(tmp_path: Path) -> None:
+    source = _db(tmp_path / "source.db")
+    target = _db(tmp_path / "target.db")
+    envelopes = []
+    for index in range(2):
+        continuity_journal.capture_event(
+            "memory",
+            {"content": f"paged memory {index}", "salience": 0.8},
+            db_path=source,
+        )
+        envelope = continuity_journal.seal_pending(SECRET, db_path=source)
+        assert envelope is not None
+        envelopes.append(envelope)
+        continuity_journal.mark_segment_uploaded(envelope, db_path=source)
+
+    requested: list[str] = []
+
+    def opener(request, timeout):
+        assert timeout == 3.0
+        requested.append(request.full_url)
+        if "cursor=0" in request.full_url:
+            return _Response({
+                "ok": True,
+                "envelopes": [envelopes[0]],
+                "next_cursor": 1,
+            })
+        assert "cursor=1" in request.full_url
+        return _Response({
+            "ok": True,
+            "envelopes": [envelopes[1]],
+            "next_cursor": None,
+        })
+
+    result = continuity_journal.fetch_and_merge(
+        "https://vault.example",
+        "t" * 24,
+        SECRET,
+        db_path=target,
+        timeout=3.0,
+        opener=opener,
+    )
+
+    assert result == {
+        "ok": True,
+        "status": "merged",
+        "merged": 2,
+        "duplicates": 0,
+        "quarantined": 0,
+        "pages": 2,
+    }
+    assert len(requested) == 2
+    with sqlite3.connect(target) as conn:
+        assert [row[0] for row in conn.execute(
+            "SELECT content FROM memories ORDER BY content"
+        )] == ["paged memory 0", "paged memory 1"]
+
+
+def test_fetch_segments_rejects_a_non_advancing_remote_cursor() -> None:
+    def opener(_request, timeout):
+        assert timeout == 8.0
+        return _Response({
+            "ok": True,
+            "envelopes": [],
+            "next_cursor": 0,
+        })
+
+    result = continuity_journal.fetch_segments(
+        "https://vault.example",
+        "t" * 24,
+        SECRET,
+        cursor=0,
+        opener=opener,
+    )
+
+    assert result == {
+        "ok": False,
+        "status": "invalid_response",
+        "envelopes": [],
+    }

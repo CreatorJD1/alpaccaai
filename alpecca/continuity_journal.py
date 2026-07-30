@@ -35,6 +35,9 @@ ALGORITHM = "AES-256-GCM"
 MAX_EVENTS_PER_SEGMENT = 128
 MAX_PLAINTEXT_BYTES = 2 * 1024 * 1024
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+FETCH_PAGE_SEGMENTS = 8
+MAX_FETCH_PAGES = 64
+MAX_REMOTE_EVENT_SEGMENTS = 256
 _NONCE_BYTES = 12
 _DOMAIN = b"Alpecca continuity event journal v1\x00"
 _suppress_capture: ContextVar[bool] = ContextVar("continuity_capture_suppressed", default=False)
@@ -537,10 +540,21 @@ def flush_pending(
 
 def fetch_segments(
     cloud_url: str, token: str, secret: str | bytes, *,
+    cursor: int = 0, limit: int = FETCH_PAGE_SEGMENTS,
     timeout: float = 8.0, opener=None,
 ) -> dict[str, object]:
+    if (
+        isinstance(cursor, bool)
+        or not isinstance(cursor, int)
+        or not 0 <= cursor <= MAX_REMOTE_EVENT_SEGMENTS
+        or isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 1 <= limit <= FETCH_PAGE_SEGMENTS
+    ):
+        return {"ok": False, "status": "invalid_page", "envelopes": []}
+    query = urllib.parse.urlencode({"cursor": cursor, "limit": limit})
     request = urllib.request.Request(
-        endpoint(cloud_url, "/events/latest"),
+        endpoint(cloud_url, "/events/latest") + "?" + query,
         headers=_headers(token, secret), method="GET",
     )
     try:
@@ -548,7 +562,12 @@ def fetch_segments(
             raw = response.read(MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            return {"ok": True, "status": "empty", "envelopes": []}
+            return {
+                "ok": True,
+                "status": "empty",
+                "envelopes": [],
+                "next_cursor": None,
+            }
         return {"ok": False, "status": "rejected", "envelopes": []}
     except (OSError, urllib.error.URLError, TimeoutError):
         return {"ok": False, "status": "transport_failed", "envelopes": []}
@@ -561,27 +580,65 @@ def fetch_segments(
         return {"ok": False, "status": "invalid_response", "envelopes": []}
     if not isinstance(envelopes, list):
         return {"ok": False, "status": "invalid_response", "envelopes": []}
-    return {"ok": True, "status": "fetched", "envelopes": envelopes}
+    next_cursor = body.get("next_cursor")
+    if next_cursor is not None and (
+        isinstance(next_cursor, bool)
+        or not isinstance(next_cursor, int)
+        or not cursor < next_cursor <= MAX_REMOTE_EVENT_SEGMENTS
+    ):
+        return {"ok": False, "status": "invalid_response", "envelopes": []}
+    return {
+        "ok": True,
+        "status": "fetched",
+        "envelopes": envelopes,
+        "next_cursor": next_cursor,
+    }
 
 
 def fetch_and_merge(
     cloud_url: str, token: str, secret: str | bytes, *,
     db_path: Path = DB_PATH, timeout: float = 8.0, opener=None,
 ) -> dict[str, object]:
-    fetched = fetch_segments(cloud_url, token, secret, timeout=timeout, opener=opener)
-    if not fetched.get("ok"):
-        return fetched
     totals = {"merged": 0, "duplicates": 0, "quarantined": 0}
-    for envelope in fetched.get("envelopes", []):
-        try:
-            events = unseal_segment(envelope, secret)
-        except VaultError:
-            totals["quarantined"] += 1
-            continue
-        result = merge_events(events, db_path=db_path)
-        for key in totals:
-            totals[key] += result[key]
-    return {"ok": totals["quarantined"] == 0, "status": "merged", **totals}
+    cursor = 0
+    pages = 0
+    while pages < MAX_FETCH_PAGES:
+        fetched = fetch_segments(
+            cloud_url,
+            token,
+            secret,
+            cursor=cursor,
+            limit=FETCH_PAGE_SEGMENTS,
+            timeout=timeout,
+            opener=opener,
+        )
+        if not fetched.get("ok"):
+            return {**fetched, **totals, "pages": pages}
+        pages += 1
+        for envelope in fetched.get("envelopes", []):
+            try:
+                events = unseal_segment(envelope, secret)
+            except VaultError:
+                totals["quarantined"] += 1
+                continue
+            result = merge_events(events, db_path=db_path)
+            for key in totals:
+                totals[key] += result[key]
+        next_cursor = fetched.get("next_cursor")
+        if next_cursor is None:
+            return {
+                "ok": totals["quarantined"] == 0,
+                "status": "merged",
+                **totals,
+                "pages": pages,
+            }
+        cursor = int(next_cursor)
+    return {
+        "ok": False,
+        "status": "page_limit_exceeded",
+        **totals,
+        "pages": pages,
+    }
 
 
 __all__ = [

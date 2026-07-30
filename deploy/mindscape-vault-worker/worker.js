@@ -15,6 +15,10 @@ const SNAPSHOT_RETENTION = 48;
 const ARCHIVE_RETENTION = 8;
 const MAX_EVENT_BYTES = 4 * 1024 * 1024;
 const MAX_EVENT_SEGMENTS = 256;
+const DEFAULT_EVENT_PAGE_SEGMENTS = 8;
+const MAX_EVENT_PAGE_SEGMENTS = 32;
+const MAX_EVENT_PAGE_BYTES = 3 * 1024 * 1024;
+const MAX_LISTED_OBJECTS = 1000;
 const ID_RE = /^[a-f0-9]{32}$/;
 const HEX_64_RE = /^[a-f0-9]{64}$/;
 const KEY_ID_RE = /^[a-f0-9]{24}$/;
@@ -29,12 +33,25 @@ function json(data, status = 200) {
   });
 }
 
-function authorized(request, env) {
+async function timingSafeSecretEqual(candidate, expected) {
+  const encoder = new TextEncoder();
+  const [candidateHash, expectedHash] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(candidate)),
+    crypto.subtle.digest("SHA-256", encoder.encode(expected)),
+  ]);
+  return crypto.subtle.timingSafeEqual(candidateHash, expectedHash);
+}
+
+async function authorized(request, env) {
   const expected = env.MINDSCAPE_VAULT_TOKEN || "";
   if (!expected) return false;
   const bearer = request.headers.get("authorization") || "";
   const explicit = request.headers.get("x-alpecca-mindscape-vault-token") || "";
-  return bearer === `Bearer ${expected}` || explicit === expected;
+  const [bearerMatch, explicitMatch] = await Promise.all([
+    timingSafeSecretEqual(bearer, `Bearer ${expected}`),
+    timingSafeSecretEqual(explicit, expected),
+  ]);
+  return bearerMatch || explicitMatch;
 }
 
 function byteLength(text) {
@@ -199,12 +216,23 @@ async function immutablePut(env, key, value, metadata, contentType) {
 
 async function listObjects(env, kind, scope) {
   const prefix = `v1/${scope}/${kind}/`;
-  const result = await env.MINDSCAPE_VAULT_ARCHIVE.list({
-    prefix,
-    limit: 1000,
-    include: ["customMetadata"],
-  });
-  return result.objects
+  const objects = [];
+  let cursor;
+  while (objects.length < MAX_LISTED_OBJECTS) {
+    const result = await env.MINDSCAPE_VAULT_ARCHIVE.list({
+      prefix,
+      limit: Math.min(1000, MAX_LISTED_OBJECTS - objects.length),
+      include: ["customMetadata"],
+      ...(cursor ? { cursor } : {}),
+    });
+    objects.push(...result.objects);
+    if (!result.truncated) break;
+    if (!result.cursor || result.cursor === cursor) {
+      throw new Error("R2 listing cursor did not advance");
+    }
+    cursor = result.cursor;
+  }
+  return objects
     .filter((object) => object.customMetadata?.kind === kind && object.customMetadata?.scope === scope)
     // A local database restore can legitimately introduce a different writer
     // id with its own sequence counter.  The authenticated creation timestamp
@@ -309,22 +337,59 @@ async function uploadEvents(request, env) {
 async function downloadEvents(request, env) {
   const scope = requestedScope(request);
   if (!scope) return json({ ok: false, error: "valid vault scope is required" }, 400);
+  const url = new URL(request.url);
+  const rawCursor = url.searchParams.get("cursor") || "0";
+  const rawLimit = url.searchParams.get("limit") || String(DEFAULT_EVENT_PAGE_SEGMENTS);
+  if (!/^(0|[1-9][0-9]*)$/.test(rawCursor) || !/^[1-9][0-9]*$/.test(rawLimit)) {
+    return json({ ok: false, error: "invalid event page" }, 400);
+  }
+  const cursor = Number(rawCursor);
+  const limit = Number(rawLimit);
+  if (!Number.isSafeInteger(cursor) || cursor > MAX_EVENT_SEGMENTS ||
+      !Number.isSafeInteger(limit) || limit > MAX_EVENT_PAGE_SEGMENTS) {
+    return json({ ok: false, error: "invalid event page" }, 400);
+  }
   const objects = await listObjects(env, EVENT_KIND, scope);
   const selected = objects.slice(0, MAX_EVENT_SEGMENTS).reverse();
   const envelopes = [];
-  for (const object of selected) {
+  let scanned = cursor;
+  let responseBytes = 512;
+  for (let index = cursor; index < selected.length && envelopes.length < limit; index += 1) {
+    const object = selected[index];
     const stored = await env.MINDSCAPE_VAULT_ARCHIVE.get(object.key);
+    scanned = index + 1;
     if (!stored) continue;
     try {
       const envelope = await stored.json();
-      if (validateEventEnvelope(envelope).ok) envelopes.push(envelope);
+      if (!validateEventEnvelope(envelope).ok) continue;
+      const envelopeBytes = byteLength(JSON.stringify(envelope)) + 1;
+      if (responseBytes + envelopeBytes > MAX_EVENT_PAGE_BYTES) {
+        scanned = index;
+        if (!envelopes.length) {
+          return json({ ok: false, error: "event segment exceeds page size" }, 413);
+        }
+        break;
+      }
+      envelopes.push(envelope);
+      responseBytes += envelopeBytes;
     } catch (_error) {
       // Corrupt or partial objects are omitted; client-side authentication is
       // still authoritative and will reject any malformed returned envelope.
     }
   }
   if (!envelopes.length) return json({ ok: false, error: "no event segments stored" }, 404);
-  return json({ ok: true, status: "fetched", envelopes });
+  return json({
+    ok: true,
+    status: "fetched",
+    envelopes,
+    next_cursor: scanned < selected.length ? scanned : null,
+    page: {
+      cursor,
+      returned: envelopes.length,
+      selected_total: selected.length,
+      max_bytes: MAX_EVENT_PAGE_BYTES,
+    },
+  });
 }
 
 function requestedScope(request) {
@@ -477,7 +542,7 @@ export default {
     if (!env.MINDSCAPE_VAULT_ARCHIVE) {
       return json({ ok: false, error: "MINDSCAPE_VAULT_ARCHIVE binding missing" }, 500);
     }
-    if (!authorized(request, env)) return json({ ok: false, error: "unauthorized" }, 401);
+    if (!(await authorized(request, env))) return json({ ok: false, error: "unauthorized" }, 401);
     const path = new URL(request.url).pathname;
     if (request.method === "POST" && path === "/v1/snapshot") return uploadSnapshot(request, env);
     if (request.method === "GET" && path === "/v1/snapshot/latest") return downloadSnapshot(request, env);
