@@ -48,6 +48,7 @@ _last_engine = ""
 _last_error = ""
 _last_modulation: dict = {}
 _voice_reference_cache: dict | None = None
+_voice_reference_source = ""
 _cloud_tts_client = CloudTTSClient.from_env(
     {
         CLOUD_TTS_ENDPOINT_ENV: CLOUD_TTS_ENDPOINT,
@@ -74,25 +75,57 @@ _kokoro_metrics = {
 # (its strength). This cutoff (0..1, on max(intensity, arousal)) tunes the mix;
 # lower = more F5, higher = more Kokoro.
 VOICE_MIX_INTENSITY = float(os.environ.get("ALPECCA_VOICE_MIX_INTENSITY", "0.6"))
-_VOICE_REFERENCE_PATH = (
+_LOCAL_VOICE_REFERENCE_PATH = (
     Path(__file__).resolve().parents[1]
     / "data"
     / "voice_references"
     / "alpecca_voice_personality_profile.json"
 )
+_PACKAGED_VOICE_REFERENCE_PATH = (
+    Path(__file__).resolve().parent
+    / "resources"
+    / "voice"
+    / "alpecca_voice_personality_profile.json"
+)
 
 
 def _voice_reference() -> dict:
-    """Processed Jason-provided voice/personality target, if available."""
-    global _voice_reference_cache
+    """Load the local detailed profile or the portable identity contract.
+
+    Audio stays outside the source tree.  The packaged fallback contains only
+    bounded voice-behaviour metadata, so every deployment keeps Alpecca's
+    modulation contract without claiming that reference audio is installed.
+    """
+    global _voice_reference_cache, _voice_reference_source
     if _voice_reference_cache is not None:
         return _voice_reference_cache
-    try:
-        payload = json.loads(_VOICE_REFERENCE_PATH.read_text(encoding="utf-8"))
-        profile = payload.get("profile") if isinstance(payload, dict) else {}
-        _voice_reference_cache = profile if isinstance(profile, dict) else {}
-    except Exception:
-        _voice_reference_cache = {}
+    configured = os.environ.get("ALPECCA_VOICE_REFERENCE_PROFILE", "").strip()
+    candidates = []
+    if configured:
+        configured_path = Path(configured)
+        candidates.append(
+            configured_path
+            if configured_path.is_absolute()
+            else Path(__file__).resolve().parents[1] / configured_path
+        )
+    candidates.extend((_LOCAL_VOICE_REFERENCE_PATH, _PACKAGED_VOICE_REFERENCE_PATH))
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            profile = payload.get("profile") if isinstance(payload, dict) else {}
+            if isinstance(profile, dict) and profile:
+                _voice_reference_cache = profile
+                _voice_reference_source = str(path)
+                return _voice_reference_cache
+        except (OSError, ValueError, TypeError):
+            continue
+    _voice_reference_cache = {}
+    _voice_reference_source = ""
     return _voice_reference_cache
 
 
@@ -400,6 +433,7 @@ def voice_state(state=None) -> dict:
         "identity_lock": dyn["identity_lock"],
         "profile": dyn["profile"],
         "reference_profile_loaded": dyn.get("reference_loaded", False),
+        "reference_profile_source": _voice_reference_source,
         "modulation_strength": dyn.get("modulation_strength", 1.0),
         "reference_target": _voice_reference().get("target_quality", {}),
         "house_hq_embodiment_reference": _voice_reference().get("house_hq_embodiment_reference", {}),

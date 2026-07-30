@@ -39,6 +39,12 @@ from config import (
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_VENV_PYTHON = ROOT / ".venv-f5-tts" / "Scripts" / "python.exe"
 READY_SAMPLE = ROOT / "data" / "voice_references" / "generated_samples" / "alpecca_f5_open_tts_sample.wav"
+PACKAGED_REFERENCE_MANIFEST = (
+    Path(__file__).resolve().parent
+    / "resources"
+    / "voice"
+    / "alpecca_open_tts_refs.json"
+)
 LOCAL_MODEL_DIR = Path(OPEN_TTS_LOCAL_MODEL_DIR)
 LOCAL_CKPT = LOCAL_MODEL_DIR / "model_1250000.safetensors"
 LOCAL_VOCAB = LOCAL_MODEL_DIR / "vocab.txt"
@@ -77,15 +83,40 @@ def _voice_controls(state=None) -> dict:
     }
 
 
+def _manifest_candidates() -> list[Path]:
+    configured = Path(OPEN_TTS_REFERENCE_MANIFEST)
+    if not configured.is_absolute():
+        configured = ROOT / configured
+    candidates = [configured, PACKAGED_REFERENCE_MANIFEST]
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate.resolve())
+        if key not in seen:
+            unique.append(candidate)
+            seen.add(key)
+    return unique
+
+
+def _load_manifest_with_source() -> tuple[dict, Path | None]:
+    for path in _manifest_candidates():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict) and isinstance(payload.get("references"), list):
+                return payload, path
+        except (OSError, ValueError, TypeError):
+            continue
+    return {}, None
+
+
 def _load_manifest() -> dict:
-    path = Path(OPEN_TTS_REFERENCE_MANIFEST)
-    if not path.is_absolute():
-        path = ROOT / path
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        return payload if isinstance(payload, dict) else {}
-    except Exception:
-        return {}
+    manifest, _ = _load_manifest_with_source()
+    return manifest
+
+
+def _reference_audio_path(reference: dict) -> Path:
+    path = Path(str(reference.get("audio") or ""))
+    return path if path.is_absolute() else ROOT / path
 
 
 def _emotion_primary(state) -> str:
@@ -349,8 +380,10 @@ def ready() -> bool:
 
 
 def status() -> dict:
-    manifest = _load_manifest()
+    manifest, manifest_path = _load_manifest_with_source()
     refs = manifest.get("references", []) if isinstance(manifest.get("references"), list) else []
+    configured_refs = [r for r in refs if isinstance(r, dict) and r.get("audio")]
+    available_refs = [r for r in configured_refs if _reference_audio_path(r).is_file()]
     return {
         "engine": OPEN_TTS_ENGINE,
         "f5_available": bool(_f5_cli()),
@@ -360,8 +393,11 @@ def status() -> dict:
         "nfe_step": OPEN_TTS_NFE_STEP,
         "cache": _f5_model_cache_status(),
         "worker": _worker_health(),
-        "manifest": str(Path(OPEN_TTS_REFERENCE_MANIFEST)),
-        "references": len([r for r in refs if isinstance(r, dict) and r.get("audio")]),
+        "manifest": str(manifest_path or Path(OPEN_TTS_REFERENCE_MANIFEST)),
+        "configured_manifest": str(Path(OPEN_TTS_REFERENCE_MANIFEST)),
+        "references": len(configured_refs),
+        "available_references": len(available_refs),
+        "reference_audio_ready": bool(available_refs),
         "default": manifest.get("default", ""),
         "last_engine": _last_engine,
         "last_error": _last_error,

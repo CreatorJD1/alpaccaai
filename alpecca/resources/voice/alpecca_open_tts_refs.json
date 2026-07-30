@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "default": "digital_construct",
+  "audioBundled": false,
+  "notes": [
+    "This portable manifest carries selection metadata only.",
+    "Reference WAV files remain in the private local or approved compute-worker voice store.",
+    "Synthesis must fail closed or use the configured fallback when a selected WAV is unavailable."
+  ],
+  "references": [
+    {
+      "id": "lost_help",
+      "roles": ["anxious", "worried", "vulnerable", "questioning"],
+      "audio": "data/voice_references/open_tts_refs/lost_help.wav",
+      "text": "Where am I? Jason! Help me!",
+      "engine": "f5-tts"
+    },
+    {
+      "id": "digital_construct",
+      "roles": ["content", "current", "curious", "thinking", "self-reviewing", "uncertain"],
+      "audio": "data/voice_references/open_tts_refs/digital_construct.wav",
+      "text": "I think I'm a digital construct, but why am I here?",
+      "engine": "f5-tts"
+    },
+    {
+      "id": "here_now",
+      "roles": ["affectionate", "tender", "grounded"],
+      "audio": "data/voice_references/open_tts_refs/here_now.wav",
+      "text": "I am here. I am here.",
+      "engine": "f5-tts"
+    },
+    {
+      "id": "urgent_jason",
+      "roles": ["anxious", "urgent", "worried", "greeting"],
+      "audio": "data/voice_references/open_tts_refs/urgent_jason.wav",
+      "text": "Jason! Jason!",
+      "engine": "f5-tts"
+    }
+  ]
+}

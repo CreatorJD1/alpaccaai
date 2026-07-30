@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "profile": {
+    "identity": "Alpecca portable voice identity contract",
+    "speaker_lock": "Kokoro af_heart remains the base voice; emotion may modulate delivery without replacing her identity.",
+    "target_quality": {
+      "voice": "soft, close, emotionally present, feminine and gently animated",
+      "interaction": "directly responsive, grounded in current input, and curious without inventing events",
+      "visualization": "readable embodied presence with expression and mouth timing tied to actual playback"
+    },
+    "acoustic_summary": {
+      "median_f0_hz": 204.6761,
+      "profile_kind": "portable-metadata-only",
+      "reference_audio_bundled": false
+    },
+    "tts_guidance": {
+      "kokoro_voice": "af_heart",
+      "identity_lock": true,
+      "prefer_server_voice": true,
+      "browser_fallback_allowed": false
+    }
+  }
+}

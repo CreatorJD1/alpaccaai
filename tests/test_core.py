@@ -16,6 +16,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import pytest
+
 # Direct ASGI imports in this canonical local suite must not inherit a live
 # cross-host continuity deployment. Dedicated fencing tests supply their own
 # process environments and continue to exercise the production guard.
@@ -954,6 +956,19 @@ def test_open_tts_reference_manifest_selects_emotional_clip():
     assert "Jason" in anxious["text"]
     assert tender["id"] == "here_now"
     assert Path(tender["audio"]).suffix == ".wav"
+
+
+def test_open_tts_status_separates_configured_refs_from_available_audio(monkeypatch):
+    from alpecca import open_tts
+
+    monkeypatch.setattr(open_tts, "_f5_cli", lambda: None)
+    monkeypatch.setattr(open_tts, "_worker_health", lambda: {"ready": False})
+    monkeypatch.setattr(open_tts, "_f5_model_cache_status", lambda: {})
+    voice_status = open_tts.status()
+    assert voice_status["references"] >= 4
+    assert 0 <= voice_status["available_references"] <= voice_status["references"]
+    assert voice_status["reference_audio_ready"] is bool(voice_status["available_references"])
+    assert Path(voice_status["manifest"]).is_file()
 
 
 def test_tts_auto_mixes_f5_clone_and_kokoro_by_emotion(monkeypatch):
@@ -2333,6 +2348,9 @@ def test_stage4_resumable_colab_worker_uploads_after_each_tile():
 
 def test_stage4_first_slice_packages_16_sector_turnaround_and_full_loop():
     root = Path(__file__).resolve().parent.parent
+    queue = root / "output" / "alpecca_stage4_tile_jobs" / "stage4_generation_queue.json"
+    if not queue.exists():
+        pytest.skip("requires the local or Hugging Face Stage 4 worker queue")
     subprocess.run(
         [sys.executable, "scripts/build_alpecca_stage4_first_slice.py", "--frame-index", "0"],
         cwd=root,
@@ -2366,6 +2384,16 @@ def test_stage4_first_slice_packages_16_sector_turnaround_and_full_loop():
 
 def test_stage4_turnaround_qa_reports_all_16_sectors_before_import():
     root = Path(__file__).resolve().parent.parent
+    queue = root / "output" / "alpecca_stage4_tile_jobs" / "stage4_generation_queue.json"
+    if not queue.exists():
+        pytest.skip("requires the local or Hugging Face Stage 4 worker queue")
+    subprocess.run(
+        [sys.executable, "scripts/build_alpecca_stage4_first_slice.py", "--frame-index", "0"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
     manifest = root / "output" / "alpecca_stage4_tile_jobs" / "first_slices" / "idle_eye_16sector_frame000_turnaround" / "tile_job_manifest.json"
     out_root = root / "output" / "test_stage4_turnaround_qa"
     result = subprocess.run(
@@ -2600,6 +2628,13 @@ def test_stage4_returned_slice_runner_targets_first_16_sector_proof():
 
 def test_stage4_sector_contract_audit_passes_for_drive_360_queue():
     root = Path(__file__).resolve().parent.parent
+    required = (
+        root / "data" / "alpecca_art_source" / "generation_queue.json",
+        root / "data" / "alpecca_art_source" / "external_360_references" / "manifest.json",
+        root / "output" / "alpecca_stage4_tile_jobs" / "stage4_generation_queue.json",
+    )
+    if any(not path.exists() for path in required):
+        pytest.skip("requires local or Hugging Face Stage 4 source and worker artifacts")
     result = subprocess.run(
         [
             sys.executable,
