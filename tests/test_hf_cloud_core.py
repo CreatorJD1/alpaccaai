@@ -29,6 +29,10 @@ def test_cloud_core_uses_hosted_qwen35_and_keeps_private_capabilities_off():
     assert env["ALPECCA_HF_MODEL"] == "Qwen/Qwen3.5-9B"
     assert env["ALPECCA_HF_FALLBACK_MODEL"] == "@cf/google/gemma-4-26b-a4b-it"
     assert env["ALPECCA_HF_FAILURE_COOLDOWN"] == "900"
+    assert env["ALPECCA_HISTORY_MESSAGES"] == "96"
+    assert env["ALPECCA_CHAT_CLOUD_PAGED_MEMORY"] == "1"
+    assert env["ALPECCA_NUM_CTX"] == "30000"
+    assert env["ALPECCA_CLOUD_NUM_CTX"] == "30000"
     assert env["ALPECCA_MODEL"] == "qwen3.5:9b"
     assert ("qwen3" + ":8b") not in repr(env)
     assert env["ALPECCA_REFLECT_THINK"] == "0"

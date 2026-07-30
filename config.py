@@ -81,9 +81,11 @@ OLLAMA_NUM_PREDICT = int(os.environ.get("ALPECCA_NUM_PREDICT", "80"))
 
 # How many recent chat messages ride along with every reply -- HER WORKING
 # MEMORY of the conversation. This, not num_ctx, is what makes her feel
-# forgetful: the model can only remember what we actually send it. 24 messages
-# = 12 exchanges (~1-2K tokens), comfortably inside even the local 8K window.
-HISTORY_MESSAGES = int(os.environ.get("ALPECCA_HISTORY_MESSAGES", "24"))
+# forgetful: the model can only remember what we actually send it. Keep the
+# persisted 96-message ceiling available to cloud-safe turns; exact fitting
+# still drops oldest text before a request exceeds its 30K token budget, while
+# private/local turns retain their own smaller context limit.
+HISTORY_MESSAGES = int(os.environ.get("ALPECCA_HISTORY_MESSAGES", "96"))
 
 # --- Hybrid chat: cloud-first replies, local always as the net ---------------
 # Set ALPECCA_CHAT_CLOUD_MODEL to a hosted Ollama cloud model (needs `ollama
@@ -109,8 +111,9 @@ CHAT_CLOUD_PAGED_MEMORY = os.environ.get(
     "ALPECCA_CHAT_CLOUD_PAGED_MEMORY", "0"
 ) not in ("", "0", "false", "False")
 # Context window for cloud chat calls -- hosted models take big windows
-# without eating local RAM, so her conversational memory can run deep.
-CLOUD_NUM_CTX = int(os.environ.get("ALPECCA_CLOUD_NUM_CTX", "32768"))
+# without eating local RAM, so her shared creator conversation can run deep.
+# This is the 30K working window used by cloud-safe House HQ and Discord text.
+CLOUD_NUM_CTX = int(os.environ.get("ALPECCA_CLOUD_NUM_CTX", "30000"))
 
 # --- Streamed replies: show her words as they generate ----------------------
 # The home app displays a live DRAFT of her reply token by token, then replaces
