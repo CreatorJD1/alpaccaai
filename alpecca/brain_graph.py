@@ -803,6 +803,18 @@ def _probe_speaker_worker(facts: Mapping[str, Any]) -> ProbeResult:
             None,
             ("facts.speaker_worker",),
         )
+    if status.get("status") == "unavailable":
+        return ProbeResult(
+            "unfinished",
+            "The bounded CPU speaker-familiarity backend reported unavailable.",
+            35,
+            (
+                "speaker_worker.status=unavailable",
+                "speaker_worker.purpose=familiarity-only",
+                "speaker_worker.may_authenticate=false",
+                "speaker_worker.may_grant_authority=false",
+            ),
+        )
     return ProbeResult(
         "healthy",
         "The CPU speaker-familiarity worker reported bounded non-authoritative status.",

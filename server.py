@@ -139,6 +139,7 @@ from alpecca import hearing
 from alpecca import avatar as avatar_mod
 from alpecca import computer as computer_mod
 from alpecca import runtime_status as runtime_status_mod
+from alpecca import research_runtime as research_runtime_mod
 from alpecca import rog_worker_client as rog_worker_client_mod
 from alpecca import rog_worker_runtime as rog_worker_runtime_mod
 from alpecca import rog_remote_admin as rog_remote_admin_mod
@@ -8454,6 +8455,7 @@ def brain_graph() -> dict:
         "creator_password_configured": _AUTHORITY.password_configured,
         # FastAPI executes this synchronous route in its worker thread.
         "pagefile_evidence": _collect_pagefile_live_evidence(),
+        **research_runtime_mod.brain_graph_facts(),
     }
     return brain_graph_mod.build_snapshot(facts)
 

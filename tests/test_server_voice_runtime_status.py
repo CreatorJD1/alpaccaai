@@ -188,6 +188,15 @@ def test_brain_graph_receives_the_exact_strict_runtime_snapshot(monkeypatch):
     monkeypatch.setattr(server, "_discord_bot_token", lambda: "")
     monkeypatch.setattr(server, "DISCORD_CLIENT_ID", "")
     monkeypatch.setattr(server, "_collect_pagefile_live_evidence", lambda: {})
+    research = {
+        "video_companion": {"available": False},
+        "asr_dispatch": {"schema": "alpecca.asr-dispatch-status.v1"},
+    }
+    monkeypatch.setattr(
+        server.research_runtime_mod,
+        "brain_graph_facts",
+        lambda: research,
+    )
     monkeypatch.setattr(
         server.socket,
         "create_connection",
@@ -202,3 +211,5 @@ def test_brain_graph_receives_the_exact_strict_runtime_snapshot(monkeypatch):
 
     assert server.brain_graph() == {"ok": True}
     assert captured["voice_runtime"] is strict_voice
+    assert captured["video_companion"] == {"available": False}
+    assert captured["asr_dispatch"] == {"schema": "alpecca.asr-dispatch-status.v1"}
