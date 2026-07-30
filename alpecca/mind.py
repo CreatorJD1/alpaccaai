@@ -6394,18 +6394,17 @@ class CoreMind:
             and SOUL_LLM
             and self.llm.local_inference_available(self.llm.model_for("fast"))
         )
-        remote_model_ready = bool(
+        remote_model_configured = bool(
             textual_requested
             and SOUL_LLM
             and SOUL_LLM_REMOTE
             and self.llm.is_cloud()
-            and self.llm.online
         )
         runtime_record = soul_runtime_mod.evaluate_compact_plan(
             compact_plan,
             textual_deliberator=(
                 self._soul_textual_deliberator
-                if local_model_ready or remote_model_ready
+                if local_model_ready or remote_model_configured
                 else None
             ),
         )

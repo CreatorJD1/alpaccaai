@@ -158,6 +158,47 @@ def test_hosted_selective_soul_receives_only_the_bounded_numeric_slate(
     assert "snapshot" not in serialized
 
 
+def test_hosted_selective_soul_attempts_configured_route_without_racy_online_precheck(
+    monkeypatch,
+) -> None:
+    from alpecca import cognition as cognition_mod
+    from alpecca import mind as mind_mod
+    from alpecca import soul as soul_mod
+
+    calls: list[dict[str, object]] = []
+
+    def generate(_system_prompt: str, _user_msg: str, **kwargs) -> str:
+        calls.append(dict(kwargs))
+        return json.dumps({
+            "selected_role": "Feeler",
+            "reason": "The bounded high-affect slate keeps welfare first.",
+        })
+
+    instance = mind_mod.CoreMind.__new__(mind_mod.CoreMind)
+    instance._soul_snapshot = lambda: soul_mod.snapshot(
+        EmotionalState(fear=0.85),
+        solitude_s=300,
+    )
+    instance._location = "studio"
+    instance._last_soul_runtime = {}
+    instance.llm = SimpleNamespace(
+        online=False,
+        is_cloud=lambda: True,
+        model_for=lambda _tier: "hosted-test-model",
+        local_inference_available=lambda _model: False,
+        generate=generate,
+    )
+    monkeypatch.setattr(mind_mod, "SOUL_LLM", True)
+    monkeypatch.setattr(mind_mod, "SOUL_LLM_REMOTE", True)
+    monkeypatch.setattr(cognition_mod, "record_observation", lambda _item: None)
+
+    plan = instance.soul_state(details=False, textual_deliberation=True)
+
+    assert plan["soul_runtime"]["outcome"] == "textual_selection"
+    assert plan["soul_runtime"]["callback_invoked"] is True
+    assert calls == [{"tier": "fast", "local_only": False}]
+
+
 def test_mind_drops_malformed_or_model_claiming_vector_instead_of_leaking_it(
     monkeypatch,
 ) -> None:
