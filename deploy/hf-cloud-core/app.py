@@ -415,16 +415,7 @@ def merge_latest_continuity_events(
 def server_command() -> list[str]:
     return [
         sys.executable,
-        "-m",
-        "uvicorn",
-        "server:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        str(APP_PORT),
-        "--log-level",
-        "warning",
-        "--no-access-log",
+        str(Path(__file__).with_name("cloud_server.py")),
     ]
 
 

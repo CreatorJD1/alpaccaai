@@ -269,6 +269,9 @@ def test_lifecycle_has_one_public_port_and_both_public_tts_owners() -> None:
     supervisor = (ROOT / "deploy" / "hf-cloud-core" / "app.py").read_text(
         encoding="utf-8"
     )
+    cloud_server = (
+        ROOT / "deploy" / "hf-cloud-core" / "cloud_server.py"
+    ).read_text(encoding="utf-8")
 
     assert "app_port: 7860" in readme
     assert "EXPOSE 7860\n" in docker
@@ -285,4 +288,5 @@ def test_lifecycle_has_one_public_port_and_both_public_tts_owners() -> None:
         server.index("_SAFE_HTTP_METHODS", server.index("_PUBLIC_AUTH_PATHS"))
     ]
     assert '"/voice/tts"' not in public_paths
-    assert '"server:app"' in supervisor
+    assert 'with_name("cloud_server.py")' in supervisor
+    assert '"server:app"' in cloud_server

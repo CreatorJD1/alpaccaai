@@ -66,7 +66,8 @@ RUN pip install --no-cache-dir \
     https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 COPY --from=source /opt/runtime /opt/alpecca
 COPY --chown=1000:1000 app.py cloud_entrypoint.py cloud_healthcheck.py \
-    cloud_process_supervisor.py cloud_voice.py start.sh /opt/hf-cloud-core/
+    cloud_process_supervisor.py cloud_server.py cloud_voice.py start.sh \
+    /opt/hf-cloud-core/
 RUN sed -i 's/\r$//' /opt/hf-cloud-core/start.sh \
     && chmod 0555 /opt/hf-cloud-core/start.sh
 
