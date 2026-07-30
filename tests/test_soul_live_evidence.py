@@ -189,7 +189,8 @@ def test_hosted_selective_soul_attempts_configured_route_without_racy_online_pre
         generate=generate,
     )
     monkeypatch.setattr(mind_mod, "SOUL_LLM", True)
-    monkeypatch.setattr(mind_mod, "SOUL_LLM_REMOTE", True)
+    monkeypatch.setattr(mind_mod, "SOUL_LLM_REMOTE", False)
+    monkeypatch.setenv("ALPECCA_SOUL_LLM_REMOTE", "1")
     monkeypatch.setattr(cognition_mod, "record_observation", lambda _item: None)
 
     plan = instance.soul_state(details=False, textual_deliberation=True)

@@ -148,6 +148,20 @@ _PHASE5_AFFECT_POSTURES = {
 _GUEST_MESSAGE_CHARS = 8_000
 _GUEST_PERCEPTION_CHARS = 4_000
 _GUEST_PERCEPTION_SEAL = object()
+_FALSE_ENV_VALUES = frozenset({"", "0", "false", "no", "off"})
+
+
+def _runtime_feature_enabled(name: str, imported_default: bool) -> bool:
+    """Resolve a feature flag from the current child environment.
+
+    Hosted CoreMind configuration is finalized by the continuity supervisor
+    immediately before it starts the server child. Reading the environment at
+    the use site prevents import-order or process-start configuration staleness.
+    """
+    value = os.environ.get(name)
+    if value is None:
+        return bool(imported_default)
+    return value.strip().casefold() not in _FALSE_ENV_VALUES
 _GUEST_VISUAL_CHARS = 1_200
 _GUEST_VISUAL_SEAL = object()
 _GUEST_SYSTEM_PROMPT = (
@@ -6338,6 +6352,10 @@ class CoreMind:
             }
             for item in request.roles
         ]
+        remote_opt_in = _runtime_feature_enabled(
+            "ALPECCA_SOUL_LLM_REMOTE",
+            SOUL_LLM_REMOTE,
+        )
         return self.llm.generate(
             (
                 "You arbitrate Alpecca's seven already-scored Soul perspectives. "
@@ -6351,30 +6369,38 @@ class CoreMind:
                 "response_contract": request.response_contract,
             }, separators=(",", ":"), sort_keys=True),
             tier="fast",
-            local_only=not (SOUL_LLM_REMOTE and self.llm.is_cloud()),
+            local_only=not (remote_opt_in and self.llm.is_cloud()),
         )
 
     def soul_textual_route_status(self, *, requested: bool = True) -> dict[str, bool]:
         """Return content-free readiness facts for the selective Soul route."""
         requested = bool(requested)
         llm = getattr(self, "llm", None)
+        soul_llm_enabled = _runtime_feature_enabled(
+            "ALPECCA_SOUL_LLM",
+            SOUL_LLM,
+        )
+        remote_opt_in = _runtime_feature_enabled(
+            "ALPECCA_SOUL_LLM_REMOTE",
+            SOUL_LLM_REMOTE,
+        )
         local_model_available = bool(
             requested
-            and SOUL_LLM
+            and soul_llm_enabled
             and llm is not None
             and llm.local_inference_available(llm.model_for("fast"))
         )
         cloud_backend = bool(llm is not None and llm.is_cloud())
         remote_model_configured = bool(
             requested
-            and SOUL_LLM
-            and SOUL_LLM_REMOTE
+            and soul_llm_enabled
+            and remote_opt_in
             and cloud_backend
         )
         return {
             "requested": requested,
-            "soul_llm_enabled": bool(SOUL_LLM),
-            "remote_opt_in": bool(SOUL_LLM_REMOTE),
+            "soul_llm_enabled": soul_llm_enabled,
+            "remote_opt_in": remote_opt_in,
             "cloud_backend": cloud_backend,
             "llm_online": bool(llm is not None and llm.online),
             "local_model_available": local_model_available,
