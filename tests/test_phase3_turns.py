@@ -221,6 +221,68 @@ def test_creator_primary_promotes_latest_epoch_bound_v1_history(tmp_path):
     assert promoted["portal_epoch"] == "new-epoch"
 
 
+def test_unified_creator_history_merges_existing_creator_surface_rows_once(tmp_path):
+    db_path = tmp_path / "unified-history.db"
+    house = turn_context.TurnContext.create(
+        "creator-house-hq-primary",
+        principal="creator",
+        surface="house-hq",
+        privacy_scope="creator-personal",
+    )
+    discord = turn_context.TurnContext.create(
+        "creator-cross-surface",
+        principal="creator",
+        surface="discord",
+        privacy_scope="creator-personal",
+    )
+    direct = turn_context.TurnContext.create(
+        "default",
+        principal="creator",
+        surface="direct",
+        privacy_scope="shared",
+    )
+    guest = turn_context.TurnContext.create(
+        "guest-room",
+        principal="guest",
+        surface="discord",
+        privacy_scope="guest-discord-room",
+    )
+    other_creator_scope = turn_context.TurnContext.create(
+        "other-private",
+        principal="creator",
+        surface="admin",
+        privacy_scope="creator-private",
+    )
+    for context, marker in (
+        (house, "house rolling marker"),
+        (discord, "discord rolling marker"),
+        (direct, "direct rolling marker"),
+        (guest, "guest marker must not migrate"),
+        (other_creator_scope, "other private marker must not migrate"),
+    ):
+        turn_context.save_history(
+            context,
+            [{"role": "user", "content": marker}],
+            db_path=db_path,
+        )
+
+    unified = turn_context.TurnContext.create(
+        "alpecca-unified-context",
+        principal="creator",
+        surface="alpecca-unified",
+        privacy_scope="creator-personal",
+        portal_epoch="unified",
+    )
+    merged = turn_context.load_history(unified, db_path=db_path)
+
+    assert {item["content"] for item in merged} == {
+        "house rolling marker",
+        "discord rolling marker",
+        "direct rolling marker",
+    }
+    assert turn_context.load_history(unified, db_path=db_path) == merged
+
+
 def test_scoped_memory_and_mindpage_retrieval_do_not_cross_private_scopes(tmp_path):
     db_path = tmp_path / "scoped-retrieval.db"
     state_store.init_db(db_path)

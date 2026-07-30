@@ -2226,6 +2226,27 @@ class CoreMind:
             )
         return self._histories[key]
 
+    @staticmethod
+    def _shared_history_turn(
+        turn: turn_context_mod.TurnContext,
+    ) -> turn_context_mod.TurnContext:
+        """Return Alpecca's canonical rolling-conversation identity.
+
+        Every authenticated creator surface contributes to and reads the same
+        short-term transcript. The original turn still owns delivery, audit,
+        cancellation, capabilities, and source provenance. Guest traffic keeps
+        its verified participant scope and can never receive creator history.
+        """
+        if turn.principal != "creator":
+            return turn
+        return turn_context_mod.TurnContext.create(
+            "alpecca-unified-context",
+            principal="creator",
+            surface="alpecca-unified",
+            privacy_scope="creator-personal",
+            portal_epoch="unified",
+        )
+
     def end_conversation(self, conversation_id: str) -> dict:
         """Page remaining history and remove a finished conversation."""
         history = self._histories.pop(conversation_id, [])
@@ -2251,23 +2272,23 @@ class CoreMind:
 
     @property
     def _history(self) -> list[dict]:
-        """Backward-compat property: returns the 'default' conversation history.
+        """Backward-compat property for Alpecca's unified creator history.
 
         Existing tests and code paths that reference mind._history keep working.
         """
-        return self._get_history("default")
+        canonical = self._shared_history_turn(turn_context_mod.TurnContext.default())
+        return self._get_history(turn=canonical)
 
     @_history.setter
     def _history(self, value: list[dict]) -> None:
-        # Tests and older direct-call integrations assign this compatibility
-        # property. Network turns always use their explicit scoped history.
-        self._histories["default"] = list(value or [])
+        canonical = self._shared_history_turn(turn_context_mod.TurnContext.default())
+        self._histories[canonical.scope_key] = list(value or [])
 
     def mindpage_state(self) -> dict:
         """One canonical, externally observable working-memory snapshot."""
         if self._last_mindpage is not None:
             return dict(self._last_mindpage)
-        return mindpage_mod.pressure_snapshot(self._get_history("default"))
+        return mindpage_mod.pressure_snapshot(self._history)
 
     def _page_history_prefix(self, count: int, reason: str,
                              conversation_id: str = "default",
@@ -2315,6 +2336,7 @@ class CoreMind:
 
     def page_history_to_target(self, target_fill: float = 0.72) -> dict:
         """Let the Soul relieve measured context pressure through Mindpage."""
+        history_turn = self._shared_history_turn(turn_context_mod.TurnContext.default())
         before = self.mindpage_state()
         history_length = len(self._history)
         unattached_prefix = max(
@@ -2327,7 +2349,12 @@ class CoreMind:
             target_fill=target_fill,
             min_keep_messages=4,
         )
-        result = self._page_history_prefix(len(evicted), "soul_pressure_relief")
+        result = self._page_history_prefix(
+            len(evicted),
+            "soul_pressure_relief",
+            conversation_id=history_turn.scope_key,
+            scope=history_turn.memory_scope,
+        )
         if result.get("ok"):
             attached_count = max(0, len(evicted) - unattached_prefix)
             attached_evicted = evicted[-attached_count:] if attached_count else []
@@ -3001,6 +3028,7 @@ class CoreMind:
             :_GUEST_MESSAGE_CHARS
         ]
         history: list[dict] = []
+        history_turn = self._shared_history_turn(turn)
         scoped_memories: list[dict] = []
         if persistent_discord_memory:
             # A message accepted from the signed Discord bridge is an external
@@ -3009,7 +3037,7 @@ class CoreMind:
             # The scope is actor-specific and recall never includes shared or
             # creator memories.
             if persistent_discord_history:
-                history = self._get_history(turn=turn)
+                history = self._get_history(turn=history_turn)
             try:
                 scoped_memories = memory_store.recall(
                     memory_message,
@@ -3183,8 +3211,15 @@ class CoreMind:
         if persistent_discord_history:
             history.append({"role": "user", "content": memory_message})
             history.append({"role": "assistant", "content": reply})
+            if len(history) > HISTORY_MESSAGES * 4:
+                self._page_history_prefix(
+                    len(history) - HISTORY_MESSAGES * 2,
+                    "rolling_history_cap",
+                    conversation_id=history_turn.scope_key,
+                    scope=history_turn.memory_scope,
+                )
             try:
-                turn_context_mod.save_history(turn, history)
+                turn_context_mod.save_history(history_turn, history)
             except Exception:
                 pass
             try:
@@ -3498,7 +3533,8 @@ class CoreMind:
         if not STREAM_CHAT:
             on_token = None
         speaker = turn.principal
-        history = self._get_history("default") if implicit_turn else self._get_history(turn=turn)
+        history_turn = self._shared_history_turn(turn)
+        history = self._get_history(turn=history_turn)
         moved = False
         low = user_msg.lower()
         runtime_model_question = _asks_runtime_model(user_msg)
@@ -4172,9 +4208,7 @@ class CoreMind:
                 cognition_mod.mark_observation_remembered(image_obs_id, image_memory_id)
 
         # Keep a little rolling context for this conversation only.
-        history_metadata = (
-            {"private_context": True} if private_model_context else {}
-        )
+        history_metadata = {"private_context": bool(private_model_context)}
         persisted_reply = (
             "[Ephemeral local file response omitted; reattach the file for a follow-up.]"
             if attachment_context else reply
@@ -4189,8 +4223,8 @@ class CoreMind:
             evict_count = len(history) - HISTORY_MESSAGES * 2
             paging_result = self._page_history_prefix(
                 evict_count, "rolling_history_cap",
-                conversation_id="default" if implicit_turn else turn.scope_key,
-                scope=turn.memory_scope,
+                conversation_id=history_turn.scope_key,
+                scope=history_turn.memory_scope,
             )
             if not paging_result.get("ok"):
                 # Retain the full history for a later retry and expose the real
@@ -4222,7 +4256,7 @@ class CoreMind:
         ))
 
         if not implicit_turn:
-            turn_context_mod.save_history(turn, history)
+            turn_context_mod.save_history(history_turn, history)
         self._record_temporal_turn(
             user_msg,
             turn=turn,
@@ -5141,15 +5175,20 @@ class CoreMind:
         text = str(reply or "").strip()
         if not text:
             return
-        history_scope = turn.scope_key if turn is not None else scope
+        history_turn = self._shared_history_turn(turn) if turn is not None else None
+        history_scope = history_turn.scope_key if history_turn is not None else scope
         history = (
-            self._get_history(turn=turn)
-            if turn is not None
+            self._get_history(turn=history_turn)
+            if history_turn is not None
             else self._get_history(history_scope)
         )
-        history.append({"role": "assistant", "content": text})
-        if turn is not None:
-            turn_context_mod.save_history(turn, history)
+        history.append({
+            "role": "assistant",
+            "content": text,
+            "private_context": True,
+        })
+        if history_turn is not None:
+            turn_context_mod.save_history(history_turn, history)
 
     def compose_volunteer_event(
         self,
@@ -5159,7 +5198,8 @@ class CoreMind:
         turn: turn_context_mod.TurnContext | None = None,
     ) -> dict:
         """Return proactive text together with this invocation's budget result."""
-        history_scope = turn.scope_key if turn is not None else scope
+        history_turn = self._shared_history_turn(turn) if turn is not None else None
+        history_scope = history_turn.scope_key if history_turn is not None else scope
         reason_key = " ".join(str(reason or "").split())
         initiative = None
         if reason_key:

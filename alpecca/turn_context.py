@@ -20,7 +20,11 @@ from config import DB_PATH
 
 _ID_RE = re.compile(r"[^a-zA-Z0-9_.:-]+")
 _MAX_ID_LENGTH = 160
-_HISTORY_MAX_MESSAGES = 96
+# Keep enough durable transcript to survive a restart before CoreMind has a
+# chance to page its rolling context (the supported cloud-safe prompt window
+# uses its most recent 96 messages and pages once the in-memory buffer reaches
+# 384). This is storage only; model fitting remains strictly budgeted.
+_HISTORY_MAX_MESSAGES = 384
 
 
 def _clean_id(value: str, fallback: str) -> str:
@@ -258,11 +262,41 @@ def load_history(context: TurnContext, db_path: Path = DB_PATH) -> list[dict]:
     from alpecca.db import connect
 
     promote_legacy = False
+    merged_creator_histories: list[dict] | None = None
     with connect(db_path) as conn:
         row = conn.execute(
             "SELECT history_json FROM conversation_histories WHERE scope_key=?",
             (context.scope_key,),
         ).fetchone()
+        # The unified CreatorJD context supersedes the old per-surface rolling
+        # rows. On its first load, carry forward only creator-personal/direct
+        # history; guest and explicitly separate creator scopes never enter the
+        # new canonical transcript. Saving below makes this a one-time merge.
+        if (
+            row is None
+            and context.principal == "creator"
+            and context.surface == "alpecca-unified"
+            and context.conversation_id == "alpecca-unified-context"
+        ):
+            legacy_rows = conn.execute(
+                """
+                SELECT history_json
+                  FROM conversation_histories
+                 WHERE principal='creator'
+                   AND privacy_scope IN ('creator-personal', 'shared')
+                   AND scope_key<>?
+                 ORDER BY updated_at ASC
+                """,
+                (context.scope_key,),
+            ).fetchall()
+            merged_creator_histories = []
+            for legacy_row in legacy_rows:
+                try:
+                    legacy_value = json.loads(legacy_row["history_json"])
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if isinstance(legacy_value, list):
+                    merged_creator_histories.extend(_clean_history(legacy_value))
         # Phase 3 originally included the transport epoch (and a random socket
         # conversation id) in its v1 key. Promote the newest matching creator
         # row when the stable per-surface primary conversation first loads.
@@ -287,14 +321,15 @@ def load_history(context: TurnContext, db_path: Path = DB_PATH) -> list[dict]:
                 (context.principal, context.surface, context.privacy_scope),
             ).fetchone()
             promote_legacy = row is not None
-    if not row:
-        return []
-    try:
-        value = json.loads(row["history_json"])
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return []
-    cleaned = _clean_history(value if isinstance(value, list) else [])
-    if cleaned and promote_legacy:
+    if row:
+        try:
+            value = json.loads(row["history_json"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        cleaned = _clean_history(value if isinstance(value, list) else [])
+    else:
+        cleaned = _clean_history(merged_creator_histories or [])
+    if cleaned and (promote_legacy or merged_creator_histories is not None):
         save_history(context, cleaned, db_path=db_path)
     return cleaned
 

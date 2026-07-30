@@ -6321,7 +6321,7 @@ def test_chat_history_eviction_writes_mindpage_episode(monkeypatch):
                       on_tool=None, tier="reason", local_only=False):
         return "I'm here with you."
 
-    def fake_write_episode_page(turns, db_path=None):
+    def fake_write_episode_page(turns, db_path=None, **_kwargs):
         captured["turns"] = list(turns)
         return 123
 
@@ -6357,7 +6357,7 @@ def test_chat_history_eviction_retains_turns_when_page_write_fails(monkeypatch):
     def fake_generate(system_prompt, user_msg, history=None, tools=None, on_tool=None, tier="reason"):
         return "I'm here with you."
 
-    def failed_write(_turns, db_path=None):
+    def failed_write(_turns, db_path=None, **_kwargs):
         raise OSError("disk unavailable")
 
     mind.llm.generate = fake_generate

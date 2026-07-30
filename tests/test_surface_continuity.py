@@ -61,6 +61,45 @@ def test_authenticated_creator_receives_exact_recent_house_turn(monkeypatch):
     assert "most recent first" in prompt
 
 
+def test_authenticated_creator_surfaces_share_one_rolling_history():
+    house = turn_context.TurnContext.create(
+        "creator-house-hq-primary",
+        principal="creator",
+        surface="house-hq",
+        privacy_scope="creator-personal",
+    )
+    discord = turn_context.TurnContext.create(
+        "creator-cross-surface",
+        principal="creator",
+        surface="discord",
+        privacy_scope="creator-personal",
+    )
+    mobile = turn_context.TurnContext.create(
+        "creator-mobile-primary",
+        principal="creator",
+        surface="mobile",
+        privacy_scope="creator-personal",
+    )
+    guest = turn_context.TurnContext.create(
+        "guest-room",
+        principal="guest",
+        surface="discord",
+        privacy_scope="guest-room",
+    )
+
+    shared_house = mind_mod.CoreMind._shared_history_turn(house)
+    shared_discord = mind_mod.CoreMind._shared_history_turn(discord)
+    shared_mobile = mind_mod.CoreMind._shared_history_turn(mobile)
+    shared_guest = mind_mod.CoreMind._shared_history_turn(guest)
+
+    assert shared_house.scope_key == shared_discord.scope_key
+    assert shared_house.scope_key == shared_mobile.scope_key
+    assert shared_house.scope_key != shared_guest.scope_key
+    assert shared_house.surface == "alpecca-unified"
+    assert shared_house.conversation_id == "alpecca-unified-context"
+    assert shared_guest is guest
+
+
 def test_guest_never_receives_creator_cross_surface_content(monkeypatch):
     turn = turn_context.TurnContext.create(
         "guest-room",
