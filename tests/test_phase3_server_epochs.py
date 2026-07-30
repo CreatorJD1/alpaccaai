@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from starlette.websockets import WebSocketDisconnect
 
 from alpecca import turn_context
 import server
@@ -25,10 +26,12 @@ def isolated_portal_registry():
     clients = set(server.ws_clients)
     epochs = dict(server._ws_portal_epochs)
     turns = dict(server._ws_portal_turns)
+    surfaces = dict(server._ws_portal_surfaces)
     active = server._active_ws_portal
     server.ws_clients.clear()
     server._ws_portal_epochs.clear()
     server._ws_portal_turns.clear()
+    server._ws_portal_surfaces.clear()
     server._active_ws_portal = None
     yield
     for turn in server._ws_portal_turns.values():
@@ -39,6 +42,8 @@ def isolated_portal_registry():
     server._ws_portal_epochs.update(epochs)
     server._ws_portal_turns.clear()
     server._ws_portal_turns.update(turns)
+    server._ws_portal_surfaces.clear()
+    server._ws_portal_surfaces.update(surfaces)
     server._active_ws_portal = active
 
 
@@ -85,6 +90,167 @@ def test_house_hq_has_server_owned_transport_routes():
 
     assert "/channel/house-hq" in routes
     assert "/ws/house-hq" in routes
+
+
+def test_android_webview_socket_requires_device_bound_mobile_provenance():
+    android = SimpleNamespace(
+        url=SimpleNamespace(path="/ws"),
+        headers={"user-agent": "Mozilla/5.0 AlpeccaAndroid/2.2.21"},
+    )
+    browser = SimpleNamespace(
+        url=SimpleNamespace(path="/ws"),
+        headers={"user-agent": "Mozilla/5.0"},
+    )
+    house = SimpleNamespace(
+        url=SimpleNamespace(path="/ws/house-hq"),
+        headers={"user-agent": "Mozilla/5.0 AlpeccaAndroid/2.2.21"},
+    )
+
+    assert server._websocket_route_surface(android) == "websocket"
+    assert server._websocket_route_surface(
+        android,
+        trusted_native_device=True,
+    ) == "mobile"
+    assert server._websocket_route_surface(browser) == "websocket"
+    assert server._websocket_route_surface(house) == "house-hq"
+
+
+def test_verified_mobile_surface_is_retained_only_for_the_live_portal():
+    socket = FakeSocket()
+    socket.url = SimpleNamespace(path="/ws")
+    socket.headers = {"user-agent": "Mozilla/5.0 AlpeccaAndroid/2.2.21"}
+
+    epoch = server._open_ws_portal(
+        socket,
+        "epoch-mobile",
+        verified_surface="mobile",
+    )
+
+    assert server._websocket_route_surface(socket) == "mobile"
+    assert server._retire_ws_portal(
+        socket,
+        portal_epoch=epoch,
+        reason="test_complete",
+    ) is True
+    assert server._websocket_route_surface(socket) == "websocket"
+
+
+def test_websocket_handshake_labels_mobile_only_for_active_device_session(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    class ActiveDeviceRegistry:
+        @staticmethod
+        def session_valid(device_id, issued_at):
+            return device_id == "device-id-12345" and isinstance(issued_at, int)
+
+    monkeypatch.setattr(server, "_TRUSTED_DEVICE_REGISTRY", ActiveDeviceRegistry())
+    app_user_agent = "Mozilla/5.0 AlpeccaAndroid/2.2.21"
+
+    local_client = TestClient(
+        server.app,
+        client=("127.0.0.1", 50109),
+    )
+    with local_client.websocket_connect(
+        "/ws",
+        headers={
+            server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET,
+            "user-agent": app_user_agent,
+        },
+    ) as websocket:
+        state = websocket.receive_json()
+        assert state["capability_connection"]["surface"] == "websocket"
+
+    device_cookie = server._AUTHORITY.issue_session_cookie(
+        secure=False,
+        device_id="device-id-12345",
+        origin="http://testserver",
+    )
+    with local_client.websocket_connect(
+        "/ws",
+        headers={
+            "cookie": (
+                f"{server.auth_mod.SESSION_COOKIE_NAME}={device_cookie.value}"
+            ),
+            "origin": "http://testserver",
+            "user-agent": app_user_agent,
+        },
+    ) as websocket:
+        state = websocket.receive_json()
+        assert state["capability_connection"]["surface"] == "mobile"
+
+
+def test_hugging_face_private_proxy_preserves_mobile_websocket_session(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    class ActiveDeviceRegistry:
+        @staticmethod
+        def session_valid(device_id, issued_at):
+            return device_id == "device-id-12345" and isinstance(issued_at, int)
+
+    space_host = "creatorjd-alpecca-survival-core.hf.space"
+    monkeypatch.setattr(server, "_TRUSTED_DEVICE_REGISTRY", ActiveDeviceRegistry())
+    monkeypatch.setenv("SPACE_HOST", space_host)
+    device_cookie = server._AUTHORITY.issue_session_cookie(
+        secure=True,
+        device_id="device-id-12345",
+        origin=f"https://{space_host}",
+    )
+    client = TestClient(
+        server.app,
+        base_url=f"http://{space_host}",
+        client=("10.112.73.211", 50110),
+    )
+
+    with client.websocket_connect(
+        f"ws://{space_host}/ws",
+        headers={
+            "cookie": (
+                f"{server.auth_mod.SESSION_COOKIE_NAME}={device_cookie.value}"
+            ),
+            "origin": f"https://{space_host}",
+            "x-forwarded-proto": "https",
+            "user-agent": "Mozilla/5.0 AlpeccaAndroid/2.2.21",
+        },
+    ) as websocket:
+        state = websocket.receive_json()
+        assert state["capability_connection"]["surface"] == "mobile"
+
+
+def test_websocket_forwarded_https_requires_exact_space_proxy_boundary(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    class ActiveDeviceRegistry:
+        @staticmethod
+        def session_valid(_device_id, _issued_at):
+            return True
+
+    space_host = "creatorjd-alpecca-survival-core.hf.space"
+    monkeypatch.setattr(server, "_TRUSTED_DEVICE_REGISTRY", ActiveDeviceRegistry())
+    monkeypatch.setenv("SPACE_HOST", space_host)
+    device_cookie = server._AUTHORITY.issue_session_cookie(
+        secure=True,
+        device_id="device-id-12345",
+        origin=f"https://{space_host}",
+    )
+    client = TestClient(
+        server.app,
+        base_url=f"http://{space_host}",
+        client=("198.51.100.50", 50111),
+    )
+
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect(
+            f"ws://{space_host}/ws",
+            headers={
+                "cookie": (
+                    f"{server.auth_mod.SESSION_COOKIE_NAME}={device_cookie.value}"
+                ),
+                "origin": f"https://{space_host}",
+                "x-forwarded-proto": "https",
+                "user-agent": "Mozilla/5.0 AlpeccaAndroid/2.2.21",
+            },
+        ):
+            pass
 
 
 def test_new_epoch_fences_stale_turn_send_broadcast_and_finalizer():

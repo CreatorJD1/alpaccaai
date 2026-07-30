@@ -524,6 +524,7 @@ face_sense = vision.FaceSense(gate=_conversation_quiet)
 ws_clients: set[WebSocket] = set()
 _ws_portal_epochs: dict[WebSocket, str] = {}
 _ws_portal_turns: dict[WebSocket, turn_context_mod.TurnContext] = {}
+_ws_portal_surfaces: dict[WebSocket, str] = {}
 _active_ws_portal: tuple[WebSocket, str] | None = None
 
 BACKGROUND_WS_SOURCES = {
@@ -566,9 +567,34 @@ def _server_conversation_id(
     return f"guest-{clean_surface}-{clean_seed}"
 
 
-def _websocket_route_surface(socket: WebSocket) -> str:
+def _websocket_route_surface(
+    socket: WebSocket,
+    *,
+    trusted_native_device: bool = False,
+) -> str:
+    try:
+        retained = _ws_portal_surfaces.get(socket)
+    except TypeError:
+        # Lightweight route probes may use an unhashable socket-shaped object;
+        # only a real opened portal can have retained server evidence.
+        retained = None
+    if retained in {"house-hq", "websocket", "mobile"}:
+        return retained
     path = str(getattr(getattr(socket, "url", None), "path", ""))
-    return "house-hq" if path == "/ws/house-hq" else "websocket"
+    if path == "/ws/house-hq":
+        return "house-hq"
+    headers = getattr(socket, "headers", None)
+    try:
+        user_agent = str(headers.get("user-agent", "") if headers else "")
+    except (AttributeError, TypeError):
+        user_agent = ""
+    if (
+        path == "/ws"
+        and trusted_native_device
+        and "alpeccaandroid/" in user_agent.casefold()
+    ):
+        return "mobile"
+    return "websocket"
 
 
 def _proactive_turn_context() -> turn_context_mod.TurnContext:
@@ -826,6 +852,7 @@ def _retire_ws_portal(socket: WebSocket, *, portal_epoch: str | None = None,
     if current is None or (portal_epoch is not None and current != portal_epoch):
         return False
     _ws_portal_epochs.pop(socket, None)
+    _ws_portal_surfaces.pop(socket, None)
     turn = _ws_portal_turns.pop(socket, None)
     if turn is not None:
         turn.cancel(reason)
@@ -847,7 +874,12 @@ def _retire_ws_portal(socket: WebSocket, *, portal_epoch: str | None = None,
     return True
 
 
-def _open_ws_portal(socket: WebSocket, portal_epoch: str | None = None) -> str:
+def _open_ws_portal(
+    socket: WebSocket,
+    portal_epoch: str | None = None,
+    *,
+    verified_surface: str = "",
+) -> str:
     """Claim the single writable WebSocket portal and retire its predecessor."""
     global _active_ws_portal
     epoch = str(portal_epoch or uuid.uuid4().hex)
@@ -857,6 +889,10 @@ def _open_ws_portal(socket: WebSocket, portal_epoch: str | None = None) -> str:
             previous[0], portal_epoch=previous[1], reason="portal_epoch_replaced",
         )
     _ws_portal_epochs[socket] = epoch
+    surface = str(verified_surface or "").strip().lower()
+    if surface not in {"house-hq", "websocket", "mobile"}:
+        surface = _websocket_route_surface(socket)
+    _ws_portal_surfaces[socket] = surface
     _active_ws_portal = (socket, epoch)
     ws_clients.add(socket)
     return epoch
@@ -3884,8 +3920,10 @@ _SPACE_PROXY_NETWORKS = (
 )
 
 
-def _trusted_external_request_origin(request: Request) -> str:
-    """Return the authenticated transport origin seen by the external client.
+def _trusted_external_transport_origin(
+    transport: Request | WebSocket,
+) -> str:
+    """Return the authenticated HTTP origin seen by the external client.
 
     Hugging Face terminates TLS before forwarding a Space request over its
     private container network. Uvicorn deliberately does not trust arbitrary
@@ -3897,32 +3935,52 @@ def _trusted_external_request_origin(request: Request) -> str:
     rewritten, preventing a forged X-Forwarded-For value from becoming local
     creator trust.
     """
-    direct = _normalized_origin(f"{request.url.scheme}://{request.url.netloc}")
-    if request.url.scheme == "https":
-        return direct
-    if request.url.scheme != "http":
+    transport_scheme = str(transport.url.scheme).lower()
+    origin_scheme = {
+        "http": "http",
+        "https": "https",
+        "ws": "http",
+        "wss": "https",
+    }.get(transport_scheme, "")
+    if not origin_scheme:
         return ""
+    direct = _normalized_origin(f"{origin_scheme}://{transport.url.netloc}")
+    if transport_scheme in {"https", "wss"}:
+        return direct
+    if transport_scheme not in {"http", "ws"}:
+        return ""
+
+    try:
+        peer = ipaddress.ip_address(transport.client.host if transport.client else "")
+    except ValueError:
+        return ""
+    if peer.is_loopback:
+        return direct
 
     configured_host = str(os.environ.get("SPACE_HOST") or "").strip().lower().rstrip(".")
     if not configured_host or any(char in configured_host for char in "/:@?#"):
         return ""
-    request_host = (request.url.hostname or "").strip().lower().rstrip(".")
+    request_host = (transport.url.hostname or "").strip().lower().rstrip(".")
     if request_host != configured_host:
-        return ""
-    try:
-        peer = ipaddress.ip_address(request.client.host if request.client else "")
-    except ValueError:
         return ""
     if not any(peer in network for network in _SPACE_PROXY_NETWORKS):
         return ""
 
-    forwarded_values = request.headers.getlist("x-forwarded-proto")
+    forwarded_values = transport.headers.getlist("x-forwarded-proto")
     if len(forwarded_values) != 1:
         return ""
     forwarded_proto = forwarded_values[0].strip().lower()
     if forwarded_proto != "https" or "," in forwarded_values[0]:
         return ""
     return f"https://{configured_host}"
+
+
+def _trusted_external_request_origin(request: Request) -> str:
+    return _trusted_external_transport_origin(request)
+
+
+def _trusted_external_socket_origin(socket: WebSocket) -> str:
+    return _trusted_external_transport_origin(socket)
 
 
 def _request_uses_https(request: Request) -> bool:
@@ -10857,8 +10915,7 @@ async def ws(socket: WebSocket) -> None:
         cookies=socket.cookies,
         query=socket.query_params,
     )
-    expected_scheme = "https" if socket.url.scheme == "wss" else "http"
-    expected = f"{expected_scheme}://{socket.url.netloc}".rstrip("/")
+    expected = _trusted_external_socket_origin(socket)
     decision = _validate_bound_device_session(decision, expected)
     if decision.allowed and decision.mechanism == "session_cookie":
         origin = _normalized_origin(socket.headers.get("origin", ""))
@@ -10879,9 +10936,18 @@ async def ws(socket: WebSocket) -> None:
         )
         await socket.close(code=1008)    # policy violation
         return
+    route_surface = _websocket_route_surface(
+        socket,
+        trusted_native_device=bool(
+            decision.allowed
+            and decision.principal == "creator"
+            and decision.mechanism == "session_cookie"
+            and decision.device_id
+            and decision.session_origin == expected
+        ),
+    )
     await socket.accept()
-    portal_epoch = _open_ws_portal(socket)
-    route_surface = _websocket_route_surface(socket)
+    portal_epoch = _open_ws_portal(socket, verified_surface=route_surface)
     conversation_id = _server_conversation_id(
         decision.principal,
         route_surface,
