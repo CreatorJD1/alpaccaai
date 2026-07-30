@@ -7452,6 +7452,36 @@ def soul() -> dict:
     }
 
 
+@app.post("/cognition/soul-tick")
+async def cognition_soul_tick() -> dict:
+    """Run one explicit compact Soul arbitration and cache its advisory receipt.
+
+    This is the manual counterpart to the chance-gated quiet reflection cycle.
+    ``details=False`` is an invariant here: the compact path evaluates the real
+    seven-perspective slate deterministically and cannot call a language model
+    or choose/execute an action.  Observability reads remain side-effect free at
+    ``GET /soul`` and ``GET /brain/graph``.
+    """
+    async with mind_lock:
+        plan = await _state_thread(
+            "explicit_soul_tick",
+            mind.soul_state,
+            details=False,
+        )
+    if not isinstance(plan, Mapping):
+        raise HTTPException(status_code=503, detail="compact Soul arbitration failed")
+    runtime = plan.get("soul_runtime")
+    if not isinstance(runtime, Mapping) or not runtime:
+        raise HTTPException(status_code=503, detail="Soul receipt was not produced")
+    return {
+        "ok": True,
+        "fresh_deliberation": True,
+        "deliberation_mode": "compact",
+        "advisory_only": runtime.get("advisory_only") is True,
+        "soul_runtime": dict(runtime),
+    }
+
+
 @app.get("/memories")
 def memories() -> dict:
     """The Library's contents: the moments and musings she's keeping. Read-only."""

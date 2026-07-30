@@ -77,6 +77,55 @@ def test_soul_get_returns_only_cached_status_without_side_effects(monkeypatch):
     assert server.mind.state.as_dict() == before_state
 
 
+def test_explicit_soul_tick_runs_one_compact_advisory_arbitration(monkeypatch):
+    monkeypatch.setenv("ALPECCA_CONTINUITY_OFFLINE_ISOLATED", "true")
+    from fastapi.testclient import TestClient
+    import server
+
+    calls: list[bool] = []
+    runtime = {
+        "schema": "alpecca.soul-runtime-decision.v1",
+        "roles": (
+            "Feeler", "Expressor", "Carer", "Doer",
+            "Wanderer", "Reflector", "Improver",
+        ),
+        "scores": (0.2, 0.1, 0.4, 0.8, 0.3, 0.5, 0.6),
+        "active": (1, 0, 1, 1, 0, 1, 1),
+        "deterministic_role": "Doer",
+        "selected_role": "Doer",
+        "callback_invoked": False,
+        "outcome": "not_eligible",
+        "advisory_only": True,
+    }
+
+    def compact_soul_state(*, details: bool = True) -> dict:
+        calls.append(details)
+        return {"focus": {"subagent": "Doer"}, "soul_runtime": runtime}
+
+    monkeypatch.setattr(server.mind, "soul_state", compact_soul_state)
+    monkeypatch.setattr(server.mind.llm, "generate", _forbid("model generation"))
+
+    response = TestClient(server.app).post(
+        "/cognition/soul-tick",
+        headers={server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert calls == [False]
+    assert payload == {
+        "ok": True,
+        "fresh_deliberation": True,
+        "deliberation_mode": "compact",
+        "advisory_only": True,
+        "soul_runtime": {
+            **runtime,
+            "roles": list(runtime["roles"]),
+            "scores": list(runtime["scores"]),
+            "active": list(runtime["active"]),
+        },
+    }
+
+
 def _import_server(
     *,
     epoch: str | None,
