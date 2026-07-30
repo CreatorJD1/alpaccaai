@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import json
-import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -44,6 +44,15 @@ def _png(width: int = 3, height: int = 2) -> bytes:
 def _write_png(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(_png())
+
+
+def _approve_fixture_catalog(monkeypatch) -> None:
+    digest = hashlib.sha256(_png()).hexdigest()
+    monkeypatch.setattr(
+        discord_media,
+        "APPROVED_SELF_IMAGE_SHA256",
+        {kind: digest for kind in discord_media.APPROVED_SELF_IMAGE_KINDS},
+    )
 
 
 def test_prepare_inbound_image_sniffs_bytes_and_emits_canonical_data_url():
@@ -102,8 +111,13 @@ def test_attachment_candidate_metadata_never_substitutes_for_byte_validation():
         (", can you send me an image of yourself?", "portrait"),
         ("Alpecca, can you send me a selfie?", "portrait"),
         ("show me your base model", "base"),
-        ("share your character sheet", "reference"),
-        ("!image gallery", "gallery"),
+        ("share your character sheet", "confirmation"),
+        ("!image gallery", "ready"),
+        ("!image active", "speaking"),
+        ("!image focused", "thinking"),
+        ("show another image of yourself", "reach"),
+        ("show your sleeping pose", "sleeping"),
+        ("share your rear view image", "rear"),
         ("can you see this image?", None),
         ("Alpecca, we should send a photo later", None),
         ("open C:/private/secret.png", None),
@@ -116,18 +130,18 @@ def test_requested_media_kind_requires_an_explicit_closed_catalog_request(
     assert discord_media.requested_media_kind(text) == expected
 
 
-def test_outbound_catalog_returns_only_owned_bytes_and_generic_filename(tmp_path):
+def test_outbound_catalog_returns_only_hash_locked_portraits_and_generic_filename(
+    monkeypatch,
+    tmp_path,
+):
+    _approve_fixture_catalog(monkeypatch)
     avatar_dir = tmp_path / "avatar"
     character_dir = tmp_path / "character"
     _write_png(avatar_dir / "portraits" / "idle.png")
-    _write_png(character_dir / "reference" / "base-model.png")
-    _write_png(character_dir / "reference" / "master-character-sheet.png")
-    older = character_dir / "gallery" / "self-20260712-100000.png"
-    newer = character_dir / "gallery" / "self-20260712-110000.png"
-    _write_png(older)
-    _write_png(newer)
-    os.utime(older, (1, 1))
-    os.utime(newer, (2, 2))
+    _write_png(avatar_dir / "portraits" / "thinking.png")
+    _write_png(avatar_dir / "poses" / "reach.png")
+    _write_png(character_dir / "reference" / "poses" / "pose-1.png")
+    _write_png(character_dir / "reference" / "poses" / "pose-5.png")
 
     portrait = discord_media.resolve_outbound_media(
         "send your portrait",
@@ -148,12 +162,17 @@ def test_outbound_catalog_returns_only_owned_bytes_and_generic_filename(tmp_path
     assert portrait is not None
     assert portrait.filename == "alpecca-portrait.png"
     assert portrait.image_bytes == _png()
-    assert reference is not None and reference.filename == "alpecca-reference.png"
-    assert gallery is not None and gallery.filename == "alpecca-gallery.png"
+    assert reference is not None and reference.filename == "alpecca-confirmation.png"
+    assert gallery is not None and gallery.filename == "alpecca-ready.png"
+    assert gallery.image_bytes == _png()
     assert b"private" not in portrait.image_bytes
 
 
-def test_outbound_catalog_fails_closed_for_missing_or_invalid_assets(tmp_path):
+def test_outbound_catalog_fails_closed_for_missing_invalid_or_changed_assets(
+    monkeypatch,
+    tmp_path,
+):
+    _approve_fixture_catalog(monkeypatch)
     avatar_dir = tmp_path / "avatar"
     character_dir = tmp_path / "character"
 
@@ -166,6 +185,13 @@ def test_outbound_catalog_fails_closed_for_missing_or_invalid_assets(tmp_path):
     bad = avatar_dir / "portraits" / "idle.png"
     bad.parent.mkdir(parents=True)
     bad.write_bytes(b"not an image")
+    assert discord_media.resolve_outbound_media(
+        "send your portrait",
+        avatar_dir=avatar_dir,
+        character_dir=character_dir,
+    ) is None
+
+    bad.write_bytes(_png(4, 4))
     assert discord_media.resolve_outbound_media(
         "send your portrait",
         avatar_dir=avatar_dir,
@@ -385,6 +411,7 @@ def test_direct_launcher_media_default_loads_secret_before_selecting_default(
     expected_status: str,
 ):
     launcher = _discord_launcher_module()
+    monkeypatch.setattr(discord_media, "approved_portrait_status", lambda: "ready")
     secret = tmp_path / "alpecca_discord.env"
     secret.write_text(secret_value, encoding="utf-8")
     monkeypatch.setattr(launcher, "SECRET", secret)

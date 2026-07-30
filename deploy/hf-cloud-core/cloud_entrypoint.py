@@ -470,6 +470,26 @@ def install_vrm(home: Path, opener=urllib.request.urlopen) -> Path:
     return target
 
 
+def install_runtime_assets(
+    home: Path,
+    opener=urllib.request.urlopen,
+    image_installer=None,
+) -> Path:
+    """Install all identity-bound runtime assets before CoreMind promotion."""
+    vrm = install_vrm(home, opener=opener)
+    if image_installer is None:
+        from alpecca.approved_self_images import install_approved_self_images
+
+        image_installer = install_approved_self_images
+    images = image_installer(home, opener=opener)
+    print(
+        "[hf-cloud-core] approved self-image set installed "
+        f"count={len(images)} set=alpecca-approved-self-images-2026-07",
+        flush=True,
+    )
+    return vrm
+
+
 def main() -> int:
     configure_environment(os.environ)
     port = int(os.environ.get("PORT", "7860"))
@@ -509,7 +529,7 @@ def main() -> int:
         try:
             try:
                 result, shutdown_requested = supervisor.run_supervisor_once(
-                    vrm_installer=install_vrm,
+                    vrm_installer=install_runtime_assets,
                 )
             except Exception:
                 result, shutdown_requested = 1, False

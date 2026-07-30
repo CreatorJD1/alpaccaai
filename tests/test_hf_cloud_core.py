@@ -171,6 +171,34 @@ def test_vrm_install_rejects_a_body_that_does_not_match_locked_hash(tmp_path):
     assert not (tmp_path / "avatar" / "vrm" / "alpecca.vrm").exists()
 
 
+def test_runtime_asset_install_requires_vrm_and_all_approved_self_images(
+    tmp_path, monkeypatch
+):
+    events: list[tuple[str, object]] = []
+    vrm = tmp_path / "avatar" / "vrm" / "alpecca.vrm"
+
+    def install_vrm(home, *, opener):
+        events.append(("vrm", opener))
+        vrm.parent.mkdir(parents=True)
+        vrm.write_bytes(b"locked-v4")
+        return vrm
+
+    def install_images(home, *, opener):
+        events.append(("images", opener))
+        return (home / "avatar" / "portraits" / "idle.png",)
+
+    opener = object()
+    monkeypatch.setattr(cloud, "install_vrm", install_vrm)
+    installed = cloud.install_runtime_assets(
+        tmp_path,
+        opener=opener,
+        image_installer=install_images,
+    )
+
+    assert installed == vrm
+    assert events == [("vrm", opener), ("images", opener)]
+
+
 def test_cloud_space_build_is_pinned_to_exact_main_commit_and_no_old_qwen():
     dockerfile = (PATH.parent / "Dockerfile").read_text(encoding="utf-8")
     readme = (PATH.parent / "README.md").read_text(encoding="utf-8")
@@ -183,6 +211,13 @@ def test_cloud_space_build_is_pinned_to_exact_main_commit_and_no_old_qwen():
     assert "COPY --from=source /opt/alpecca /opt/alpecca" not in dockerfile
     for excluded in ("./.git", "./deploy", "./docs", "./scripts", "./tests"):
         assert f"--exclude='{excluded}'" in dockerfile
+    assert (
+        "docs/manifests/alpecca-approved-self-images-v1.json" in dockerfile
+    )
+    assert (
+        "/opt/runtime/docs/manifests/alpecca-approved-self-images-v1.json"
+        in dockerfile
+    )
     assert "Qwen/Qwen3.5-9B" in readme
     assert ("qwen3" + ":8b") not in dockerfile + readme
 

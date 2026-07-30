@@ -15,6 +15,7 @@ from types import MappingProxyType
 from typing import Literal
 
 from alpecca import cognition as cognition_mod
+from alpecca.approved_self_images import load_approved_self_images
 from alpecca.attachment_ingress import (
     ATTACHMENT_IMAGE_MAX_BYTES,
     DEFAULT_MAX_IMAGE_BYTES,
@@ -30,7 +31,11 @@ InboundRejection = Literal[
     "read-failed",
     "audit-unavailable",
 ]
-MediaKind = Literal["portrait", "base", "reference", "gallery"]
+MediaKind = Literal[
+    "portrait", "speaking", "thinking", "reach", "rest", "shy",
+    "confirmation", "sleeping", "running", "balance", "ready", "rear",
+    "base", "expressions",
+]
 DisabledMediaKind = Literal["file", "audio"]
 MediaDiagnostic = Literal[
     "media-disabled",
@@ -47,7 +52,7 @@ LocalVisionStatus = Literal["unknown", "ready", "unavailable"]
 ApprovedPortraitStatus = Literal["unknown", "ready", "unavailable"]
 
 INBOUND_MAX_BYTES = DEFAULT_MAX_IMAGE_BYTES
-OUTBOUND_MAX_BYTES = min(8 * 1024 * 1024, ATTACHMENT_IMAGE_MAX_BYTES)
+OUTBOUND_MAX_BYTES = min(2 * 1024 * 1024, ATTACHMENT_IMAGE_MAX_BYTES)
 INBOUND_READ_TIMEOUT_SECONDS = 20.0
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif"})
 IMAGE_MIME_TYPES = ("image/gif", "image/jpeg", "image/png")
@@ -55,10 +60,7 @@ AUDIO_EXTENSIONS = frozenset(
     {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav", ".webm"}
 )
 
-_COMMAND_RE = re.compile(
-    r"^\s*!image(?:\s+(portrait|base|reference|gallery))?\s*$",
-    re.IGNORECASE,
-)
+_COMMAND_RE = re.compile(r"^\s*!image(?:\s+([a-z-]+))?\s*$", re.IGNORECASE)
 _DIRECT_OUTBOUND_REQUEST_RE = re.compile(
     r"^\s*(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|"
     r"please\s+|i\s+(?:want|need|would\s+like)\s+you\s+to\s+)?"
@@ -73,7 +75,7 @@ _DIRECT_ADDRESS_RE = re.compile(
 _MENTION_RESIDUE_RE = re.compile(r"^\s*[,.:;!?-]+\s*")
 _IMAGE_RE = re.compile(
     r"\b(?:image|picture|photo|portrait|selfie|character\s+sheet|design\s+sheet|"
-    r"reference\s+sheet|base\s+model|gallery)\b",
+    r"reference\s+sheet|base\s+model|gallery|pose|stance|rear\s+view|back\s+view)\b",
     re.IGNORECASE,
 )
 _DISABLED_COMMAND_RE = re.compile(
@@ -88,7 +90,39 @@ _AUDIO_RE = re.compile(
     r"\b(?:audio|voice\s+(?:clip|message|note)|recording|sound|wav|mp3)\b",
     re.IGNORECASE,
 )
-_GALLERY_NAME_RE = re.compile(r"^self-[0-9-]+\.(?:png|jpg|jpeg)$", re.IGNORECASE)
+_MEDIA_KINDS = frozenset({
+    "portrait", "speaking", "thinking", "reach", "rest", "shy",
+    "confirmation", "sleeping", "running", "balance", "ready", "rear",
+    "base", "expressions",
+})
+_MEDIA_KIND_ALIASES = MappingProxyType({
+    "active": "speaking",
+    "focused": "thinking",
+    "reaching": "reach",
+    "resting": "rest",
+    "sleep": "sleeping",
+    "run": "running",
+    "dynamic": "balance",
+    "confirm": "confirmation",
+    "back": "rear",
+    "rear-view": "rear",
+    "gallery": "ready",
+    "reference": "confirmation",
+    "gestures": "reach",
+    "gesture": "reach",
+    "wardrobe": "rear",
+    "outfit": "rear",
+    "movement": "running",
+})
+
+# The complete outbound set is derived from the reviewed manifest shared with
+# the cloud installer. Unknown files under familiar local paths never become
+# sendable merely by existing there.
+_APPROVED_SELF_IMAGE_ASSETS = load_approved_self_images()
+APPROVED_SELF_IMAGE_SHA256 = MappingProxyType({
+    asset.kind: asset.sha256 for asset in _APPROVED_SELF_IMAGE_ASSETS
+})
+APPROVED_SELF_IMAGE_KINDS = tuple(APPROVED_SELF_IMAGE_SHA256)
 
 _DIAGNOSTICS = MappingProxyType({
     "media-disabled": (
@@ -329,17 +363,47 @@ def requested_media_kind(text: str) -> MediaKind | None:
     raw = str(text or "").strip()
     command = _COMMAND_RE.fullmatch(raw)
     if command:
-        return (command.group(1) or "portrait").lower()  # type: ignore[return-value]
+        requested = (command.group(1) or "portrait").lower()
+        requested = _MEDIA_KIND_ALIASES.get(requested, requested)
+        return requested if requested in _MEDIA_KINDS else None  # type: ignore[return-value]
     clean = _normalize_outbound_request_text(raw)
     if not (_DIRECT_OUTBOUND_REQUEST_RE.search(clean) and _IMAGE_RE.search(clean)):
         return None
     low = clean.casefold()
+    if "sleeping" in low or "asleep" in low or "sleep pose" in low:
+        return "sleeping"
+    if "resting" in low or "rest pose" in low:
+        return "rest"
+    if "shy" in low or "reserved pose" in low:
+        return "shy"
+    if "reaching" in low or "reach pose" in low or "gesture" in low or "hand pose" in low:
+        return "reach"
+    if "confirmation" in low or "confirming" in low or "confirm pose" in low:
+        return "confirmation"
+    if "running" in low or "run pose" in low:
+        return "running"
+    if "balance" in low or "side-moving" in low:
+        return "balance"
+    if "ready" in low or "ready stance" in low:
+        return "ready"
+    if "rear" in low or "back view" in low or "wardrobe" in low or "outfit" in low:
+        return "rear"
+    if "thinking" in low or "focused" in low:
+        return "thinking"
+    if "speaking" in low or "talking" in low or "active pose" in low:
+        return "speaking"
     if "base model" in low:
         return "base"
+    if "expression" in low or "phoneme" in low:
+        return "expressions"
+    if "movement" in low or "action pose" in low:
+        return "running"
     if "reference" in low or "character sheet" in low or "design sheet" in low:
-        return "reference"
+        return "confirmation"
     if "gallery" in low or "latest art" in low or "latest image" in low:
-        return "gallery"
+        return "ready"
+    if re.search(r"\banother\b", low):
+        return "reach"
     return "portrait"
 
 
@@ -360,25 +424,36 @@ def requested_disabled_media_kind(text: str) -> DisabledMediaKind | None:
     return None
 
 
-def _latest_gallery_image(character_dir: Path) -> Path | None:
-    gallery = character_dir / "gallery"
-    if not gallery.is_dir():
-        return None
-    candidates = [
-        path for path in gallery.iterdir()
-        if path.is_file() and _GALLERY_NAME_RE.fullmatch(path.name)
-    ]
-    return max(candidates, key=lambda path: (path.stat().st_mtime_ns, path.name), default=None)
-
-
-def _catalog_path(kind: MediaKind, avatar_dir: Path, character_dir: Path) -> Path | None:
-    if kind == "portrait":
-        return avatar_dir / "portraits" / "idle.png"
-    if kind == "base":
-        return character_dir / "reference" / "base-model.png"
-    if kind == "reference":
-        return character_dir / "reference" / "master-character-sheet.png"
-    return _latest_gallery_image(character_dir)
+def _catalog_location(
+    kind: MediaKind,
+    avatar_dir: Path,
+    character_dir: Path,
+) -> tuple[Path, Path] | None:
+    portrait_paths = {
+        "portrait": avatar_dir / "portraits" / "idle.png",
+        "speaking": avatar_dir / "portraits" / "speaking.png",
+        "thinking": avatar_dir / "portraits" / "thinking.png",
+    }
+    pose_paths = {
+        "reach": avatar_dir / "poses" / "reach.png",
+        "rest": avatar_dir / "poses" / "rest.png",
+        "shy": avatar_dir / "poses" / "shy.png",
+    }
+    reference_paths = {
+        "confirmation": character_dir / "reference" / "poses" / "pose-1.png",
+        "sleeping": character_dir / "reference" / "poses" / "pose-2.png",
+        "running": character_dir / "reference" / "poses" / "pose-3.png",
+        "balance": character_dir / "reference" / "poses" / "pose-4.png",
+        "ready": character_dir / "reference" / "poses" / "pose-5.png",
+        "rear": character_dir / "reference" / "poses" / "pose-6.png",
+    }
+    if kind in portrait_paths:
+        return portrait_paths[kind], avatar_dir / "portraits"
+    if kind in pose_paths:
+        return pose_paths[kind], avatar_dir / "poses"
+    if kind in reference_paths:
+        return reference_paths[kind], character_dir / "reference" / "poses"
+    return None
 
 
 def _load_approved_outbound_image(
@@ -386,23 +461,29 @@ def _load_approved_outbound_image(
     path: Path | None,
     *,
     expected_parent: Path,
+    expected_sha256: str,
 ) -> OutboundDiscordImage | None:
     """Read one catalog entry after resolving it inside its fixed directory."""
 
-    if path is None or not path.is_file():
-        return None
-    resolved = path.resolve()
-    if resolved.parent != expected_parent.resolve():
-        return None
-    if kind == "gallery" and not _GALLERY_NAME_RE.fullmatch(resolved.name):
-        return None
-    declared = (
-        "image/jpeg"
-        if resolved.suffix.lower() in {".jpg", ".jpeg"}
-        else f"image/{resolved.suffix.lower().lstrip('.')}"
-    )
     try:
-        raw = resolved.read_bytes()
+        if path is None:
+            return None
+        resolved = path.resolve(strict=True)
+        if not resolved.is_file() or resolved.parent != expected_parent.resolve():
+            return None
+        if not re.fullmatch(r"[0-9a-f]{64}", str(expected_sha256 or "")):
+            return None
+        declared = (
+            "image/jpeg"
+            if resolved.suffix.lower() in {".jpg", ".jpeg"}
+            else f"image/{resolved.suffix.lower().lstrip('.')}"
+        )
+        if resolved.stat().st_size > OUTBOUND_MAX_BYTES:
+            return None
+        with resolved.open("rb") as handle:
+            raw = handle.read(OUTBOUND_MAX_BYTES + 1)
+            if len(raw) > OUTBOUND_MAX_BYTES or handle.read(1):
+                return None
         inspected = inspect_image_bytes(
             raw,
             scope=f"discord:outbound:{kind}",
@@ -412,6 +493,8 @@ def _load_approved_outbound_image(
             max_bytes=OUTBOUND_MAX_BYTES,
         )
     except (OSError, ImageIngressRejected):
+        return None
+    if inspected.envelope.sha256 != expected_sha256:
         return None
     return OutboundDiscordImage(
         kind=kind,
@@ -443,6 +526,7 @@ def resolve_self_portrait() -> OutboundDiscordImage | None:
         "portrait",
         portraits_dir / "idle.png",
         expected_parent=portraits_dir,
+        expected_sha256=APPROVED_SELF_IMAGE_SHA256["portrait"],
     )
 
 
@@ -465,16 +549,18 @@ def resolve_outbound_media(
         return None
     avatar_dir = Path(avatar_dir)
     character_dir = Path(character_dir)
-    path = _catalog_path(kind, avatar_dir, character_dir)
-    expected_parent = (
-        avatar_dir / "portraits"
-        if kind == "portrait"
-        else character_dir / ("gallery" if kind == "gallery" else "reference")
-    )
+    expected_sha256 = APPROVED_SELF_IMAGE_SHA256.get(kind)
+    if expected_sha256 is None:
+        return None
+    location = _catalog_location(kind, avatar_dir, character_dir)
+    if location is None:
+        return None
+    path, expected_parent = location
     return _load_approved_outbound_image(
         kind,
         path,
         expected_parent=expected_parent,
+        expected_sha256=expected_sha256,
     )
 
 

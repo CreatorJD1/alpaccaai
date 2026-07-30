@@ -1,0 +1,121 @@
+{
+  "schema": "alpecca.approved-self-images.v1",
+  "setId": "alpecca-approved-self-images-2026-07",
+  "dataset": "CREATORJD/alpecca-runtime-assets",
+  "revision": "approved-self-images-v1",
+  "basePath": "runtime-assets/approved-self-images/v1",
+  "assetCount": 12,
+  "maxAssetBytes": 2097152,
+  "sourceApprovalCatalog": "apps/android-launcher/approved-art.json",
+  "sourceApprovalSchema": "alpecca.android.approved-art.v2",
+  "assets": [
+    {
+      "kind": "portrait",
+      "approvalId": "alpecca-locked-portrait-v1",
+      "filename": "portrait.png",
+      "runtimePath": "avatar/portraits/idle.png",
+      "sha256": "c4fe98c9fd28bf01abaf55e1009e10586bce7a0205ca1fec239199cbc8d0d3c6",
+      "byteLength": 1202171,
+      "mimeType": "image/png"
+    },
+    {
+      "kind": "speaking",
+      "approvalId": "alpecca-active-pose-v1",
+      "filename": "speaking.png",
+      "runtimePath": "avatar/portraits/speaking.png",
+      "sha256": "a60702334096d3a359f2e90e5f9400cd89aab67ddbed5bb2bbc51fa171b91cec",
+      "byteLength": 1019030,
+      "mimeType": "image/png"
+    },
+    {
+      "kind": "thinking",
+      "approvalId": "alpecca-focused-pose-v1",
+      "filename": "thinking.png",
+      "runtimePath": "avatar/portraits/thinking.png",
+      "sha256": "6d0cd738bf1185eab620adc27d195820cf244cf099b4497843a36159930392a4",
+      "byteLength": 1157240,
+      "mimeType": "image/png"
+    },
+    {
+      "kind": "reach",
+      "approvalId": "alpecca-reach-pose-v1",
+      "filename": "reach.png",
+      "runtimePath": "avatar/poses/reach.png",
+      "sha256": "7ede0fc044140d8588c49c2450e08725d67ac61fd59cb9407c2abea93632e9de",
+      "byteLength": 1216700,
+      "mimeType": "image/png"
+    },
+    {
+      "kind": "rest",
+      "approvalId": "alpecca-rest-pose-v1",
+      "filename": "rest.png",
+      "runtimePath": "avatar/poses/rest.png",
+      "sha256": "8724e844aea9c824e3eaf85b4a3fd904f51e087c9bf7943cb11b1d5a868b7939",
+      "byteLength": 1483187,
+      "mimeType": "image/png"
+    },
+    {
+      "kind": "shy",
+      "approvalId": "alpecca-shy-pose-v1",
+      "filename": "shy.png",
+      "runtimePath": "avatar/poses/shy.png",
+      "sha256": "1f9a9e6278eef3a0d79ac02a1a641f5a4295d1029abbc6d912930f4a58a88349",
+      "byteLength": 601213,
+      "mimeType": "image/png"
+    },
+    {
+      "kind": "confirmation",
+      "approvalId": "alpecca-confirmation-reference-v1",
+      "filename": "confirmation.png",
+      "runtimePath": "character/reference/poses/pose-1.png",
+      "sha256": "dde81ac40417f69cb27e2adc18574eff7f3401dcd67609b4ccd823894b1e4c7e",
+      "byteLength": 1854666,
+      "mimeType": "image/png"
+    },
+    {
+      "kind": "sleeping",
+      "approvalId": "alpecca-sleeping-reference-v1",
+      "filename": "sleeping.png",
+      "runtimePath": "character/reference/poses/pose-2.png",
+      "sha256": "f809d669a8ca47fe59c40dd0b54cce80f35c6ad7377c956c96c634256092af21",
+      "byteLength": 1632986,
+      "mimeType": "image/png"
+    },
+    {
+      "kind": "running",
+      "approvalId": "alpecca-running-reference-v1",
+      "filename": "running.png",
+      "runtimePath": "character/reference/poses/pose-3.png",
+      "sha256": "fac3ce3fc44225abaf9bea141d0596458a0b843a13846f2915f526da72b3da83",
+      "byteLength": 1542212,
+      "mimeType": "image/png"
+    },
+    {
+      "kind": "balance",
+      "approvalId": "alpecca-balance-reference-v1",
+      "filename": "balance.png",
+      "runtimePath": "character/reference/poses/pose-4.png",
+      "sha256": "e922a01ca7db5b8971affd649df5be20f29f1a7ccbe682956b3e67725d494b4e",
+      "byteLength": 1610075,
+      "mimeType": "image/png"
+    },
+    {
+      "kind": "ready",
+      "approvalId": "alpecca-ready-reference-v1",
+      "filename": "ready.png",
+      "runtimePath": "character/reference/poses/pose-5.png",
+      "sha256": "7c39d9f463db398ebce394c459cb90db9c0ec0dfb6d354e36f7bbf47e435fe90",
+      "byteLength": 1827011,
+      "mimeType": "image/png"
+    },
+    {
+      "kind": "rear",
+      "approvalId": "alpecca-rear-design-reference-v1",
+      "filename": "rear.png",
+      "runtimePath": "character/reference/poses/pose-6.png",
+      "sha256": "109d16435a428022c2e07234a8370e06d85fe80f51637b2ec6cde697befb8e51",
+      "byteLength": 1168036,
+      "mimeType": "image/png"
+    }
+  ]
+}

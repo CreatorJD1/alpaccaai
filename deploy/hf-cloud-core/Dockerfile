@@ -29,7 +29,10 @@ RUN mkdir -p /opt/runtime \
         --exclude='./data/*.db*' \
         --exclude='./data/logs' \
         -cf - . \
-    | tar -C /opt/runtime -xf -
+    | tar -C /opt/runtime -xf - \
+    && install -D -m 0444 \
+        docs/manifests/alpecca-approved-self-images-v1.json \
+        /opt/runtime/docs/manifests/alpecca-approved-self-images-v1.json
 
 FROM python:3.12-slim
 
