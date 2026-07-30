@@ -17,6 +17,7 @@ import base64
 import hashlib
 import html
 import importlib.util
+import ipaddress
 import io
 import json
 import math
@@ -3873,6 +3874,59 @@ def _normalized_origin(origin: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
 
 
+_SPACE_PROXY_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("fd00::/8"),
+)
+
+
+def _trusted_external_request_origin(request: Request) -> str:
+    """Return the authenticated transport origin seen by the external client.
+
+    Hugging Face terminates TLS before forwarding a Space request over its
+    private container network. Uvicorn deliberately does not trust arbitrary
+    forwarded client addresses, so the ASGI scheme can remain ``http``. Trust
+    only the single forwarded *scheme* when every independent Space boundary
+    agrees: Hugging Face supplied ``SPACE_HOST``, the Host header is that exact
+    hostname, the direct peer is RFC1918/ULA, and one unambiguous
+    ``X-Forwarded-Proto: https`` header is present. The client address is never
+    rewritten, preventing a forged X-Forwarded-For value from becoming local
+    creator trust.
+    """
+    direct = _normalized_origin(f"{request.url.scheme}://{request.url.netloc}")
+    if request.url.scheme == "https":
+        return direct
+    if request.url.scheme != "http":
+        return ""
+
+    configured_host = str(os.environ.get("SPACE_HOST") or "").strip().lower().rstrip(".")
+    if not configured_host or any(char in configured_host for char in "/:@?#"):
+        return ""
+    request_host = (request.url.hostname or "").strip().lower().rstrip(".")
+    if request_host != configured_host:
+        return ""
+    try:
+        peer = ipaddress.ip_address(request.client.host if request.client else "")
+    except ValueError:
+        return ""
+    if not any(peer in network for network in _SPACE_PROXY_NETWORKS):
+        return ""
+
+    forwarded_values = request.headers.getlist("x-forwarded-proto")
+    if len(forwarded_values) != 1:
+        return ""
+    forwarded_proto = forwarded_values[0].strip().lower()
+    if forwarded_proto != "https" or "," in forwarded_values[0]:
+        return ""
+    return f"https://{configured_host}"
+
+
+def _request_uses_https(request: Request) -> bool:
+    return _trusted_external_request_origin(request).startswith("https://")
+
+
 def _allowed_cors_origin(origin: str) -> str:
     normalized = _normalized_origin(origin)
     if not normalized:
@@ -3964,6 +4018,13 @@ def _safe_local_path(value: str | None) -> str:
     return (parsed.path or "/")[:1024]
 
 
+def _safe_request_local_path(request: Request) -> str:
+    candidate = request.url.path
+    if request.url.query:
+        candidate = f"{candidate}?{request.url.query}"
+    return _safe_local_path(candidate)
+
+
 def issue_local_bootstrap_url(path: str = "/") -> str:
     """Mint a short-lived one-use URL for a launcher on this same machine."""
     code = _AUTHORITY.issue_bootstrap_code("127.0.0.1")
@@ -3976,9 +4037,7 @@ def issue_local_bootstrap_url(path: str = "/") -> str:
 
 def _cookie_origin_allowed(request: Request, origin: str) -> bool:
     normalized = _normalized_origin(origin)
-    request_origin = _normalized_origin(
-        f"{request.url.scheme}://{request.url.netloc}"
-    )
+    request_origin = _trusted_external_request_origin(request)
     if normalized:
         if normalized == request_origin:
             return True
@@ -4060,7 +4119,7 @@ async def _auth_gate(request: Request, call_next):
         )
         decision = _validate_bound_device_session(
             decision,
-            _normalized_origin(f"{request.url.scheme}://{request.url.netloc}"),
+            _trusted_external_request_origin(request),
         )
     if not decision.allowed:
         _record_auth_decision(
@@ -4093,7 +4152,7 @@ async def _auth_gate(request: Request, call_next):
                 remote_addr=client_host,
             )
             return _with_cors(RedirectResponse(
-                issue_local_bootstrap_url(request.url.path),
+                issue_local_bootstrap_url(_safe_request_local_path(request)),
                 status_code=303,
                 headers={"Cache-Control": "no-store"},
             ), origin)
@@ -4101,8 +4160,8 @@ async def _auth_gate(request: Request, call_next):
             return _with_cors(
                 HTMLResponse(
                     _access_html(
-                        request.url.path,
-                        allow_password=request.url.scheme == "https",
+                        _safe_request_local_path(request),
+                        allow_password=_request_uses_https(request),
                     ),
                     status_code=401,
                     headers={"Cache-Control": "no-store"},
@@ -4190,9 +4249,9 @@ async def _device_json(request: Request) -> dict:
 
 def _device_request_origin(request: Request) -> str:
     client_host = request.client.host if request.client else ""
-    if request.url.scheme != "https" and not auth_mod.is_loopback_address(client_host):
+    if not _request_uses_https(request) and not auth_mod.is_loopback_address(client_host):
         raise HTTPException(status_code=403, detail="https required")
-    request_origin = _normalized_origin(f"{request.url.scheme}://{request.url.netloc}")
+    request_origin = _trusted_external_request_origin(request)
     supplied_origin = _normalized_origin(request.headers.get("origin", ""))
     if not request_origin or supplied_origin != request_origin:
         raise HTTPException(status_code=403, detail="same-origin device request required")
@@ -4270,7 +4329,7 @@ async def trusted_device_exchange(request: Request) -> Response:
     if device_id is None:
         raise HTTPException(status_code=503, detail="device verification timed out")
     cookie = _AUTHORITY.issue_session_cookie(
-        secure=request.url.scheme == "https",
+        secure=_request_uses_https(request),
         device_id=device_id,
         origin=origin,
     )
@@ -4310,7 +4369,7 @@ async def revoke_trusted_device(device_id: str, request: Request) -> Response:
         response.delete_cookie(
             auth_mod.SESSION_COOKIE_NAME,
             path="/",
-            secure=request.url.scheme == "https",
+            secure=_request_uses_https(request),
             httponly=True,
             samesite="strict",
         )
@@ -4352,7 +4411,7 @@ def auth_bootstrap_exchange(request: Request) -> Response:
     decision, cookie = _AUTHORITY.exchange_bootstrap_code(
         request.query_params.get("code", ""),
         client_host,
-        secure=request.url.scheme == "https",
+        secure=_request_uses_https(request),
     )
     _record_auth_decision(
         "bootstrap_exchange",
@@ -4392,7 +4451,7 @@ def request_auth_bootstrap(request: Request) -> dict:
 def auth_password_landing(request: Request) -> Response:
     """Serve the remote creator password form for direct mobile opens."""
     client_host = request.client.host if request.client else ""
-    allow_password = request.url.scheme == "https" or auth_mod.is_loopback_address(client_host)
+    allow_password = _request_uses_https(request) or auth_mod.is_loopback_address(client_host)
     return HTMLResponse(
         _access_html(
             _safe_local_path(request.query_params.get("next") or "/house-hq"),
@@ -4412,7 +4471,7 @@ async def auth_password_exchange(request: Request) -> Response:
     client_host = request.client.host if request.client else ""
     if (
         not auth_mod.is_loopback_address(client_host)
-        and request.url.scheme != "https"
+        and not _request_uses_https(request)
     ):
         decision = auth_mod.AuthDecision(
             False, "password", "https_required", remote_scope="remote"
@@ -4465,7 +4524,7 @@ async def auth_password_exchange(request: Request) -> Response:
     decision, cookie = _AUTHORITY.exchange_password(
         password,
         client_host,
-        secure=request.url.scheme == "https",
+        secure=_request_uses_https(request),
     )
     _record_auth_decision(
         "password_exchange",

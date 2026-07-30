@@ -248,6 +248,87 @@ def test_remote_password_exchange_rejects_cleartext_http(monkeypatch):
     assert "set-cookie" not in response.headers
 
 
+def test_hugging_face_private_proxy_preserves_external_https_for_mobile_login(monkeypatch):
+    import server
+
+    authority = auth.SessionAuthority(
+        "test-only-space-proxy-secret",
+        creator_password=TEST_PASSWORD,
+    )
+    monkeypatch.setattr(server, "_AUTHORITY", authority)
+    monkeypatch.setenv("SPACE_HOST", "creatorjd-alpecca-survival-core.hf.space")
+    client = TestClient(
+        server.app,
+        base_url="http://creatorjd-alpecca-survival-core.hf.space",
+        client=("10.112.73.211", 50106),
+    )
+    proxy_headers = {
+        "X-Forwarded-Proto": "https",
+        "Origin": "https://creatorjd-alpecca-survival-core.hf.space",
+    }
+
+    landing = client.get(
+        "/house-hq",
+        headers={"Accept": "text/html", "X-Forwarded-Proto": "https"},
+    )
+    assert landing.status_code == 401
+    assert 'type="password"' in landing.text
+
+    enrolled = client.post(
+        "/auth/password",
+        data={"password": TEST_PASSWORD, "next": "/house-hq"},
+        headers=proxy_headers,
+        follow_redirects=False,
+    )
+
+    assert enrolled.status_code == 303
+    assert enrolled.headers["location"] == "/house-hq"
+    assert "HttpOnly" in enrolled.headers["set-cookie"]
+    assert "Secure" in enrolled.headers["set-cookie"]
+
+
+def test_forwarded_https_is_rejected_without_exact_space_proxy_boundary(monkeypatch):
+    import server
+
+    authority = auth.SessionAuthority(
+        "test-only-untrusted-proxy-secret",
+        creator_password=TEST_PASSWORD,
+    )
+    monkeypatch.setattr(server, "_AUTHORITY", authority)
+    monkeypatch.setenv("SPACE_HOST", "creatorjd-alpecca-survival-core.hf.space")
+    data = {"password": TEST_PASSWORD, "next": "/house-hq"}
+    headers = {
+        "X-Forwarded-Proto": "https",
+        "Origin": "https://creatorjd-alpecca-survival-core.hf.space",
+    }
+
+    public_peer = TestClient(
+        server.app,
+        base_url="http://creatorjd-alpecca-survival-core.hf.space",
+        client=("198.51.100.50", 50107),
+    )
+    wrong_host = TestClient(
+        server.app,
+        base_url="http://attacker.example",
+        client=("10.112.73.211", 50108),
+    )
+
+    public_response = public_peer.post(
+        "/auth/password", data=data, headers=headers, follow_redirects=False
+    )
+    wrong_host_response = wrong_host.post(
+        "/auth/password",
+        data=data,
+        headers={**headers, "Origin": "https://attacker.example"},
+        follow_redirects=False,
+    )
+
+    assert public_response.status_code == 426
+    assert wrong_host_response.status_code == 426
+    assert "set-cookie" not in public_response.headers
+    assert "set-cookie" not in wrong_host_response.headers
+
+
 def test_launcher_and_app_sources_do_not_put_credentials_in_urls():
     root = Path(__file__).resolve().parents[1]
     launcher = (root / "apps" / "launcher" / "src" / "alpecca_launcher.py").read_text(

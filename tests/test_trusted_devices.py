@@ -181,6 +181,34 @@ def test_server_device_challenge_rejects_cross_origin(monkeypatch, tmp_path):
     assert response.status_code == 403
 
 
+def test_server_device_challenge_accepts_exact_hugging_face_https_proxy(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+    import server
+
+    registry = TrustedDeviceRegistry(tmp_path / "space-proxy-devices.db")
+    monkeypatch.setattr(server, "_TRUSTED_DEVICE_REGISTRY", registry)
+    monkeypatch.setenv("SPACE_HOST", "creatorjd-alpecca-survival-core.hf.space")
+    client = TestClient(
+        server.app,
+        base_url="http://creatorjd-alpecca-survival-core.hf.space",
+        client=("10.112.73.211", 50109),
+    )
+
+    response = client.post(
+        "/auth/device/challenge",
+        headers={
+            "Origin": "https://creatorjd-alpecca-survival-core.hf.space",
+            "X-Forwarded-Proto": "https",
+        },
+        json={"device_id": "missing-device"},
+    )
+
+    # Reaching the registry (rather than failing the HTTPS/origin gate) proves
+    # the launcher challenge path sees the exact external Space origin.
+    assert response.status_code == 404
+    assert response.json()["detail"] == "device unavailable"
+
+
 def test_server_rejects_device_cookie_on_a_different_origin(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
     import server
