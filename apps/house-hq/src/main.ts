@@ -7,6 +7,16 @@ import {
   type VrmEmbodimentDebug,
 } from "./vrmEmbodiment";
 import {
+  APPROVED_ALPECCA_RUNTIME_ASSET_BASE,
+  defaultAlpeccaArtBaseForHost,
+  normalizeApprovedAlpeccaArtBase,
+} from "./assetRouting";
+import {
+  canQueueFullSpriteAnimation,
+  deferFullSpriteLibrary,
+  spriteLibraryStatusLabel,
+} from "./spriteLoadingPolicy";
+import {
   VoiceQueueFullError,
   createHouseVoiceSessionCoordinator,
   createVoiceAvatarPlaybackSignal,
@@ -43,6 +53,13 @@ import {
   houseReadTool,
   houseReadToolControl,
 } from "./toolConnectivity";
+import {
+  circleIntersectsAnyRect,
+  depenetrateCircle,
+  findGridRoute,
+  orientedRectFootprint,
+  type PlanarRect,
+} from "./spatialNavigation";
 
 window.addEventListener("vite:preloadError", (event) => {
   event.preventDefault();
@@ -102,6 +119,7 @@ type AlpeccaRuntimeProbe = {
   animationLoaded: number;
   animationTotal: number;
   animationMissing: string[];
+  animationDeferred: boolean;
   walkIntent: boolean;
   movedDistance: number;
   walkPlaybackRate: number;
@@ -231,6 +249,7 @@ declare global {
         animationLoaded?: number;
         animationTotal?: number;
         animationMissing?: string[];
+        animationDeferred?: boolean;
         talking?: boolean;
         mouthOpen?: number;
         profileMouthMode?: string;
@@ -319,7 +338,7 @@ declare global {
   }
 }
 
-type Wall = { minX: number; maxX: number; minZ: number; maxZ: number };
+type Wall = PlanarRect & { label?: string };
 type SpriteFrame = { x: number; y: number; w: number; h: number; duration?: number };
 type SpriteAtlas = {
   frames: Record<string, SpriteFrame>;
@@ -1555,6 +1574,7 @@ let alpeccaCylinderQaGroup: THREE.Group | null = null;
 let alpeccaCylinderMovementClamped = false;
 const animatedProps: Array<(dt: number) => void> = [];
 const playerRadius = 0.32;
+const alpeccaCollisionRadius = 0.3;
 const player = {
   yaw: 0,
   pitch: 0,
@@ -1610,6 +1630,7 @@ window.__ALPECCA_RUNTIME__ = {
   animationLoaded: 0,
   animationTotal: 0,
   animationMissing: [],
+  animationDeferred: false,
   walkIntent: false,
   movedDistance: 0,
   walkPlaybackRate: alpeccaWalkFrameRate,
@@ -1954,19 +1975,10 @@ function isStaticPreviewHost(host: string) {
 }
 
 const alpeccaArtBaseStorageKey = "alpeccaArtBaseUrl";
-const alpeccaDefaultHfArtBaseUrl = "https://huggingface.co/datasets/CREATORJD/alpecca-runtime-assets/resolve/main/runtime-assets";
+const alpeccaDefaultHfArtBaseUrl = APPROVED_ALPECCA_RUNTIME_ASSET_BASE;
 
 function normalizeAlpeccaArtBaseUrl(value: string) {
-  if (!value.trim()) return "";
-  try {
-    const url = new URL(value.trim());
-    if (url.protocol !== "http:" && url.protocol !== "https:") return "";
-    url.search = "";
-    url.hash = "";
-    return url.toString().replace(/\/$/, "");
-  } catch {
-    return "";
-  }
+  return normalizeApprovedAlpeccaArtBase(value);
 }
 
 function configuredAlpeccaArtBaseUrl() {
@@ -1977,7 +1989,7 @@ function configuredAlpeccaArtBaseUrl() {
   }
   const stored = normalizeAlpeccaArtBaseUrl(localStorage.getItem(alpeccaArtBaseStorageKey) || "");
   if (stored) return stored;
-  return isStaticPreviewHost(window.location.hostname) ? alpeccaDefaultHfArtBaseUrl : "";
+  return defaultAlpeccaArtBaseForHost(window.location.hostname, alpeccaDefaultHfArtBaseUrl);
 }
 
 const alpeccaArtBaseUrl = configuredAlpeccaArtBaseUrl();
@@ -2011,6 +2023,12 @@ function configuredAlpeccaEmbodiment(): AlpeccaEmbodimentPreference {
   }
   return localStorage.getItem(alpeccaEmbodimentStorageKey) === "vrm" ? "vrm" : "sprite";
 }
+
+const alpeccaInitialEmbodimentPreference = configuredAlpeccaEmbodiment();
+let alpeccaSpriteLibraryDeferred = deferFullSpriteLibrary(alpeccaInitialEmbodimentPreference);
+let alpeccaStaticFallbackTexture: THREE.Texture | null = null;
+let alpeccaStaticFallbackLoading = false;
+const alpeccaStaticFallbackPortraitUrl = alpeccaAssetUrl("/assets/alpecca-avatar/portraits/idle.png");
 
 function isAlpeccaVrm3D() {
   return alpeccaEmbodimentState === "vrm";
@@ -2081,7 +2099,9 @@ function prewarmAlpeccaVrm() {
 async function activateAlpeccaVrm() {
   if (alpeccaEmbodimentState === "loading" || isAlpeccaVrm3D()) return;
   if (!alpeccaAiBaseUrl) {
+    alpeccaEmbodimentState = "failed";
     alpeccaVrmStatusDetail = "3D body needs a live backend URL";
+    setAlpeccaSpriteVisualsVisible(true);
     updateCoreStatusLabels();
     return;
   }
@@ -2097,13 +2117,41 @@ async function activateAlpeccaVrm() {
     alpeccaVrmEmbodiment?.setSpriteState(alpecca.state, alpecca.moving, isAlpeccaTalking());
     appendAlpeccaLog("System", "Alpecca switched to her experimental 3D body.");
   } else {
-    // Failure never strands her: the sprite pipeline stayed warm the whole time.
+    // Failure never strands her: the single portrait remains available. Keep
+    // the VRM preference so a reload retries 3D without decoding every atlas.
     alpeccaEmbodimentState = "failed";
-    localStorage.setItem(alpeccaEmbodimentStorageKey, "sprite");
     setAlpeccaSpriteVisualsVisible(true);
     if (!alpeccaVrmStatusDetail) alpeccaVrmStatusDetail = "3D body failed to load; staying 2D";
   }
   document.body.dataset.alpeccaVrmSwitchMs = Math.round(performance.now() - switchStartedAt).toString();
+  updateCoreStatusLabels();
+}
+
+async function requestFullAlpeccaSpriteLibrary() {
+  if (!alpeccaSpriteLibraryDeferred) return;
+  alpeccaSpriteLibraryDeferred = false;
+  publishAlpeccaRuntimeProbe();
+
+  await ensureAlpeccaAnimation("idle");
+  await Promise.all(alpeccaStartupMovementStates.map((name) => ensureAlpeccaAnimation(name)));
+  const initialState = alpecca.animations.has("idleDown")
+    ? "idleDown"
+    : alpecca.animations.has("idle")
+      ? "idle"
+      : null;
+  if (!initialState) {
+    alpeccaVrmStatusDetail = "2D animation assets are unavailable; portrait fallback remains active";
+    publishAlpeccaRuntimeProbe();
+    updateCoreStatusLabels();
+    return;
+  }
+
+  attachAlpeccaAnimatedSpriteVisuals();
+  setAlpeccaAnimation(initialState, true);
+  applyAlpeccaBillboardYaw(0, true);
+  preloadAlpeccaMovementAnimations();
+  alpeccaVrmStatusDetail = "";
+  publishAlpeccaRuntimeProbe();
   updateCoreStatusLabels();
 }
 
@@ -2117,6 +2165,7 @@ function deactivateAlpeccaVrm() {
   setAlpeccaSpriteVisualsVisible(true);
   alpeccaVrmStatusDetail = "";
   updateCoreStatusLabels();
+  void requestFullAlpeccaSpriteLibrary();
 }
 
 function updateAlpeccaEmbodiment(dt: number) {
@@ -3417,22 +3466,34 @@ function cylinder(name: string, radius: number, depth: number, pos: THREE.Vector
   return mesh;
 }
 
-function addCollider(centerX: number, centerZ: number, sizeX: number, sizeZ: number) {
+function addCollider(centerX: number, centerZ: number, sizeX: number, sizeZ: number, label = "scene collider") {
   walls.push({
     minX: centerX - sizeX / 2,
     maxX: centerX + sizeX / 2,
     minZ: centerZ - sizeZ / 2,
     maxZ: centerZ + sizeZ / 2,
+    label,
   });
 }
 
 function addWall(name: string, centerX: number, centerZ: number, sizeX: number, sizeZ: number) {
   box(name, [sizeX, 2.8, sizeZ], [centerX, 1.4, centerZ], materials.wall);
-  addCollider(centerX, centerZ, sizeX, sizeZ);
+  addCollider(centerX, centerZ, sizeX, sizeZ, name);
 }
 
-function addFurnitureCollider(centerX: number, centerZ: number, sizeX: number, sizeZ: number) {
-  addCollider(centerX, centerZ, sizeX, sizeZ);
+function addFurnitureCollider(centerX: number, centerZ: number, sizeX: number, sizeZ: number, label = "furniture") {
+  addCollider(centerX, centerZ, sizeX, sizeZ, label);
+}
+
+function addOrientedFurnitureCollider(
+  label: string,
+  pos: THREE.Vector3Tuple,
+  yaw: number,
+  sizeX: number,
+  sizeZ: number,
+) {
+  const footprint = orientedRectFootprint({ x: pos[0], z: pos[2] }, sizeX, sizeZ, yaw);
+  walls.push({ ...footprint, label });
 }
 
 function addExteriorBoundaryColliders() {
@@ -3775,7 +3836,9 @@ function updateCoreStatusLabels() {
       ? "Body: 3D model"
       : alpeccaEmbodimentState === "loading"
         ? "Body: loading 3D…"
-        : "Body: 2D sprite";
+        : alpeccaEmbodimentState === "failed"
+          ? "Body: portrait fallback"
+          : "Body: 2D sprite";
   embodimentStatus.textContent =
     alpeccaVrmStatusDetail ||
     (alpeccaEmbodimentState === "vrm"
@@ -7757,6 +7820,7 @@ function addSourceTerminal(featureId: string, pos: THREE.Vector3Tuple, yaw: numb
   group.rotation.y = yaw;
   group.scale.setScalar(0.88);
   scene.add(group);
+  addOrientedFurnitureCollider(`${feature.room} source terminal`, pos, yaw, 0.86, 0.62);
 
   const accent = new THREE.MeshStandardMaterial({
     color: feature.color,
@@ -8429,6 +8493,7 @@ function addAlpeccaAvatarStation(pos: THREE.Vector3Tuple, yaw: number) {
   group.rotation.y = yaw;
   group.scale.setScalar(0.88);
   scene.add(group);
+  addOrientedFurnitureCollider("Alpecca avatar pose station", pos, yaw, 1.34, 0.24);
 
   groupBox(group, [1.34, 1.58, 0.07], [0, 0, -0.045], materials.board);
   groupBox(group, [1.48, 0.06, 0.09], [0, 0.84, 0.01], materials.metal);
@@ -8949,6 +9014,7 @@ function addPrototypeTerminal(featureId: string, pos: THREE.Vector3Tuple, yaw: n
   group.position.set(...pos);
   group.rotation.y = yaw;
   scene.add(group);
+  addOrientedFurnitureCollider(`prototype ${featureId} terminal`, pos, yaw, 0.88, 0.58);
 
   const accent = new THREE.MeshBasicMaterial({ color: feature.color, transparent: true, opacity: 0.58 });
   groupBox(group, [0.84, 0.08, 0.54], [0, 0.02, 0], materials.metal);
@@ -9511,6 +9577,7 @@ function addAlpeccaAgiJournal(pos: THREE.Vector3Tuple, yaw: number) {
   group.rotation.y = yaw;
   group.scale.setScalar(0.9);
   scene.add(group);
+  addOrientedFurnitureCollider("Alpecca persistent AGI journal", pos, yaw, 1.04, 0.66);
 
   groupBox(group, [1.08, 0.09, 0.68], [0, 0.52, 0], materials.darkWood);
   groupBox(group, [0.08, 0.52, 0.08], [-0.44, 0.26, -0.24], materials.darkWood);
@@ -9629,6 +9696,7 @@ function addAlpeccaImprovementQueue(pos: THREE.Vector3Tuple, yaw: number) {
   group.rotation.y = yaw;
   group.scale.setScalar(0.9);
   scene.add(group);
+  addOrientedFurnitureCollider("Alpecca improvement queue", pos, yaw, 1.12, 0.64);
 
   groupBox(group, [1.18, 0.1, 0.66], [0, 0.18, 0.05], materials.metal);
   groupBox(group, [0.98, 0.68, 0.08], [0, 0.72, -0.22], materials.board);
@@ -9853,6 +9921,7 @@ function addAlpeccaEnvironmentModel(pos: THREE.Vector3Tuple, yaw: number) {
   group.rotation.y = yaw;
   group.scale.setScalar(0.9);
   scene.add(group);
+  addOrientedFurnitureCollider("Alpecca house environment model", pos, yaw, 1.34, 0.84);
 
   groupBox(group, [1.42, 0.1, 0.88], [0, 0.52, 0], materials.darkWood);
   groupBox(group, [0.1, 0.5, 0.1], [-0.56, 0.26, -0.33], materials.darkWood);
@@ -10607,6 +10676,7 @@ function addWorkbench(pos: THREE.Vector3Tuple, yaw: number) {
   group.position.set(...pos);
   group.rotation.y = yaw;
   scene.add(group);
+  addOrientedFurnitureCollider("workshop bench", pos, yaw, 2.46, 0.84);
   groupBox(group, [2.4, 0.16, 0.78], [0, 0.9, 0], materials.darkWood);
   groupBox(group, [2.1, 0.9, 0.08], [0, 1.45, -0.38], materials.board);
   for (let i = 0; i < 5; i += 1) groupBox(group, [0.09, 0.35, 0.08], [-0.85 + i * 0.42, 1.48, -0.31], materials.metal);
@@ -11013,6 +11083,7 @@ function addActivationStation(id: string, label: string, pos: THREE.Vector3Tuple
   group.position.set(pos[0], 0, pos[2]);
   group.scale.setScalar(baseScale);
   scene.add(group);
+  addOrientedFurnitureCollider(`${id} activation station`, pos, 0, 0.88, 0.62);
   groupBox(group, [0.9, 0.05, 0.62], [0, 0.025, 0], materials.darkWood);
   for (const x of [-0.29, 0.29]) {
     groupBox(group, [0.075, Math.max(0.14, pos[1] - 0.12), 0.075], [x, Math.max(0.14, pos[1] - 0.12) / 2 + 0.05, -0.16], materials.metal);
@@ -11056,6 +11127,7 @@ function addPlanter(pos: THREE.Vector3Tuple, flowering: boolean) {
   const group = new THREE.Group();
   group.position.set(...pos);
   scene.add(group);
+  addFurnitureCollider(pos[0], pos[2], 0.5, 0.5, flowering ? "flowering planter" : "planter");
   groupCylinder(group, 0.22, 0.34, [0, 0.17, 0], materials.darkWood, 16);
   for (let i = 0; i < 7; i += 1) {
     const leaf = groupBox(group, [0.08, 0.36, 0.04], [Math.sin(i) * 0.14, 0.48, Math.cos(i) * 0.14], materials.plant);
@@ -11676,6 +11748,7 @@ function calmAlpeccaMotionState(name: AlpeccaAnimationName): AlpeccaAnimationNam
 }
 
 function queueAlpeccaAnimationLoad(name: AlpeccaAnimationName, urgent = false) {
+  if (!canQueueFullSpriteAnimation(alpeccaSpriteLibraryDeferred)) return;
   if (alpecca.animations.has(name) || alpecca.loading.has(name)) return;
   const existingIndex = alpeccaPreloadQueue.indexOf(name);
   if (existingIndex >= 0) alpeccaPreloadQueue.splice(existingIndex, 1);
@@ -11772,11 +11845,17 @@ function setAlpeccaAnimation(name: AlpeccaAnimationName, force = false, allowRar
     ? THREE.MathUtils.clamp(estimateAlpeccaAnimationDuration(animation) * 0.82, 0.42, 1.8)
     : 0;
   alpecca.material.map = animation.texture;
+  alpecca.material.color.set("#ffffff");
+  alpecca.material.opacity = 1;
   if (alpecca.depthProxy) alpecca.depthProxy.material.map = animation.texture;
   if (alpecca.glitchRed) alpecca.glitchRed.material.map = animation.texture;
   if (alpecca.glitchCyan) alpecca.glitchCyan.material.map = animation.texture;
   if (alpecca.silhouette) alpecca.silhouette.material.map = animation.texture;
   alpecca.material.needsUpdate = true;
+  if (alpeccaStaticFallbackTexture && alpeccaStaticFallbackTexture !== animation.texture) {
+    alpeccaStaticFallbackTexture.dispose();
+    alpeccaStaticFallbackTexture = null;
+  }
   alpecca.visualScale = animation.visualScale;
   alpecca.spriteY = animation.spriteY;
   applyAlpeccaVisualTransform(0, true);
@@ -12970,6 +13049,7 @@ function publishAlpeccaRuntimeProbe() {
     animationLoaded: alpeccaAllAnimationStates.length - animationMissing.length,
     animationTotal: alpeccaAllAnimationStates.length,
     animationMissing,
+    animationDeferred: alpeccaSpriteLibraryDeferred,
     walkIntent: alpecca.walkIntent,
     movedDistance: Number(alpecca.lastMovedDistance.toFixed(4)),
     walkPlaybackRate: Number(alpecca.walkPlaybackRate.toFixed(3)),
@@ -13094,6 +13174,7 @@ function publishAlpeccaRuntimeProbe() {
   document.body.dataset.alpeccaMovementMissing = movementMissing.join(",");
   document.body.dataset.alpeccaAnimationLoaded = `${runtime.animationLoaded}/${runtime.animationTotal}`;
   document.body.dataset.alpeccaAnimationMissing = animationMissing.join(",");
+  document.body.dataset.alpeccaAnimationDeferred = String(runtime.animationDeferred);
   document.body.dataset.alpeccaWalkIntent = String(runtime.walkIntent);
   document.body.dataset.alpeccaMovedDistance = String(runtime.movedDistance);
   document.body.dataset.alpeccaWalkPlaybackRate = String(runtime.walkPlaybackRate);
@@ -13160,7 +13241,12 @@ function publishAlpeccaRuntimeProbe() {
   document.body.dataset.alpeccaNavClearance = runtime.navClearance;
   document.body.dataset.renderCalls = String(runtime.renderCalls);
   document.body.dataset.renderPixelRatio = String(runtime.pixelRatio);
-  alpeccaSpriteStatusEl.textContent = `Alpecca sprites: ${runtime.animationLoaded}/${runtime.animationTotal}`;
+  alpeccaSpriteStatusEl.textContent = spriteLibraryStatusLabel({
+    deferred: runtime.animationDeferred,
+    embodiment: alpeccaEmbodimentState,
+    loaded: runtime.animationLoaded,
+    total: runtime.animationTotal,
+  });
   alpeccaChat.classList.toggle("talking", talking);
   document.body.classList.toggle("alpecca-chat-open", !alpeccaChat.classList.contains("hidden"));
   updateDefaultAlpeccaActivity();
@@ -13174,6 +13260,7 @@ function publishAlpeccaRuntimeProbe() {
 }
 
 function preloadAlpeccaMovementAnimations() {
+  if (!canQueueFullSpriteAnimation(alpeccaSpriteLibraryDeferred)) return;
   const priority: AlpeccaAnimationName[] = [
     ...alpeccaCoreMovementStates,
     "walk",
@@ -13203,6 +13290,7 @@ function preloadAlpeccaMovementAnimations() {
 }
 
 function updateAlpeccaPreloadQueue(dt: number) {
+  if (!canQueueFullSpriteAnimation(alpeccaSpriteLibraryDeferred)) return;
   if (alpeccaPreloadQueue.length === 0) return;
   if (alpecca.loading.size >= alpeccaMaxConcurrentSpriteLoads) return;
 
@@ -13447,6 +13535,41 @@ function pushAlpeccaRoutePoint(route: THREE.Vector3[], point: THREE.Vector3) {
   if (Math.hypot(previous.x - point.x, previous.z - point.z) > 0.22) route.push(point.clone());
 }
 
+function alpeccaNavigationBounds() {
+  return isPrototypeMode()
+    ? { minX: -5.55, maxX: 5.55, minZ: -5.55, maxZ: 5.55 }
+    : { minX: -7.55, maxX: 7.55, minZ: -5.55, maxZ: 5.55 };
+}
+
+function expandBlockedAlpeccaRoute(authored: THREE.Vector3[]) {
+  const expanded: THREE.Vector3[] = [];
+  let from = alpecca.group.position.clone();
+  for (const destination of authored) {
+    if (!routeSegmentIntersectsWall(from, destination, alpeccaCollisionRadius)) {
+      pushAlpeccaRoutePoint(expanded, destination);
+      from = destination;
+      continue;
+    }
+    const detour = findGridRoute(
+      { x: from.x, z: from.z },
+      { x: destination.x, z: destination.z },
+      alpeccaCollisionRadius,
+      walls,
+      alpeccaNavigationBounds(),
+    );
+    if (!detour?.length) {
+      // Never put a known-unreachable authored point back into the route.
+      continue;
+    }
+    for (const point of detour) {
+      const waypoint = new THREE.Vector3(point.x, destination.y, point.z);
+      pushAlpeccaRoutePoint(expanded, waypoint);
+      from = waypoint;
+    }
+  }
+  return expanded;
+}
+
 function buildAlpeccaRoute(targetIndex: number) {
   const point = alpeccaExplorePoints[targetIndex % alpeccaExplorePoints.length];
   const stageSpec = alpeccaStageSpecForRoom(point.roomId);
@@ -13476,7 +13599,9 @@ function buildAlpeccaRoute(targetIndex: number) {
 
   const finalTarget = terminalTarget?.approach ?? finalStage.center;
   pushAlpeccaRoutePoint(route, finalTarget);
-  return route.length > 0 ? route : [finalTarget.clone()];
+  const authored = route.length > 0 ? route : [finalTarget.clone()];
+  const expanded = expandBlockedAlpeccaRoute(authored);
+  return expanded.length > 0 ? expanded : [alpecca.group.position.clone()];
 }
 
 function resolveAlpeccaNavigationTarget(targetIndex: number) {
@@ -13940,6 +14065,7 @@ function updateAlpecca(dt: number) {
     window.__HOUSE_DEBUG__.alpecca.animationLoaded = window.__ALPECCA_RUNTIME__?.animationLoaded ?? 0;
     window.__HOUSE_DEBUG__.alpecca.animationTotal = window.__ALPECCA_RUNTIME__?.animationTotal ?? alpeccaAllAnimationStates.length;
     window.__HOUSE_DEBUG__.alpecca.animationMissing = window.__ALPECCA_RUNTIME__?.animationMissing ?? [];
+    window.__HOUSE_DEBUG__.alpecca.animationDeferred = window.__ALPECCA_RUNTIME__?.animationDeferred ?? false;
     window.__HOUSE_DEBUG__.alpecca.talking = window.__ALPECCA_RUNTIME__?.talking ?? false;
     window.__HOUSE_DEBUG__.alpecca.mouthOpen = window.__ALPECCA_RUNTIME__?.mouthOpen ?? 0;
     window.__HOUSE_DEBUG__.alpecca.profileMouthMode = window.__ALPECCA_RUNTIME__?.profileMouthMode ?? "";
@@ -14007,15 +14133,72 @@ function updateAlpecca(dt: number) {
   }
 }
 
+function attachAlpeccaAnimatedSpriteVisuals() {
+  let sprite = alpecca.sprite;
+  if (!sprite) {
+    sprite = new THREE.Mesh(new THREE.PlaneGeometry(alpeccaSpritePlaneSize, alpeccaSpritePlaneSize), alpecca.material);
+    alpecca.group.add(sprite);
+    alpecca.sprite = sprite;
+  } else if (!alpecca.depthProxy) {
+    const fallbackGeometry = sprite.geometry;
+    sprite.geometry = new THREE.PlaneGeometry(alpeccaSpritePlaneSize, alpeccaSpritePlaneSize);
+    fallbackGeometry.dispose();
+  }
+  sprite.name = "Alpecca sprite";
+  sprite.position.set(0, 0.93, 0);
+  sprite.renderOrder = 8;
+  sprite.castShadow = false;
+
+  if (!alpecca.depthProxy) addAlpeccaDepthLayers(sprite);
+  if (!alpecca.heightRuler) addAlpeccaHeightRuler();
+  if (!alpecca.glitchRed) addAlpeccaGlitchLayers(sprite);
+  if (!alpecca.headLook) addAlpeccaHeadLook();
+  if (!alpecca.hitTarget) addAlpeccaHitTarget();
+  if (!alpecca.shadow) addAlpeccaGroundShadow();
+}
+
+function loadAlpeccaStaticFallbackPortrait() {
+  if (alpeccaStaticFallbackTexture || alpeccaStaticFallbackLoading) return;
+  alpeccaStaticFallbackLoading = true;
+  const expectedSprite = alpecca.sprite;
+  void loadTexture(alpeccaStaticFallbackPortraitUrl).then((texture) => {
+    if (alpecca.animations.size > 0 || !expectedSprite || alpecca.sprite !== expectedSprite) {
+      texture.dispose();
+      return;
+    }
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearFilter;
+    texture.wrapS = THREE.ClampToEdgeWrapping;
+    texture.wrapT = THREE.ClampToEdgeWrapping;
+    texture.generateMipmaps = false;
+    alpeccaStaticFallbackTexture = texture;
+    alpecca.material.map = texture;
+    alpecca.material.color.set("#ffffff");
+    alpecca.material.opacity = 1;
+    alpecca.material.needsUpdate = true;
+    if (isAlpeccaVrm3D()) setAlpeccaSpriteVisualsVisible(false);
+  }).catch((error) => {
+    console.warn("Alpecca portrait fallback failed to load.", error);
+  }).finally(() => {
+    alpeccaStaticFallbackLoading = false;
+  });
+}
+
 function createAlpeccaFallback() {
-  const fallback = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.35, 1.7),
-    new THREE.MeshBasicMaterial({ color: "#d86a8d", transparent: true, opacity: 0.92, side: THREE.DoubleSide }),
-  );
-  fallback.position.set(0, 0.89, 0);
-  alpecca.group.add(fallback);
-  addAlpeccaHitTarget();
-  addAlpeccaGroundShadow();
+  if (!alpecca.sprite) {
+    const fallback = new THREE.Mesh(new THREE.PlaneGeometry(1.35, 1.7), alpecca.material);
+    fallback.name = "Alpecca portrait fallback";
+    fallback.position.set(0, 0.89, 0);
+    fallback.renderOrder = 8;
+    alpecca.material.color.set("#d86a8d");
+    alpecca.material.opacity = 0.92;
+    alpecca.group.add(fallback);
+    alpecca.sprite = fallback;
+  }
+  if (!alpecca.hitTarget) addAlpeccaHitTarget();
+  if (!alpecca.shadow) addAlpeccaGroundShadow();
+  loadAlpeccaStaticFallbackPortrait();
   alpecca.ready = true;
   publishAlpeccaRuntimeProbe();
   consumeManualStepHash();
@@ -14036,10 +14219,9 @@ async function createAlpecca() {
   alpecca.group.name = "Alpecca NPC";
   if (!restoreAlpeccaPose()) alpecca.group.position.copy(currentAlpeccaExplorePoint().position);
   scene.add(alpecca.group);
-  // Fetch and parse her 3D body in parallel with sprite startup. The sprite
-  // remains visible until activation, so boot stays responsive while the
-  // first embodiment switch gains the same cached path as later switches.
-  prewarmAlpeccaVrm();
+  // A sprite-first session may prewarm the optional body in parallel. A forced
+  // VRM launch skips this path and starts activation without awaiting an atlas.
+  if (alpeccaInitialEmbodimentPreference !== "vrm") prewarmAlpeccaVrm();
   publishAlpeccaRuntimeProbe();
 
   window.__HOUSE_DEBUG__!.alpecca = {
@@ -14086,6 +14268,7 @@ async function createAlpecca() {
     animationLoaded: 0,
     animationTotal: alpeccaAllAnimationStates.length,
     animationMissing: [...alpeccaAllAnimationStates],
+    animationDeferred: alpeccaSpriteLibraryDeferred,
     talking: false,
     mouthOpen: 0,
     profileMouthMode: "fallback-overlay",
@@ -14139,34 +14322,28 @@ async function createAlpecca() {
     z: alpecca.group.position.z,
   };
 
-  try {
-    const idleConfig = alpeccaAnimationConfig.idle;
-    await loadAlpeccaAnimation("idle", idleConfig.folder, idleConfig.secondsPerFrame, idleConfig.loop ?? true);
-    await Promise.all(alpeccaStartupMovementStates.map((name) => ensureAlpeccaAnimation(name)));
-
-    const sprite = new THREE.Mesh(new THREE.PlaneGeometry(alpeccaSpritePlaneSize, alpeccaSpritePlaneSize), alpecca.material);
-    sprite.name = "Alpecca sprite";
-    sprite.position.set(0, 0.93, 0);
-    sprite.renderOrder = 8;
-    sprite.castShadow = false;
-    alpecca.group.add(sprite);
-    alpecca.sprite = sprite;
-    addAlpeccaDepthLayers(sprite);
-    addAlpeccaHeightRuler();
-    addAlpeccaGlitchLayers(sprite);
-    addAlpeccaHeadLook();
-    addAlpeccaHitTarget();
-    addAlpeccaGroundShadow();
-    setAlpeccaAnimation("idleDown");
-    applyAlpeccaBillboardYaw(0, true);
-    preloadAlpeccaMovementAnimations();
-    alpecca.ready = true;
-    publishAlpeccaRuntimeProbe();
-    consumeManualStepHash();
-    if (configuredAlpeccaEmbodiment() === "vrm") void activateAlpeccaVrm();
-  } catch (error) {
-    console.warn("Alpecca sprite assets failed to load. Using fallback NPC.", error);
+  if (alpeccaInitialEmbodimentPreference === "vrm") {
+    // Start the canonical 3D body immediately. The single portrait below is a
+    // failure/loading fallback and does not unlock the 45-state atlas queue.
+    void activateAlpeccaVrm();
     createAlpeccaFallback();
+  } else {
+    try {
+      const idleConfig = alpeccaAnimationConfig.idle;
+      await loadAlpeccaAnimation("idle", idleConfig.folder, idleConfig.secondsPerFrame, idleConfig.loop ?? true);
+      await Promise.all(alpeccaStartupMovementStates.map((name) => ensureAlpeccaAnimation(name)));
+
+      attachAlpeccaAnimatedSpriteVisuals();
+      setAlpeccaAnimation("idleDown");
+      applyAlpeccaBillboardYaw(0, true);
+      preloadAlpeccaMovementAnimations();
+      alpecca.ready = true;
+      publishAlpeccaRuntimeProbe();
+      consumeManualStepHash();
+    } catch (error) {
+      console.warn("Alpecca sprite assets failed to load. Using portrait fallback.", error);
+      createAlpeccaFallback();
+    }
   }
 
   alpeccaInteractable = {
@@ -14510,12 +14687,40 @@ function getTarget() {
 }
 
 function collides(x: number, z: number) {
-  return walls.some((wall) => x + playerRadius > wall.minX && x - playerRadius < wall.maxX && z + playerRadius > wall.minZ && z - playerRadius < wall.maxZ);
+  return circleIntersectsAnyRect({ x, z }, playerRadius, walls);
 }
 
 function alpeccaCollides(x: number, z: number) {
-  const radius = 0.3;
-  return walls.some((wall) => x + radius > wall.minX && x - radius < wall.maxX && z + radius > wall.minZ && z - radius < wall.maxZ);
+  return circleIntersectsAnyRect({ x, z }, alpeccaCollisionRadius, walls);
+}
+
+function recoverAlpeccaFromScenePenetration() {
+  const recovered = depenetrateCircle(
+    { x: alpecca.group.position.x, z: alpecca.group.position.z },
+    alpeccaCollisionRadius,
+    walls,
+  );
+  if (recovered.moved) {
+    alpecca.group.position.x = recovered.x;
+    alpecca.group.position.z = recovered.z;
+    alpecca.stuckTimer = 0;
+    alpecca.route = [];
+    alpecca.routeStep = 0;
+  }
+  return recovered.clear;
+}
+
+function recoverPlayerFromScenePenetration() {
+  const recovered = depenetrateCircle(
+    { x: camera.position.x, z: camera.position.z },
+    playerRadius,
+    walls,
+  );
+  if (recovered.moved) {
+    camera.position.x = recovered.x;
+    camera.position.z = recovered.z;
+  }
+  return recovered.clear;
 }
 
 function constrainAlpeccaToStageCylinder(candidate: THREE.Vector3) {
@@ -14569,6 +14774,7 @@ function senseAlpeccaAvoidance(dir: THREE.Vector3, dt: number) {
 }
 
 function moveAlpeccaSafely(dir: THREE.Vector3, distance: number) {
+  if (!recoverAlpeccaFromScenePenetration()) return false;
   alpeccaCandidate.copy(alpecca.group.position).addScaledVector(dir, distance);
   constrainAlpeccaToStageCylinder(alpeccaCandidate);
   if (!alpeccaCollides(alpeccaCandidate.x, alpeccaCandidate.z)) {
@@ -14606,6 +14812,7 @@ function constrainPlayerToHouse() {
 }
 
 function movePlayer(dt: number) {
+  recoverPlayerFromScenePenetration();
   const input = new THREE.Vector3(
     Number(keys.has("KeyD")) - Number(keys.has("KeyA")) + virtualMove.x,
     0,
