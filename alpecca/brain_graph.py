@@ -975,14 +975,20 @@ def _validate_plugin(raw: object, source: Path) -> dict[str, Any]:
         if not isinstance(label, str) or not label or probe not in PROBES:
             raise ValueError(f"{source}: node {node_id!r} has an invalid label or probe")
         seen.add(node_id)
+        system = item.get("system") if isinstance(item.get("system"), str) else "overview"
+        detail = item.get("detail") if isinstance(item.get("detail"), str) else ""
+        owner = item.get("owner") if isinstance(item.get("owner"), str) else system
+        next_action = item.get("nextAction") if isinstance(item.get("nextAction"), str) else ""
         clean_nodes.append({
             "id": node_id,
             "label": label,
             "parent": item.get("parent") if isinstance(item.get("parent"), str) else None,
             "probe": probe,
-            "system": item.get("system") if isinstance(item.get("system"), str) else "overview",
-            "detail": item.get("detail") if isinstance(item.get("detail"), str) else "",
+            "system": system,
+            "detail": detail,
             "group": item.get("group") if isinstance(item.get("group"), str) else "Structure",
+            "owner": owner,
+            "nextAction": next_action,
         })
     return {"id": plugin_id, "name": str(raw.get("name") or plugin_id), "source": str(source), "nodes": clean_nodes}
 

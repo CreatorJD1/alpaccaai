@@ -2535,6 +2535,7 @@ body.alpecca-chat-open #touchInteract {
 
 .brain-vitals [data-state="degraded"]::before { background: #ffb36b; }
 .brain-vitals [data-state="unfinished"]::before { background: #f0bd59; }
+.brain-vitals [data-state="live"]::before { background: #5cf2b5; box-shadow: 0 0 8px rgba(92, 242, 181, 0.65); }
 .brain-vitals [data-state="disabled"]::before { background: #77858a; }
 .brain-vitals [data-state="unknown"]::before { background: #c8b9de; }
 
@@ -2706,6 +2707,7 @@ body.alpecca-chat-open #touchInteract {
 
 .brain-node[data-state="degraded"] .brain-node-light { background: #ff9f78; box-shadow: 0 0 10px rgba(255, 159, 120, 0.5); }
 .brain-node[data-state="unfinished"] .brain-node-light { background: #f0bd59; box-shadow: 0 0 10px rgba(240, 189, 89, 0.45); }
+.brain-node[data-state="live"] .brain-node-light { background: #5cf2b5; box-shadow: 0 0 14px rgba(92, 242, 181, 0.72); }
 .brain-node[data-state="disabled"] .brain-node-light { background: #77858a; box-shadow: none; }
 .brain-node[data-state="unknown"] .brain-node-light { background: #c8b9de; box-shadow: 0 0 8px rgba(200, 185, 222, 0.35); }
 
@@ -2798,6 +2800,7 @@ body.alpecca-chat-open #touchInteract {
 .brain-detail-heading small { color: var(--alpecca-ui-muted); font-size: 0.55rem; }
 .brain-detail-state { width: fit-content; padding: 3px 6px; border-radius: 4px; color: #061012; background: #c8b9de; font-size: 0.52rem; font-weight: 950; text-transform: uppercase; }
 .brain-detail-state[data-state="healthy"] { background: #58d6a7; }
+.brain-detail-state[data-state="live"] { background: #5cf2b5; box-shadow: 0 0 10px rgba(92, 242, 181, 0.45); }
 .brain-detail-state[data-state="degraded"] { background: #ff9f78; }
 .brain-detail-state[data-state="unfinished"] { background: #f0bd59; }
 .brain-detail-state[data-state="disabled"] { background: #77858a; }

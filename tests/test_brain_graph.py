@@ -37,6 +37,8 @@ def test_builtin_graph_is_qualified_and_evidence_backed():
     assert "blocks phase completion" in nodes["alpecca-core:p7"]["summary"]
     assert nodes["alpecca-core:p14"]["progress"] == 35
     assert all(node["evidence"] for node in snapshot["nodes"])
+    assert all(node["owner"] for node in snapshot["nodes"])
+    assert all(node["nextAction"] for node in snapshot["nodes"])
 
 
 def test_local_plugin_auto_discovery_uses_only_allowlisted_probes(tmp_path):

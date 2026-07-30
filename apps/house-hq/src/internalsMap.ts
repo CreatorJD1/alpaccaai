@@ -1,4 +1,4 @@
-export type BrainNodeState = "healthy" | "degraded" | "disabled" | "unfinished" | "unknown";
+export type BrainNodeState = "healthy" | "live" | "degraded" | "disabled" | "unfinished" | "unknown";
 
 export type BrainNode = {
   id: string;
@@ -8,6 +8,8 @@ export type BrainNode = {
   group: string;
   system: string;
   detail: string;
+  owner: string;
+  nextAction: string;
   state: BrainNodeState;
   summary: string;
   progress: number | null;
@@ -33,6 +35,7 @@ const escapeHtml = (value: unknown) => String(value ?? "")
 
 const stateLabel: Record<BrainNodeState, string> = {
   healthy: "healthy",
+  live: "live now",
   degraded: "needs attention",
   disabled: "disabled",
   unfinished: "unfinished",
@@ -92,6 +95,7 @@ export function renderInternalsMap(snapshot: InternalsSnapshot) {
     <div class="brain-toolbar">
       <div class="brain-vitals" aria-label="Brain graph summary">
         <span data-state="healthy"><b>${count("healthy")}</b> healthy</span>
+        <span data-state="live"><b>${count("live")}</b> live now</span>
         <span data-state="degraded"><b>${count("degraded")}</b> attention</span>
         <span data-state="unfinished"><b>${count("unfinished")}</b> unfinished</span>
         <span data-state="disabled"><b>${count("disabled")}</b> disabled</span>
@@ -111,7 +115,7 @@ export function renderInternalsMap(snapshot: InternalsSnapshot) {
     </div>
     <div class="brain-detail" aria-live="polite">
       <div class="brain-detail-heading"><span class="brain-detail-state" data-brain-detail-state data-state="unknown">SELECT A NODE</span><strong data-brain-detail-title>Inspect live evidence</strong><small data-brain-detail-plugin>Plugin provenance appears here</small></div>
-      <div><p data-brain-detail-copy>Select a node to see exactly what was measured, what remains unfinished, and which source supports the status.</p><ul data-brain-detail-evidence></ul></div>
+      <div><p data-brain-detail-copy>Select a node to see exactly what was measured, what remains unfinished, and which source supports the status.</p><p data-brain-detail-owner hidden></p><p data-brain-detail-next-action hidden></p><ul data-brain-detail-evidence></ul></div>
       <button type="button" data-brain-open disabled>Open system</button>
     </div>`;
 }
@@ -133,6 +137,8 @@ export function mountInternalsMap(
   const wrappers = Array.from(root.querySelectorAll<HTMLElement>("[data-brain-wrap]"));
   const title = root.querySelector<HTMLElement>("[data-brain-detail-title]");
   const copy = root.querySelector<HTMLElement>("[data-brain-detail-copy]");
+  const owner = root.querySelector<HTMLElement>("[data-brain-detail-owner]");
+  const nextAction = root.querySelector<HTMLElement>("[data-brain-detail-next-action]");
   const state = root.querySelector<HTMLElement>("[data-brain-detail-state]");
   const plugin = root.querySelector<HTMLElement>("[data-brain-detail-plugin]");
   const evidence = root.querySelector<HTMLUListElement>("[data-brain-detail-evidence]");
@@ -144,7 +150,7 @@ export function mountInternalsMap(
 
   nodes.forEach((button) => button.addEventListener("click", () => {
     const node = graphNodes.find((item) => item.id === button.dataset.brainNode);
-    if (!node || !title || !copy || !state || !plugin || !evidence || !open) return;
+    if (!node || !title || !copy || !owner || !nextAction || !state || !plugin || !evidence || !open) return;
     selected = node;
     nodes.forEach((candidate) => candidate.setAttribute("aria-pressed", String(candidate === button)));
     wrappers.forEach((wrapper) => wrapper.classList.toggle("is-selected", wrapper.dataset.brainWrap === node.id));
@@ -153,6 +159,10 @@ export function mountInternalsMap(
     title.textContent = node.label;
     plugin.textContent = `${node.plugin} - ${node.group}`;
     copy.textContent = node.detail || node.summary;
+    owner.textContent = node.owner ? `Owner: ${node.owner}` : "";
+    owner.hidden = !node.owner;
+    nextAction.textContent = node.nextAction ? `Next action: ${node.nextAction}` : "";
+    nextAction.hidden = !node.nextAction;
     evidence.replaceChildren(...node.evidence.map((item) => {
       const li = document.createElement("li");
       li.textContent = item;
