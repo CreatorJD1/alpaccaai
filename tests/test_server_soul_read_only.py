@@ -107,6 +107,20 @@ def test_explicit_soul_tick_runs_one_compact_advisory_arbitration(monkeypatch):
         return {"focus": {"subagent": "Doer"}, "soul_runtime": runtime}
 
     monkeypatch.setattr(server.mind, "soul_state", compact_soul_state)
+    monkeypatch.setattr(
+        server.mind,
+        "soul_textual_route_status",
+        lambda *, requested=True: {
+            "requested": requested,
+            "soul_llm_enabled": True,
+            "remote_opt_in": False,
+            "cloud_backend": False,
+            "llm_online": True,
+            "local_model_available": True,
+            "remote_model_configured": False,
+            "callback_configured": True,
+        },
+    )
     monkeypatch.setattr(server.mind.llm, "generate", _forbid("model generation"))
 
     response = TestClient(server.app).post(
@@ -121,6 +135,16 @@ def test_explicit_soul_tick_runs_one_compact_advisory_arbitration(monkeypatch):
         "fresh_deliberation": True,
         "deliberation_mode": "compact",
         "advisory_only": True,
+        "textual_route": {
+            "requested": True,
+            "soul_llm_enabled": True,
+            "remote_opt_in": False,
+            "cloud_backend": False,
+            "llm_online": True,
+            "local_model_available": True,
+            "remote_model_configured": False,
+            "callback_configured": True,
+        },
         "soul_runtime": {
             **runtime,
             "roles": list(runtime["roles"]),

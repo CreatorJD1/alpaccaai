@@ -7462,6 +7462,7 @@ async def cognition_soul_tick() -> dict:
     and it cannot choose or execute an action. Observability reads remain
     side-effect free at ``GET /soul`` and ``GET /brain/graph``.
     """
+    textual_route = mind.soul_textual_route_status(requested=True)
     async with mind_lock:
         plan = await _state_thread(
             "explicit_soul_tick",
@@ -7479,6 +7480,7 @@ async def cognition_soul_tick() -> dict:
         "fresh_deliberation": True,
         "deliberation_mode": "compact",
         "advisory_only": runtime.get("advisory_only") is True,
+        "textual_route": textual_route,
         "soul_runtime": dict(runtime),
     }
 

@@ -6354,6 +6354,36 @@ class CoreMind:
             local_only=not (SOUL_LLM_REMOTE and self.llm.is_cloud()),
         )
 
+    def soul_textual_route_status(self, *, requested: bool = True) -> dict[str, bool]:
+        """Return content-free readiness facts for the selective Soul route."""
+        requested = bool(requested)
+        llm = getattr(self, "llm", None)
+        local_model_available = bool(
+            requested
+            and SOUL_LLM
+            and llm is not None
+            and llm.local_inference_available(llm.model_for("fast"))
+        )
+        cloud_backend = bool(llm is not None and llm.is_cloud())
+        remote_model_configured = bool(
+            requested
+            and SOUL_LLM
+            and SOUL_LLM_REMOTE
+            and cloud_backend
+        )
+        return {
+            "requested": requested,
+            "soul_llm_enabled": bool(SOUL_LLM),
+            "remote_opt_in": bool(SOUL_LLM_REMOTE),
+            "cloud_backend": cloud_backend,
+            "llm_online": bool(llm is not None and llm.online),
+            "local_model_available": local_model_available,
+            "remote_model_configured": remote_model_configured,
+            "callback_configured": bool(
+                local_model_available or remote_model_configured
+            ),
+        }
+
     def soul_state(
         self,
         *,
@@ -6389,22 +6419,14 @@ class CoreMind:
         textual_requested = (
             details if textual_deliberation is None else bool(textual_deliberation)
         )
-        local_model_ready = bool(
-            textual_requested
-            and SOUL_LLM
-            and self.llm.local_inference_available(self.llm.model_for("fast"))
-        )
-        remote_model_configured = bool(
-            textual_requested
-            and SOUL_LLM
-            and SOUL_LLM_REMOTE
-            and self.llm.is_cloud()
+        textual_route = self.soul_textual_route_status(
+            requested=textual_requested,
         )
         runtime_record = soul_runtime_mod.evaluate_compact_plan(
             compact_plan,
             textual_deliberator=(
                 self._soul_textual_deliberator
-                if local_model_ready or remote_model_configured
+                if textual_route["callback_configured"]
                 else None
             ),
         )
