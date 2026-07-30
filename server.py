@@ -567,6 +567,17 @@ def _server_conversation_id(
     return f"guest-{clean_surface}-{clean_seed}"
 
 
+def _transport_has_android_launcher_user_agent(
+    transport: Request | WebSocket,
+) -> bool:
+    headers = getattr(transport, "headers", None)
+    try:
+        user_agent = str(headers.get("user-agent", "") if headers else "")
+    except (AttributeError, TypeError):
+        return False
+    return "alpeccaandroid/" in user_agent.casefold()
+
+
 def _websocket_route_surface(
     socket: WebSocket,
     *,
@@ -581,19 +592,14 @@ def _websocket_route_surface(
     if retained in {"house-hq", "websocket", "mobile"}:
         return retained
     path = str(getattr(getattr(socket, "url", None), "path", ""))
-    if path == "/ws/house-hq":
-        return "house-hq"
-    headers = getattr(socket, "headers", None)
-    try:
-        user_agent = str(headers.get("user-agent", "") if headers else "")
-    except (AttributeError, TypeError):
-        user_agent = ""
     if (
-        path == "/ws"
+        path in {"/ws", "/ws/house-hq"}
         and trusted_native_device
-        and "alpeccaandroid/" in user_agent.casefold()
+        and _transport_has_android_launcher_user_agent(socket)
     ):
         return "mobile"
+    if path == "/ws/house-hq":
+        return "house-hq"
     return "websocket"
 
 
@@ -3981,6 +3987,40 @@ def _trusted_external_request_origin(request: Request) -> str:
 
 def _trusted_external_socket_origin(socket: WebSocket) -> str:
     return _trusted_external_transport_origin(socket)
+
+
+def _device_session_matches_origin(
+    decision: auth_mod.AuthDecision | None,
+    expected_origin: str,
+) -> bool:
+    """Recognize only a current middleware-validated native-device session."""
+    return bool(
+        expected_origin
+        and decision is not None
+        and decision.allowed
+        and decision.principal == "creator"
+        and decision.mechanism == "session_cookie"
+        and decision.device_id
+        and decision.session_origin == expected_origin
+    )
+
+
+def _authenticated_request_surface(
+    request: Request,
+    nominal_surface: str,
+    decision: auth_mod.AuthDecision | None,
+) -> str:
+    """Preserve Android provenance for House's authenticated HTTP fallback."""
+    if (
+        nominal_surface == "house-hq"
+        and _device_session_matches_origin(
+            decision,
+            _trusted_external_request_origin(request),
+        )
+        and _transport_has_android_launcher_user_agent(request)
+    ):
+        return "mobile"
+    return nominal_surface
 
 
 def _request_uses_https(request: Request) -> bool:
@@ -10360,17 +10400,23 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     private_perception = field("private_perception")
     source_ref_value = payload.get("source_ref")
     has_legacy_file_payload = "file_data" in payload or "file_name" in payload
+    decision = getattr(req.state, "authorization", None)
     route_surface = {
         "/channel/house-hq": "house-hq",
         "/channel/discord": "discord",
     }.get(req.url.path, "channel")
+    route_surface = _authenticated_request_surface(
+        req,
+        route_surface,
+        decision,
+    )
     if route_surface == "discord" and discord_interaction not in {"reply", "participate"}:
         raise HTTPException(
             status_code=400,
             detail="invalid Discord interaction mode",
             headers={"Cache-Control": "no-store"},
         )
-    if route_surface in {"discord", "house-hq"} and delivery not in {"text", "voice"}:
+    if route_surface in {"discord", "house-hq", "mobile"} and delivery not in {"text", "voice"}:
         raise HTTPException(
             status_code=400,
             detail=f"invalid {route_surface} delivery mode",
@@ -10432,7 +10478,6 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         raise HTTPException(status_code=400, detail="text, image, or source_ref required")
     image_desc = None
     image_perception: dict[str, object] | None = None
-    decision = getattr(req.state, "authorization", None)
     if route_surface == "discord":
         if verified_discord_actor is None:
             _raise_discord_actor_denied()
@@ -10453,8 +10498,8 @@ async def channel_inbound(req: Request, response: Response) -> dict:
     ).strip()
     turn_portal_epoch = (
         request_connection
-        if route_surface == "house-hq"
-        and _capability_connection_surface(request_connection) == "house-hq"
+        if route_surface in {"house-hq", "mobile"}
+        and _capability_connection_surface(request_connection) == route_surface
         else f"local-{route_surface}"
     )
     if verified_discord_actor is not None and principal != "creator":
@@ -10636,13 +10681,13 @@ async def channel_inbound(req: Request, response: Response) -> dict:
                 source="discord_bridge",
             ):
                 _raise_capability_audit_unavailable()
-        elif route_surface == "house-hq":
+        elif route_surface in {"house-hq", "mobile"}:
             decision = _require_creator_request(req)
             principal = decision.principal
             await _validate_request_capability_lease(
                 req,
                 purpose="camera_frame",
-                required_surface="house-hq",
+                required_surface=route_surface,
             )
         try:
             inspected_image = attachment_ingress_mod.ingest_image(
@@ -10653,12 +10698,12 @@ async def channel_inbound(req: Request, response: Response) -> dict:
             )
         except attachment_ingress_mod.ImageIngressRejected as exc:
             _raise_image_rejection(exc)
-        if route_surface == "house-hq":
+        if route_surface in {"house-hq", "mobile"}:
             await _consume_request_capability_lease(
                 req,
                 purpose="camera_frame",
                 bytes_used=len(inspected_image.image_bytes),
-                required_surface="house-hq",
+                required_surface=route_surface,
             )
             if not await _record_capability_use(
                 "webcam",
@@ -10763,7 +10808,7 @@ async def channel_inbound(req: Request, response: Response) -> dict:
             image_data
             or attachment_context
             or (
-                route_surface == "house-hq"
+                route_surface in {"house-hq", "mobile"}
                 and principal == "creator"
                 and private_perception in {"microphone", "screen", "sensor"}
             )
@@ -10938,13 +10983,7 @@ async def ws(socket: WebSocket) -> None:
         return
     route_surface = _websocket_route_surface(
         socket,
-        trusted_native_device=bool(
-            decision.allowed
-            and decision.principal == "creator"
-            and decision.mechanism == "session_cookie"
-            and decision.device_id
-            and decision.session_origin == expected
-        ),
+        trusted_native_device=_device_session_matches_origin(decision, expected),
     )
     await socket.accept()
     portal_epoch = _open_ws_portal(socket, verified_surface=route_surface)

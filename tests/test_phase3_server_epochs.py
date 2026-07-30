@@ -113,6 +113,10 @@ def test_android_webview_socket_requires_device_bound_mobile_provenance():
     ) == "mobile"
     assert server._websocket_route_surface(browser) == "websocket"
     assert server._websocket_route_surface(house) == "house-hq"
+    assert server._websocket_route_surface(
+        house,
+        trusted_native_device=True,
+    ) == "mobile"
 
 
 def test_verified_mobile_surface_is_retained_only_for_the_live_portal():
@@ -135,6 +139,60 @@ def test_verified_mobile_surface_is_retained_only_for_the_live_portal():
     assert server._websocket_route_surface(socket) == "websocket"
 
 
+def test_house_http_fallback_requires_verified_device_and_android_identity():
+    origin = "https://creatorjd-alpecca-survival-core.hf.space"
+    android_request = SimpleNamespace(
+        url=SimpleNamespace(
+            scheme="https",
+            netloc="creatorjd-alpecca-survival-core.hf.space",
+            hostname="creatorjd-alpecca-survival-core.hf.space",
+        ),
+        headers={"user-agent": "Mozilla/5.0 AlpeccaAndroid/2.2.21"},
+        client=SimpleNamespace(host="198.51.100.50"),
+    )
+    browser_request = SimpleNamespace(
+        url=android_request.url,
+        headers={"user-agent": "Mozilla/5.0"},
+        client=android_request.client,
+    )
+    device_session = server.auth_mod.AuthDecision(
+        True,
+        "session_cookie",
+        "ok",
+        principal="creator",
+        device_id="device-id-12345",
+        session_origin=origin,
+    )
+    password_session = server.auth_mod.AuthDecision(
+        True,
+        "session_cookie",
+        "ok",
+        principal="creator",
+        session_origin="",
+    )
+
+    assert server._authenticated_request_surface(
+        android_request,
+        "house-hq",
+        device_session,
+    ) == "mobile"
+    assert server._authenticated_request_surface(
+        browser_request,
+        "house-hq",
+        device_session,
+    ) == "house-hq"
+    assert server._authenticated_request_surface(
+        android_request,
+        "house-hq",
+        password_session,
+    ) == "house-hq"
+    assert server._authenticated_request_surface(
+        android_request,
+        "channel",
+        device_session,
+    ) == "channel"
+
+
 def test_websocket_handshake_labels_mobile_only_for_active_device_session(monkeypatch):
     from fastapi.testclient import TestClient
 
@@ -151,14 +209,14 @@ def test_websocket_handshake_labels_mobile_only_for_active_device_session(monkey
         client=("127.0.0.1", 50109),
     )
     with local_client.websocket_connect(
-        "/ws",
+        "/ws/house-hq",
         headers={
             server.auth_mod.AUTHORIZATION_HEADER: server._AUTH_SECRET,
             "user-agent": app_user_agent,
         },
     ) as websocket:
         state = websocket.receive_json()
-        assert state["capability_connection"]["surface"] == "websocket"
+        assert state["capability_connection"]["surface"] == "house-hq"
 
     device_cookie = server._AUTHORITY.issue_session_cookie(
         secure=False,
@@ -166,7 +224,7 @@ def test_websocket_handshake_labels_mobile_only_for_active_device_session(monkey
         origin="http://testserver",
     )
     with local_client.websocket_connect(
-        "/ws",
+        "/ws/house-hq",
         headers={
             "cookie": (
                 f"{server.auth_mod.SESSION_COOKIE_NAME}={device_cookie.value}"
@@ -202,7 +260,7 @@ def test_hugging_face_private_proxy_preserves_mobile_websocket_session(monkeypat
     )
 
     with client.websocket_connect(
-        f"ws://{space_host}/ws",
+        f"ws://{space_host}/ws/house-hq",
         headers={
             "cookie": (
                 f"{server.auth_mod.SESSION_COOKIE_NAME}={device_cookie.value}"
@@ -240,7 +298,7 @@ def test_websocket_forwarded_https_requires_exact_space_proxy_boundary(monkeypat
 
     with pytest.raises(WebSocketDisconnect):
         with client.websocket_connect(
-            f"ws://{space_host}/ws",
+            f"ws://{space_host}/ws/house-hq",
             headers={
                 "cookie": (
                     f"{server.auth_mod.SESSION_COOKIE_NAME}={device_cookie.value}"
@@ -251,6 +309,58 @@ def test_websocket_forwarded_https_requires_exact_space_proxy_boundary(monkeypat
             },
         ):
             pass
+
+
+def test_android_house_http_fallback_uses_mobile_turn_context(monkeypatch):
+    from fastapi.testclient import TestClient
+    from alpecca import openclaw_bridge
+
+    captured: dict[str, object] = {}
+
+    class ActiveDeviceRegistry:
+        @staticmethod
+        def session_valid(device_id, issued_at):
+            return device_id == "device-id-12345" and isinstance(issued_at, int)
+
+    async def fake_chat(_text, **kwargs):
+        captured["turn"] = kwargs["turn"]
+        return {"reply": "mobile reply"}
+
+    monkeypatch.setattr(server, "_TRUSTED_DEVICE_REGISTRY", ActiveDeviceRegistry())
+    monkeypatch.setattr(server, "_ws_chat_turn_with_timeout", fake_chat)
+    monkeypatch.setattr(server.mind, "note_initiative_user_activity", lambda *_args: None)
+    monkeypatch.setattr(server, "_mindscape_request_event_sync", lambda *_args: None)
+    monkeypatch.setattr(openclaw_bridge, "try_deliver", lambda *_args, **_kwargs: False)
+    origin = "https://testserver"
+    device_cookie = server._AUTHORITY.issue_session_cookie(
+        secure=True,
+        device_id="device-id-12345",
+        origin=origin,
+    )
+    client = TestClient(
+        server.app,
+        base_url=origin,
+        client=("198.51.100.50", 50112),
+    )
+
+    response = client.post(
+        "/channel/house-hq",
+        headers={
+            "cookie": (
+                f"{server.auth_mod.SESSION_COOKIE_NAME}={device_cookie.value}"
+            ),
+            "origin": origin,
+            "user-agent": "Mozilla/5.0 AlpeccaAndroid/2.2.21",
+        },
+        json={"text": "hello from the signed app", "channel": "house-chat"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "mobile reply"
+    turn = captured["turn"]
+    assert isinstance(turn, turn_context.TurnContext)
+    assert turn.surface == "mobile"
+    assert turn.conversation_id == "creator-mobile-primary"
 
 
 def test_new_epoch_fences_stale_turn_send_broadcast_and_finalizer():

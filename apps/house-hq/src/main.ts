@@ -472,7 +472,7 @@ type AlpeccaCapabilityPurpose =
   | "file_source_ref";
 type AlpeccaCapabilityConnection = {
   id: string;
-  surface: "house-hq";
+  surface: "house-hq" | "mobile";
   principal: "creator";
 };
 type AlpeccaCapabilityLease = {
@@ -4412,12 +4412,16 @@ function stopAlpeccaLocalCapabilityMedia() {
 }
 
 function setAlpeccaCapabilityConnection(value: AlpeccaAiMessage["capability_connection"]) {
+  const supportedSurface: AlpeccaCapabilityConnection["surface"] | null =
+    value?.surface === "house-hq" || value?.surface === "mobile"
+    ? value.surface
+    : null;
   const next = value
     && typeof value.id === "string"
     && value.id.trim()
-    && value.surface === "house-hq"
+    && supportedSurface
     && value.principal === "creator"
-    ? { id: value.id.trim(), surface: "house-hq" as const, principal: "creator" as const }
+    ? { id: value.id.trim(), surface: supportedSurface, principal: "creator" as const }
     : null;
   if (!next) {
     if (alpeccaCapabilityConnection) stopAlpeccaLocalCapabilityMedia();
@@ -4535,6 +4539,12 @@ async function acquireAlpeccaCapabilityLease(
     || !alpeccaAiBaseUrl
   ) {
     throw new Error(`Live House connection is not ready for ${alpeccaCapabilityLabel(purpose).toLowerCase()}.`);
+  }
+  if (
+    connection.surface === "mobile"
+    && (purpose === "file_source_ref" || purpose === "screen_share")
+  ) {
+    throw new Error(`${alpeccaCapabilityLabel(purpose)} is available only from the primary House desktop.`);
   }
   const conflicts: AlpeccaCapabilityPurpose[] = purpose === "push_to_talk" || purpose === "voice_enrollment"
     ? ["push_to_talk", "voice_enrollment"]
