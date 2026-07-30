@@ -109,6 +109,40 @@ def test_discord_ready_path_can_supply_live_evidence():
     assert "voice_runtime.discord=active" in node["evidence"]
 
 
+def test_ready_synthesis_without_active_playback_is_healthy_not_live():
+    snapshot = voice_runtime.voice_runtime_snapshot(
+        house={
+            "state": "idle",
+            "mic_live": False,
+            "listening": False,
+            "thinking": False,
+            "speaking": False,
+            "degraded": False,
+        },
+        synthesis={
+            "routes": {
+                "cloud": {"enabled": True, "ready": True, "active": False},
+                "f5": {"enabled": False, "ready": False},
+                "kokoro": {"enabled": False, "ready": False},
+            },
+        },
+        discord={
+            "connected": False,
+            "send": {"enabled": False},
+            "receive": {"enabled": False},
+            "vad": {"enabled": False},
+        },
+    )
+
+    node = _voice_node({"voice_runtime": snapshot})
+
+    assert node["state"] == "healthy"
+    assert node["progress"] == 100
+    assert "no House, synthesis, or Discord path is active" in node["summary"]
+    assert "voice_runtime.synthesis=ready" in node["evidence"]
+    assert "voice_runtime.selected_route=none" in node["evidence"]
+
+
 def test_degraded_evidence_overrides_other_live_paths_and_hides_reason_content():
     snapshot = _live_snapshot()
     secret_reason = "creator said private content token=do-not-expose"

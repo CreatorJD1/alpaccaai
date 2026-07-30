@@ -327,26 +327,33 @@ def _probe_voice(facts: Mapping[str, Any]) -> ProbeResult:
         or (component_states["house"] == "thinking" and house.get("thinking") is True)
         or (component_states["house"] == "speaking" and house.get("speaking") is True)
     )
-    synthesis_live = any(
-        route.get("ready") is True
-        and route.get("state") in {"active", "ready"}
+    synthesis_active = any(
+        route.get("active") is True
+        and route.get("state") == "active"
         for route in route_statuses.values()
     )
     send = _mapping(discord.get("send"))
     receive = _mapping(discord.get("receive"))
     vad = _mapping(discord.get("vad"))
-    discord_live = component_states["discord"] in {"active", "ready"} and any(
-        channel.get("ready") is True
-        and channel.get("state") in {"active", "ready"}
+    discord_active = component_states["discord"] == "active" and any(
+        channel.get("active") is True
+        and channel.get("state") == "active"
         for channel in (send, receive, vad)
     )
     live = status.get("ready") is True and status.get("state") == "healthy" and (
-        house_active or synthesis_live or discord_live
+        house_active or synthesis_active or discord_active
     )
     if live:
         return ProbeResult(
             "live",
             "Bounded runtime evidence verifies a live House, synthesis, or Discord voice path.",
+            100,
+            evidence,
+        )
+    if status.get("ready") is True and status.get("state") == "healthy":
+        return ProbeResult(
+            "healthy",
+            "Voice readiness is verified, but no House, synthesis, or Discord path is active now.",
             100,
             evidence,
         )
