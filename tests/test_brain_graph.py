@@ -35,6 +35,9 @@ def test_builtin_graph_is_qualified_and_evidence_backed():
     assert nodes["alpecca-core:p5"]["state"] == "healthy"
     assert nodes["alpecca-core:p7"]["state"] == "unfinished"
     assert "blocks phase completion" in nodes["alpecca-core:p7"]["summary"]
+    assert nodes["alpecca-core:p13"]["state"] == "unfinished"
+    assert "cloud-created-event reconciliation" in nodes["alpecca-core:p13"]["nextAction"]
+    assert "restore-preview approval" not in nodes["alpecca-core:p13"]["nextAction"]
     assert nodes["alpecca-core:p14"]["progress"] == 35
     assert all(node["evidence"] for node in snapshot["nodes"])
     assert all(node["owner"] for node in snapshot["nodes"])
