@@ -651,6 +651,12 @@ LIVING_LLM = os.environ.get("ALPECCA_LIVING_LLM", "1") \
     not in ("", "0", "false", "False")
 SOUL_LLM = os.environ.get("ALPECCA_SOUL_LLM", "1") \
     not in ("", "0", "false", "False")
+# The selective Soul callback normally stays on a verified local model.  A
+# hosted CoreMind may opt in only because that callback receives the fixed
+# seven-role numeric slate -- never conversation, memory, sensed context, or
+# free-form perspective prose.
+SOUL_LLM_REMOTE = os.environ.get("ALPECCA_SOUL_LLM_REMOTE", "0") \
+    not in ("", "0", "false", "False")
 PROACTIVE_LLM = os.environ.get("ALPECCA_PROACTIVE_LLM", "1") \
     not in ("", "0", "false", "False")
 # Cross-session continuity: when a session ends (she's put to sleep / the server

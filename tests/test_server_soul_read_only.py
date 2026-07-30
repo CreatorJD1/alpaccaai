@@ -82,7 +82,7 @@ def test_explicit_soul_tick_runs_one_compact_advisory_arbitration(monkeypatch):
     from fastapi.testclient import TestClient
     import server
 
-    calls: list[bool] = []
+    calls: list[tuple[bool, bool | None]] = []
     runtime = {
         "schema": "alpecca.soul-runtime-decision.v1",
         "roles": (
@@ -98,8 +98,12 @@ def test_explicit_soul_tick_runs_one_compact_advisory_arbitration(monkeypatch):
         "advisory_only": True,
     }
 
-    def compact_soul_state(*, details: bool = True) -> dict:
-        calls.append(details)
+    def compact_soul_state(
+        *,
+        details: bool = True,
+        textual_deliberation: bool | None = None,
+    ) -> dict:
+        calls.append((details, textual_deliberation))
         return {"focus": {"subagent": "Doer"}, "soul_runtime": runtime}
 
     monkeypatch.setattr(server.mind, "soul_state", compact_soul_state)
@@ -111,7 +115,7 @@ def test_explicit_soul_tick_runs_one_compact_advisory_arbitration(monkeypatch):
     )
     assert response.status_code == 200
     payload = response.json()
-    assert calls == [False]
+    assert calls == [(False, True)]
     assert payload == {
         "ok": True,
         "fresh_deliberation": True,

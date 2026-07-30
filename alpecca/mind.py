@@ -75,7 +75,7 @@ from config import (DEEP_BACKEND, ANTHROPIC_API_KEY, ANTHROPIC_MODEL,
                     OLLAMA_CLOUD_MODEL, CLOUD_REFLECT_NUM_PREDICT,
                     ROG_WORKER_URL, ROG_WORKER_MODEL,
                     ROG_WORKER_FAILURE_COOLDOWN_SECONDS)
-from config import LIVING_LLM, SOUL_LLM, PROACTIVE_LLM
+from config import LIVING_LLM, SOUL_LLM, SOUL_LLM_REMOTE, PROACTIVE_LLM
 from alpecca.homeostasis import EmotionalState
 from alpecca import state as state_store
 from alpecca import memory as memory_store
@@ -6323,7 +6323,13 @@ class CoreMind:
         self,
         request: soul_runtime_mod.TextualDeliberationRequest,
     ) -> str:
-        """Ask the local model for one bounded role selection, never prose."""
+        """Ask an approved model for one bounded role selection, never prose.
+
+        The remote opt-in is safe to use on the hosted CoreMind because the
+        request is constructed exclusively from the validated fixed-shape
+        numeric role slate below.  No conversation, memory, sensed context, or
+        free-form Soul explanation crosses this boundary.
+        """
         role_rows = [
             {
                 "role": item.role,
@@ -6345,10 +6351,15 @@ class CoreMind:
                 "response_contract": request.response_contract,
             }, separators=(",", ":"), sort_keys=True),
             tier="fast",
-            local_only=True,
+            local_only=not (SOUL_LLM_REMOTE and self.llm.is_cloud()),
         )
 
-    def soul_state(self, *, details: bool = True) -> dict:
+    def soul_state(
+        self,
+        *,
+        details: bool = True,
+        textual_deliberation: bool | None = None,
+    ) -> dict:
         """What her Soul is arbitrating right now: the ranked slate of intentions
         from her seven subagents and the one in focus, decided by the Good Person
         Principle. Read-only and fully explainable. Background self-directed
@@ -6375,15 +6386,27 @@ class CoreMind:
             "agents": plan.get("agents"),
             "deliberation_mode": "compact",
         }
+        textual_requested = (
+            details if textual_deliberation is None else bool(textual_deliberation)
+        )
         local_model_ready = bool(
-            details
+            textual_requested
             and SOUL_LLM
             and self.llm.local_inference_available(self.llm.model_for("fast"))
+        )
+        remote_model_ready = bool(
+            textual_requested
+            and SOUL_LLM
+            and SOUL_LLM_REMOTE
+            and self.llm.is_cloud()
+            and self.llm.online
         )
         runtime_record = soul_runtime_mod.evaluate_compact_plan(
             compact_plan,
             textual_deliberator=(
-                self._soul_textual_deliberator if local_model_ready else None
+                self._soul_textual_deliberator
+                if local_model_ready or remote_model_ready
+                else None
             ),
         )
         runtime_metadata = dict(runtime_record.observation_metadata())

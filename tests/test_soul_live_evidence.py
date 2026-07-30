@@ -91,6 +91,73 @@ def test_compact_mind_evidence_is_live_fixed_shape_and_never_calls_a_model(
     assert "because" not in serialized
 
 
+def test_hosted_selective_soul_receives_only_the_bounded_numeric_slate(
+    monkeypatch,
+) -> None:
+    from alpecca import cognition as cognition_mod
+    from alpecca import mind as mind_mod
+    from alpecca import soul as soul_mod
+
+    captured: dict[str, object] = {}
+
+    def generate(system_prompt: str, user_msg: str, **kwargs) -> str:
+        captured.update({
+            "system_prompt": system_prompt,
+            "user_msg": user_msg,
+            "kwargs": kwargs,
+        })
+        return json.dumps({
+            "selected_role": "Feeler",
+            "reason": "The bounded high-affect slate keeps welfare first.",
+        })
+
+    instance = mind_mod.CoreMind.__new__(mind_mod.CoreMind)
+    instance._soul_snapshot = lambda: soul_mod.snapshot(
+        EmotionalState(fear=0.85),
+        solitude_s=300,
+    )
+    instance._location = "studio"
+    instance._last_soul_runtime = {}
+    instance.llm = SimpleNamespace(
+        online=True,
+        is_cloud=lambda: True,
+        model_for=lambda _tier: "hosted-test-model",
+        local_inference_available=lambda _model: False,
+        generate=generate,
+    )
+    monkeypatch.setattr(mind_mod, "SOUL_LLM", True)
+    monkeypatch.setattr(mind_mod, "SOUL_LLM_REMOTE", True)
+    monkeypatch.setattr(cognition_mod, "record_observation", lambda _item: None)
+
+    plan = instance.soul_state(
+        details=False,
+        textual_deliberation=True,
+    )
+
+    runtime = plan["soul_runtime"]
+    assert runtime["outcome"] == "textual_selection"
+    assert runtime["callback_invoked"] is True
+    assert runtime["selected_role"] == "Feeler"
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["tier"] == "fast"
+    assert kwargs["local_only"] is False
+    payload = json.loads(str(captured["user_msg"]))
+    assert set(payload) == {
+        "deterministic_role",
+        "response_contract",
+        "roles",
+        "trigger",
+    }
+    assert len(payload["roles"]) == 7
+    assert all(set(row) == {"active", "role", "score"} for row in payload["roles"])
+    serialized = json.dumps(payload, sort_keys=True).casefold()
+    assert "memory" not in serialized
+    assert "conversation" not in serialized
+    assert "situation" not in serialized
+    assert "snapshot" not in serialized
+
+
 def test_mind_drops_malformed_or_model_claiming_vector_instead_of_leaking_it(
     monkeypatch,
 ) -> None:

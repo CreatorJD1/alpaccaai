@@ -36,6 +36,7 @@ def test_cloud_core_uses_hosted_qwen35_and_keeps_private_capabilities_off():
     assert env["ALPECCA_MODEL"] == "qwen3.5:9b"
     assert ("qwen3" + ":8b") not in repr(env)
     assert env["ALPECCA_REFLECT_THINK"] == "0"
+    assert env["ALPECCA_SOUL_LLM_REMOTE"] == "1"
     assert env["ALPECCA_COMPUTER_USE"] == "0"
     assert env["ALPECCA_DISCORD"] == "0"
     assert env["ALPECCA_MINDSCAPE_VAULT"] == "0"
@@ -438,6 +439,7 @@ def test_supervisor_restores_approves_publishes_then_starts(tmp_path):
     assert child_env["ALPECCA_HF_MODEL"] == "Qwen/Qwen3.5-9B"
     assert child_env["ALPECCA_MODEL"] == "qwen3.5:9b"
     assert child_env["ALPECCA_REFLECT_THINK"] == "0"
+    assert child_env["ALPECCA_SOUL_LLM_REMOTE"] == "1"
     assert child_env["ALPECCA_MINDSCAPE_VAULT"] == "0"
     assert child_env["ALPECCA_CONTINUITY_FENCING_EPOCH"] == "42"
     assert "ALPECCA_CLOUD_RESTORE_APPROVAL" not in child_env
@@ -595,6 +597,8 @@ def test_owned_scaffold_and_mind_keep_the_non_thinking_contract():
     assert retired not in (readme + dockerfile + start + app_source).lower()
     assert "Qwen/Qwen3.5-9B" in dockerfile
     assert "ALPECCA_REFLECT_THINK=0" in dockerfile
+    assert "ALPECCA_SOUL_LLM_REMOTE=1" in dockerfile
+    assert "ALPECCA_SOUL_LLM_REMOTE=1" in start
     assert "cloud-standby" in start
     assert "sleep" in readme.lower()
     assert "not an always-on" in readme.lower()

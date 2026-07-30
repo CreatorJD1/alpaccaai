@@ -234,6 +234,7 @@ def configure_runtime(
         "ALPECCA_FAST_MODEL": "qwen3.5:9b",
         "ALPECCA_REFLECT_MODEL": "",
         "ALPECCA_REFLECT_THINK": "0",
+        "ALPECCA_SOUL_LLM_REMOTE": "1",
         "ALPECCA_DEEP_BACKEND": "local",
         "ALPECCA_CHAT_CLOUD_MODEL": "",
         "ALPECCA_OLLAMA_CLOUD_MODEL": "",

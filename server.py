@@ -7457,16 +7457,17 @@ async def cognition_soul_tick() -> dict:
     """Run one explicit compact Soul arbitration and cache its advisory receipt.
 
     This is the manual counterpart to the chance-gated quiet reflection cycle.
-    ``details=False`` is an invariant here: the compact path evaluates the real
-    seven-perspective slate deterministically and cannot call a language model
-    or choose/execute an action.  Observability reads remain side-effect free at
-    ``GET /soul`` and ``GET /brain/graph``.
+    The optional textual tie-break sees only the fixed seven-role numeric slate;
+    it receives no conversation, memory, sensed context, or perspective prose,
+    and it cannot choose or execute an action. Observability reads remain
+    side-effect free at ``GET /soul`` and ``GET /brain/graph``.
     """
     async with mind_lock:
         plan = await _state_thread(
             "explicit_soul_tick",
             mind.soul_state,
             details=False,
+            textual_deliberation=True,
         )
     if not isinstance(plan, Mapping):
         raise HTTPException(status_code=503, detail="compact Soul arbitration failed")
