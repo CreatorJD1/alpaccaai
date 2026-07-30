@@ -425,8 +425,16 @@ def test_fitting_chat_keeps_the_existing_result_contract(monkeypatch):
     assert "context_refusal" not in result
     assert {"mood", "state", "mindpage", "turn", "chat_turn_id"} <= set(result)
     assert mind._history[-2:] == [
-        {"role": "user", "content": "short fitting request"},
-        {"role": "assistant", "content": "A normal fitting reply."},
+        {
+            "role": "user",
+            "content": "short fitting request",
+            "private_context": False,
+        },
+        {
+            "role": "assistant",
+            "content": "A normal fitting reply.",
+            "private_context": False,
+        },
     ]
     assert len(calls["memory_writes"]) == 1
     assert len(calls["state_writes"]) == 1
@@ -477,3 +485,62 @@ def test_overflowed_repetition_retry_keeps_first_reply_and_records_skip(monkeypa
     assert len(calls["generations"]) == 1
     assert result["reply"] == "first acceptable draft"
     assert result["mindpage"]["retry_skipped"] == "fixed_overflow"
+
+
+def test_successful_cloud_turn_persists_shared_history_and_provider_evidence(
+    monkeypatch,
+):
+    fitted = _ledger(fits=True, num_ctx=mind_mod.CLOUD_NUM_CTX)
+    mind, calls = _chat_harness(
+        monkeypatch,
+        [([], fitted), ([], fitted)],
+    )
+    monkeypatch.setattr(mind_mod, "CHAT_CLOUD_PAGED_MEMORY", True)
+    monkeypatch.setattr(mind.llm, "is_cloud", lambda: True)
+    monkeypatch.setattr(mind.llm, "last_call", lambda: {
+        "requested_tier": "reason",
+        "used_tier": "reason",
+        "backend": "ollama-cloud",
+        "model": "gemma4:cloud",
+        "ok": True,
+        "fallback": False,
+        "error": "",
+        "route": {
+            "served_route": "cloud",
+            "provider_response_received": True,
+            "provider_requested_num_ctx": mind_mod.CLOUD_NUM_CTX,
+            "provider_prompt_tokens": 24_321,
+            "provider_output_tokens": 87,
+            "provider_done": True,
+            "provider_done_reason": "stop",
+        },
+    })
+    turn = turn_context_mod.TurnContext.create(
+        "creator-house-hq-primary",
+        principal="creator",
+        surface="house-hq",
+        privacy_scope="creator-personal",
+    )
+
+    result = mind.chat("record a content-free context receipt", turn=turn)
+
+    history = result["model_use"]["history"]
+    assert history == {
+        "scope_key": "v2:creator-personal:creator:alpecca-unified:alpecca-unified-context",
+        "conversation_id": "alpecca-unified-context",
+        "principal": "creator",
+        "surface": "alpecca-unified",
+        "privacy_scope": "creator-personal",
+        "shared_creator": True,
+    }
+    context = result["model_use"]["context"]
+    assert context["num_ctx"] == mind_mod.CLOUD_NUM_CTX
+    assert context["request_sent"] is True
+    assert context["generation_completed"] is True
+    assert context["provider_ok"] is True
+    assert context["provider_fallback"] is False
+    assert context["provider_response_received"] is True
+    assert context["provider_requested_num_ctx"] == mind_mod.CLOUD_NUM_CTX
+    assert context["provider_prompt_tokens"] == 24_321
+    assert context["served_route"] == "cloud"
+    assert calls["chat_turns"][0].model_use["context"] == context

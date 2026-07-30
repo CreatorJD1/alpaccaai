@@ -727,6 +727,71 @@ class _LLM:
     def last_call(self) -> dict:
         return dict(self._last_call)
 
+    def _record_route_response(
+        self,
+        response: object,
+        *,
+        requested_num_ctx: int,
+        served_route: str,
+    ) -> None:
+        """Attach bounded provider telemetry without retaining prompt content.
+
+        Provider-reported token counts are acceptance evidence that a requested
+        context window was actually exercised. Missing fields remain missing
+        rather than being inferred.
+        """
+        route_local = getattr(self, "_route_local", None)
+        route = getattr(route_local, "detail", None)
+        if not isinstance(route, dict):
+            return
+
+        def response_value(name: str) -> object:
+            if isinstance(response, Mapping):
+                return response.get(name)
+            try:
+                return response[name]  # type: ignore[index]
+            except (KeyError, TypeError, AttributeError):
+                return getattr(response, name, None)
+
+        def nested_value(source: object, name: str) -> object:
+            if isinstance(source, Mapping):
+                return source.get(name)
+            try:
+                return source[name]  # type: ignore[index]
+            except (KeyError, TypeError, AttributeError):
+                return getattr(source, name, None)
+
+        route.update({
+            "served_route": str(served_route or "")[:24],
+            "provider_requested_num_ctx": max(0, int(requested_num_ctx)),
+            "provider_response_received": True,
+        })
+        usage = response_value("usage")
+        for source_key, usage_key, target_key in (
+            ("prompt_eval_count", "prompt_tokens", "provider_prompt_tokens"),
+            ("eval_count", "completion_tokens", "provider_output_tokens"),
+        ):
+            value = response_value(source_key)
+            if value is None and usage is not None:
+                value = nested_value(usage, usage_key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                route[target_key] = value
+        done = response_value("done")
+        done_reason = response_value("done_reason")
+        if not isinstance(done, bool):
+            choices = response_value("choices")
+            first_choice = choices[0] if isinstance(choices, (list, tuple)) and choices else None
+            finish_reason = nested_value(first_choice, "finish_reason")
+            if isinstance(finish_reason, str) and finish_reason.strip():
+                done = True
+                done_reason = finish_reason
+        if isinstance(done, bool):
+            route["provider_done"] = done
+        if isinstance(done_reason, str) and done_reason.strip():
+            route["provider_done_reason"] = re.sub(
+                r"[\x00-\x1f\x7f]", "", done_reason,
+            ).strip()[:48]
+
     @staticmethod
     def _ollama_backend_for_model(model: str) -> str:
         hosted = {
@@ -1064,6 +1129,11 @@ class _LLM:
                 route_detail["cloud_elapsed_ms"] = round(
                     (time.perf_counter() - cloud_started) * 1000
                 )
+                self._record_route_response(
+                    resp,
+                    requested_num_ctx=CLOUD_NUM_CTX,
+                    served_route="cloud",
+                )
                 return resp
             except Exception as exc:
                 route_detail["cloud_elapsed_ms"] = round(
@@ -1108,6 +1178,11 @@ class _LLM:
                 result = _one_call()
                 route_detail["local_elapsed_ms"] = round(
                     (time.perf_counter() - local_started) * 1000
+                )
+                self._record_route_response(
+                    result,
+                    requested_num_ctx=int(kwargs["options"].get("num_ctx") or 0),
+                    served_route="local",
                 )
                 return result
             except Exception as exc:
@@ -1573,6 +1648,18 @@ class _LLM:
         The primary client is recreated after the cooldown instead of remaining
         permanently disabled until process restart.
         """
+        route_detail: dict[str, object] = {
+            "cloud_attempted": True,
+            "cloud_elapsed_ms": 0,
+            "cloud_error": "",
+            "local_elapsed_ms": 0,
+        }
+        route_local = getattr(self, "_route_local", None)
+        if route_local is None:
+            route_local = threading.local()
+            self._route_local = route_local
+        route_local.detail = route_detail
+        cloud_started = time.perf_counter()
         primary_client = self._ensure_hf_client()
         fallback_client = getattr(self, "_hf_fallback", None)
         selected_client = primary_client or fallback_client
@@ -1639,7 +1726,7 @@ class _LLM:
             if selected_backend != "hf":
                 call.pop("extra_body", None)
             try:
-                return compatible_complete(selected_client, call)
+                response = compatible_complete(selected_client, call)
             except Exception as exc:
                 if (
                     selected_backend != "hf"
@@ -1659,7 +1746,16 @@ class _LLM:
                     "hosted text failover.",
                     file=sys.stderr,
                 )
-                return compatible_complete(selected_client, call)
+                response = compatible_complete(selected_client, call)
+            route_detail["cloud_elapsed_ms"] = round(
+                (time.perf_counter() - cloud_started) * 1000
+            )
+            self._record_route_response(
+                response,
+                requested_num_ctx=CLOUD_NUM_CTX,
+                served_route="cloud",
+            )
+            return response
         try:
             if tools and on_tool:
                 # Offer the tools; if the model calls any, run them and let it
@@ -1774,6 +1870,10 @@ class _LLM:
             return strip_think(content)
         except Exception as exc:
             import sys
+            route_detail["cloud_elapsed_ms"] = round(
+                (time.perf_counter() - cloud_started) * 1000
+            )
+            route_detail["cloud_error"] = f"{type(exc).__name__}: {exc}"[:180]
             if selected_backend == "hf" and _hosted_provider_unavailable(exc):
                 self._cool_down_hf(exc)
             print(f"[mind] hosted cloud call failed -> echo. model={selected_model} "
@@ -3380,7 +3480,23 @@ class CoreMind:
     def _record_mindpage_ledger(self, ledger: dict) -> dict:
         """Publish one measured request ledger without inventing telemetry."""
         snapshot = mindpage_mod.pressure_snapshot(ledger=ledger)
-        for key in ("request_sent", "retry_audits", "retry_skipped"):
+        for key in (
+            "request_sent",
+            "generation_completed",
+            "provider_ok",
+            "provider_fallback",
+            "provider_backend",
+            "provider_model",
+            "provider_response_received",
+            "provider_requested_num_ctx",
+            "provider_prompt_tokens",
+            "provider_output_tokens",
+            "provider_done",
+            "provider_done_reason",
+            "served_route",
+            "retry_audits",
+            "retry_skipped",
+        ):
             if key in ledger:
                 value = ledger[key]
                 if key == "retry_audits":
@@ -3967,6 +4083,40 @@ class CoreMind:
                                           **privacy_kwargs)
                 if self.llm.last_call().get("fallback"):
                     break
+        # Persist evidence for the request that actually produced the final
+        # draft. A configured window alone is not proof that the provider
+        # accepted and completed the request.
+        completed_model_use = self.llm.last_call()
+        completed_route = completed_model_use.get("route")
+        completed_route = completed_route if isinstance(completed_route, Mapping) else {}
+        request_ledger.update({
+            "request_sent": True,
+            "generation_completed": True,
+            "provider_ok": bool(completed_model_use.get("ok", False)),
+            "provider_fallback": bool(completed_model_use.get("fallback", False)),
+            "provider_backend": str(completed_model_use.get("backend") or "")[:48],
+            "provider_model": str(completed_model_use.get("model") or "")[:160],
+            "provider_response_received": bool(
+                completed_route.get("provider_response_received", False)
+            ),
+            "provider_requested_num_ctx": max(
+                0, int(completed_route.get("provider_requested_num_ctx") or 0)
+            ),
+            "provider_prompt_tokens": max(
+                0, int(completed_route.get("provider_prompt_tokens") or 0)
+            ),
+            "provider_output_tokens": max(
+                0, int(completed_route.get("provider_output_tokens") or 0)
+            ),
+            "served_route": str(completed_route.get("served_route") or "")[:24],
+        })
+        if isinstance(completed_route.get("provider_done"), bool):
+            request_ledger["provider_done"] = completed_route["provider_done"]
+        if str(completed_route.get("provider_done_reason") or "").strip():
+            request_ledger["provider_done_reason"] = str(
+                completed_route["provider_done_reason"]
+            )[:48]
+        self._record_mindpage_ledger(request_ledger)
         runtime_status_parts = []
         if runtime_topology_question:
             runtime_status_parts.append(_runtime_compute_worker_reply(self.llm))
@@ -4246,9 +4396,40 @@ class CoreMind:
                 self._last_mindpage = dict(self._last_mindpage or {})
                 self._last_mindpage["unsummarized_eviction_backlog"] = evict_count
                 self._last_mindpage["paging_error"] = paging_result.get("error") or paging_result.get("reason")
+        context_snapshot = self.mindpage_state()
+        context_evidence_keys = (
+            "source", "num_ctx", "input_budget_tokens", "input_tokens",
+            "output_reserve_tokens", "protocol_reserve_tokens", "total_tokens",
+            "required_context_tokens", "context_fill", "context_fits", "fit_status",
+            "overflow_tokens", "dropped_history_messages", "dropped_history_tokens",
+            "unsummarized_eviction_backlog", "prefault_page_count", "paging_error",
+            "request_sent", "generation_completed", "provider_ok",
+            "provider_fallback", "provider_backend", "provider_model",
+            "provider_response_received", "provider_requested_num_ctx",
+            "provider_prompt_tokens", "provider_output_tokens", "provider_done",
+            "provider_done_reason", "served_route",
+        )
+        context_evidence = {
+            key: context_snapshot[key]
+            for key in context_evidence_keys
+            if key in context_snapshot
+        }
         turn_model_use = {
-            **self.llm.last_call(),
+            **completed_model_use,
             "turn": turn.audit_metadata(),
+            "history": {
+                "scope_key": history_turn.scope_key,
+                "conversation_id": history_turn.conversation_id,
+                "principal": history_turn.principal,
+                "surface": history_turn.surface,
+                "privacy_scope": history_turn.privacy_scope,
+                "shared_creator": bool(
+                    history_turn.principal == "creator"
+                    and history_turn.surface == "alpecca-unified"
+                    and history_turn.conversation_id == "alpecca-unified-context"
+                ),
+            },
+            "context": context_evidence,
             "communication_stance": communication_stance.as_dict(),
         }
         chat_turn_id = cognition_mod.record_chat_turn(cognition_mod.ChatTurn(
