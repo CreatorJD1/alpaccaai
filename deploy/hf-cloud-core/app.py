@@ -224,6 +224,8 @@ def configure_runtime(
         "ALPECCA_HOME": str(runtime_home),
         "ALPECCA_LLM_BACKEND": "hf",
         "ALPECCA_HF_MODEL": MODEL_ID,
+        "ALPECCA_HF_FALLBACK_MODEL": "@cf/google/gemma-4-26b-a4b-it",
+        "ALPECCA_HF_FAILURE_COOLDOWN": "900",
         "ALPECCA_MODEL": "qwen3.5:9b",
         "ALPECCA_FAST_MODEL": "qwen3.5:9b",
         "ALPECCA_REFLECT_MODEL": "",
@@ -284,6 +286,23 @@ def validate_runtime_configuration(environ: Mapping[str, str]) -> None:
         raise CloudCoreStartupError("creator_password_too_short")
     if str(environ.get("ALPECCA_CONTINUITY_ROLE")) != CONTINUITY_ROLE:
         raise CloudCoreStartupError("continuity_role_invalid")
+    fallback_url = str(environ.get("ALPECCA_HF_FALLBACK_URL") or "").strip()
+    fallback_key = str(environ.get("ALPECCA_HF_FALLBACK_API_KEY") or "").strip()
+    if bool(fallback_url) != bool(fallback_key):
+        raise CloudCoreStartupError("hosted_fallback_configuration_incomplete")
+    if fallback_url:
+        parsed = urlsplit(fallback_url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise CloudCoreStartupError("hosted_fallback_url_invalid")
+        if len(fallback_key) < 32:
+            raise CloudCoreStartupError("hosted_fallback_secret_too_short")
 
 
 def create_runtime_home(environ: Mapping[str, str]) -> Path:

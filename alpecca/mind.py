@@ -57,6 +57,10 @@ from config import (
     HF_TOKEN,
     HF_MODEL,
     HF_PROVIDER,
+    HF_FALLBACK_URL,
+    HF_FALLBACK_MODEL,
+    HF_FALLBACK_API_KEY,
+    HF_FAILURE_COOLDOWN_SECONDS,
     CLOUD_SEND_SENSES,
     CORE_MEMORY_LEARN_ONLY,
     RECAP_SALIENCE,
@@ -588,6 +592,42 @@ class _StreamPartial(RuntimeError):
     it propagates so the honest fallback reply replaces the draft."""
 
 
+def _hosted_failover_endpoint(value: str) -> str:
+    """Return one credential-free HTTPS OpenAI base URL or an empty string."""
+    candidate = str(value or "").strip().rstrip("/")
+    if not candidate or len(candidate) > 2048:
+        return ""
+    parsed = urlparse(candidate)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+    return candidate
+
+
+def _hosted_provider_unavailable(exc: Exception) -> bool:
+    """Whether a provider error is safe to retry on the configured text route."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status in {401, 402, 403, 408, 429, 500, 502, 503, 504}:
+        return True
+    text = str(exc).casefold()
+    return any(marker in text for marker in (
+        "payment required",
+        "depleted",
+        "rate limit",
+        "timed out",
+        "timeout",
+        "temporarily unavailable",
+        "connection error",
+    ))
+
+
 class _LLM:
     """Thin wrapper over the Ollama client with a graceful offline fallback."""
 
@@ -595,6 +635,9 @@ class _LLM:
         self._backend = LLM_BACKEND          # "ollama" (local) or "hf" (cloud)
         self._client = None                  # ollama client
         self._hf = None                      # huggingface InferenceClient
+        self._hf_fallback = None             # explicit OpenAI-compatible failover
+        self._hf_retry_after = 0.0
+        self._hf_last_error = ""
         if self._backend == "hf":
             try:
                 from huggingface_hub import InferenceClient
@@ -607,6 +650,22 @@ class _LLM:
                       f"        fix:  python -m pip install huggingface_hub  and  "
                       f"huggingface-cli login  (or set HF_TOKEN).", file=sys.stderr)
                 self._hf = None
+            endpoint = _hosted_failover_endpoint(HF_FALLBACK_URL)
+            if endpoint and HF_FALLBACK_MODEL and HF_FALLBACK_API_KEY:
+                try:
+                    from huggingface_hub import InferenceClient
+                    self._hf_fallback = InferenceClient(
+                        base_url=endpoint,
+                        api_key=HF_FALLBACK_API_KEY,
+                    )
+                except Exception as exc:
+                    import sys
+                    print(
+                        "[mind] hosted language failover unavailable: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                    )
+                    self._hf_fallback = None
         else:
             try:
                 import ollama
@@ -822,7 +881,38 @@ class _LLM:
 
     @property
     def online(self) -> bool:
-        return self._hf is not None if self._backend == "hf" else self._client is not None
+        if self._backend == "hf":
+            return (
+                self._ensure_hf_client() is not None
+                or getattr(self, "_hf_fallback", None) is not None
+            )
+        return self._client is not None
+
+    def _ensure_hf_client(self):
+        """Recreate the stateless HF client after a bounded failure cooldown."""
+        client = getattr(self, "_hf", None)
+        if client is not None:
+            return client
+        retry_after = float(getattr(self, "_hf_retry_after", 0.0) or 0.0)
+        if time.monotonic() < retry_after:
+            return None
+        try:
+            from huggingface_hub import InferenceClient
+            client = InferenceClient(
+                provider=HF_PROVIDER or "auto",
+                token=HF_TOKEN or None,
+            )
+        except Exception as exc:
+            self._hf_last_error = str(exc)[:220]
+            self._hf_retry_after = time.monotonic() + HF_FAILURE_COOLDOWN_SECONDS
+            return None
+        self._hf = client
+        return client
+
+    def _cool_down_hf(self, exc: Exception) -> None:
+        self._hf = None
+        self._hf_last_error = str(exc)[:220]
+        self._hf_retry_after = time.monotonic() + HF_FAILURE_COOLDOWN_SECONDS
 
     def deep_online(self) -> bool:
         """Whether her deep tier is actually wired -- for /state reporting."""
@@ -1461,11 +1551,24 @@ class _LLM:
     def _generate_hf(self, system_prompt: str, user_msg: str,
                      history: list[dict] | None = None,
                      tools: list[dict] | None = None, on_tool=None) -> str:
-        """One reply from the Hugging Face cloud brain (OpenAI-compatible chat
-        completion), with tool calling when tools are offered. Keeps her alive
-        with the same echo fallback if the call fails, and surfaces the real
-        error so a bad token/model is diagnosable."""
-        if self._hf is None:
+        """One hosted reply, with a bounded OpenAI-compatible failover.
+
+        Hugging Face stays first when it is available. Capacity, credential, or
+        transport failures put that stateless client into a short cooldown and
+        move the same text-only prompt to the explicitly configured failover.
+        The primary client is recreated after the cooldown instead of remaining
+        permanently disabled until process restart.
+        """
+        primary_client = self._ensure_hf_client()
+        fallback_client = getattr(self, "_hf_fallback", None)
+        selected_client = primary_client or fallback_client
+        selected_backend = "hf" if primary_client is not None else "hosted-fallback"
+        selected_model = HF_MODEL if primary_client is not None else HF_FALLBACK_MODEL
+        if selected_client is None:
+            error = (
+                str(getattr(self, "_hf_last_error", "") or "").strip()
+                or "No hosted language client is currently available"
+            )
             self._mark_model_use(
                 requested="reason",
                 used="fallback",
@@ -1473,20 +1576,20 @@ class _LLM:
                 model=HF_MODEL,
                 ok=False,
                 fallback=True,
-                error="Hugging Face client is not configured",
+                error=error,
             )
-            return self._fallback(system_prompt, user_msg)
+            return self._fallback(system_prompt, user_msg, error=error)
         messages = [{"role": "system", "content": system_prompt}]
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": user_msg})
         hf_call: dict = {
             "messages": messages,
-            "model": HF_MODEL,
+            "model": selected_model,
             "max_tokens": 512,
             "temperature": 0.8,
         }
-        if "qwen3.5" in HF_MODEL.lower():
+        if "qwen3.5" in selected_model.lower():
             # Qwen3.5 thinks by default and can consume the whole response cap
             # before emitting content. Companion turns need the model's
             # documented non-thinking API mode; deep reflection keeps its own
@@ -1495,10 +1598,10 @@ class _LLM:
                 "chat_template_kwargs": {"enable_thinking": False},
             }
 
-        def complete(**kwargs):
-            """Retry once without optional provider parameters on HTTP 400 only."""
+        def compatible_complete(client, kwargs: dict):
+            """Retry once without optional model parameters on HTTP 400 only."""
             try:
-                return self._hf.chat_completion(**kwargs)
+                return client.chat_completion(**kwargs)
             except Exception as exc:
                 response = getattr(exc, "response", None)
                 status = getattr(response, "status_code", None)
@@ -1509,11 +1612,40 @@ class _LLM:
                 compatible.pop("extra_body", None)
                 import sys
                 print(
-                    "[mind] HF provider rejected optional Qwen parameters; "
+                    "[mind] hosted provider rejected optional model parameters; "
                     "retrying the same model without them.",
                     file=sys.stderr,
                 )
-                return self._hf.chat_completion(**compatible)
+                return client.chat_completion(**compatible)
+
+        def complete(**kwargs):
+            nonlocal selected_client, selected_backend, selected_model
+            call = dict(kwargs)
+            call["model"] = selected_model
+            if selected_backend != "hf":
+                call.pop("extra_body", None)
+            try:
+                return compatible_complete(selected_client, call)
+            except Exception as exc:
+                if (
+                    selected_backend != "hf"
+                    or fallback_client is None
+                    or not _hosted_provider_unavailable(exc)
+                ):
+                    raise
+                self._cool_down_hf(exc)
+                selected_client = fallback_client
+                selected_backend = "hosted-fallback"
+                selected_model = HF_FALLBACK_MODEL
+                call["model"] = selected_model
+                call.pop("extra_body", None)
+                import sys
+                print(
+                    "[mind] Hugging Face route unavailable; using the configured "
+                    "hosted text failover.",
+                    file=sys.stderr,
+                )
+                return compatible_complete(selected_client, call)
         try:
             if tools and on_tool:
                 # Offer the tools; if the model calls any, run them and let it
@@ -1521,7 +1653,9 @@ class _LLM:
                 # tools for every model, so fall back to a plain call on error.
                 try:
                     resp = complete(**hf_call, tools=tools, tool_choice="auto")
-                except Exception:
+                except Exception as exc:
+                    if _hosted_provider_unavailable(exc):
+                        raise
                     resp = complete(**hf_call)
                 msg = resp.choices[0].message
                 # Same bounded multi-round chaining as the local path (see there).
@@ -1600,8 +1734,8 @@ class _LLM:
                 self._mark_model_use(
                     requested="reason",
                     used="reason",
-                    backend="hf",
-                    model=HF_MODEL,
+                    backend=selected_backend,
+                    model=selected_model,
                 )
                 if blocked_reply is not None:
                     return blocked_reply
@@ -1615,8 +1749,8 @@ class _LLM:
             self._mark_model_use(
                 requested="reason",
                 used="reason",
-                backend="hf",
-                model=HF_MODEL,
+                backend=selected_backend,
+                model=selected_model,
             )
             content = getattr(resp.choices[0].message, "content", None)
             if not isinstance(content, str) or not content.strip():
@@ -1626,17 +1760,16 @@ class _LLM:
             return strip_think(content)
         except Exception as exc:
             import sys
-            print(f"[mind] HF cloud call failed -> echo. model={HF_MODEL} "
-                  f"provider={HF_PROVIDER}\n        {type(exc).__name__}: {exc}",
+            if selected_backend == "hf" and _hosted_provider_unavailable(exc):
+                self._cool_down_hf(exc)
+            print(f"[mind] hosted cloud call failed -> echo. model={selected_model} "
+                  f"route={selected_backend}\n        {type(exc).__name__}: {exc}",
                   file=sys.stderr)
-            error_text = str(exc).lower()
-            if any(marker in error_text for marker in ("402", "payment required", "depleted", "401", "403")):
-                self._hf = None
             self._mark_model_use(
                 requested="reason",
                 used="fallback",
-                backend="hf",
-                model=HF_MODEL,
+                backend=selected_backend,
+                model=selected_model,
                 ok=False,
                 fallback=True,
                 error=str(exc),

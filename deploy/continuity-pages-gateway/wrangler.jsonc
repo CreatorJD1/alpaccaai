@@ -12,6 +12,10 @@
     {
       "binding": "VAULT_SERVICE",
       "service": "alpecca-mindscape-vault"
+    },
+    {
+      "binding": "LANGUAGE_SERVICE",
+      "service": "alpecca-cloud-language"
     }
   ]
 }

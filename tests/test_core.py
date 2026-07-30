@@ -1111,6 +1111,31 @@ def test_runtime_status_reports_degraded_voice_and_offline_model():
     assert any(x["code"] == "server_voice_fallback" for x in d["issues"])
 
 
+def test_runtime_status_does_not_make_ollama_fatal_for_a_live_hosted_primary():
+    ollama = {
+        "reachable": False,
+        "reason_model_present": False,
+        "fix": "start Ollama",
+    }
+    d = runtime_status.build_runtime_status(
+        models={
+            "backend": "hf",
+            "reason": "Qwen/Qwen3.5-9B",
+            "fast": "Qwen/Qwen3.5-9B",
+            "deep": "local",
+        },
+        llm_online=True,
+        deep_backend="local",
+        deep_online=False,
+        voice={"engines": {"server_enabled": True, "kokoro": True}},
+        senses={"screen_sight": False},
+        ollama=ollama,
+    )
+    assert d["models"]["chat_ready"] is True
+    assert d["models"]["local_fallback_ready"] is False
+    assert not any(x["code"] == "ollama_unreachable" for x in d["issues"])
+
+
 def test_runtime_status_requires_original_modulated_alpecca_voice():
     d = runtime_status.build_runtime_status(
         models={"reason": "qwen3.5:9b", "fast": "gemma4-e4b", "deep": "local"},
@@ -5444,6 +5469,98 @@ def test_hf_qwen35_empty_compatibility_response_falls_back_cleanly(monkeypatch):
     assert llm._last_call["error"] == (
         "Hugging Face provider returned an empty text response"
     )
+
+
+def test_hf_capacity_failure_uses_configured_hosted_text_failover(monkeypatch):
+    from types import SimpleNamespace
+    from alpecca import mind as mind_mod
+
+    class PaymentRequired(RuntimeError):
+        response = SimpleNamespace(status_code=402)
+
+    class DepletedHF:
+        calls = 0
+
+        def chat_completion(self, **_kwargs):
+            self.calls += 1
+            raise PaymentRequired("monthly credits depleted")
+
+    fallback_calls = []
+
+    class HostedFallback:
+        def chat_completion(self, **kwargs):
+            fallback_calls.append(kwargs)
+            message = SimpleNamespace(content="hosted continuity restored")
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    primary = DepletedHF()
+    llm = object.__new__(mind_mod._LLM)
+    llm._backend = "hf"
+    llm._hf = primary
+    llm._hf_fallback = HostedFallback()
+    llm._hf_retry_after = 0.0
+    llm._hf_last_error = ""
+    llm._last_call = {}
+    monkeypatch.setattr(mind_mod, "HF_MODEL", "Qwen/Qwen3.5-9B")
+    monkeypatch.setattr(
+        mind_mod,
+        "HF_FALLBACK_MODEL",
+        "@cf/google/gemma-4-26b-a4b-it",
+    )
+
+    reply = llm._generate_hf("You are Alpecca.", "Are you there?")
+
+    assert reply == "hosted continuity restored"
+    assert primary.calls == 1
+    assert len(fallback_calls) == 1
+    assert fallback_calls[0]["model"] == "@cf/google/gemma-4-26b-a4b-it"
+    assert "extra_body" not in fallback_calls[0]
+    assert llm._hf is None
+    assert llm._hf_retry_after > 0
+    assert llm.online is True
+    assert llm.last_call()["backend"] == "hosted-fallback"
+    assert llm.last_call()["model"] == "@cf/google/gemma-4-26b-a4b-it"
+
+
+def test_hf_capacity_failure_cools_down_instead_of_retrying_twice(monkeypatch):
+    from types import SimpleNamespace
+    from alpecca import mind as mind_mod
+
+    class PaymentRequired(RuntimeError):
+        response = SimpleNamespace(status_code=402)
+
+    class DepletedHF:
+        calls = 0
+
+        def chat_completion(self, **_kwargs):
+            self.calls += 1
+            raise PaymentRequired("monthly credits depleted")
+
+    primary = DepletedHF()
+    llm = object.__new__(mind_mod._LLM)
+    llm._backend = "hf"
+    llm._hf = primary
+    llm._hf_fallback = None
+    llm._hf_retry_after = 0.0
+    llm._hf_last_error = ""
+    llm._last_call = {}
+    monkeypatch.setattr(
+        mind_mod._LLM,
+        "_fallback",
+        lambda self, *_args, **_kwargs: "bounded offline reply",
+    )
+
+    reply = llm._generate_hf(
+        "You are Alpecca.",
+        "Use a tool if needed.",
+        tools=[{"type": "function", "function": {"name": "memory_search"}}],
+        on_tool=lambda *_args: "unused",
+    )
+
+    assert reply == "bounded offline reply"
+    assert primary.calls == 1
+    assert llm._hf is None
+    assert llm._hf_retry_after > 0
 
 
 def test_zerogpu_deep_tier_is_explicit_opt_in_only():

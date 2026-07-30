@@ -15,6 +15,7 @@ import time
 from typing import Any, Mapping, NamedTuple, Protocol
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 
 VRM_URL = (
@@ -89,6 +90,8 @@ def configure_environment(environ: dict[str, str]) -> None:
         "ALPECCA_LLM_BACKEND": "hf",
         "ALPECCA_HF_MODEL": "Qwen/Qwen3.5-9B",
         "ALPECCA_HF_PROVIDER": "auto",
+        "ALPECCA_HF_FALLBACK_MODEL": "@cf/google/gemma-4-26b-a4b-it",
+        "ALPECCA_HF_FAILURE_COOLDOWN": "900",
         "ALPECCA_MODEL": "qwen3.5:9b",
         "ALPECCA_FAST_MODEL": "qwen3.5:9b",
         "ALPECCA_REFLECT_MODEL": "",
@@ -126,6 +129,23 @@ def validate_configuration(environ: dict[str, str]) -> list[str]:
         value = environ.get(name, "").strip()
         if value and not value.startswith("https://"):
             missing.append(f"{name}:https-required")
+    fallback_url = environ.get("ALPECCA_HF_FALLBACK_URL", "").strip()
+    fallback_key = environ.get("ALPECCA_HF_FALLBACK_API_KEY", "").strip()
+    if bool(fallback_url) != bool(fallback_key):
+        missing.append("ALPECCA_HF_FALLBACK:incomplete")
+    if fallback_url:
+        parsed = urlsplit(fallback_url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            missing.append("ALPECCA_HF_FALLBACK_URL:https-required")
+        if len(fallback_key) < 32:
+            missing.append("ALPECCA_HF_FALLBACK_API_KEY:too-short")
     return missing
 
 

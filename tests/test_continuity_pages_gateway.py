@@ -6,13 +6,14 @@ ROOT = Path(__file__).resolve().parents[1]
 GATEWAY = ROOT / "deploy" / "continuity-pages-gateway"
 
 
-def test_gateway_binds_existing_authority_and_vault_without_secrets():
+def test_gateway_binds_existing_authority_vault_and_language_without_secrets():
     config = json.loads((GATEWAY / "wrangler.jsonc").read_text(encoding="utf-8"))
     services = {row["binding"]: row["service"] for row in config["services"]}
     assert config["pages_build_output_dir"] == "./public"
     assert services == {
         "LEASE_SERVICE": "alpecca-continuity-lease",
         "VAULT_SERVICE": "alpecca-mindscape-vault",
+        "LANGUAGE_SERVICE": "alpecca-cloud-language",
     }
     assert "vars" not in config
 
@@ -21,6 +22,7 @@ def test_gateway_is_prefix_bounded_and_contains_no_direct_worker_url():
     source = (GATEWAY / "functions" / "[[path]].js").read_text(encoding="utf-8")
     assert 'pathname.startsWith("/lease/")' in source
     assert 'pathname.startsWith("/vault/")' in source
+    assert 'pathname.startsWith("/language/")' in source
     assert 'url.pathname === "/healthz"' in source
     assert 'target.binding.fetch(new Request(' in source
     assert 'return json({ detail: "not found" }, 404);' in source

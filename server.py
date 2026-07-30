@@ -732,6 +732,7 @@ def _runtime_status(
     from alpecca import tts as tts_mod
     tts_status = tts_mod.voice_state(mind.state)
     models = {
+        "backend": "hf" if mind.llm.is_cloud() else "ollama",
         "reason": mind.llm.model_for("reason"),
         "fast": mind.llm.model_for("fast"),
         "deep": DEEP_BACKEND if mind.llm.deep_online() else "local",

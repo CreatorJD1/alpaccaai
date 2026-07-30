@@ -14,6 +14,9 @@ function route(pathname, env) {
   if (pathname === "/vault" || pathname.startsWith("/vault/")) {
     return { binding: env.VAULT_SERVICE, prefix: "/vault" };
   }
+  if (pathname === "/language" || pathname.startsWith("/language/")) {
+    return { binding: env.LANGUAGE_SERVICE, prefix: "/language" };
+  }
   return null;
 }
 

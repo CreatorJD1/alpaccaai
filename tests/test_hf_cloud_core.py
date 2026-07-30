@@ -27,6 +27,8 @@ def test_cloud_core_uses_hosted_qwen35_and_keeps_private_capabilities_off():
     cloud.configure_environment(env)
     assert env["ALPECCA_LLM_BACKEND"] == "hf"
     assert env["ALPECCA_HF_MODEL"] == "Qwen/Qwen3.5-9B"
+    assert env["ALPECCA_HF_FALLBACK_MODEL"] == "@cf/google/gemma-4-26b-a4b-it"
+    assert env["ALPECCA_HF_FAILURE_COOLDOWN"] == "900"
     assert env["ALPECCA_MODEL"] == "qwen3.5:9b"
     assert ("qwen3" + ":8b") not in repr(env)
     assert env["ALPECCA_REFLECT_THINK"] == "0"
@@ -42,6 +44,21 @@ def test_cloud_core_requires_every_private_recovery_input():
     missing = cloud.validate_configuration(env)
     assert set(cloud.REQUIRED_SECRETS).issubset(missing)
     assert set(cloud.REQUIRED_URLS).issubset(missing)
+
+
+def test_cloud_core_requires_a_complete_https_hosted_language_fallback():
+    env = {"PORT": "7860", "ALPECCA_HF_FALLBACK_URL": "http://example.test/v1"}
+    cloud.configure_environment(env)
+    assert "ALPECCA_HF_FALLBACK:incomplete" in cloud.validate_configuration(env)
+
+    env["ALPECCA_HF_FALLBACK_API_KEY"] = "x" * 48
+    assert "ALPECCA_HF_FALLBACK_URL:https-required" in cloud.validate_configuration(env)
+
+    env["ALPECCA_HF_FALLBACK_URL"] = "https://language.example/v1"
+    assert not any(
+        item.startswith("ALPECCA_HF_FALLBACK")
+        for item in cloud.validate_configuration(env)
+    )
 
 
 def test_cloud_core_requires_explicit_enable_switch():

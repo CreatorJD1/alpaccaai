@@ -78,20 +78,24 @@ def build_runtime_status(*, models: dict, llm_online: bool, deep_backend: str,
     model_status["client_configured"] = bool(llm_online)
     model_status["deep_backend"] = deep_backend or "local"
     model_status["deep_online"] = bool(deep_online)
+    primary_backend = str(model_status.get("backend") or "ollama").strip().lower()
+    hosted_primary = primary_backend in {"hf", "hosted", "cloud"}
     colab = model_status.get("colab") if isinstance(model_status.get("colab"), dict) else {}
     colab_ready = bool(colab.get("ready") and colab.get("reachable"))
     model_status["colab_fast_ready"] = colab_ready
 
     if ollama is not None:
         model_status["ollama"] = ollama
-        chat_ready = bool(ollama.get("reachable") and ollama.get("reason_model_present"))
-        if not ollama.get("reachable"):
+        local_ready = bool(ollama.get("reachable") and ollama.get("reason_model_present"))
+        model_status["local_fallback_ready"] = local_ready
+        chat_ready = bool(llm_online) if hosted_primary else local_ready
+        if not hosted_primary and not ollama.get("reachable"):
             issues.append({
                 "code": "ollama_unreachable",
                 "message": "Local Ollama is not reachable, so replies fall back to basic mode.",
                 "fix": ollama.get("fix", "Start Ollama."),
             })
-        elif not ollama.get("reason_model_present"):
+        elif not hosted_primary and not ollama.get("reason_model_present"):
             issues.append({
                 "code": "model_missing",
                 "message": f"Reasoning model {models.get('reason', '')} is not installed.",

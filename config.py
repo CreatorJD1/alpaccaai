@@ -186,6 +186,17 @@ HF_TOKEN = (os.environ.get("HF_TOKEN", "")
 # change her reasoning model when the laptop is unavailable.
 HF_MODEL = os.environ.get("ALPECCA_HF_MODEL", "Qwen/Qwen3.5-9B")
 HF_PROVIDER = os.environ.get("ALPECCA_HF_PROVIDER", "auto")
+# Optional OpenAI-compatible failover for the hosted companion route. The
+# endpoint and credential are deliberately separate from the older deep-tier
+# booster: this path may carry the same bounded shared chat prompt that HF was
+# already authorized to receive. It is inert unless all three values exist.
+HF_FALLBACK_URL = os.environ.get("ALPECCA_HF_FALLBACK_URL", "").strip().rstrip("/")
+HF_FALLBACK_MODEL = os.environ.get("ALPECCA_HF_FALLBACK_MODEL", "").strip()
+HF_FALLBACK_API_KEY = os.environ.get("ALPECCA_HF_FALLBACK_API_KEY", "").strip()
+HF_FAILURE_COOLDOWN_SECONDS = max(
+    30.0,
+    min(86_400.0, float(os.environ.get("ALPECCA_HF_FAILURE_COOLDOWN", "900"))),
+)
 # Memory-recall embeddings. Local Ollama (`nomic-embed-text`) by default; set
 # ALPECCA_EMBED_BACKEND=hf to embed via Hugging Face instead, which frees the
 # local GPU (her embedder was the model that evicted the chat model on a small
