@@ -16,6 +16,11 @@ import tempfile
 import time
 from pathlib import Path
 
+# Direct ASGI imports in this canonical local suite must not inherit a live
+# cross-host continuity deployment. Dedicated fencing tests supply their own
+# process environments and continue to exercise the production guard.
+os.environ["ALPECCA_CONTINUITY_OFFLINE_ISOLATED"] = "1"
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from alpecca.homeostasis import EmotionalState
@@ -2736,6 +2741,11 @@ def test_cognition_recursive_engagement_scorecard_uses_evidence_not_claims():
             score=0.8,
             supports_status="testing",
         ), db_path=db)
+        for index in range(60):
+            cognition.record_observation(cognition.CognitionObservation(
+                source="senses",
+                content=f"unrelated sensor event {index}",
+            ), db_path=db)
         full = cognition.recursive_engagement_scorecard(db_path=db)
         assert full["ok"] is True
         assert full["score"] == 1
@@ -2801,7 +2811,9 @@ def test_house_living_loop_routes_alpecca_to_activation_terminals():
     assert "routeAlpeccaToLivingLoopTarget(message.living_loop)" in src
     assert "routeAlpeccaToLivingLoopTarget(data)" in src
     living_handler = src[src.index('if (message.type === "living_loop")') : src.index('if (message.type === "reply")')]
+    assert 'appendAlpeccaLog("Alpecca", line)' in living_handler
     assert 'if (!alpeccaChat.classList.contains("hidden")) showAlpeccaProfileLine' in living_handler
+    assert 'startAlpeccaSpeech(line, "", "proactive")' in living_handler
     assert "else showMessage(line, 5.5)" in living_handler
 
 
@@ -3142,11 +3154,49 @@ def test_house_hq_chat_uses_natural_reason_tier_like_discord():
     assert server._house_chat_reply_tier("can you hear me?") == "reason"
 
 
-def test_house_live_voice_uses_fast_tier_without_changing_typed_chat():
+def test_house_live_voice_uses_cloud_first_voice_tier_without_changing_typed_chat():
     import server
 
-    assert server._house_chat_reply_tier("can you hear me?", delivery="voice") == "fast"
+    assert server._house_chat_reply_tier("can you hear me?", delivery="voice") == "voice"
     assert server._house_chat_reply_tier("can you hear me?", delivery="text") == "reason"
+
+
+def test_trivial_acknowledgements_use_fast_tier_not_the_slow_core():
+    import server
+
+    # Bare acks/backchannels/emoji never need the full reasoning core; keeping
+    # a one-character "k" on the slow tier is what let it stall into the canned
+    # timeout fallback seen repeated in Discord.
+    for ack in ("k", "kk", "ok", "okay", "ty", "thanks", "got it", "👍"):
+        assert server._house_chat_reply_tier(ack) == "fast", ack
+    # Greetings, commands, and questions keep her natural reason-tier reply.
+    assert server._house_chat_reply_tier("hi") == "reason"
+    assert server._house_chat_reply_tier("stop walking") == "reason"
+    assert server._house_chat_reply_tier("can you hear me?") == "reason"
+
+
+def test_stall_fallback_never_leaks_internals_or_repeats_verbatim():
+    import server
+
+    server._recent_fallback_lines.clear()
+    turn = server.turn_context_mod.TurnContext.create(
+        "stall-dedup", principal="creator", surface="websocket",
+    )
+    # Cancel first so the fallback takes the timeout path (no cognition write).
+    turn.cancel("timeout")
+    first = server._ws_chat_timeout_result("walk me through the plan", turn=turn)
+    second = server._ws_chat_timeout_result("walk me through the plan", turn=turn)
+
+    for result in (first, second):
+        low = result["reply"].lower()
+        # The internal tier/model machinery must never be narrated to the person.
+        assert "grounded live mode" not in low
+        assert "full core" not in low
+        assert "deeper model" not in low
+    # Back-to-back stalls must not send the identical line verbatim.
+    assert first["reply"] != second["reply"]
+    assert second["model_use"]["fallback_repeat"] is True
+    server._recent_fallback_lines.clear()
 
 
 def test_ws_house_chat_timeout_still_returns_reply(monkeypatch):
@@ -3587,6 +3637,17 @@ def test_image_seen_lands_in_prompt_grounded():
     p = prompts.build_system_prompt(EmotionalState(), [], image_seen="a small brown dog on a beach")
     assert "a small brown dog on a beach" in p
     assert "really there" in p   # the grounding nudge rides along
+
+
+def test_runtime_clock_is_authoritative_and_in_every_prompt():
+    from datetime import datetime, timezone, timedelta
+
+    now = datetime(2026, 7, 23, 14, 5, 9, tzinfo=timezone(timedelta(hours=-7), "PDT"))
+    clock = prompts.runtime_clock(now)
+    assert clock == "Thursday, July 23, 2026 at 2:05:09 PM PDT (UTC-07:00)"
+    assert "Clock now (measured)" in prompts.build_system_prompt(
+        EmotionalState(), [], compact=True,
+    )
 
 
 # --- Proactive speech ---------------------------------------------------------
@@ -4291,8 +4352,12 @@ def test_actuator_refuses_anything_off_the_list():
 def test_actuator_disabled_offers_no_tools():
     act = actions.Actuator(apps={})
     assert act.enabled is False
+    assert act.can_open_urls is False
     assert act.tools_schema() == []
     assert act.describe() == ""
+    assert "isn't enabled" in act.execute(
+        "open_url", {"url": "https://example.com"}
+    )
 
 def test_actuator_tools_schema_enumerates_granted_names_only():
     act = actions.Actuator(apps={"spotify": "x", "notes": "y"})
@@ -4308,9 +4373,49 @@ def test_open_url_is_https_only():
 
 def test_open_url_offered_alongside_open_app():
     act = actions.Actuator(apps={"notes": "notepad.exe"})
+    assert act.can_open_urls is True
     names = [t["function"]["name"] for t in act.tools_schema()]
     assert names == ["open_app", "open_url"]
     assert "open_url" in act.describe()
+
+
+def test_games_play_keeps_disabled_and_unapproved_urls_inert():
+    import asyncio
+    import server
+
+    class RequestBody:
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        async def json(self):
+            return {"url": self.url}
+
+    class InertActuator:
+        def __init__(self, can_open_urls: bool) -> None:
+            self.can_open_urls = can_open_urls
+
+        def execute(self, *_args, **_kwargs):
+            raise AssertionError("disabled or unapproved game unexpectedly executed")
+
+    original = server.mind.actuator
+    try:
+        server.mind.actuator = InertActuator(False)
+        disabled = asyncio.run(
+            server.games_play(RequestBody("https://lichess.org/"))
+        )
+        assert disabled == {"ok": False, "error": "game launching is disabled"}
+        assert server.games()["can_open"] is False
+
+        server.mind.actuator = InertActuator(True)
+        unapproved = asyncio.run(
+            server.games_play(RequestBody("https://unapproved.example/"))
+        )
+        assert unapproved == {
+            "ok": False,
+            "error": "game url is not in the approved catalog",
+        }
+    finally:
+        server.mind.actuator = original
 
 
 # --- Hearing degrades gracefully ----------------------------------------------
@@ -4945,6 +5050,8 @@ def test_tts_route_has_timeout_fallback_for_slow_voice_engine():
     assert "asyncio.wait_for" in route
     assert "server voice timed out" in route
     assert "X-Alpecca-TTS-Error" in route
+    assert '"cloud"' in route
+    assert "LIVE_TTS_ROUTE_TIMEOUT" in route
     assert '@app.post("/voice/tts")' in route
     assert '@app.post("/tts/warmup")' in text
     assert "_warm_alpecca_voice" in text
@@ -5268,6 +5375,77 @@ def test_hf_qwen35_fallback_disables_thinking_for_companion_turns(monkeypatch):
     }
 
 
+def test_hf_qwen35_retries_without_optional_parameters_on_provider_400(monkeypatch):
+    from types import SimpleNamespace
+    from alpecca import mind as mind_mod
+
+    class BadRequestError(RuntimeError):
+        response = SimpleNamespace(status_code=400)
+
+    calls = []
+
+    class FakeClient:
+        def chat_completion(self, **kwargs):
+            calls.append(kwargs)
+            if "extra_body" in kwargs:
+                raise BadRequestError("provider rejected optional parameters")
+            message = SimpleNamespace(content="cloud qwen compatibility reply")
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    llm = object.__new__(mind_mod._LLM)
+    llm._hf = FakeClient()
+    llm._last_call = {}
+    monkeypatch.setattr(mind_mod, "HF_MODEL", "Qwen/Qwen3.5-9B")
+
+    reply = llm._generate_hf("You are Alpecca.", "Are you there?")
+
+    assert reply == "cloud qwen compatibility reply"
+    assert len(calls) == 2
+    assert calls[0]["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    assert "extra_body" not in calls[1]
+
+
+def test_hf_qwen35_empty_compatibility_response_falls_back_cleanly(monkeypatch):
+    from types import SimpleNamespace
+    from alpecca import mind as mind_mod
+
+    class BadRequestError(RuntimeError):
+        response = SimpleNamespace(status_code=400)
+
+    calls = []
+
+    class FakeClient:
+        def chat_completion(self, **kwargs):
+            calls.append(kwargs)
+            if "extra_body" in kwargs:
+                raise BadRequestError("provider rejected optional parameters")
+            message = SimpleNamespace(content=None)
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    llm = object.__new__(mind_mod._LLM)
+    llm._hf = FakeClient()
+    llm._last_call = {}
+    monkeypatch.setattr(mind_mod, "HF_MODEL", "Qwen/Qwen3.5-9B")
+    monkeypatch.setattr(
+        mind_mod._LLM,
+        "_fallback",
+        lambda self, *_args, **kwargs: f"fallback: {kwargs['error']}",
+    )
+
+    reply = llm._generate_hf("You are Alpecca.", "Are you there?")
+
+    assert reply == (
+        "fallback: Hugging Face provider returned an empty text response"
+    )
+    assert len(calls) == 2
+    assert llm._last_call["fallback"] is True
+    assert llm._last_call["error"] == (
+        "Hugging Face provider returned an empty text response"
+    )
+
+
 def test_zerogpu_deep_tier_is_explicit_opt_in_only():
     # ZeroGPU is supported, but it is a named booster she reaches for only when
     # the owner configured both the backend and a Space. It must not become the
@@ -5548,6 +5726,73 @@ def test_fast_workload_stays_on_local_qwen_when_model_names_match(monkeypatch):
     assert llm.last_call()["requested_tier"] == "fast"
 
 
+def test_live_voice_uses_hosted_chat_with_bounded_spoken_budget(monkeypatch):
+    """Voice is direct conversation, while background fast scoring stays local."""
+    from alpecca import mind as mind_mod
+    from alpecca.mind import _LLM
+
+    class FakeClient:
+        def __init__(self, reply):
+            self.reply = reply
+            self.calls = []
+
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"message": {"content": self.reply}}
+
+    local = FakeClient("local fallback")
+    cloud = FakeClient("short hosted voice answer")
+    monkeypatch.setattr(mind_mod, "CHAT_CLOUD_MODEL", "gemma4:cloud")
+    monkeypatch.setattr(mind_mod, "CHAT_ZEROGPU", False)
+    llm = _LLM()
+    llm._backend = "ollama"
+    llm._client = local
+    monkeypatch.setattr(_LLM, "_voice_cloud_chat_client", lambda self: cloud)
+
+    assert llm.generate("system", "hello", tier="voice") == "short hosted voice answer"
+    assert local.calls == []
+    assert cloud.calls[0]["model"] == "gemma4:cloud"
+    assert 96 <= cloud.calls[0]["options"]["num_predict"] <= 128
+    assert llm.last_call()["requested_tier"] == "voice"
+    assert llm.last_call()["backend"] == "ollama-cloud"
+
+
+def test_live_voice_cloud_timeout_does_not_queue_local_9b_retry(monkeypatch):
+    from alpecca import mind as mind_mod
+    from alpecca.mind import _LLM
+
+    class LocalClient:
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, **_kwargs):
+            self.calls += 1
+            return {"message": {"content": "late local reply"}}
+
+    class TimedOutCloud:
+        def chat(self, **_kwargs):
+            raise TimeoutError("hosted voice deadline")
+
+    monkeypatch.setattr(mind_mod, "CHAT_CLOUD_MODEL", "gemma4:cloud")
+    monkeypatch.setattr(mind_mod, "CHAT_ZEROGPU", False)
+    local = LocalClient()
+    llm = _LLM()
+    llm._backend = "ollama"
+    llm._client = local
+    monkeypatch.setattr(
+        _LLM,
+        "_voice_cloud_chat_client",
+        lambda self: TimedOutCloud(),
+    )
+
+    reply = llm.generate("overall: content", "Are you there?", tier="voice")
+
+    assert local.calls == 0
+    assert "basic live mode" in reply
+    assert llm.last_call()["fallback"] is True
+    assert llm.last_call()["requested_tier"] == "voice"
+
+
 def test_stream_request_does_not_replace_hosted_reason_chat_with_local(monkeypatch):
     """Streaming is presentation-only; it must not silently change providers."""
     from alpecca import mind as mind_mod
@@ -5804,6 +6049,43 @@ def test_smart_tool_mode_offers_tools_for_memorized_requests_and_streams_are_pau
         assert captured["on_token"] is None
         names = [t["function"]["name"] for t in captured["tools"]]
         assert "memory_search" in names or "self_status" in names
+    finally:
+        ActionsCfg.TOOL_MODE = old_mode
+
+
+def test_live_voice_is_conversation_only_even_when_words_match_tools():
+    from alpecca.mind import CoreMind
+    from config import Actions as ActionsCfg
+
+    old_mode = ActionsCfg.TOOL_MODE
+    try:
+        ActionsCfg.TOOL_MODE = "always"
+        mind = CoreMind()
+        captured = {}
+
+        def fake_generate(system_prompt, user_msg, history=None, tools=None,
+                          on_tool=None, tier="reason", local_only=False):
+            captured.update({"tools": tools, "on_tool": on_tool, "tier": tier})
+            return "I remember what you mean."
+
+        mind.llm.generate = fake_generate
+        mind.llm._last_call = {
+            "requested_tier": "voice",
+            "used_tier": "voice",
+            "backend": "test",
+            "model": "fake",
+            "ok": True,
+            "fallback": False,
+            "error": "",
+        }
+
+        result = mind.chat(
+            "Search your memory and tell me how you feel about it.",
+            reply_tier="voice",
+        )
+
+        assert result["reply"] == "I remember what you mean."
+        assert captured == {"tools": None, "on_tool": None, "tier": "voice"}
     finally:
         ActionsCfg.TOOL_MODE = old_mode
 

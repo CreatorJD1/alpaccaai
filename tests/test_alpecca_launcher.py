@@ -28,7 +28,54 @@ def test_gui_launch_defaults_keep_the_current_qwen35_model_and_preserve_override
     assert defaults["ALPECCA_MODEL"] == "qwen3.5:9b"
     assert defaults["ALPECCA_FAST_MODEL"] == "qwen3.5:9b"
     assert defaults["ALPECCA_NUM_CTX"] == "8192"
+    assert defaults["ALPECCA_ROG_WORKER_URL"] == "https://Jason_HOLYROG:8788"
+    assert defaults["ALPECCA_ROG_WORKER_CA_CERT"].endswith("jason-holyrog.crt")
+    assert defaults["ALPECCA_ROG_WORKER_MODEL"] == "qwen3.5:9b"
     assert custom["ALPECCA_MODEL"] == "custom-local"
+
+
+def test_launch_environment_merges_overrides_into_inherited_environment(monkeypatch):
+    launcher = _module()
+    monkeypatch.setenv("ALPECCA_ROG_WORKER_BLEND_ROOT", r"D:\approved-blends")
+
+    env = launcher.launch_environment()
+    env["ALPECCA_ROG_WORKER_LAN"] = "1"
+
+    assert env["ALPECCA_ROG_WORKER_LAN"] == "1"
+    assert env["ALPECCA_ROG_WORKER_BLEND_ROOT"] == r"D:\approved-blends"
+
+
+def test_jason_holyrog_is_recognized_as_dedicated_worker():
+    launcher = _module()
+
+    assert launcher._is_dedicated_worker_host("JASON_HOLYROG") is True
+    assert launcher._is_dedicated_worker_host("RygenART") is False
+
+
+def test_frozen_launcher_uses_explicit_python_path(monkeypatch, tmp_path: Path):
+    launcher = _module()
+    interpreter = tmp_path / "python.exe"
+    interpreter.write_bytes(b"")
+    monkeypatch.setattr(launcher.sys, "frozen", True, raising=False)
+    monkeypatch.setenv("ALPECCA_PYTHON", str(interpreter))
+
+    assert launcher._launcher_python() == str(interpreter)
+
+
+def test_frozen_launcher_fails_visibly_when_python_is_missing(monkeypatch):
+    launcher = _module()
+    monkeypatch.setattr(launcher.sys, "frozen", True, raising=False)
+    monkeypatch.delenv("ALPECCA_PYTHON", raising=False)
+    monkeypatch.setattr(launcher, "REPO_ROOT", None)
+    monkeypatch.setattr(launcher.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("LOCALAPPDATA", r"Z:\missing")
+
+    try:
+        launcher._launcher_python()
+    except RuntimeError as exc:
+        assert "Python 3.12" in str(exc)
+    else:
+        raise AssertionError("missing Python must not silently spawn an invalid command")
 
 
 def test_gui_starts_the_existing_singleton_full_stack_hidden(monkeypatch, tmp_path: Path):
@@ -83,9 +130,10 @@ def test_gui_publishes_phone_endpoint_with_hidden_attach_only_relay(monkeypatch,
 def test_master_launcher_invokes_gui_source_directly_without_bat_delegation():
     source = (ROOT / "ALPECCA_LAUNCHER.bat").read_text(encoding="utf-8")
 
-    assert 'pythonw "apps\\launcher\\src\\alpecca_launcher.py"' in source
-    assert 'python "apps\\launcher\\src\\alpecca_launcher.py"' in source
-    assert 'python "apps\\launcher\\build_launcher.py"' in source
+    assert '"%ALPECCA_PYTHONW%" "apps\\launcher\\src\\alpecca_launcher.py"' in source
+    assert '"%ALPECCA_PYTHON%" "apps\\launcher\\src\\alpecca_launcher.py"' in source
+    assert '"%ALPECCA_PYTHON%" "apps\\launcher\\build_launcher.py"' in source
+    assert ':resolve_python' in source
     assert "ALPECCA_AUTOWAKE=1" in source
     for wrapper in (
         "START_HERE.bat",
@@ -99,7 +147,7 @@ def test_master_launcher_invokes_gui_source_directly_without_bat_delegation():
         assert wrapper.lower() not in source.lower()
 
 
-def test_master_launcher_preserves_cloud_first_discord_voice_auto_default():
+def test_master_launcher_preserves_bounded_cloud_first_discord_voice_default():
     launcher = (ROOT / "ALPECCA_LAUNCHER.bat").read_text(encoding="utf-8")
     full_launcher = (ROOT / "scripts" / "run_full.py").read_text(encoding="utf-8")
     direct_launcher = (ROOT / "scripts" / "run_discord_bridge.py").read_text(
@@ -108,8 +156,10 @@ def test_master_launcher_preserves_cloud_first_discord_voice_auto_default():
 
     assert "ALPECCA_DISCORD_TTS_ENGINE=f5" not in launcher
     assert 'set "ALPECCA_TTS_BACKEND=auto"' in launcher
-    assert 'os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "auto")' in full_launcher
-    assert 'os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "auto")' in direct_launcher
+    assert 'os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "cloud")' in full_launcher
+    assert 'os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "cloud")' in direct_launcher
+    assert 'os.environ.setdefault("ALPECCA_CHAT_VOICE_TIMEOUT", "3.0")' in full_launcher
+    assert 'os.environ.setdefault("ALPECCA_LIVE_TTS_TIMEOUT", "3.0")' in direct_launcher
 
 
 def test_python_build_driver_targets_single_file_no_console_executable():
@@ -134,21 +184,45 @@ def test_full_stack_pins_the_hosted_and_local_workload_split_with_overridable_de
         "ALPECCA_FAST_MODEL": "qwen3.5:9b",
         "ALPECCA_CHAT_CLOUD_MODEL": "gemma4:cloud",
         "ALPECCA_CHAT_CLOUD_PAGED_MEMORY": "1",
-        "ALPECCA_DEEP_BACKEND": "ollama-cloud",
+        "ALPECCA_ROG_WORKER_URL": "https://jason-holyrog.tailda0108.ts.net:8788",
+        "ALPECCA_ROG_WORKER_MODEL": "qwen3.5:9b",
+        "ALPECCA_DEEP_BACKEND": "rog-worker,ollama-cloud",
+        "ALPECCA_ROG_SSH_ENABLED": "0",
         "ALPECCA_OLLAMA_CLOUD_MODEL": "gemma4:cloud",
         "ALPECCA_REFLECT_MODEL": "qwen3.5:9b",
         "ALPECCA_VISION_BACKEND": "local",
         "ALPECCA_VISION_CLOUD_MODEL": "gemma4:cloud",
-        "ALPECCA_DISCORD_CREATOR_CLOUD_VISION": "1",
+        "ALPECCA_DISCORD_CREATOR_CLOUD_VISION": "0",
         "ALPECCA_VISION_CLOUD_TRANSPORT_ROUTE": "https://ollama.com/api/chat",
         "ALPECCA_VISION_CLOUD_DEPLOYMENT": "ollama-cloud",
         "ALPECCA_VISION_CLOUD_PROCESSING_LOCATION": "provider-managed",
         "ALPECCA_VISION_MODEL": "qwen3.5:4b",
         "ALPECCA_VISION_NUM_GPU": "99",
-        "ALPECCA_VISION_TIMEOUT": "60",
+        "ALPECCA_VISION_TIMEOUT": "120",
+        "ALPECCA_VISION_KEEP_ALIVE": "30m",
     }
     for name, value in expected_defaults.items():
-        assert f'os.environ.setdefault("{name}", "{value}")' in source
+        if name == "ALPECCA_ROG_WORKER_URL":
+            assert f'_ROG_WORKER_MAGICDNS_URL = "{value}"' in source
+            assert (
+                'os.environ.setdefault("ALPECCA_ROG_WORKER_URL", '
+                "_ROG_WORKER_MAGICDNS_URL)" in source
+            )
+        else:
+            assert f'os.environ.setdefault("{name}", "{value}")' in source
+    assert '_ROG_WORKER_LEGACY_URL = "https://Jason_HOLYROG:8788"' in source
+    assert "_configured_rog_worker_url.casefold()" in source
+    assert '"ALPECCA_ROG_WORKER_CA_CERT"' in source
+    assert '"jason-holyrog.crt"' in source
+    assert 'os.environ.setdefault("ALPECCA_ROG_SSH_HOST", "Jason_HOLYROG")' in source
+    assert 'os.environ.setdefault("ALPECCA_ROG_SSH_USER", "Jason")' in source
+
+
+def test_full_stack_keeps_ssh_remote_administration_explicitly_opt_in():
+    source = (ROOT / "scripts" / "run_full.py").read_text(encoding="utf-8")
+
+    assert 'os.environ.setdefault("ALPECCA_ROG_SSH_ENABLED", "0")' in source
+    assert 'os.environ.setdefault("ALPECCA_ROG_SSH_ENABLED", "1")' not in source
 
 
 def test_full_stack_sidecars_use_no_window_background_flags():
@@ -158,6 +232,16 @@ def test_full_stack_sidecars_use_no_window_background_flags():
     assert "CREATE_NO_WINDOW" in source
     assert source.count('kwargs["creationflags"] = _background_creationflags()') >= 3
     assert launcher.CREATE_NO_WINDOW
+
+
+def test_full_stack_starts_f5_with_its_dedicated_voice_interpreter():
+    source = (ROOT / "scripts" / "run_full.py").read_text(encoding="utf-8")
+
+    assert '".venv-f5-tts" / "Scripts" / "python.exe"' in source
+    assert "configured_python = str(OPEN_TTS_PYTHON or \"\").strip()" in source
+    assert "_voice_python_supports_device(candidate, requested_device)" in source
+    assert "candidates = [default_voice_python, Path(sys.executable)]" in source
+    assert 'subprocess.Popen([worker_python, "scripts\\\\f5_tts_worker.py"]' in source
 
 
 def test_full_stack_offline_mode_is_local_only_and_does_not_wait_for_f5():
@@ -189,6 +273,15 @@ def test_gui_wakes_cloud_standby_and_repairs_an_absent_discord_bridge():
     assert '"scripts\\\\run_discord_bridge.py"' in source
     assert "DISCORD_BRIDGE_LOCK_PORT" in source
     assert "_loopback_port_open" in source
+
+
+def test_gui_rog_control_starts_only_the_compute_worker_on_its_assigned_host():
+    source = LAUNCHER.read_text(encoding="utf-8")
+
+    assert '"scripts\\\\run_rog_compute_worker.py"' in source
+    assert 'env["ALPECCA_ROG_WORKER_LAN"] = "1"' in source
+    assert "_is_dedicated_worker_host" in source
+    assert '"/system/rog-worker"' in source
 
 
 def test_full_stack_wakes_the_passive_cloud_standby_without_promoting_it():

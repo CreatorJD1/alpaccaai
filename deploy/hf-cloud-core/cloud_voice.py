@@ -14,6 +14,7 @@ from io import BytesIO
 import json
 import os
 import threading
+import time
 from typing import Any, Protocol
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -30,6 +31,12 @@ MAX_BODY_BYTES = 16 * 1024
 MAX_AUDIO_BYTES = 12 * 1024 * 1024
 MAX_CREDENTIAL_CHARS = 512
 DEFAULT_PORT = 7861
+SELF_CHECK_TEXT = "Voice readiness check."
+SELF_CHECK_TIMEOUT_SECONDS = 45.0
+MIN_PCM_DURATION_MS = 100
+MIN_SIGNAL_AMPLITUDE = 64
+MIN_ACTIVE_SAMPLE_PER_MILLE = 5
+MAX_SIGNAL_PROBES = 8_192
 
 
 class VoiceServiceError(RuntimeError):
@@ -53,6 +60,9 @@ class HealthMetadata:
     device: str
     sampleRateHz: int
     modelLoaded: bool
+    selfCheckPassed: bool
+    selfCheckState: str
+    synthesisReady: bool
     persistence: bool
     coreMind: bool
     singletonAuthority: bool
@@ -124,6 +134,159 @@ class LazyKokoroSynthesizer:
             return data
 
 
+def _has_meaningful_pcm_signal(
+    audio: bytes,
+    *,
+    data_start: int,
+    data_size: int,
+    block_align: int,
+) -> bool:
+    frame_count = data_size // block_align
+    minimum_frames = (SAMPLE_RATE_HZ * MIN_PCM_DURATION_MS + 999) // 1_000
+    if frame_count < minimum_frames:
+        return False
+
+    probe_count = min(frame_count, MAX_SIGNAL_PROBES)
+    required_active = max(
+        2,
+        (probe_count * MIN_ACTIVE_SAMPLE_PER_MILLE + 999) // 1_000,
+    )
+    active = 0
+    for probe_index in range(probe_count):
+        frame_index = probe_index * frame_count // probe_count
+        sample_start = data_start + frame_index * block_align
+        sample = int.from_bytes(
+            audio[sample_start : sample_start + 2],
+            "little",
+            signed=True,
+        )
+        if abs(sample) >= MIN_SIGNAL_AMPLITUDE:
+            active += 1
+            if active >= required_active:
+                return True
+    return False
+
+
+def _valid_wav(audio: object) -> bool:
+    """Validate playable PCM structure, duration, and signal quality."""
+
+    if not isinstance(audio, bytes) or not 44 <= len(audio) <= MAX_AUDIO_BYTES:
+        return False
+    if audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+        return False
+
+    riff_size = int.from_bytes(audio[4:8], "little")
+    if riff_size != len(audio) - 8:
+        return False
+
+    fmt: tuple[int, int, int, int, int, int] | None = None
+    data_span: tuple[int, int] | None = None
+    offset = 12
+    while offset < len(audio):
+        if offset + 8 > len(audio):
+            return False
+        chunk_id = audio[offset : offset + 4]
+        chunk_size = int.from_bytes(audio[offset + 4 : offset + 8], "little")
+        chunk_start = offset + 8
+        chunk_end = chunk_start + chunk_size
+        padded_end = chunk_end + (chunk_size & 1)
+        if chunk_end > len(audio) or padded_end > len(audio):
+            return False
+
+        if chunk_id == b"fmt ":
+            if fmt is not None or chunk_size < 16:
+                return False
+            fmt = tuple(
+                int.from_bytes(audio[start:end], "little")
+                for start, end in (
+                    (chunk_start, chunk_start + 2),
+                    (chunk_start + 2, chunk_start + 4),
+                    (chunk_start + 4, chunk_start + 8),
+                    (chunk_start + 8, chunk_start + 12),
+                    (chunk_start + 12, chunk_start + 14),
+                    (chunk_start + 14, chunk_start + 16),
+                )
+            )
+        elif chunk_id == b"data":
+            if data_span is not None:
+                return False
+            data_span = (chunk_start, chunk_end)
+
+        offset = padded_end
+
+    if offset != len(audio) or fmt is None or data_span is None:
+        return False
+
+    audio_format, channels, sample_rate, byte_rate, block_align, bits = fmt
+    if (
+        audio_format != 1
+        or channels != 1
+        or sample_rate != SAMPLE_RATE_HZ
+        or bits != 16
+        or block_align != channels * (bits // 8)
+        or byte_rate != sample_rate * block_align
+    ):
+        return False
+    data_start, data_end = data_span
+    data_size = data_end - data_start
+    if data_size < block_align or data_size % block_align != 0:
+        return False
+    return _has_meaningful_pcm_signal(
+        audio,
+        data_start=data_start,
+        data_size=data_size,
+        block_align=block_align,
+    )
+
+
+class SynthesisReadiness:
+    """Run one bounded synthesis probe without blocking the health endpoint."""
+
+    def __init__(self, *, timeout_seconds: float = SELF_CHECK_TIMEOUT_SECONDS) -> None:
+        self._timeout_seconds = max(0.01, float(timeout_seconds))
+        self._lock = threading.Lock()
+        self._state = "pending"
+        self._started_at = 0.0
+
+    def ensure_started(self, engine: Synthesizer) -> None:
+        with self._lock:
+            if self._state != "pending":
+                return
+            self._state = "running"
+            self._started_at = time.monotonic()
+        threading.Thread(
+            target=self._run,
+            args=(engine,),
+            name="cloud-voice-self-check",
+            daemon=True,
+        ).start()
+
+    def _run(self, engine: Synthesizer) -> None:
+        try:
+            audio = engine.synthesize(SELF_CHECK_TEXT)
+            valid = _valid_wav(audio)
+        except Exception:
+            valid = False
+        completed_at = time.monotonic()
+        with self._lock:
+            elapsed = completed_at - self._started_at
+            if self._state == "running":
+                self._state = (
+                    "passed" if valid and elapsed <= self._timeout_seconds else "failed"
+                )
+
+    def snapshot(self, *, model_loaded: bool) -> tuple[str, bool, bool]:
+        with self._lock:
+            if (
+                self._state == "running"
+                and time.monotonic() - self._started_at > self._timeout_seconds
+            ):
+                self._state = "failed"
+            check_state = self._state
+        check_passed = check_state == "passed"
+        return check_state, check_passed, bool(model_loaded and check_passed)
+
+
 def _secret_digest(secret: str) -> bytes:
     if not isinstance(secret, str) or not secret or len(secret) > MAX_CREDENTIAL_CHARS:
         raise ValueError("voice authorization secret is missing or malformed")
@@ -179,11 +342,17 @@ def _bounded_text(payload: dict[str, Any]) -> str:
     return normalized
 
 
-def create_app(*, secret: str, synthesizer: Synthesizer | None = None) -> FastAPI:
+def create_app(
+    *,
+    secret: str,
+    synthesizer: Synthesizer | None = None,
+    self_check_timeout_seconds: float = SELF_CHECK_TIMEOUT_SECONDS,
+) -> FastAPI:
     """Create the isolated service without loading Kokoro or Alpecca state."""
 
     expected_digest = _secret_digest(secret)
     engine = synthesizer or LazyKokoroSynthesizer()
+    readiness = SynthesisReadiness(timeout_seconds=self_check_timeout_seconds)
     app = FastAPI(
         title="Alpecca Cloud Voice",
         version=str(SERVICE_VERSION),
@@ -194,15 +363,33 @@ def create_app(*, secret: str, synthesizer: Synthesizer | None = None) -> FastAP
 
     @app.get("/healthz")
     async def health() -> dict[str, Any]:
+        readiness.ensure_started(engine)
+        try:
+            model_loaded = bool(engine.loaded)
+        except Exception:
+            model_loaded = False
+        check_state, check_passed, synthesis_ready = readiness.snapshot(
+            model_loaded=model_loaded
+        )
+        state = (
+            "ready"
+            if synthesis_ready
+            else "unavailable"
+            if check_state == "failed"
+            else "starting"
+        )
         metadata = HealthMetadata(
             service=SERVICE_NAME,
             version=SERVICE_VERSION,
-            state="ready",
+            state=state,
             engine="kokoro",
             voice=VOICE,
             device="cpu",
             sampleRateHz=SAMPLE_RATE_HZ,
-            modelLoaded=bool(engine.loaded),
+            modelLoaded=model_loaded,
+            selfCheckPassed=check_passed,
+            selfCheckState=check_state,
+            synthesisReady=synthesis_ready,
             persistence=False,
             coreMind=False,
             singletonAuthority=False,
@@ -230,7 +417,7 @@ def create_app(*, secret: str, synthesizer: Synthesizer | None = None) -> FastAP
                 flush=True,
             )
             raise HTTPException(status_code=503, detail="synthesis_unavailable") from None
-        if not isinstance(audio, bytes) or not audio or len(audio) > MAX_AUDIO_BYTES:
+        if not _valid_wav(audio):
             raise HTTPException(status_code=503, detail="invalid_synthesis_result")
         return Response(
             content=audio,

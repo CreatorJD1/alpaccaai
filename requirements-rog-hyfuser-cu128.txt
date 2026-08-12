@@ -1,0 +1,14 @@
+# Jason_HOLYROG HyFusER shadow runtime only.
+# Target interpreter: CPython 3.11.9 x64 on Windows.
+# Keep this environment separate from Alpecca's primary runtime.
+#
+# Install only after the read-only preflight reports ready:
+#   py -3.11 -m venv .venv-rog-hyfuser
+#   .venv-rog-hyfuser\Scripts\python.exe -m pip install --upgrade pip
+#   .venv-rog-hyfuser\Scripts\python.exe -m pip install -r requirements-rog-hyfuser-cu128.txt
+#
+# PyTorch publishes CUDA wheels through this dedicated index. The local CUDA
+# toolkit is not required; the NVIDIA display driver must support CUDA 12.8.
+--index-url https://download.pytorch.org/whl/cu128
+
+torch==2.7.0; python_version == "3.11" and platform_system == "Windows" and platform_machine == "AMD64"

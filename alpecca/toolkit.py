@@ -14,11 +14,13 @@ from config import Actions as ActionsCfg
 from alpecca import cognition as cognition_mod
 from alpecca import desires as desires_mod
 from alpecca import home as home_mod
+from alpecca import google_workspace as google_workspace_mod
 from alpecca import journal as journal_mod
 from alpecca import memory as memory_store
 from alpecca import mindpage as mindpage_mod
 from alpecca import source_perception as source_perception_mod
 from alpecca import source_workspace as source_workspace_mod
+from alpecca import prompts as prompts_mod
 from alpecca.turn_context import TurnContext
 from alpecca import tool_access_policy
 
@@ -81,6 +83,7 @@ class InnateToolkit:
             "draft approval-required plans",
             "recall a paged-out conversation episode",
             "inspect a bounded repository source file when the creator asks",
+            "check Google Workspace status and create private Drive folders or Google Docs when connected",
         ]
 
     def describe(self, turn: TurnContext | None = None) -> str:
@@ -294,6 +297,44 @@ class InnateToolkit:
                 },
             },
         )
+        if ActionsCfg.GOOGLE_WORKSPACE:
+            tools.extend([
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "google_status",
+                        "description": "Check whether Alpecca's private Google Workspace connection is ready.",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "google_create_folder",
+                        "description": "Create a new folder inside Alpecca's configured private Google Drive root. Cannot share, overwrite, move, or delete.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"name": {"type": "string", "description": "New folder name."}},
+                            "required": ["name"],
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "google_create_document",
+                        "description": "Create a new Google Doc inside Alpecca's configured private Drive root and optionally insert bounded text.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string", "description": "New document title."},
+                                "content": {"type": "string", "description": "Optional initial document text."},
+                            },
+                            "required": ["title"],
+                        },
+                    },
+                },
+            ])
         return tools
 
     def execute(self, tool_name: str, args: dict, *,
@@ -321,6 +362,7 @@ class InnateToolkit:
             "self_status": self._self_status,
             "recall_page": self._recall_page,
             "source_inspect": self._source_inspect,
+            "google_status": self._google_status,
         }
         creator_handlers = {
             "journal_read": self._journal_read,
@@ -328,6 +370,8 @@ class InnateToolkit:
             "note_to_self": self._note_to_self,
             "go_to_room": self._go_to_room,
             "make_plan": self._make_plan,
+            "google_create_folder": self._google_create_folder,
+            "google_create_document": self._google_create_document,
         }
         fn = scoped_handlers.get(tool_name) or creator_handlers.get(tool_name)
         if not fn:
@@ -459,11 +503,7 @@ class InnateToolkit:
         return f"note_to_self stored as desire {did} ({kind})"
 
     def _self_status(self, _args: dict, turn: TurnContext) -> str:
-        """Return only the current turn's observable execution state.
-
-        Core mood, cognition totals, and global memory counts are not scoped
-        stores, so exposing them to a turn would reveal process-wide state.
-        """
+        """Return grounded live state to an authenticated creator turn."""
         audit = turn.audit_metadata()
         status = {
             "turn": {
@@ -476,7 +516,38 @@ class InnateToolkit:
                 "commit_state": audit["commit_state"],
             },
         }
+        introspect = getattr(self.mind, "introspect", None)
+        if callable(introspect):
+            report = introspect()
+            status.update({
+                "clock": prompts_mod.runtime_clock(),
+                "location": getattr(self.mind, "_location", home_mod.DEFAULT_ROOM),
+                "self": {
+                    "mood": report.mood,
+                    "state": report.state,
+                    "trends": report.trends,
+                    "reason": report.reason,
+                    "memory_count": report.memory_count,
+                    "senses_active": report.senses_active,
+                    "host_pressure": report.host_pressure or {},
+                },
+                "google_workspace": google_workspace_mod.status(),
+            })
         return json.dumps(status, ensure_ascii=False)
+
+    def _google_status(self, _args: dict, _turn: TurnContext) -> str:
+        return json.dumps(google_workspace_mod.status(), ensure_ascii=False)
+
+    def _google_create_folder(self, args: dict) -> str:
+        receipt = google_workspace_mod.create_folder(args.get("name"))
+        return json.dumps(receipt, ensure_ascii=False)
+
+    def _google_create_document(self, args: dict) -> str:
+        receipt = google_workspace_mod.create_document(
+            args.get("title"),
+            args.get("content", ""),
+        )
+        return json.dumps(receipt, ensure_ascii=False)
 
     def _go_to_room(self, args: dict) -> str:
         location = _coerce_room(str(args.get("location") or args.get("room") or ""))

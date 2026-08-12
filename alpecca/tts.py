@@ -130,13 +130,27 @@ def voice_params_for(state) -> dict:
 
 # --- Kokoro (best free local voice) -----------------------------------------
 _kokoro = None
-_kokoro_ready = None        # None untried, then True/False (latched)
+_kokoro_ready = None        # None untried, then True/False
+_kokoro_failed_at = 0.0     # monotonic time of the last load failure
+# A failed Kokoro load used to latch OFF for the whole process, so ONE transient
+# failure (a momentarily busy/exhausted GPU, a model-load hiccup) silenced her
+# voice until a full restart. Re-probe after a cooldown so her voice keeps
+# running all the time; a genuinely-missing package still fails fast and simply
+# retries slowly rather than every turn.
+_KOKORO_RETRY_COOLDOWN_SECONDS = float(
+    os.environ.get("ALPECCA_KOKORO_RETRY_COOLDOWN", "120")
+)
 
 
 def _kokoro_pipeline():
-    global _kokoro, _kokoro_ready
+    global _kokoro, _kokoro_ready, _kokoro_failed_at
     if _kokoro_ready is False:
-        return None
+        # Recover instead of latching off forever: a transient load failure must
+        # not silence her voice until the process is restarted. Re-probe once the
+        # cooldown has elapsed.
+        if (time.monotonic() - _kokoro_failed_at) < _KOKORO_RETRY_COOLDOWN_SECONDS:
+            return None
+        _kokoro_ready = None
     if _kokoro is None:
         started = time.monotonic()
         try:
@@ -150,6 +164,7 @@ def _kokoro_pipeline():
                   f"install with: python -m pip install kokoro soundfile  "
                   f"(and espeak-ng on the system).", file=sys.stderr)
             _kokoro_ready = False
+            _kokoro_failed_at = time.monotonic()
             _kokoro_metrics["last_startup_seconds"] = round(time.monotonic() - started, 3)
             _kokoro_metrics["last_error"] = f"{type(exc).__name__}: {exc}"
             return None
@@ -168,10 +183,10 @@ def kokoro_status() -> dict:
         call = _kokoro_call
         busy = bool(call and not call["done"].is_set())
         started = float(call["started"]) if busy else None
-    if not installed:
-        state = "unavailable"
-    elif busy:
+    if busy:
         state = "warming_or_synthesizing"
+    elif not installed:
+        state = "unavailable"
     elif _kokoro_ready is False:
         state = "failed"
     elif _kokoro is not None:
@@ -636,6 +651,43 @@ def _shape_text_for_alpecca_voice(text: str, dyn: dict) -> str:
 
 
 # --- edge-tts (always-works neural fallback) --------------------------------
+def _mp3_to_wav(mp3: bytes) -> "bytes | None":
+    """Transcode MP3 bytes to a clean 24 kHz mono WAV via ffmpeg.
+
+    edge-tts streams a duration-less MP3 that Discord's FFmpeg playback path
+    mangles into morphing/pitched artifacts. A proper WAV (the same shape Kokoro
+    serves) plays cleanly. Returns None if ffmpeg is unavailable or the transcode
+    fails, so the caller can fall back to the raw MP3."""
+    import shutil
+    import subprocess
+    import wave
+    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+    try:
+        # Decode to RAW PCM (s16le) -- a pipe is non-seekable, so asking ffmpeg
+        # for '-f wav pipe:1' makes it write a placeholder (max) size into the
+        # RIFF/data headers, and players then misframe the clip into garbled,
+        # morphing voices. Emitting headerless PCM and wrapping it with Python's
+        # wave module writes the CORRECT sizes.
+        proc = subprocess.run(
+            [ffmpeg, "-hide_banner", "-loglevel", "error",
+             "-i", "pipe:0", "-ar", "24000", "-ac", "1", "-f", "s16le", "pipe:1"],
+            input=mp3, capture_output=True, timeout=15,
+        )
+        pcm = proc.stdout
+        if not pcm or len(pcm) < 2:
+            return None
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(24000)
+            writer.writeframes(pcm)
+        return buf.getvalue()
+    except Exception:
+        pass
+    return None
+
+
 def _synth_edge(text: str, state=None):
     try:
         import asyncio
@@ -659,11 +711,17 @@ def _synth_edge(text: str, state=None):
 
     try:
         data = asyncio.run(_go())
-        return ("audio/mpeg", data) if data else None
     except Exception as exc:
         print(f"[tts] edge-tts failed ({type(exc).__name__}: {exc}); "
               f"install with: python -m pip install edge-tts", file=sys.stderr)
         return None
+    if not data:
+        return None
+    # Serve ONLY the clean WAV. If the transcode fails (ffmpeg missing or busy
+    # under load), return None so she falls back to text rather than ever playing
+    # the raw duration-less MP3, which garbles into pitched/morphing voices.
+    wav = _mp3_to_wav(data)
+    return ("audio/wav", wav) if wav else None
 
 
 def _prefers_clone_voice(state=None) -> bool:
@@ -684,12 +742,27 @@ def _prefers_clone_voice(state=None) -> bool:
                float(dyn.get("arousal", 0.5))) >= VOICE_MIX_INTENSITY
 
 
+def _synth_holyrog(text: str, state=None):
+    """Synthesize on the HOLYROG XTTS-v2 voice server (her cloned voice on the ROG
+    GPU). Returns None when it is unconfigured or unreachable so the local engines
+    take over -- so enabling HOLYROG only ever upgrades quality, never breaks."""
+    del state
+    global _last_error
+    from alpecca import holyrog_voice
+
+    result = holyrog_voice.client().synthesize(text)
+    if not result:
+        return None
+    return (result[0], result[1], {"engine": "holyrog-xtts", "profile": "xtts_v2_clone"})
+
+
 def synth(text: str, state=None, *, backend_override: str = ""):
     """Return (mime_type, audio_bytes) for `text`, or None to let the browser
     voice handle it. `state` is her live EmotionalState so the voice carries
     emotion. ALPECCA_TTS_BACKEND: auto (default) tries configured cloud Kokoro,
-    then blends the local F5 clone and Kokoro by emotion. 'cloud', 'kokoro',
-    'edge', and 'f5' force one route; 'browser'/'off' disable server TTS.
+    then blends the local F5 clone and Kokoro by emotion. 'cloud' prefers the
+    bounded cloud route but falls back to local Kokoro; 'kokoro', 'edge', and
+    'f5' force one route; 'browser'/'off' disable server TTS.
     Trusted channel bridges may pin one engine for a request so a bad clone
     render cannot silently replace the channel's established voice."""
     text = (text or "").strip()
@@ -703,7 +776,7 @@ def synth(text: str, state=None, *, backend_override: str = ""):
     # Emotion may vary native speed and gain, but must not pitch-resample her
     # into a different perceived speaker.
     identity_token = _force_kokoro_identity_profile.set(
-        backend in {"auto", "kokoro"}
+        backend in {"auto", "cloud", "kokoro"}
     )
     print(f"[tts] synth: backend={backend!r} "
           f"(env ALPECCA_TTS_BACKEND={os.environ.get('ALPECCA_TTS_BACKEND')!r})",
@@ -718,7 +791,16 @@ def synth(text: str, state=None, *, backend_override: str = ""):
 
             order = (open_tts.synth,)
         elif backend == "cloud":
+            # Discord normally prefers the low-latency cloud renderer, but an
+            # unavailable provider must not make a live voice channel silent.
+            # Prefer the ready F5 identity clone before Kokoro so Discord keeps
+            # Alpecca's established voice when the hosted renderer is absent.
+            from alpecca import open_tts
+
             order = (_synth_cloud,)
+            if open_tts.ready():
+                order += (open_tts.synth,)
+            order += (_synth_kokoro,)
         elif backend == "kokoro":
             # Kokoro af_heart is her actual voice profile. Do not substitute a
             # different server voice and label it as Alpecca.
@@ -739,6 +821,15 @@ def synth(text: str, state=None, *, backend_override: str = ""):
                 order = (_synth_kokoro,)
             if _cloud_tts_client.status().configured:
                 order = (_synth_cloud,) + order
+        # When the HOLYROG XTTS voice server is configured it LEADS (highest
+        # quality, her cloned voice on the ROG GPU); the local engines above stay
+        # the automatic fallback whenever HOLYROG is unreachable. Explicit
+        # single-engine overrides ('edge'/'f5') are left untouched.
+        if backend in {"auto", "kokoro"}:
+            from alpecca import holyrog_voice
+
+            if holyrog_voice.client().enabled:
+                order = (_synth_holyrog,) + order
         for fn in order:
             try:
                 r = fn(text, state)

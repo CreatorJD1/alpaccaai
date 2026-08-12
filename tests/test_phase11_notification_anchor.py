@@ -480,6 +480,10 @@ def test_windows_backend_is_constructor_inert_and_uses_only_exact_target():
         anchor_key=ANCHOR_KEY,
     )
 
+    assert backend.storage_domain == (
+        "windows-credential-manager:" + target.casefold()
+    )
+    assert anchor.storage_domain == backend.storage_domain
     assert anchor.snapshot() == outbox_mod.AnchorSnapshot(None, None)
     assert credential.read_targets and set(credential.read_targets) == {target}
     assert len(credential.writes) == 1

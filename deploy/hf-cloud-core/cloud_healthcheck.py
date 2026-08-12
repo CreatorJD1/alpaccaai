@@ -1,4 +1,4 @@
-"""Container health probe for cloud Core handoff and the voice sidecar."""
+"""Container health probe for the sparse standby and fenced active core."""
 from __future__ import annotations
 
 import json
@@ -38,6 +38,35 @@ def promotion_grace_is_fresh(
     return 0.0 <= age <= PROMOTION_HEALTH_GRACE_SECONDS
 
 
+def voice_synthesis_ready(voice: dict) -> bool:
+    """Report optional voice readiness without making it container liveness."""
+
+    return (
+        voice.get("state") == "ready"
+        and voice.get("modelLoaded") is True
+        and voice.get("selfCheckPassed") is True
+        and voice.get("selfCheckState") == "passed"
+        and voice.get("synthesisReady") is True
+    )
+
+
+def public_service_ready(value: dict) -> bool:
+    """Accept only the sparse standby identity or the active server health shape."""
+    if value == {"service": "alpecca", "version": 1}:
+        return True
+    return (
+        value.get("service") == "alpecca-continuity-standby"
+        and value.get("version") == 1
+        and value.get("coreMind") is False
+        and value.get("state") in {
+            "disabled",
+            "configuration-required",
+            "lease-unavailable",
+            "waiting-for-singleton-lease",
+        }
+    )
+
+
 def healthy(
     *,
     opener: Callable = urllib.request.urlopen,
@@ -45,20 +74,9 @@ def healthy(
     environ: dict[str, str] | None = None,
 ) -> bool:
     values = os.environ if environ is None else environ
-    voice_port = values.get("ALPECCA_CLOUD_VOICE_PORT", "7861")
     try:
-        voice = _health_json(
-            f"http://127.0.0.1:{int(voice_port)}/healthz",
-            opener=opener,
-        )
-    except Exception:
-        return False
-    if voice.get("state") != "ready":
-        return False
-
-    try:
-        _health_json("http://127.0.0.1:7860/healthz", opener=opener)
-        return True
+        public = _health_json("http://127.0.0.1:7860/healthz", opener=opener)
+        return public_service_ready(public)
     except Exception:
         marker = (
             Path(values.get("ALPECCA_CLOUD_RUNTIME_ROOT", "/tmp/alpecca-cloud-core"))

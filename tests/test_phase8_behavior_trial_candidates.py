@@ -11,6 +11,7 @@ from alpecca.behavior_trial_controller import (
     BehaviorTrialController,
     ChatterTrialPacing,
 )
+from alpecca.qualified_response_ledger import QualifiedResponseLedger
 
 
 SEAL_KEY = b"phase8c8-test-only-candidate-seal-key"
@@ -58,6 +59,88 @@ def _accept(proposal_id: int, db_path):
         approved_by_user=True,
         db_path=db_path,
     )
+
+
+def _committed_outcome(
+    ledger: QualifiedResponseLedger,
+    delivery_id: str,
+    *,
+    at: float,
+    responded: bool,
+) -> None:
+    ledger.begin_dispatch(
+        delivery_id=delivery_id,
+        scope_key="creator:house-hq",
+        surface="house-hq",
+        proactive_turn_id=f"turn-{delivery_id}",
+        response_window_seconds=10.0,
+        dispatched_at=at,
+    )
+    ledger.confirm_delivery(delivery_id, delivered_at=at + 1.0)
+    if responded:
+        ledger.record_creator_response(
+            scope_key="creator:house-hq",
+            surface="house-hq",
+            response_turn_id=f"response-{delivery_id}",
+            received_at=at + 2.0,
+        )
+
+
+def test_model_free_activation_uses_only_committed_sqlite_evidence(tmp_path):
+    store = _store(tmp_path)
+    ledger = QualifiedResponseLedger(store.db_path)
+    for index, responded in enumerate((True, True, False, False, False)):
+        _committed_outcome(
+            ledger,
+            f"committed-{index}",
+            at=10.0 + index * 20.0,
+            responded=responded,
+        )
+    ledger.expire_due(now=110.0)
+
+    result = store.activate_from_committed_evidence(
+        preimage_value=0.25,
+        issued_at=120.0,
+    )
+
+    assert result["issued"] is True
+    assert result["reused"] is False
+    assert result["proposal"]["approval"] == cognition.APPROVAL_ASK_FIRST
+    assert result["proposal"]["status"] == "testing"
+    assert "source=sqlite:qualified_response_outcomes" in result["proposal"]["evidence"]
+    assert result["activation"]["row_count"] == 5
+    assert result["activation"]["resolved_count"] == 5
+    assert len(result["activation"]["evidence_sha256"]) == 64
+    assert result["activation"]["model_calls"] == 0
+    assert result["activation"]["authorizes_trial_start"] is False
+    assert result["activation"]["authorizes_source_edits"] is False
+    with sqlite3.connect(store.db_path) as conn:
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='experiment_trial_ledger'"
+        ).fetchone() is None
+
+
+def test_activation_refuses_unsettled_or_missing_committed_evidence(tmp_path):
+    empty = _store(tmp_path / "empty")
+    absent = empty.activate_from_committed_evidence(
+        preimage_value=0.25,
+        issued_at=100.0,
+    )
+    assert absent["issued"] is False
+    assert absent["reason"] == "baseline_unavailable"
+    assert absent["activation"]["row_count"] == 0
+
+    pending = _store(tmp_path / "pending")
+    ledger = QualifiedResponseLedger(pending.db_path)
+    _committed_outcome(ledger, "pending-one", at=10.0, responded=False)
+    result = pending.activate_from_committed_evidence(
+        preimage_value=0.25,
+        issued_at=20.0,
+    )
+    assert result["issued"] is False
+    assert result["reason"] == "baseline_unavailable"
+    assert pending.public_status() is None
 
 
 @pytest.mark.parametrize(

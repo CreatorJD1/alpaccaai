@@ -498,6 +498,7 @@ def _headers(token: str, secret: str | bytes, *, lease: Mapping[str, object] | N
         "Authorization": f"Bearer {token}",
         "X-Alpecca-Mindscape-Vault-Token": str(token),
         "X-Alpecca-Mindscape-Vault-Scope": scope_id(secret),
+        "User-Agent": "Alpecca-Continuity-Journal/1",
         "Content-Type": "application/json",
     }
     if lease:

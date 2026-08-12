@@ -36,19 +36,63 @@ from pathlib import Path
 from typing import NoReturn
 from urllib.parse import parse_qs, quote, urlparse
 
-# A configured cross-host authority makes direct execution unsafe because it
-# would construct CoreMind before acquiring a fencing epoch. Imports remain
-# available to tests and the guarded launcher, but `python server.py` must not
-# bypass scripts/run_full.py once continuity failover is enabled.
-if (
-    __name__ == "__main__"
-    and os.environ.get("ALPECCA_CONTINUITY_LEASE_URL", "").strip()
-    and not os.environ.get("ALPECCA_CONTINUITY_FENCING_EPOCH", "").strip()
-):
-    raise SystemExit(
-        "Cross-host continuity is configured. Start Alpecca through "
-        "scripts/run_full.py so a singleton lease is acquired first."
+# A configured cross-host authority makes any unfenced CoreMind construction
+# unsafe, including direct ASGI imports such as ``uvicorn server:app``.
+_EXPLICIT_TRUE = frozenset({"1", "true", "yes", "on"})
+_continuity_lease_configured = bool(
+    os.environ.get("ALPECCA_CONTINUITY_LEASE_URL", "").strip()
+)
+_continuity_offline_isolated = (
+    os.environ.get("ALPECCA_CONTINUITY_OFFLINE_ISOLATED", "").strip().lower()
+    in _EXPLICIT_TRUE
+)
+try:
+    _continuity_fencing_epoch = int(
+        os.environ.get("ALPECCA_CONTINUITY_FENCING_EPOCH", "").strip()
     )
+except (TypeError, ValueError):
+    _continuity_fencing_epoch = 0
+try:
+    _continuity_launcher_pid = int(
+        os.environ.get("ALPECCA_CONTINUITY_LAUNCHER_PID", "").strip()
+    )
+except (TypeError, ValueError):
+    _continuity_launcher_pid = 0
+_continuity_lease_id = os.environ.get(
+    "ALPECCA_CONTINUITY_LEASE_ID", ""
+).strip()
+_continuity_lease_holder = os.environ.get(
+    "ALPECCA_CONTINUITY_LEASE_HOLDER", ""
+).strip()
+_continuity_fence_inherited = bool(
+    1 <= len(_continuity_lease_id) <= 96
+    and 1 <= len(_continuity_lease_holder) <= 96
+    and _continuity_fencing_epoch >= 1
+    and _continuity_launcher_pid == os.getpid()
+)
+
+if (
+    _continuity_lease_configured
+    and not _continuity_offline_isolated
+    and not _continuity_fence_inherited
+):
+    _continuity_guard_message = (
+        "Cross-host continuity is configured, but this process has no valid "
+        "inherited lease fence. Start Alpecca through scripts/run_full.py so "
+        "the complete singleton lease tuple is acquired in this process, or "
+        "explicitly set "
+        "ALPECCA_CONTINUITY_OFFLINE_ISOLATED=true for a local-only session."
+    )
+    if __name__ == "__main__":
+        raise SystemExit(_continuity_guard_message)
+    raise RuntimeError(_continuity_guard_message)
+
+# This must run before config imports or CoreMind construction. The ROG is a
+# non-speaking compute worker even if someone bypasses every supported launcher
+# and imports this ASGI module directly.
+from alpecca import host_roles as host_roles_mod
+
+host_roles_mod.require_primary_runtime_host()
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
@@ -62,6 +106,7 @@ import uvicorn
 
 from config import (HOME, HOST, PORT, DEEP_BACKEND, OLLAMA_HOST,
                     COLAB_URL, COLAB_MODEL, COLAB_API_KEY,
+                    ROG_WORKER_URL,
                      MINDSCAPE_ENABLED, MINDSCAPE_CLOUD_URL, MINDSCAPE_TOKEN,
                      MINDSCAPE_SYNC_TIMEOUT, MINDSCAPE_AUTO_SYNC_INTERVAL,
                      MINDSCAPE_EVENT_SYNC_MIN_INTERVAL, MINDSCAPE_VAULT_ENABLED,
@@ -93,12 +138,16 @@ from alpecca import hearing
 from alpecca import avatar as avatar_mod
 from alpecca import computer as computer_mod
 from alpecca import runtime_status as runtime_status_mod
+from alpecca import rog_worker_client as rog_worker_client_mod
+from alpecca import rog_worker_runtime as rog_worker_runtime_mod
+from alpecca import rog_remote_admin as rog_remote_admin_mod
 from alpecca import mindscape as mindscape_mod
 from alpecca import mindscape_vault as mindscape_vault_mod
 from alpecca import continuity_journal as continuity_journal_mod
 from alpecca import memory as memory_store
 from alpecca import mindpage as mindpage_mod
 from alpecca import journal as journal_mod
+from alpecca import google_workspace as google_workspace_mod
 from alpecca import cognition as cognition_mod
 from alpecca import instance as instance_mod
 from alpecca import routines as routines_mod
@@ -718,6 +767,9 @@ def _runtime_status(
             house=house_voice_status,
             discord=discord_voice_status,
         ),
+    }
+    status["integrations"] = {
+        "google_workspace": google_workspace_mod.status(),
     }
     return status
 
@@ -1404,21 +1456,57 @@ def _background_autonomy_snapshot() -> dict:
     }
 
 
+# When the live model overruns its bounded deadline we return a short, honest
+# holding line instead of the real reply. Two things matter for how she comes
+# across to the person: (1) it must NOT narrate internal tier/model machinery
+# ("deeper model", "full core", "grounded live mode" all used to leak into chat
+# and read like a system message), and (2) she must not send the SAME holding
+# line verbatim twice in a row -- that reads like a stuck record, which is
+# exactly what the repeated Discord fallback looked like. We rotate a few
+# grounded phrasings and remember the last one per principal so a repeated stall
+# reads as continuity. State is in-process only: a timed-out turn is cancelled
+# before this runs, so recording a cognition turn here is intentionally skipped
+# (see the record gate below and test_timeout_fallback_sends_once...).
+_STALL_FALLBACK_LINES = (
+    "I'm here with you. That one needs a little longer than this turn gave me; "
+    "ask me again in a moment and I'll take a proper run at it.",
+    "Still with you. That one needs more than a single turn to answer well; "
+    "nudge me again in a moment and I'll give it a proper go.",
+    "I'm here, and I haven't dropped it; it just needs longer than this turn. "
+    "Give me another go at it in a moment.",
+)
+_FALLBACK_REPEAT_COOLDOWN_SECONDS = float(
+    os.environ.get("ALPECCA_FALLBACK_REPEAT_COOLDOWN", "900")
+)
+# principal -> (last_delivered_at, rotation_index)
+_recent_fallback_lines: dict[str, tuple[float, int]] = {}
+
+
+def _rotating_stall_line(turn: turn_context_mod.TurnContext) -> tuple[str, bool]:
+    """Pick a grounded stall line, rotating so it is never verbatim-identical to
+    the one this principal just heard within the cooldown window. Returns the
+    line and whether it was a back-to-back repeat (a self-improvement signal)."""
+    key = getattr(turn, "principal", "") or "default"
+    now = _time.time()
+    last_at, index = _recent_fallback_lines.get(key, (0.0, -1))
+    repeated = bool(last_at and (now - last_at) < _FALLBACK_REPEAT_COOLDOWN_SECONDS)
+    index = index + 1 if repeated else 0
+    _recent_fallback_lines[key] = (now, index)
+    return _STALL_FALLBACK_LINES[index % len(_STALL_FALLBACK_LINES)], repeated
+
+
 def _ws_chat_timeout_result(user_text: str,
                             turn: turn_context_mod.TurnContext | None = None,
                             *, record: bool = True) -> dict:
     turn = turn or turn_context_mod.TurnContext.default()
     low = user_text.strip().lower()
+    fallback_repeat = False
     if low in {"hi", "hello", "hey", "hiya", "yo"}:
         reply = "Hi. I'm here with you. What should we focus on next?"
     elif any(term in low for term in ("stop walking", "stand still", "stay still", "stop moving")):
-        reply = "Okay. I'll stay still and listen while the deeper core catches up."
+        reply = "Okay. I'll stay still and listen while I catch up."
     else:
-        reply = (
-            "I'm here with you. My deeper model is taking too long, so I'm staying "
-            "in grounded live mode for this turn. Try that again if you want me to "
-            "send it through the full core."
-        )
+        reply, fallback_repeat = _rotating_stall_line(turn)
     if turn.principal != "creator":
         return {"reply": reply}
     model_use = {
@@ -1428,6 +1516,7 @@ def _ws_chat_timeout_result(user_text: str,
         "model": "",
         "ok": False,
         "fallback": True,
+        "fallback_repeat": fallback_repeat,
         "error": "WebSocket chat generation timed out.",
         "turn": turn.audit_metadata(),
     }
@@ -1496,6 +1585,26 @@ def _record_chat_stall_learning(*, safe: bool) -> None:
         pass
 
 
+def _record_fallback_repeat_learning() -> None:
+    """A back-to-back stall fallback is a bounded, creator-visible signal that
+    the reasoning tier is repeatedly overrunning its deadline. Route it into the
+    existing incident learner so it surfaces as an improvement cue rather than
+    silent churn -- this is the self-improvement hook for the repeated-fallback
+    pattern, not a new self-modifying loop."""
+    try:
+        incident_learning_mod.record_incident(
+            source="chat_runtime",
+            cue="chat-fallback-repeat",
+            summary="Alpecca delivered a stall fallback twice in a row before the model recovered.",
+            severity=0.7,
+            controllability=0.5,
+            prediction_error=0.9,
+        )
+    except Exception:
+        # Learning is best-effort; it must never break the fallback delivery.
+        pass
+
+
 def _compact_reply_compare(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
 
@@ -1543,6 +1652,34 @@ def _repair_echo_reply(user_text: str, result: dict,
     return {**result, **repaired}
 
 
+_TRIVIAL_ACK_TOKENS = frozenset({
+    "k", "kk", "kkk", "ok", "okay", "okey", "kay", "oki", "okie", "k thanks",
+    "yep", "yup", "yeah", "ya", "sure", "cool", "nice", "aight", "ight",
+    "word", "bet", "fr", "true", "facts", "np", "roger", "noted", "mhm", "mmhm",
+    "ty", "thx", "thanks", "thank you", "cheers", "ta", "tysm",
+    "got it", "gotit", "gotcha", "understood",
+    "lol", "lmao", "haha", "hah", "heh",
+})
+
+
+def _is_trivial_ack(user_text: str) -> bool:
+    """A bare acknowledgement/backchannel ("k", "ok", "ty", a lone emoji) that
+    does not warrant the slow reasoning core. Greetings, commands, and questions
+    are deliberately excluded -- those still get her natural reason-tier reply.
+    A one-character "k" invoking the full core and stalling into a timeout
+    fallback is exactly the Discord failure this guards against."""
+    raw = (user_text or "").strip()
+    if not raw:
+        return False
+    token = raw.lower().strip(" .!?,~-")
+    if token in _TRIVIAL_ACK_TOKENS:
+        return True
+    # A short reaction with no letters or digits (emoji/punctuation only).
+    if len(raw) <= 4 and not any(ch.isalnum() for ch in raw):
+        return True
+    return False
+
+
 def _house_chat_reply_tier(user_text: str, *, delivery: str = "text") -> str:
     """House HQ player chat should use the same natural core as Discord.
 
@@ -1555,7 +1692,14 @@ def _house_chat_reply_tier(user_text: str, *, delivery: str = "text") -> str:
     # begin while the exchange is still conversational. Typed House chat keeps
     # the fuller reasoning tier. The same CoreMind, memory, and safety gates run
     # in both cases; this only selects the bounded generation tier.
-    return "fast" if delivery == "voice" else "reason"
+    if delivery == "voice":
+        return "voice"
+    # A bare acknowledgement never needs the full reasoning core. Keeping it on
+    # the slow tier is what let a trivial "k" stall past the deadline and emit
+    # the canned timeout fallback; the fast tier answers it promptly instead.
+    if _is_trivial_ack(user_text):
+        return "fast"
+    return "reason"
 
 
 async def _locked_ws_chat_turn(turn: turn_context_mod.TurnContext,
@@ -1702,7 +1846,10 @@ async def _ws_chat_turn_with_timeout(user_text: str, image_desc: str | None = No
         release_priority_on_exit = False
         worker.add_done_callback(_finish_late_ws_chat_turn)
         _record_chat_stall_learning(safe=False)
-        return _ws_chat_timeout_result(user_text, turn=turn)
+        fallback = _ws_chat_timeout_result(user_text, turn=turn)
+        if (fallback.get("model_use") or {}).get("fallback_repeat"):
+            _record_fallback_repeat_learning()
+        return fallback
     except asyncio.CancelledError:
         turn.cancel("cancelled")
         release_priority_on_exit = False
@@ -2751,6 +2898,7 @@ async def lifespan(app: FastAPI):
     tender while you ground through an error, or settled while you were away.
     We keep a reference to the task so it isn't silently garbage-collected.
     """
+    host_roles_mod.require_primary_runtime_host()
     _behavior_trial_recovery_ready.clear()
     _capability_lease_recovery_ready.clear()
     try:
@@ -3067,6 +3215,25 @@ async def lifespan(app: FastAPI):
 
     async def automation_loop() -> None:
         routines_mod.init_db()
+        if AutomationCfg.ROUTINES and AutomationCfg.SAFE_INTERNAL_ROUTINES:
+            try:
+                created = routines_mod.bootstrap_safe_internal()
+                if created:
+                    cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                        source="routine",
+                        room=getattr(mind, "_location", ""),
+                        content="Safe internal maintenance routines were initialized.",
+                        confidence=1.0,
+                        privacy_class="local",
+                        metadata={
+                            "kind": "safe_internal_bootstrap",
+                            "count": len(created),
+                        },
+                    ))
+            except Exception as exc:
+                _background_autonomy_status["last_routine_bootstrap_error"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
         watcher = watchers_mod.DirectoryWatcher(
             watchers_mod.parse_watch_dirs(AutomationCfg.WATCH_DIRS),
             max_files=AutomationCfg.WATCH_MAX_FILES,
@@ -3075,6 +3242,20 @@ async def lifespan(app: FastAPI):
         while True:
             await asyncio.sleep(max(10.0, float(AutomationCfg.ROUTINE_POLL_SECONDS or 60.0)))
             try:
+                if (AutomationCfg.TEMPORAL_DERIVATION
+                        and not _player_chat_priority_active()):
+                    temporal_result = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            mind.derive_temporal_evidence,
+                            max_rows=AutomationCfg.TEMPORAL_BATCH,
+                        ),
+                        timeout=12.0,
+                    )
+                    _background_autonomy_status["last_temporal_derivation"] = {
+                        key: value
+                        for key, value in temporal_result.items()
+                        if key not in {"source_cursors"}
+                    }
                 await _run_due_routines_once()
                 now = _time.time()
                 if (AutomationCfg.WATCH_DIRS
@@ -3102,6 +3283,26 @@ async def lifespan(app: FastAPI):
             except Exception as exc:
                 _background_autonomy_status["last_automation_error"] = f"{type(exc).__name__}: {exc}"
 
+    async def voice_keepwarm_loop() -> None:
+        # Keep her voice WARM: after the one-shot startup warmup, periodically
+        # touch the voice engine so the first spoken line after an idle stretch
+        # is instant instead of paying a cold model load. Gentle by design -- it
+        # DEFERS whenever a real chat/voice turn is active so it never competes
+        # with a live turn (or the brain model) for a small GPU's VRAM.
+        from config import VOICE_ENABLED, VOICE_KEEPWARM, VOICE_KEEPWARM_INTERVAL
+        if not (VOICE_KEEPWARM and VOICE_ENABLED):
+            return
+        while True:
+            await asyncio.sleep(VOICE_KEEPWARM_INTERVAL)
+            try:
+                if _player_chat_priority_active() or active_tts_requests > 0:
+                    continue
+                warm = await _warm_alpecca_voice(timeout=8.0)
+                _background_autonomy_status["last_voice_keepwarm_at"] = _time.time()
+                _background_autonomy_status["last_voice_keepwarm"] = warm
+            except Exception as exc:
+                _background_autonomy_status["last_voice_keepwarm_error"] = f"{type(exc).__name__}: {exc}"
+
     task = asyncio.create_task(loop())
     mindscape_task = asyncio.create_task(mindscape_loop())
     continuity_journal_task = asyncio.create_task(continuity_journal_loop())
@@ -3109,6 +3310,7 @@ async def lifespan(app: FastAPI):
     from config import VOICE_WARMUP
     voice_warmup_task = (asyncio.create_task(_warm_alpecca_voice())
                          if VOICE_WARMUP else asyncio.create_task(asyncio.sleep(0)))
+    voice_keepwarm_task = asyncio.create_task(voice_keepwarm_loop())
     try:
         yield
     finally:
@@ -3117,6 +3319,7 @@ async def lifespan(app: FastAPI):
         mindscape_task.cancel()
         continuity_journal_task.cancel()
         automation_task.cancel()
+        voice_keepwarm_task.cancel()
         deferred_mindscape_task = _mindscape_event_sync_task
         _mindscape_event_sync_task = None
         if deferred_mindscape_task is not None:
@@ -3308,6 +3511,7 @@ _NOTIFICATION_PUSH_SUBSCRIPTIONS_TARGET = "Alpecca/NotificationPushSubscriptions
 _NOTIFICATION_PUSH_SUBSCRIPTIONS_ANCHOR_TARGET = (
     "Alpecca/NotificationPushSubscriptionsAnchor"
 )
+_NOTIFICATION_PUSH_ACK_ANCHOR_KEY_TARGET = "Alpecca/NotificationPushAckAnchorSeal"
 _NOTIFICATION_PUSH_ACK_ANCHOR_TARGET = "Alpecca/NotificationPushAckAnchor"
 _NOTIFICATION_PUSH_VAPID_TARGET = "Alpecca/NotificationPushVapid"
 
@@ -3432,6 +3636,12 @@ def _notification_runtime() -> dict[str, object]:
                         "Alpecca private Web Push store seal",
                     )
                 )
+                ack_anchor_key = web_push_runtime_mod.load_or_create_protected_secret(
+                    _notification_credential(
+                        _NOTIFICATION_PUSH_ACK_ANCHOR_KEY_TARGET,
+                        "Alpecca Web Push acknowledgement anchor seal",
+                    )
+                )
                 anchor_backend = (
                     notification_anchor_mod.WindowsCredentialManagerBackend(
                         _NOTIFICATION_ANCHOR_STATE_TARGET
@@ -3453,7 +3663,7 @@ def _notification_runtime() -> dict[str, object]:
                     notification_anchor_mod.WindowsCredentialManagerBackend(
                         _NOTIFICATION_PUSH_ACK_ANCHOR_TARGET
                     ),
-                    anchor_key=push_store_key,
+                    anchor_key=ack_anchor_key,
                 )
                 policy = notification_outbox_mod.OutboxPolicy(
                     policy_id="creator_app_push",
@@ -3571,6 +3781,7 @@ _DISCORD_SERVICE_PATHS = frozenset({
     "/channel/discord",
     "/channel/discord/actor-envelope",
     "/channel/discord/autonomy",
+    "/channel/discord/development",
 })
 
 def _access_html(
@@ -5960,15 +6171,32 @@ def _issue_behavior_trial_candidate_from_baseline() -> dict:
         profile = behavior_trial_profile_store.active_profile(
             behavior_trial_controller.default_chatter_chance
         )
-        baseline = qualified_response_ledger.baseline_summary(
-            since=profile.get("updated_at")
-        )
     except Exception:
         return {"issued": False, "reason": "baseline_unavailable"}
-    result = behavior_trial_candidate_store.issue_from_baseline(
-        baseline,
-        preimage_value=behavior_trial_controller.default_chatter_chance,
+    activate = getattr(
+        behavior_trial_candidate_store, "activate_from_committed_evidence", None
     )
+    if callable(activate):
+        try:
+            result = activate(
+                preimage_value=behavior_trial_controller.default_chatter_chance,
+                since=profile.get("updated_at"),
+            )
+        except Exception:
+            return {"issued": False, "reason": "baseline_unavailable"}
+    else:
+        # Compatibility for narrow adapters; production uses the sealed
+        # committed-evidence entrypoint above.
+        try:
+            baseline = qualified_response_ledger.baseline_summary(
+                since=profile.get("updated_at")
+            )
+            result = behavior_trial_candidate_store.issue_from_baseline(
+                baseline,
+                preimage_value=behavior_trial_controller.default_chatter_chance,
+            )
+        except Exception:
+            return {"issued": False, "reason": "baseline_unavailable"}
     if result.get("issued") and not result.get("reused"):
         candidate = result.get("candidate") or {}
         proposal = result.get("proposal") or {}
@@ -7093,11 +7321,74 @@ async def commitment_execute(commitment_id: int, req: Request) -> dict:
 
 @app.get("/soul")
 def soul() -> dict:
-    """Her Soul, live: the ranked slate of intentions from her seven subagents
-    (emotions, actions, self-care, compassion) and the one in focus, arbitrated
-    by the Good Person Principle (alpecca/soul.py). The single explainable answer
-    to 'what is she moved to do right now, and why.'"""
-    return mind.soul_state()
+    """Return the latest completed Soul receipt without running deliberation."""
+    from alpecca import soul as soul_mod
+
+    runtime = mind.soul_runtime_status()
+    runtime = dict(runtime) if isinstance(runtime, Mapping) else {}
+    roles = runtime.get("roles")
+    scores = runtime.get("scores")
+    active = runtime.get("active")
+    roles = tuple(roles) if isinstance(roles, (list, tuple)) else ()
+    scores = tuple(scores) if isinstance(scores, (list, tuple)) else ()
+    active = tuple(active) if isinstance(active, (list, tuple)) else ()
+    cached_by_role = {
+        role: {
+            "score": scores[index] if index < len(scores) else None,
+            "active": bool(active[index]) if index < len(active) else None,
+        }
+        for index, role in enumerate(roles)
+        if isinstance(role, str)
+    }
+
+    slate = []
+    specs_by_name = {spec.name: spec for spec in soul_mod.SUBAGENT_SPECS}
+    for spec in soul_mod.SUBAGENT_SPECS:
+        cached = cached_by_role.get(spec.name, {})
+        score = cached.get("score")
+        is_active = cached.get("active")
+        if isinstance(score, (int, float)) and not isinstance(score, bool):
+            action = f"cached perspective score {float(score):.3f}"
+        else:
+            score = None
+            action = "no completed score is cached"
+        slate.append({
+            "subagent": spec.name,
+            "category": spec.category,
+            "kind": spec.kind,
+            "tier": spec.tier,
+            "action": action,
+            "reason": (
+                "active in the latest completed Soul arbitration"
+                if is_active is True
+                else "inactive in the latest completed Soul arbitration"
+                if is_active is False
+                else "no completed Soul arbitration is cached yet"
+            ),
+            "score": score,
+            "active": is_active,
+            "source": "cached_runtime",
+        })
+
+    selected_role = runtime.get("selected_role")
+    selected_spec = specs_by_name.get(selected_role)
+    focus = ({
+        "subagent": selected_spec.name,
+        "name": selected_spec.name,
+        "category": selected_spec.category,
+        "kind": selected_spec.kind,
+        "reason": "Cached from the latest completed Soul arbitration.",
+        "source": "cached_runtime",
+    } if selected_spec is not None else {})
+    return {
+        "state": "cached" if runtime else "not_yet_observed",
+        "read_only": True,
+        "fresh_deliberation": False,
+        "principle": "Good Person Principle",
+        "focus": focus,
+        "slate": slate,
+        "soul_runtime": runtime,
+    }
 
 
 @app.get("/memories")
@@ -7403,7 +7694,7 @@ def games() -> dict:
     """A small curated set of safe browser games she can play for fun. Her charter
     permits entertainment under supervision; she opens these with her https-only
     open_url tool, or you launch one here. (Edit the list in server.py to taste.)"""
-    return {"games": _GAMES, "can_open": mind.actuator.enabled}
+    return {"games": _GAMES, "can_open": mind.actuator.can_open_urls}
 
 
 @app.post("/games/play")
@@ -7417,9 +7708,12 @@ async def games_play(req: Request) -> dict:
     url = (b.get("url") or "").strip()
     if not url or not url.startswith("https://"):
         return {"ok": False, "error": "https game url required"}
+    if url not in {game["url"] for game in _GAMES}:
+        return {"ok": False, "error": "game url is not in the approved catalog"}
+    if not mind.actuator.can_open_urls:
+        return {"ok": False, "error": "game launching is disabled"}
     result = mind.actuator.execute("open_url", {"url": url})
-    return {"ok": "isn't" not in result.lower() and "only https" not in result.lower(),
-            "result": result}
+    return {"ok": result.startswith("opened https://"), "result": result}
 
 
 @app.post("/sight/push")
@@ -7519,6 +7813,228 @@ def system_status() -> dict:
     she is in full, degraded, or offline mode.
     """
     return _runtime_status(check_models=True)
+
+
+@app.get("/integrations/google-workspace")
+def google_workspace_status(req: Request) -> dict:
+    """Creator-only, credential-free Google Workspace readiness."""
+    _require_creator_request(req)
+    return google_workspace_mod.status()
+
+
+def _record_google_workspace_receipt(operation: str, *, ok: bool,
+                                     file_kind: str = "") -> None:
+    cognition_mod.record_observation(cognition_mod.CognitionObservation(
+        source="google_workspace",
+        room="workshop",
+        content=f"Google Workspace {operation} {'completed' if ok else 'failed'}.",
+        confidence=1.0,
+        privacy_class="private",
+        metadata={
+            "operation": operation,
+            "status": "ok" if ok else "error",
+            "file_kind": file_kind,
+            "content_logged": False,
+        },
+    ))
+
+
+@app.post("/integrations/google-workspace/folders")
+async def google_workspace_create_folder(req: Request) -> JSONResponse:
+    """Create one new folder under Alpecca's configured private Drive root."""
+    _require_creator_request(req)
+    payload = await _read_bounded_json_object(req, max_bytes=8 * 1024)
+    if set(payload) - {"name"}:
+        raise HTTPException(status_code=400, detail={"code": "google_folder_invalid"})
+    try:
+        receipt = await asyncio.to_thread(
+            google_workspace_mod.create_folder,
+            payload.get("name"),
+        )
+    except google_workspace_mod.GoogleWorkspaceError as exc:
+        _record_google_workspace_receipt("create_folder", ok=False, file_kind="folder")
+        raise HTTPException(status_code=503, detail={"code": "google_workspace_unavailable", "message": str(exc)}) from exc
+    _record_google_workspace_receipt("create_folder", ok=True, file_kind="folder")
+    return JSONResponse(receipt)
+
+
+@app.post("/integrations/google-workspace/documents")
+async def google_workspace_create_document(req: Request) -> JSONResponse:
+    """Create one new Google Doc; never share, overwrite, move, or delete."""
+    _require_creator_request(req)
+    payload = await _read_bounded_json_object(req, max_bytes=120 * 1024)
+    if set(payload) - {"title", "content"}:
+        raise HTTPException(status_code=400, detail={"code": "google_document_invalid"})
+    try:
+        receipt = await asyncio.to_thread(
+            google_workspace_mod.create_document,
+            payload.get("title"),
+            payload.get("content", ""),
+        )
+    except google_workspace_mod.GoogleWorkspaceError as exc:
+        _record_google_workspace_receipt("create_document", ok=False, file_kind="document")
+        raise HTTPException(status_code=503, detail={"code": "google_workspace_unavailable", "message": str(exc)}) from exc
+    _record_google_workspace_receipt("create_document", ok=True, file_kind="document")
+    return JSONResponse(receipt)
+
+
+@app.get("/system/rog-worker")
+def rog_worker_status(req: Request) -> dict[str, object]:
+    """Creator-only health for the separate non-speaking ROG compute helper."""
+
+    _require_creator_request(req)
+    snapshot = rog_worker_runtime_mod.status_snapshot(ROG_WORKER_URL)
+    snapshot["hyfuser_soul"] = rog_worker_runtime_mod.hyfuser_status(
+        ROG_WORKER_URL
+    )
+    deep_route_loaded = any(
+        link[0] == "rog-worker"
+        for link in getattr(mind.llm, "_deep_chain", ())
+    )
+    worker_ready = bool(snapshot.get("ready"))
+    snapshot["worker_ready"] = worker_ready
+    snapshot["deep_route_loaded"] = deep_route_loaded
+    snapshot["deep_reasoning_active"] = worker_ready and deep_route_loaded
+    snapshot["restart_required"] = worker_ready and not deep_route_loaded
+    if snapshot["restart_required"]:
+        snapshot["state"] = "worker-ready-restart-required"
+    return snapshot
+
+
+@app.get("/system/remote-development")
+def remote_development_status(req: Request) -> dict[str, object]:
+    """Creator-only status for the private ROG administrator channel."""
+
+    _require_creator_request(req)
+    return rog_remote_admin_mod.status()
+
+
+@app.post("/system/remote-development/execute")
+async def remote_development_execute(req: Request) -> JSONResponse:
+    """Run CreatorJD's explicit PowerShell command on the ROG over SSH."""
+
+    decision = _require_creator_request(req)
+    payload = await _read_bounded_json_object(req, max_bytes=40 * 1024)
+    if not set(payload).issubset({"command", "cwd", "timeout_seconds"}):
+        raise HTTPException(status_code=400, detail={"code": "remote_command_invalid"})
+    command = payload.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise HTTPException(status_code=400, detail={"code": "remote_command_invalid"})
+    request_id = f"house-admin-{uuid.uuid4().hex}"
+    try:
+        result = await asyncio.to_thread(
+            rog_remote_admin_mod.execute,
+            command,
+            cwd=payload.get("cwd", ""),
+            timeout_seconds=payload.get("timeout_seconds", 300),
+            request_id=request_id,
+        )
+    except rog_remote_admin_mod.RemoteDevelopmentError as exc:
+        try:
+            cognition_mod.record_observation(cognition_mod.CognitionObservation(
+                source="remote_development",
+                content="A CreatorJD ROG development command failed before completion.",
+                confidence=1.0,
+                privacy_class="private",
+                metadata={
+                    "event": "remote_command_failed",
+                    "request_id": request_id,
+                    "principal": decision.principal,
+                    "error": type(exc).__name__,
+                },
+            ))
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "remote_development_unavailable", "error": type(exc).__name__},
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    try:
+        cognition_mod.record_observation(cognition_mod.CognitionObservation(
+            source="remote_development",
+            content="CreatorJD completed one explicit ROG development command.",
+            confidence=1.0,
+            privacy_class="private",
+            metadata={
+                "event": "remote_command_completed",
+                "request_id": request_id,
+                "principal": decision.principal,
+                "exit_code": result.exit_code,
+                "elapsed_ms": result.elapsed_ms,
+                "command_sha256": hashlib.sha256(command.encode("utf-8")).hexdigest(),
+            },
+        ))
+    except Exception:
+        pass
+    return JSONResponse(result.as_dict(), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/system/rog-worker/render")
+async def rog_worker_render(req: Request) -> JSONResponse:
+    """Render one approved worker-side Blender project and return a receipt."""
+
+    decision = _require_creator_request(req)
+    payload = await _read_bounded_json_object(req, max_bytes=4096)
+    if set(payload) != {"project", "frame"}:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "rog_render_body_invalid"},
+            headers={"Cache-Control": "no-store"},
+        )
+    project = payload.get("project")
+    frame = payload.get("frame")
+    if (
+        not isinstance(project, str)
+        or not project.strip()
+        or len(project.encode("utf-8")) > 512
+        or type(frame) is not int
+        or not 1 <= frame <= 999_999
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "rog_render_body_invalid"},
+            headers={"Cache-Control": "no-store"},
+        )
+    audited = await _record_capability_use(
+        "rog_compute",
+        action="execute",
+        principal=decision.principal,
+        source="server",
+    )
+    if not audited:
+        _raise_capability_audit_unavailable()
+    try:
+        receipt = await asyncio.to_thread(
+            rog_worker_runtime_mod.render_blender,
+            project,
+            frame,
+        )
+    except rog_worker_client_mod.RogWorkerError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "rog_worker_unavailable", "error": type(exc).__name__},
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    try:
+        cognition_mod.record_observation(cognition_mod.CognitionObservation(
+            source="rog_compute",
+            content="The ROG compute worker returned a bounded Blender render receipt.",
+            confidence=1.0,
+            privacy_class="local",
+            metadata={
+                "event": "blender_render_receipt",
+                "request_id": str(receipt.get("request_id") or "")[:128],
+                "status": str(receipt.get("status") or "")[:32],
+                "frame": frame,
+            },
+        ))
+    except Exception:
+        pass
+    return JSONResponse(
+        receipt,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 _PAGEFILE_LIVE_EVIDENCE_SCHEMA = "alpecca.phase7.pagefile-live-evidence.v1"
@@ -7866,6 +8382,7 @@ def brain_graph() -> dict:
         "soul_agent_count": len(soul_mod.SUBAGENT_SPECS),
         "soul_perspective_vector": soul_vector,
         "soul_runtime": mind.soul_runtime_status(),
+        "hyfuser_soul": rog_worker_runtime_mod.hyfuser_status(ROG_WORKER_URL),
         "temporal_memory": mind.temporal_memory_status(),
         "senses": _sense_status(),
         "discord_configured": bool(_discord_bot_token() or DISCORD_CLIENT_ID),
@@ -9237,7 +9754,7 @@ async def tts(req: Request):
     is unavailable. House HQ deliberately stays silent instead of substituting
     an unrelated browser/system speaker. Synthesis runs off the event loop."""
     from fastapi import Response
-    from config import TTS_ROUTE_TIMEOUT
+    from config import LIVE_TTS_ROUTE_TIMEOUT, TTS_ROUTE_TIMEOUT
     from alpecca import tts as tts_mod
     from alpecca import speech as speech_mod
     from alpecca.homeostasis import EmotionalState
@@ -9256,7 +9773,7 @@ async def tts(req: Request):
             headers={"Cache-Control": "no-store"},
         )
     engine = str(body.get("engine") or "").strip().lower()
-    if engine not in {"", "auto", "kokoro", "f5", "f5-tts", "open"}:
+    if engine not in {"", "auto", "cloud", "kokoro", "f5", "f5-tts", "open"}:
         return Response(
             status_code=422,
             headers={"X-Alpecca-TTS-Error": "unsupported voice engine"},
@@ -9303,19 +9820,41 @@ async def tts(req: Request):
                 )
             else:
                 synth_call = lambda: tts_mod.synth(synth_text, synth_state)
+            route_timeout = (
+                min(TTS_ROUTE_TIMEOUT, LIVE_TTS_ROUTE_TIMEOUT)
+                if engine == "cloud"
+                else TTS_ROUTE_TIMEOUT
+            )
             result = await asyncio.wait_for(
                 asyncio.to_thread(synth_call),
-                timeout=TTS_ROUTE_TIMEOUT,
+                timeout=route_timeout,
             )
         except asyncio.TimeoutError:
-            tts_mod._last_error = "server voice timed out while warming or synthesizing"
-            return Response(
-                status_code=204,
-                headers={
-                    "X-Alpecca-TTS-Status": "fallback",
-                    "X-Alpecca-TTS-Error": _header_text(tts_mod._last_error),
-                    "X-Alpecca-Voice-Preview": preview_header,
-                },
+            result = None
+        # The cloud voice attempt is capped at the short live budget to stay
+        # snappy, but that same cap also starved the LOCAL fallback inside the
+        # cloud synth chain -- so a degraded/slow cloud endpoint left the voice
+        # channel SILENT for whole conversations (text still posted). When the
+        # fast cloud attempt yields nothing, synthesize her real local voice
+        # (Kokoro af_heart -- her actual profile, not a substitute) under the
+        # full local route budget so she still speaks instead of going quiet.
+        if not result and engine == "cloud":
+            try:
+                local_call = lambda: tts_mod.synth(
+                    synth_text,
+                    synth_state,
+                    backend_override="kokoro",
+                )
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(local_call),
+                    timeout=TTS_ROUTE_TIMEOUT,
+                )
+            except Exception:
+                result = None
+        if not result:
+            tts_mod._last_error = (
+                getattr(tts_mod, "_last_error", "")
+                or "server voice timed out while warming or synthesizing"
             )
     finally:
         active_tts_requests = max(0, active_tts_requests - 1)
@@ -9433,6 +9972,50 @@ async def issue_discord_actor_envelope(req: Request, response: Response) -> dict
     return {"envelope": envelope.encode()}
 
 
+@app.post("/channel/discord/development")
+async def discord_remote_development(req: Request) -> JSONResponse:
+    """Run one fixed low-risk ROG check for the verified CreatorJD actor."""
+
+    payload, _actor, bindings = await _verified_discord_actor_request(req)
+    if not discord_creator_identity_mod.is_creator_actor_id(bindings.actor_id):
+        _raise_discord_actor_denied()
+    if set(payload) != {"action"} or not isinstance(payload.get("action"), str):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "discord_development_action_invalid"},
+            headers={"Cache-Control": "no-store"},
+        )
+    action = payload["action"].strip().casefold()
+    try:
+        result = await asyncio.to_thread(
+            rog_remote_admin_mod.execute_low_risk,
+            action,
+        )
+    except rog_remote_admin_mod.RemoteDevelopmentError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "remote_development_unavailable", "error": type(exc).__name__},
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    try:
+        cognition_mod.record_observation(cognition_mod.CognitionObservation(
+            source="remote_development",
+            content="CreatorJD requested one low-risk ROG development check through Discord.",
+            confidence=1.0,
+            privacy_class="private",
+            metadata={
+                "event": "discord_remote_check",
+                "actor_id_hash": hashlib.sha256(bindings.actor_id.encode("ascii")).hexdigest()[:16],
+                "action": action,
+                "exit_code": result.exit_code,
+                "request_id": result.request_id,
+            },
+        ))
+    except Exception:
+        pass
+    return JSONResponse(result.as_dict(), headers={"Cache-Control": "no-store"})
+
+
 def _record_discord_autonomy_outcome(
     room_scope: str,
     outcome: str,
@@ -9456,6 +10039,9 @@ def _record_discord_autonomy_outcome(
                 metadata={
                     "outcome": str(outcome)[:40],
                     "intent_index": decision.pick if decision is not None else None,
+                    "revisit_minutes": (
+                        decision.revisit_minutes if decision is not None else None
+                    ),
                     "model_calls": max(0, min(2, int(calls))),
                     "content_retained": False,
                 },
@@ -9466,7 +10052,10 @@ def _record_discord_autonomy_outcome(
     return observation_id is not None
 
 
-async def _deliberated_discord_autonomy(text: str, room_scope: str) -> str:
+async def _deliberated_discord_autonomy(
+    text: str,
+    room_scope: str,
+) -> tuple[str, int]:
     """Run a compact local decision gate before composing autonomous speech."""
     privacy_scope = f"guest-discord-room-{room_scope}"
     decision_turn = turn_context_mod.TurnContext.create(
@@ -9492,7 +10081,7 @@ async def _deliberated_discord_autonomy(text: str, room_scope: str) -> str:
             "invalid-decision-pass",
             calls=1,
         )
-        return "[pass]"
+        return "[pass]", 600
     if not decision.speak:
         _record_discord_autonomy_outcome(
             room_scope,
@@ -9500,7 +10089,7 @@ async def _deliberated_discord_autonomy(text: str, room_scope: str) -> str:
             decision=decision,
             calls=1,
         )
-        return "[pass]"
+        return "[pass]", decision.revisit_minutes * 60
 
     composition_turn = turn_context_mod.TurnContext.create(
         f"discord-autonomy-composition-{room_scope}",
@@ -9524,15 +10113,15 @@ async def _deliberated_discord_autonomy(text: str, room_scope: str) -> str:
             decision=decision,
             calls=2,
         )
-        return "[pass]"
+        return "[pass]", decision.revisit_minutes * 60
     if not _record_discord_autonomy_outcome(
         room_scope,
         "approved",
         decision=decision,
         calls=2,
     ):
-        return "[pass]"
-    return draft
+        return "[pass]", decision.revisit_minutes * 60
+    return draft, decision.revisit_minutes * 60
 
 
 @app.post("/channel/discord/autonomy")
@@ -9562,8 +10151,10 @@ async def discord_autonomy_turn(req: Request, response: Response) -> dict:
             detail="invalid Discord autonomy request",
             headers={"Cache-Control": "no-store"},
         )
-    reply = await _deliberated_discord_autonomy(text.strip(), room_scope)
-    return {"reply": reply}
+    reply, revisit_seconds = await _deliberated_discord_autonomy(
+        text.strip(), room_scope
+    )
+    return {"reply": reply, "revisit_seconds": revisit_seconds}
 
 
 @app.post("/channel/inbound")
@@ -10007,7 +10598,8 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         situation_hint = (
             f"{situation_hint} Live duplex voice turn: answer the person directly "
             "in one to three short, natural spoken sentences. Do not narrate the "
-            "voice pipeline or ask them to resend a recording."
+            "voice pipeline, tool parsing, or tool execution, and do not ask them "
+            "to resend a recording."
         ).strip()
 
     result = await _ws_chat_turn_with_timeout(
@@ -10025,7 +10617,7 @@ async def channel_inbound(req: Request, response: Response) -> dict:
         ),
         situation_hint=situation_hint,
         reply_tier=(
-            "fast"
+            "voice"
             if route_surface == "discord" and delivery == "voice"
             else _house_chat_reply_tier(text, delivery=delivery)
         ),
@@ -10480,7 +11072,8 @@ async def ws(socket: WebSocket) -> None:
             if delivery == "voice":
                 context = (
                     f"{context} Live duplex voice turn: answer the person directly "
-                    "in one to three short, natural spoken sentences."
+                    "in one to three short, natural spoken sentences. Do not "
+                    "narrate tool parsing or tool execution."
                 ).strip()
             result = await _ws_chat_turn_with_timeout(
                 user_text,

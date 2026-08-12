@@ -21,12 +21,14 @@ import json
 import math
 import os
 import re
+import socket
 import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from numbers import Number
 from typing import Literal
+from urllib.parse import urlparse
 
 from config import (
     OLLAMA_MODEL,
@@ -39,6 +41,7 @@ from config import (
     OLLAMA_TIMEOUT_SECONDS,
     HISTORY_MESSAGES,
     CHAT_CLOUD_MODEL, CHAT_CLOUD_PAGED_MEMORY,
+    CHAT_VOICE_TIMEOUT_SECONDS,
     CLOUD_NUM_CTX,
     STREAM_CHAT,
     CHAT_ZEROGPU,
@@ -65,7 +68,9 @@ from config import (DEEP_BACKEND, ANTHROPIC_API_KEY, ANTHROPIC_MODEL,
                     COLAB_URL, COLAB_MODEL, COLAB_API_KEY,
                     COLAB_TIMEOUT_SECONDS, COLAB_FAST_CHAT,
                     ZEROGPU_SPACE, ZEROGPU_API, ZEROGPU_TOKEN,
-                    OLLAMA_CLOUD_MODEL, CLOUD_REFLECT_NUM_PREDICT)
+                    OLLAMA_CLOUD_MODEL, CLOUD_REFLECT_NUM_PREDICT,
+                    ROG_WORKER_URL, ROG_WORKER_MODEL,
+                    ROG_WORKER_FAILURE_COOLDOWN_SECONDS)
 from config import LIVING_LLM, SOUL_LLM, PROACTIVE_LLM
 from alpecca.homeostasis import EmotionalState
 from alpecca import state as state_store
@@ -201,8 +206,10 @@ def _creator_cross_surface_context(
     requested_surface = "house-hq" if "house hq" in requested or "house-hq" in requested else ""
     try:
         recent = cognition_mod.recent_chat_turns(
-            limit=20,
+            limit=50,
             scope=turn.memory_scope,
+            surface=requested_surface,
+            exclude_surface="" if requested_surface else turn.surface,
         )
     except Exception:
         return ""
@@ -417,6 +424,34 @@ def _tool_message_mapping(message: object) -> Mapping[str, object]:
     }
 
 
+def _offered_tool_names(tools: list[dict]) -> frozenset[str]:
+    """Return only valid function names from the schemas offered this turn."""
+    names: set[str] = set()
+    for schema in tools:
+        if not isinstance(schema, Mapping):
+            continue
+        function = schema.get("function")
+        if not isinstance(function, Mapping):
+            continue
+        name = function.get("name")
+        if isinstance(name, str) and name:
+            names.add(name)
+    return frozenset(names)
+
+
+def _tool_rejection_reply(user_msg: str, reason: str) -> str:
+    """Explain a rejected execution in the current turn instead of canned prose."""
+    request = " ".join(str(user_msg or "").split()).strip()
+    if len(request) > 120:
+        request = request[:117].rstrip() + "..."
+    subject = f' for "{request}"' if request else ""
+    return (
+        f"I stopped the execution step{subject} before anything ran because "
+        f"the call was {reason}. I won't claim it worked; I need to reassess "
+        "that step from the conversation."
+    )
+
+
 _RUNTIME_MODEL_QUESTION_PATTERNS = (
     re.compile(
         r"\b(?:what|which)\s+(?:ai\s+|language\s+)?(?:model|llm)\b"
@@ -463,6 +498,8 @@ def _runtime_model_status_reply(model_use: Mapping[str, object]) -> str:
         route = "Ollama's hosted cloud route, not the local model"
     elif backend == "zerogpu":
         route = "the configured Hugging Face ZeroGPU route"
+    elif backend == "rog-worker":
+        route = "the authenticated non-speaking Jason_HOLYROG compute worker"
     elif backend == "hf":
         route = "the configured Hugging Face route"
     else:
@@ -470,6 +507,78 @@ def _runtime_model_status_reply(model_use: Mapping[str, object]) -> str:
     return (
         f"The language call for this turn used {model} through {route}; "
         "this status line comes from the measured call record."
+    )
+
+
+_RUNTIME_TOPOLOGY_PATTERNS = (
+    re.compile(r"\b(?:dedicated|separate|second|new|other)\s+(?:compute\s+)?(?:computer|server|worker|host)\b", re.I),
+    re.compile(r"\b(?:computer|server|worker|host)(?:'s|\s+is|\s+was)?\s+(?:name|called)\b", re.I),
+    re.compile(r"\b(?:holyrog|holy\s*rog|jason[_-]holyrog|rygenart)\b", re.I),
+    re.compile(r"\b(?:where|what)\b.{0,48}\b(?:compute|running|hosted|server)\b", re.I),
+)
+
+
+def _asks_runtime_topology(user_msg: str) -> bool:
+    text = " ".join(str(user_msg or "").split())[:600]
+    return bool(text) and any(pattern.search(text) for pattern in _RUNTIME_TOPOLOGY_PATTERNS)
+
+
+def _configured_rog_worker_name() -> str:
+    host = (urlparse(ROG_WORKER_URL).hostname or "").strip()
+    if host.casefold().startswith("jason-holyrog"):
+        return "Jason_HOLYROG"
+    return host or "the configured compute worker"
+
+
+def _runtime_topology_prompt() -> str:
+    primary = socket.gethostname().strip() or "the primary host"
+    worker = _configured_rog_worker_name()
+    return (
+        f"Your one CoreMind/person is running on primary host {primary}. "
+        f"Your separate non-speaking compute worker is named {worker}; it may handle "
+        f"deep {ROG_WORKER_MODEL} reasoning and bounded Blender jobs, but it is not "
+        "another Alpecca. A host-resource warning in your introspection describes "
+        "the primary host only; it is not evidence that the compute worker is strained."
+    )
+
+
+def _runtime_compute_worker_reply(llm: object) -> str:
+    primary = socket.gethostname().strip() or "the primary host"
+    configured_name = _configured_rog_worker_name()
+    worker_client = None
+    for link in getattr(llm, "_deep_chain", ()) or ():
+        if isinstance(link, tuple) and len(link) >= 2 and link[0] == "rog-worker":
+            worker_client = link[1]
+            break
+    if worker_client is None:
+        return (
+            f"My CoreMind is on {primary}. My configured compute worker is "
+            f"{configured_name}, but it is not loaded in my current deep route, so I "
+            "cannot claim that it is online."
+        )
+    try:
+        health = worker_client.health()
+    except Exception:
+        return (
+            f"My CoreMind is on {primary}. My dedicated compute worker is "
+            f"{configured_name}, but its authenticated health check is unavailable "
+            "right now; my cloud fallback remains separate."
+        )
+    hostname = str(getattr(health, "hostname", "") or configured_name).strip()
+    ready = bool(getattr(health, "ready", False))
+    reasoning = bool(getattr(health, "reasoning_ready", False))
+    blender = bool(getattr(health, "blender_ready", False))
+    state = "authenticated and ready" if ready else "authenticated but degraded"
+    capabilities = []
+    if reasoning:
+        capabilities.append(f"{ROG_WORKER_MODEL} reasoning")
+    if blender:
+        capabilities.append("bounded Blender jobs")
+    capability_text = " and ".join(capabilities) or "no currently ready job capability"
+    return (
+        f"My dedicated non-speaking compute worker is {hostname}. It is {state} for "
+        f"{capability_text}. My one CoreMind remains on {primary}; the worker is not "
+        "another instance of me."
     )
 
 
@@ -579,6 +688,16 @@ class _LLM:
             self._cloud_client = ollama.Client(host=OLLAMA_HOST, timeout=20.0)
         return self._cloud_client
 
+    def _voice_cloud_chat_client(self):
+        """Return the short-deadline hosted client for live spoken turns."""
+        if getattr(self, "_voice_cloud_client", None) is None:
+            import ollama
+            self._voice_cloud_client = ollama.Client(
+                host=OLLAMA_HOST,
+                timeout=CHAT_VOICE_TIMEOUT_SECONDS,
+            )
+        return self._voice_cloud_client
+
     def _thinking_client(self):
         """A second Ollama client with a reflection-scale timeout. The normal
         client is capped at OLLAMA_TIMEOUT_SECONDS (~18s) so a wedged call
@@ -663,6 +782,7 @@ class _LLM:
         self._deep_chain. Never raises: a missing key/package/endpoint just
         drops that link so her inner life still runs, just plainer."""
         self._deep_chain: list = []
+        self._deep_retry_after: dict[str, float] = {}
         for kind in [k.strip() for k in DEEP_BACKEND.split(",") if k.strip()]:
             try:
                 if kind == "anthropic" and ANTHROPIC_API_KEY:
@@ -686,6 +806,14 @@ class _LLM:
                     # Ollama (signed in). Same client/protocol as her local
                     # brain; the model name alone routes to the cloud.
                     self._deep_chain.append(("ollama-cloud", OLLAMA_CLOUD_MODEL))
+                elif kind == "rog-worker" and ROG_WORKER_URL:
+                    # A bounded compute-only helper: no CoreMind, memory DB,
+                    # Discord bridge, tools, or continuity speaking lease runs
+                    # there. Missing credentials simply omit this link.
+                    from alpecca.rog_worker_client import RogWorkerClient
+                    self._deep_chain.append(
+                        ("rog-worker", RogWorkerClient.from_environment())
+                    )
             except Exception as exc:
                 import sys
                 print(f"[mind] deep tier link '{kind}' unavailable. "
@@ -732,6 +860,8 @@ class _LLM:
             return OLLAMA_FAST_MODEL
         if tier == "deep" and self._deep and self._deep[0] == "ollama-cloud":
             return self._deep[1]
+        if tier == "deep" and self._deep and self._deep[0] == "rog-worker":
+            return ROG_WORKER_MODEL
         if tier == "deep" and REFLECT_MODEL:
             return REFLECT_MODEL
         return OLLAMA_MODEL
@@ -790,7 +920,7 @@ class _LLM:
         # Tool calls stay on the local Ollama protocol. Hosted chat routing is
         # plain-text only because tool schemas/round-trips are backend-specific
         # and must remain observable and bounded on the local path.
-        if (CHAT_CLOUD_MODEL and tier == "reason" and not local_only
+        if (CHAT_CLOUD_MODEL and tier in {"reason", "voice"} and not local_only
                 and not tools):
             cloud_started = time.perf_counter()
             route_detail["cloud_attempted"] = True
@@ -802,10 +932,22 @@ class _LLM:
                 # local 120-token budget gets eaten before the reply starts and
                 # the content comes back EMPTY. Cloud tokens are fast, so give
                 # hosted calls room to think AND answer.
-                ck["options"] = dict(kwargs["options"], num_ctx=CLOUD_NUM_CTX,
-                                     num_predict=max(512, OLLAMA_NUM_PREDICT))
+                cloud_predict = (
+                    max(96, min(128, OLLAMA_NUM_PREDICT))
+                    if tier == "voice"
+                    else max(512, OLLAMA_NUM_PREDICT)
+                )
+                ck["options"] = dict(
+                    kwargs["options"],
+                    num_ctx=CLOUD_NUM_CTX,
+                    num_predict=cloud_predict,
+                )
                 ck["options"].pop("num_gpu", None)   # meaningless for hosted
-                client = self._cloud_chat_client()
+                client = (
+                    self._voice_cloud_chat_client()
+                    if tier == "voice"
+                    else self._cloud_chat_client()
+                )
                 try:
                     resp = client.chat(**ck, think=False)
                 except TypeError:
@@ -829,6 +971,12 @@ class _LLM:
                 import sys
                 print(f"[mind] cloud chat unavailable -> local. "
                       f"{type(exc).__name__}: {exc}", file=sys.stderr)
+                if tier == "voice":
+                    # Yield the floor promptly. A local 9B retry can take tens
+                    # of seconds and then trigger another long TTS cascade.
+                    raise TimeoutError(
+                        "live voice cloud response deadline exceeded"
+                    ) from exc
         self.last_chat_model = kwargs["model"]
         # Force layer placement when configured -- Ollama under-offloads some
         # GGUFs (qwen3.5) and leaves the small GPU half-idle. See OLLAMA_NUM_GPU.
@@ -986,20 +1134,51 @@ class _LLM:
             # answers wins; every failure falls to the next, and the local
             # thinking pass below remains the final net.
             for link in self._deep_chain:
+                if link[0] == "rog-worker":
+                    now = time.monotonic()
+                    if now < self._deep_retry_after.get("rog-worker", 0.0):
+                        continue
+                    try:
+                        health = link[1].health()
+                        if not health.ready or not health.reasoning_ready:
+                            raise RuntimeError("ROG worker reasoning is not ready")
+                    except Exception as exc:
+                        self._deep_retry_after["rog-worker"] = (
+                            now + ROG_WORKER_FAILURE_COOLDOWN_SECONDS
+                        )
+                        import sys
+                        print(
+                            "[mind] deep link 'rog-worker' unavailable -> next. "
+                            f"{type(exc).__name__}: {exc}",
+                            file=sys.stderr,
+                        )
+                        continue
                 try:
                     text = self._generate_deep(system_prompt, user_msg, history,
                                                tier=link)
+                    if link[0] == "rog-worker":
+                        self._deep_retry_after.pop("rog-worker", None)
                     self._mark_model_use(
                         requested=tier,
                         used="deep",
                         backend=link[0],
                         # ollama-cloud/zerogpu links carry their model/space
                         # name as a string -- report exactly what served.
-                        model=(link[1] if isinstance(link[1], str)
-                               else self.model_for("deep")),
+                        model=(
+                            ROG_WORKER_MODEL
+                            if link[0] == "rog-worker"
+                            else (
+                                link[1] if isinstance(link[1], str)
+                                else self.model_for("deep")
+                            )
+                        ),
                     )
                     return text
                 except Exception as exc:
+                    if link[0] == "rog-worker":
+                        self._deep_retry_after["rog-worker"] = (
+                            time.monotonic() + ROG_WORKER_FAILURE_COOLDOWN_SECONDS
+                        )
                     import sys
                     print(f"[mind] deep link '{link[0]}' failed -> next. "
                           f"{type(exc).__name__}: {exc}", file=sys.stderr)
@@ -1105,9 +1284,9 @@ class _LLM:
                     )
                     if not parsed_calls.ok:
                         msg = {
-                            "content": (
-                                "I could not safely interpret that tool request, "
-                                "so I did not run it."
+                            "content": _tool_rejection_reply(
+                                user_msg,
+                                "malformed",
                             )
                         }
                         break
@@ -1315,51 +1494,108 @@ class _LLM:
             hf_call["extra_body"] = {
                 "chat_template_kwargs": {"enable_thinking": False},
             }
+
+        def complete(**kwargs):
+            """Retry once without optional provider parameters on HTTP 400 only."""
+            try:
+                return self._hf.chat_completion(**kwargs)
+            except Exception as exc:
+                response = getattr(exc, "response", None)
+                status = getattr(response, "status_code", None)
+                bad_request = status == 400 or type(exc).__name__ == "BadRequestError"
+                if "extra_body" not in kwargs or not bad_request:
+                    raise
+                compatible = dict(kwargs)
+                compatible.pop("extra_body", None)
+                import sys
+                print(
+                    "[mind] HF provider rejected optional Qwen parameters; "
+                    "retrying the same model without them.",
+                    file=sys.stderr,
+                )
+                return self._hf.chat_completion(**compatible)
         try:
             if tools and on_tool:
                 # Offer the tools; if the model calls any, run them and let it
                 # fold the result into a final reply. Not every provider supports
                 # tools for every model, so fall back to a plain call on error.
                 try:
-                    resp = self._hf.chat_completion(
-                        **hf_call, tools=tools, tool_choice="auto")
+                    resp = complete(**hf_call, tools=tools, tool_choice="auto")
                 except Exception:
-                    resp = self._hf.chat_completion(**hf_call)
+                    resp = complete(**hf_call)
                 msg = resp.choices[0].message
-                import json as _json
                 # Same bounded multi-round chaining as the local path (see there).
                 rounds = max(1, ActionsCfg.MAX_TOOL_ROUNDS)
+                allowed_tool_names = _offered_tool_names(tools)
+                remaining_tool_calls = tool_call_parser_mod.MAX_TOOL_CALLS
+                executed_tool_names: list[str] = []
+                blocked_reply: str | None = None
                 for i in range(rounds):
-                    calls = getattr(msg, "tool_calls", None) or []
+                    provider_message = dict(_tool_message_mapping(msg))
+                    if provider_message.get("tool_calls") is None:
+                        provider_message.pop("tool_calls", None)
+                    parsed_calls = tool_call_parser_mod.parse_tool_calls(
+                        provider_message
+                    )
+                    calls = parsed_calls.calls
+                    rejection_reason: str | None = None
+                    if not parsed_calls.ok:
+                        rejection_reason = "malformed"
+                    elif len(calls) > remaining_tool_calls:
+                        rejection_reason = "over-limit"
+                    elif any(call.name not in allowed_tool_names for call in calls):
+                        rejection_reason = "unknown or unoffered"
+                    if rejection_reason is not None:
+                        if executed_tool_names:
+                            tool_names = ", ".join(executed_tool_names)
+                            step_label = (
+                                "step" if len(executed_tool_names) == 1 else "steps"
+                            )
+                            blocked_reply = (
+                                f"{len(executed_tool_names)} verified tool "
+                                f"{step_label} ran ({tool_names}). A later tool "
+                                "request was rejected before it ran "
+                                f"({rejection_reason})."
+                            )
+                        else:
+                            blocked_reply = _tool_rejection_reply(
+                                user_msg,
+                                rejection_reason,
+                            )
+                        break
                     if not calls:
                         break
+                    remaining_tool_calls -= len(calls)
+                    content = provider_message.get("content", "")
                     messages.append({
-                        "role": "assistant", "content": msg.content or "",
+                        "role": "assistant",
+                        "content": content if isinstance(content, str) else "",
                         "tool_calls": [{
-                            "id": getattr(c, "id", "") or "call",
+                            "id": call.call_id or f"call-{i}-{index}",
                             "type": "function",
-                            "function": {"name": c.function.name,
-                                         "arguments": c.function.arguments},
-                        } for c in calls]})
-                    for c in calls:
-                        args = c.function.arguments
-                        if isinstance(args, str):
-                            try:
-                                args = _json.loads(args)
-                            except Exception:
-                                args = {}
-                        result = on_tool(c.function.name, args or {})
-                        messages.append({"role": "tool",
-                                         "tool_call_id": getattr(c, "id", "") or "call",
-                                         "content": str(result)})
+                            "function": {
+                                "name": call.name,
+                                "arguments": call.arguments,
+                            },
+                        } for index, call in enumerate(calls)]
+                    })
+                    for index, call in enumerate(calls):
+                        call_id = call.call_id or f"call-{i}-{index}"
+                        result = on_tool(call.name, call.arguments)
+                        executed_tool_names.append(call.name)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": str(result),
+                        })
                     last = (i == rounds - 1)
                     kw = dict(hf_call, messages=messages)
                     if not last:
                         kw.update(tools=tools, tool_choice="auto")
                     try:
-                        resp = self._hf.chat_completion(**kw)
+                        resp = complete(**kw)
                     except Exception:
-                        resp = self._hf.chat_completion(**dict(hf_call, messages=messages))
+                        resp = complete(**dict(hf_call, messages=messages))
                     msg = resp.choices[0].message
                 self._mark_model_use(
                     requested="reason",
@@ -1367,15 +1603,27 @@ class _LLM:
                     backend="hf",
                     model=HF_MODEL,
                 )
-                return strip_think(msg.content)
-            resp = self._hf.chat_completion(**hf_call)
+                if blocked_reply is not None:
+                    return blocked_reply
+                content = getattr(msg, "content", "")
+                if not isinstance(content, str) or not content.strip():
+                    raise RuntimeError(
+                        "Hugging Face provider returned an empty text response"
+                    )
+                return strip_think(content)
+            resp = complete(**hf_call)
             self._mark_model_use(
                 requested="reason",
                 used="reason",
                 backend="hf",
                 model=HF_MODEL,
             )
-            return strip_think(resp.choices[0].message.content)
+            content = getattr(resp.choices[0].message, "content", None)
+            if not isinstance(content, str) or not content.strip():
+                raise RuntimeError(
+                    "Hugging Face provider returned an empty text response"
+                )
+            return strip_think(content)
         except Exception as exc:
             import sys
             print(f"[mind] HF cloud call failed -> echo. model={HF_MODEL} "
@@ -1399,13 +1647,26 @@ class _LLM:
                        history: list[dict] | None = None,
                        tier: tuple | None = None) -> str:
         """One reply from a deep-tier link -- a stronger model for her hardest
-        inner work. Transports: Anthropic Claude, self-hosted OpenAI-compatible
-        cloud, a Hugging Face ZeroGPU Gradio Space, or an Ollama cloud model.
+        inner work. Transports: the authenticated Jason_HOLYROG compute worker,
+        Anthropic Claude, self-hosted OpenAI-compatible cloud, a Hugging Face
+        ZeroGPU Gradio Space, or an Ollama cloud model.
         No tools here: the deep tier is for thought, not actuation. Deep
         prompts carry no sensed screen context (callers pass an empty
         situation), so the no-senses-to-cloud line holds. Raises on failure so
         generate() can try the next link in the chain."""
         kind, client = tier or self._deep
+        if kind == "rog-worker":
+            result = client.reason(
+                system_prompt,
+                user_msg,
+                history=history,
+                model=ROG_WORKER_MODEL,
+                max_tokens=min(1024, max(160, CLOUD_REFLECT_NUM_PREDICT)),
+            )
+            text = strip_think(result.text).strip()
+            if not text:
+                raise RuntimeError("ROG worker deep call returned nothing")
+            return text
         if kind == "ollama-cloud":
             # Her deepest work on a big hosted thinking model, through the same
             # Ollama client as everything else. Real chain-of-thought (the chain
@@ -1741,6 +2002,9 @@ class CoreMind:
                     "memory", "remember", "journal", "note", "status",
                     "location", "self status", "go room", "make a plan",
                     "draft a plan", "plan for", "workshop plan",
+                    "google drive", "google doc", "google folder",
+                    "create a document", "create document", "create a folder",
+                    "workspace status",
                 ))
                 or source_intent
                 # Non-trivial direct request to review internal state.
@@ -1771,6 +2035,12 @@ class CoreMind:
             preferred_names.extend(["recall_page", "memory_search"])
         if "journal" in user_low:
             preferred_names.extend(["journal_read", "journal_write"])
+        if any(term in user_low for term in ("google", "drive", "workspace status")):
+            preferred_names.append("google_status")
+            if any(term in user_low for term in ("folder", "directory")):
+                preferred_names.append("google_create_folder")
+            if any(term in user_low for term in ("doc", "document", "notes")):
+                preferred_names.append("google_create_document")
         selected = []
         selected_names = set()
         for name in preferred_names:
@@ -2617,6 +2887,13 @@ class CoreMind:
                 )
             except Exception:
                 scoped_memories = []
+            else:
+                self._compare_temporal_shadow_recall(
+                    scoped_memories,
+                    turn=turn,
+                    observed_at=time.time(),
+                    limit=4,
+                )
             if _VISUAL_REFERENCE_RE.search(memory_message):
                 try:
                     visual_memories = memory_store.recall(
@@ -2675,7 +2952,9 @@ class CoreMind:
             local_only = True
         elif autonomy_phase == "discord-autonomy-composition":
             system_prompt = discord_autonomy_mod.COMPOSITION_SYSTEM_PROMPT
-            tier = "reason"
+            # Keep initiative on the resident model. Loading the 9B reason
+            # model after vision can exceed the bridge's complete-turn timeout.
+            tier = "fast"
             local_only = True
         else:
             # Non-creator turns keep Alpecca's conversational identity without
@@ -2694,7 +2973,10 @@ class CoreMind:
                 "from what someone merely claims. When identity or intent is uncertain, "
                 "reason about alternatives or ask naturally instead of inventing certainty."
             )
-            tier = "reason"
+            # Discord conversation is live, tool-free work. The resident fast
+            # tier avoids multi-minute model swaps; 9B remains the deliberate
+            # reasoning tier for bounded non-live tasks.
+            tier = "fast"
             local_only = False
         if cross_surface_awareness:
             system_prompt += "\n\n" + cross_surface_awareness
@@ -2834,6 +3116,38 @@ class CoreMind:
         except Exception:
             return
 
+    def _compare_temporal_shadow_recall(
+        self,
+        legacy_results: list[dict],
+        *,
+        turn: turn_context_mod.TurnContext,
+        observed_at: float,
+        limit: int,
+    ) -> None:
+        """Record shadow-recall evidence without changing authoritative recall.
+
+        Temporal facts remain evaluation-only. A bounded copy prevents even a
+        faulty evaluator from mutating the memories that continue into prompt
+        construction, and every shadow failure stays outside the chat path.
+        """
+        runtime = getattr(self, "_temporal_runtime", None)
+        if runtime is None:
+            return
+        bounded_legacy = tuple(
+            dict(item) if isinstance(item, Mapping) else item
+            for item in legacy_results[:limit]
+        )
+        try:
+            runtime.compare_shadow_recall(
+                bounded_legacy,
+                at=float(observed_at),
+                scope=turn.memory_scope,
+                channel=turn.surface,
+                limit=limit,
+            )
+        except Exception:
+            return
+
     def temporal_memory_status(self) -> dict:
         """Return content-free counters for the additive temporal shadow path."""
         runtime = getattr(self, "_temporal_runtime", None)
@@ -2848,6 +3162,23 @@ class CoreMind:
             }
         except Exception:
             return {"available": False, "authority": "sqlite_mindpage"}
+
+    def derive_temporal_evidence(self, *, max_rows: int = 16) -> dict:
+        """Advance bounded shadow derivation over already committed evidence."""
+        runtime = getattr(self, "_temporal_runtime", None)
+        if runtime is None:
+            return {
+                "available": False,
+                "authority": "sqlite_mindpage",
+                "mode": "shadow",
+            }
+        result = runtime.derive_committed_evidence(max_rows=max_rows)
+        return {
+            "available": True,
+            "authority": "sqlite_mindpage",
+            "mode": "shadow",
+            **asdict(result),
+        }
 
     def _cancelled_turn_result(self, turn: turn_context_mod.TurnContext) -> dict:
         """Return a non-committing worker result after a timeout/disconnect."""
@@ -3038,6 +3369,9 @@ class CoreMind:
         moved = False
         low = user_msg.lower()
         runtime_model_question = _asks_runtime_model(user_msg)
+        runtime_topology_question = _asks_runtime_topology(user_msg)
+        runtime_topology = _runtime_topology_prompt() if runtime_topology_question else ""
+        runtime_fact_question = runtime_model_question or runtime_topology_question
         live_house_room, legacy_house_room = self._house_context_room(situation)
         pending_house_room = (
             legacy_house_room if legacy_house_room and legacy_house_room != self._location else ""
@@ -3066,6 +3400,12 @@ class CoreMind:
             memories = memory_store.recall(
                 user_msg, scope=turn.memory_scope, **recall_kwargs,
             )
+        self._compare_temporal_shadow_recall(
+            memories,
+            turn=turn,
+            observed_at=cue_observed_at,
+            limit=5,
+        )
         paged_memories = []
         if MINDPAGE:
             try:
@@ -3162,7 +3502,7 @@ class CoreMind:
                 abilities = self.toolkit.describe()
         tool_schema = (
             None
-            if attachment_context or runtime_model_question
+            if reply_tier == "voice" or attachment_context or runtime_fact_question
             else self._tool_schema(low, turn=None if implicit_turn else turn)
         )
         who_prompt = people_mod.who_prompt(speaker)
@@ -3199,6 +3539,7 @@ class CoreMind:
             response_strategy=response_strategy,
             communication_stance=communication_stance.prompt_instruction(),
             cross_surface_awareness=cross_surface_awareness,
+            runtime_topology=runtime_topology,
             attachment_context=attachment_context,
         )
         history_window = history[-HISTORY_MESSAGES:]
@@ -3263,6 +3604,7 @@ class CoreMind:
             response_strategy=response_strategy,
             communication_stance=communication_stance.prompt_instruction(),
             cross_surface_awareness=cross_surface_awareness,
+            runtime_topology=runtime_topology,
             attachment_context=attachment_context,
         )
         prompt_history, exact_ledger = mindpage_mod.fit_request(
@@ -3297,6 +3639,7 @@ class CoreMind:
             response_strategy=response_strategy,
             communication_stance=communication_stance.prompt_instruction(),
             cross_surface_awareness=cross_surface_awareness,
+            runtime_topology=runtime_topology,
             attachment_context=attachment_context,
         )
         prompt_history, final_ledger = mindpage_mod.fit_request(
@@ -3368,7 +3711,7 @@ class CoreMind:
             if (
                 on_token is not None
                 and tool_schema is None
-                and not runtime_model_question
+                and not runtime_fact_question
             )
             else {}
         )
@@ -3393,7 +3736,8 @@ class CoreMind:
         # back, and bounded so it can't spin.
         if (
             tool_schema is None
-            and not runtime_model_question
+            and reply_tier != "voice"
+            and not runtime_fact_question
             and not self.llm.last_call().get("fallback")
         ):
             tries = 0
@@ -3440,8 +3784,13 @@ class CoreMind:
                                           **privacy_kwargs)
                 if self.llm.last_call().get("fallback"):
                     break
+        runtime_status_parts = []
+        if runtime_topology_question:
+            runtime_status_parts.append(_runtime_compute_worker_reply(self.llm))
         if runtime_model_question:
-            reply = _runtime_model_status_reply(self.llm.last_call())
+            runtime_status_parts.append(_runtime_model_status_reply(self.llm.last_call()))
+        if runtime_status_parts:
+            reply = " ".join(runtime_status_parts)
         if not turn.begin_commit():
             return self._cancelled_turn_result(turn)
 
@@ -5024,10 +5373,11 @@ class CoreMind:
         room_purpose = room.purpose if room else "unknown purpose"
         speaker = self._speaker or "creator"
         creator_name = people_mod.CREATOR
-        open_questions = journal_mod.open_questions(limit=6)
-        recent_observations = cognition_mod.recent_observations(limit=8)
+        open_questions = journal_mod.open_questions(limit=30)
+        recent_observations = cognition_mod.recent_observations(limit=24)
         recent_chats = cognition_mod.recent_lived_chat_turns(limit=3)
         systems = systems or {}
+        clock_text = prompts.runtime_clock()
         sees_creator = speaker == "creator" and (
             bool(recent_chats)
             or any(
@@ -5061,13 +5411,36 @@ class CoreMind:
             (
                 f"How can I notice {creator_name} more clearly while respecting evidence and privacy?"
             ),
+            (
+                "What does my measured system status say needs attention before it becomes a problem?"
+            ),
+            (
+                "Given the current date and time, is there anything timely I should prepare or mention?"
+            ),
+            (
+                "Which unfinished commitment can I advance safely without waiting for another prompt?"
+            ),
         ]
         already_open = {
             str(q.get("body", "")).strip().lower()
             for q in open_questions
             if isinstance(q, dict)
         }
-        choices = [q for q in question_bank if q.lower() not in already_open] or question_bank
+        recently_carried = set()
+        for observation in recent_observations:
+            metadata = observation.get("metadata", {}) if isinstance(observation, dict) else {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    metadata = {}
+            prior = str(metadata.get("question") or "").strip().lower() if isinstance(metadata, dict) else ""
+            if prior:
+                recently_carried.add(prior)
+        choices = [
+            q for q in question_bank
+            if q.lower() not in already_open and q.lower() not in recently_carried
+        ] or [q for q in question_bank if q.lower() not in recently_carried] or question_bank
         question = None
         if LIVING_LLM:
             obs_context = "; ".join(str(o.get("content", ""))[:120] for o in recent_observations[:4])
@@ -5086,7 +5459,7 @@ class CoreMind:
             )
         observation_text = (
             f"Living loop in {room_name}: purpose={room_purpose}. "
-            f"{creator_evidence} Current role: use House HQ as embodied scaffold, "
+            f"Clock={clock_text}. {creator_evidence} Current role: use House HQ as embodied scaffold, "
             "the Alpecca app as virtual state surface, and Mindscape for continuity. "
             f"Question: {question}"
         )
@@ -5104,6 +5477,7 @@ class CoreMind:
                 "question": question,
                 "sees_creator": sees_creator,
                 "open_question_count": len(open_questions),
+                "clock": clock_text,
             },
         ))
         journal_id = journal_mod.ask(question, mood=self.state.mood_label())
@@ -5236,15 +5610,16 @@ class CoreMind:
             confidence=0.82,
         ))
         line = (
-            f"I am in House HQ's {room_name}. Current role: {creator_name or 'creator'}. "
-            f"I activated {activation.get('label', system_id)}. "
-            f"My next question is: {question} A possible next step is to "
-            f"{next_action['action']}."
+            f"It's {clock_text}. I'm in House HQ's {room_name}, and as part of "
+            f"my current role I checked {activation.get('label', system_id)}; it reports "
+            f"{activation.get('status', 'a current state')}. "
+            f"That leaves me wondering: {question}"
         )
         return {
             "ok": True,
             "phase": "system_activation",
             "reason": reason,
+            "clock": clock_text,
             "room": {"id": self._location, "name": room_name, "purpose": room_purpose},
             "creator": {"name": creator_name, "speaker": speaker, "fresh_evidence": sees_creator},
             "question": question,

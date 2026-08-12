@@ -14,6 +14,7 @@ import os
 import threading
 import time
 import wave
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from collections.abc import Mapping
 from typing import Callable, Literal
@@ -55,6 +56,13 @@ _dave_stats = {
     "passthrough_packets": 0,
     "dropped_packets": 0,
 }
+_vad_runtime_lock = threading.Lock()
+_vad_runtime_stats = {
+    "detector_failures": 0,
+    "packet_fallback_activations": 0,
+    "active_packet_fallbacks": 0,
+    "last_failure": "",
+}
 
 VoiceEventStatus = Literal[
     "accepted",
@@ -80,6 +88,72 @@ class SpeakerVoiceUtterance:
     wav_bytes: bytes = field(repr=False)
     pcm_bytes: int
     duration_seconds: float
+    listener_epoch: int = 0
+    turn_sequence: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceTurnToken:
+    """Opaque receive-generation token for dropping superseded voice work."""
+
+    listener_epoch: int
+    turn_sequence: int
+
+
+class VoiceTurnFence:
+    """Fence listener restarts and newer completed utterances.
+
+    Completing one utterance does not stop the listener.  A newer utterance in
+    the same listener epoch supersedes model/transcription work carrying an
+    older token, while a listener restart invalidates every prior token.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._listener_epoch = 0
+        self._turn_sequence = 0
+        self._active = False
+
+    def activate(self) -> int:
+        with self._lock:
+            self._listener_epoch += 1
+            self._turn_sequence = 0
+            self._active = True
+            return self._listener_epoch
+
+    def commit_turn(self, listener_epoch: int) -> VoiceTurnToken | None:
+        with self._lock:
+            if not self._active or listener_epoch != self._listener_epoch:
+                return None
+            self._turn_sequence += 1
+            return VoiceTurnToken(self._listener_epoch, self._turn_sequence)
+
+    def is_current(self, token: VoiceTurnToken) -> bool:
+        if not isinstance(token, VoiceTurnToken):
+            return False
+        with self._lock:
+            return bool(
+                self._active
+                and token.listener_epoch == self._listener_epoch
+                and token.turn_sequence == self._turn_sequence
+            )
+
+    def deactivate(self, listener_epoch: int | None = None) -> bool:
+        with self._lock:
+            if listener_epoch is not None and listener_epoch != self._listener_epoch:
+                return False
+            changed = self._active
+            self._active = False
+            self._turn_sequence += 1
+            return changed
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "active": self._active,
+                "listener_epoch": self._listener_epoch,
+                "turn_sequence": self._turn_sequence,
+            }
 
 
 def _increment_dave_stat(name: str) -> None:
@@ -95,6 +169,44 @@ def dave_receive_status() -> dict[str, object]:
         "ready": _dave_compat_mode in {"native", "patched"},
         **stats,
     }
+
+
+def _activate_vad_fallback(reason: str) -> None:
+    with _vad_runtime_lock:
+        _vad_runtime_stats["detector_failures"] += 1
+        _vad_runtime_stats["packet_fallback_activations"] += 1
+        _vad_runtime_stats["active_packet_fallbacks"] += 1
+        _vad_runtime_stats["last_failure"] = str(reason or "detector")[:32]
+
+
+def _release_vad_fallback() -> None:
+    with _vad_runtime_lock:
+        _vad_runtime_stats["active_packet_fallbacks"] = max(
+            0,
+            int(_vad_runtime_stats["active_packet_fallbacks"]) - 1,
+        )
+
+
+def _vad_receive_status() -> dict[str, object]:
+    posture = dict(silero_vad_mod.readiness())
+    with _vad_runtime_lock:
+        stats = dict(_vad_runtime_stats)
+    configured_status = str(posture.get("status") or "fallback")
+    runtime_degraded = int(stats["detector_failures"]) > 0
+    posture.update(
+        {
+            "configured_status": configured_status,
+            "status": "degraded" if runtime_degraded else configured_status,
+            "detector_failures": int(stats["detector_failures"]),
+            "packet_fallback_activations": int(
+                stats["packet_fallback_activations"]
+            ),
+            "active_packet_fallbacks": int(stats["active_packet_fallbacks"]),
+            "packet_fallback_available": True,
+            "last_failure": str(stats["last_failure"]),
+        }
+    )
+    return posture
 
 
 def _decrypt_dave_packet(decoder, packet, davey_mod) -> str:
@@ -217,9 +329,22 @@ def receive_readiness(*, enabled: bool) -> dict[str, object]:
         enabled and extension and davey and install_dave_receive_compat()
     )
     ready = enabled and extension and whisper and davey and dave_compat
+    vad_status = _vad_receive_status()
+    availability_status = (
+        "ready" if ready else "unavailable" if enabled else "disabled"
+    )
+    operational_status = (
+        "degraded"
+        if ready and vad_status.get("status") != "ready"
+        else availability_status
+    )
     return {
         "enabled": enabled,
-        "status": "ready" if ready else "unavailable" if enabled else "disabled",
+        # ``status`` is transport availability. Packet fallback keeps reception
+        # available while ``operational_status`` exposes reduced endpointing.
+        "status": availability_status,
+        "operational_status": operational_status,
+        "degraded": operational_status == "degraded",
         "scope": "claimed-room-human-participants",
         "processing": "local-only",
         "raw_audio_persistence": "none",
@@ -228,7 +353,7 @@ def receive_readiness(*, enabled: bool) -> dict[str, object]:
         "faster_whisper": whisper,
         "davey": davey,
         "dave_receive": dave_receive_status(),
-        "vad": silero_vad_mod.readiness(),
+        "vad": vad_status,
     }
 
 
@@ -285,6 +410,13 @@ def voice_runtime_state(
         if transcriber_ready is False
         else "unverified"
     )
+    is_listening = getattr(voice_client, "is_listening", None)
+    transport_listening = (
+        _voice_client_flag(voice_client, "is_listening")
+        if callable(is_listening)
+        else listener_active is True
+    )
+    receiving = bool(receive_capable and listener_active is True and transport_listening)
     can_transcribe = receive_capable and transcriber_ready is True
     can_speak = bool(
         connected
@@ -296,7 +428,7 @@ def voice_runtime_state(
     return {
         "connected": connected,
         "can_receive": receive_capable,
-        "receiving": receive_capable and listener_active is True,
+        "receiving": receiving,
         "can_transcribe": can_transcribe,
         "transcription_status": transcription_status,
         "can_speak": can_speak,
@@ -336,6 +468,7 @@ class CreatorPcmCollector:
         self._on_speech_start = on_speech_start
         self._clock = clock
         self._vad = vad
+        self._vad_fallback_active = False
         self._lock = threading.Lock()
         self._buffer = bytearray()
         self._pre_roll = bytearray()
@@ -355,7 +488,14 @@ class CreatorPcmCollector:
             try:
                 reset()
             except Exception:
-                self._vad = None
+                self._degrade_vad_locked("reset")
+
+    def _degrade_vad_locked(self, reason: str) -> None:
+        self._vad = None
+        self._pre_roll.clear()
+        if not self._vad_fallback_active:
+            self._vad_fallback_active = True
+            _activate_vad_fallback(reason)
 
     def _append_pre_roll_locked(self, pcm: bytes) -> None:
         if VAD_PRE_ROLL_BYTES <= 0:
@@ -388,8 +528,7 @@ class CreatorPcmCollector:
                 try:
                     probabilities = tuple(self._vad.accept_pcm(pcm))
                 except Exception:
-                    self._vad = None
-                    self._pre_roll.clear()
+                    self._degrade_vad_locked("inference")
 
             if self._vad is not None and not self._speech_active:
                 for probability in probabilities:
@@ -482,6 +621,9 @@ class CreatorPcmCollector:
             self._last_packet_at = 0.0
             self._muted_until_stop = False
             self._reset_vad_locked()
+            if self._vad_fallback_active:
+                self._vad_fallback_active = False
+                _release_vad_fallback()
 
     def _emit(self, pcm: bytes) -> bool:
         duration = len(pcm) / PCM_BYTES_PER_SECOND
@@ -521,6 +663,12 @@ class RoomPcmCollector:
         self._lock = threading.Lock()
         self._collectors: dict[int, CreatorPcmCollector] = {}
         self._speaker_names: dict[int, str] = {}
+        self._turn_fence = VoiceTurnFence()
+        self._listener_epoch = self._turn_fence.activate()
+
+    @property
+    def turn_fence(self) -> VoiceTurnFence:
+        return self._turn_fence
 
     @staticmethod
     def _speaker(user: object) -> tuple[int, str] | None:
@@ -539,6 +687,9 @@ class RoomPcmCollector:
     def _emit(self, user_id: int, utterance: VoiceUtterance) -> None:
         with self._lock:
             name = self._speaker_names.get(user_id, "Discord participant")
+        token = self._turn_fence.commit_turn(self._listener_epoch)
+        if token is None:
+            return
         self._on_utterance(
             SpeakerVoiceUtterance(
                 user_id=user_id,
@@ -546,6 +697,8 @@ class RoomPcmCollector:
                 wav_bytes=utterance.wav_bytes,
                 pcm_bytes=utterance.pcm_bytes,
                 duration_seconds=utterance.duration_seconds,
+                listener_epoch=token.listener_epoch,
+                turn_sequence=token.turn_sequence,
             )
         )
 
@@ -592,6 +745,7 @@ class RoomPcmCollector:
         return sum(1 for collector in collectors if collector.flush_stale(now=now))
 
     def cleanup(self) -> None:
+        self._turn_fence.deactivate(self._listener_epoch)
         with self._lock:
             collectors = list(self._collectors.values())
             self._collectors.clear()
@@ -652,6 +806,10 @@ def voice_client_class():
 
 _event_lock = threading.Lock()
 _last_event_id = 0
+_active_voice_event_id: ContextVar[str | None] = ContextVar(
+    "discord_voice_event_id",
+    default=None,
+)
 
 
 def next_voice_event_id(*, time_ns: int | None = None) -> str:
@@ -665,12 +823,26 @@ def next_voice_event_id(*, time_ns: int | None = None) -> str:
         if candidate >= (1 << 64):
             raise RuntimeError("Discord voice event id space is exhausted")
         _last_event_id = candidate
-        return str(candidate)
+        event_id = str(candidate)
+        _active_voice_event_id.set(event_id)
+        return event_id
+
+
+def _validated_voice_event_id(event_id: str | None) -> str | None:
+    if event_id is None:
+        return None
+    if type(event_id) is not str or not event_id.isascii() or not event_id.isdigit():
+        raise ValueError("event_id must be a positive uint64 string")
+    value = int(event_id)
+    if value <= 0 or value >= (1 << 64) or str(value) != event_id:
+        raise ValueError("event_id must be a positive uint64 string")
+    return event_id
 
 
 def record_voice_event(
     status: VoiceEventStatus,
     *,
+    event_id: str | None = None,
     duration_seconds: float = 0.0,
     size_bytes: int = 0,
     reason: str = "",
@@ -680,6 +852,20 @@ def record_voice_event(
         "accepted", "transcribed", "remembered", "no-transcript", "dropped", "failed",
     }:
         raise ValueError("unknown Discord voice event status")
+    resolved_event_id = _validated_voice_event_id(
+        event_id if event_id is not None else _active_voice_event_id.get()
+    )
+    metadata: dict[str, object] = {
+        "event": "discord_voice",
+        "status": status,
+        "duration_seconds": round(max(0.0, float(duration_seconds)), 3),
+        "size_bytes": max(0, int(size_bytes)),
+        "reason": str(reason or "")[:48],
+        "processing": "local-only",
+        "raw_audio_persisted": False,
+    }
+    if resolved_event_id is not None:
+        metadata["voice_event_id"] = resolved_event_id
     try:
         return cognition_mod.record_observation(
             cognition_mod.CognitionObservation(
@@ -689,15 +875,7 @@ def record_voice_event(
                 room="discord",
                 privacy_class="local",
                 scope="discord:claimed-room",
-                metadata={
-                    "event": "discord_voice",
-                    "status": status,
-                    "duration_seconds": round(max(0.0, float(duration_seconds)), 3),
-                    "size_bytes": max(0, int(size_bytes)),
-                    "reason": str(reason or "")[:48],
-                    "processing": "local-only",
-                    "raw_audio_persisted": False,
-                },
+                metadata=metadata,
             )
         )
     except Exception:
@@ -719,6 +897,8 @@ __all__ = [
     "VAD_THRESHOLD",
     "SpeakerVoiceUtterance",
     "VoiceUtterance",
+    "VoiceTurnFence",
+    "VoiceTurnToken",
     "build_sink",
     "dave_receive_status",
     "install_dave_receive_compat",

@@ -1,4 +1,292 @@
-# Alpecca - Handoff (updated 2026-07-22)
+# Alpecca - Handoff (updated 2026-07-24)
+
+## 2026-07-24 autonomous portrait and tool-failure repair
+
+- Discord hidden deliberation can now choose a sixth, typed initiative intent:
+  share Alpecca's approved self-portrait with a grounded first-person explanation.
+  The bridge strips the machine marker, resolves only the locked approved portrait,
+  attaches it to the autonomous message, and records the outbound media receipt.
+  This is an Alpecca-chosen proactive action, not a user command or fixed timer.
+- Rejected tool calls no longer emit the old context-free canned sentence. The
+  fail-closed response names the current request and rejection reason while making
+  clear that nothing ran and no success is being claimed.
+- Focused Discord autonomy, room-awareness, media, and tool-call verification:
+  **134 passed**. The live CoreMind and launcher-owned Discord bridge were reloaded;
+  an actual model-selected autonomous portrait post remains a live behavioral gate.
+
+## 2026-07-24 Discord live-latency repair
+
+- The live screenshot exposed the actual suppression cause: both ordinary DM
+  replies and autonomous composition selected local `qwen3.5:9b`; with the 4B
+  fast/vision model resident on the 4 GB GPU, the model swap exceeded the bridge
+  deadline and produced repeated fallback prose. Autonomous failures then entered
+  a ten-minute review backoff, so no independent send could appear.
+- Tool-free Discord conversation, autonomy decisions, and autonomy composition now
+  use resident `qwen3.5:4b`. A real warm fast-tier generation completed in **3.17
+  seconds**. `qwen3.5:9b` remains the deliberate reasoning model and HolyROG target.
+- Focused Discord/guest/media/tool verification passed **141 tests**. CoreMind and
+  its single launcher-owned Discord bridge were reloaded; the bridge has an active
+  Discord gateway connection.
+
+## 2026-07-24 initiative scheduling and private-vision integration
+
+- A second live gate conflict was corrected: direct DMs scheduled their first
+  self-review at 60 seconds, but the generic 180-second room cooldown overrode
+  it. Direct-idle reviews now obey `direct_next_review_at`; every later review
+  remains model-scheduled through the bounded `revisit_minutes` decision.
+- Applied Claude Session A patch `ab0729b`, adding the authenticated HolyROG
+  `/v1/vision` client/server contract with strict image bounds and verified-local
+  fallback. Its focused integration gate passed **172 tests**.
+- Rolling deployment exposed an old-worker compatibility break in the new health
+  parser. The client now accepts the exact pre-vision health shape as
+  `vision_ready=false` while preserving strict validation. Live HolyROG health is
+  again valid for reasoning; private vision remains disabled until the remote
+  worker is upgraded and reports its new vision endpoint ready.
+- Live verification after reloading the single stack passed the initiative gate:
+  Discord message `1530285492971503826` was authored by Alpecca after the latest
+  human/Alpecca exchange, with no newer human prompt. This proves direct-DM
+  self-initiation is operating. The line's content quality remains a separate
+  personality/grounding refinement; do not conflate delivery proof with ideal prose.
+
+## 2026-07-24 temporary local vision recovery
+
+- The exact failed Discord screenshot was successfully described through the
+  verified-local route. `qwen3.5:9b` required 63.92 seconds, while the installed
+  `qwen3.5:4b` took 30.69 seconds cold and 3.56 seconds warm with a correct
+  Discord/participant description and no pixel egress.
+- Production vision now defaults to `qwen3.5:4b` and keeps it resident for 30
+  minutes. This changes only sight; `qwen3.5:9b` remains Alpecca's reasoning
+  model. The HolyROG `qwen3-vl` work order remains the long-term replacement.
+
+## 2026-07-24 dual-host vision acceleration handoff
+
+- The active work order is
+  `docs/FOR_CLAUDE_DUAL_HOST_VISION_ACCELERATION.md`. Claude on RygenART owns
+  the authenticated worker/client and Alpecca integration; Claude on
+  `Jason_HOLYROG` owns model installation, GPU benchmarks, and worker
+  deployment. Their file ownership must not overlap.
+- First candidate is `qwen3-vl:4b` (3.3 GB, Apache-2.0 upstream), followed by
+  `qwen3-vl:2b` (1.9 GB). Promotion requires five resident same-image runs and
+  an authenticated end-to-end request at or below 30 seconds with screenshot
+  reading accuracy. `qwen3.5:9b` remains the reasoning model.
+- The current RygenART local vision path is functional but measured at about
+  60 seconds on the reported Discord screenshot after its timeout was raised
+  from 60 to 120 seconds. This is fallback evidence, not completion of the
+  under-30-second target.
+
+## 2026-07-24 HolyROG live compute checkpoint
+
+- Replaced RygenART's stale HolyROG public trust certificate with the live
+  dual-SAN public certificate. No private key or shared credential was copied,
+  logged, committed, or exposed.
+- Authenticated health passed for the compute-only worker. Direct inference
+  initially failed with `reasoning_upstream_error` because HolyROG's Ollama
+  runtime was stale; updating and restarting Ollama cleared the HTTP 502.
+- Verified receipts: one bounded direct `qwen3.5:9b` reasoning request
+  completed, then Alpecca's production-configured `_LLM` chain loaded
+  `rog-worker` before `ollama-cloud` and returned a deep-tier route with
+  `backend=rog-worker`, `model=qwen3.5:9b`, and `fallback=false`.
+- Restarted the local coordinator so the long-lived worker client loaded the
+  corrected trust state. One core listener (8765), one F5 listener (8776), and
+  one Discord bridge lock (8779) are active. Keep `ollama-cloud` after
+  `rog-worker`; it is the required fallback when HolyROG is off.
+- Remaining HolyROG work is operational soak and the separately gated,
+  untrained HyFusER seven-head research path. Do not describe HyFusER as live.
+
+## 2026-07-24 internal review and runtime checkpoint
+
+- Repaired the production Python install and both dormant voice virtual
+  environments. `ALPECCA_LAUNCHER.bat` and the GUI launcher now resolve a real
+  interpreter without depending on a Windows Store alias. The F5 sidecar uses
+  `.venv-f5-tts` (or `ALPECCA_OPEN_TTS_PYTHON`) rather than the CoreMind
+  interpreter.
+- Fixed commitment recognition for coordinated natural promises, TTS busy
+  status ordering, cloud-preferred voice fallback, Discord transcription's
+  too-short six-second deadline, the stale 4B vision default, surface-filtered
+  creator continuity recall, GUI sidecar duplication, and GUI config import
+  before singleton ownership.
+- Fixed F5 worker interpreter selection: the isolated voice environment is
+  accepted only when it has F5-TTS and the requested Torch device. On this
+  laptop its CPU-only Torch is rejected in favor of the CUDA-qualified
+  production Python, while Kokoro remains the fallback if neither qualifies.
+- Added `pytest.ini` as the committed collection boundary. It includes `tests/`
+  plus both deployment test trees and excludes runtime/data scratch trees.
+  Added `npm run house:test`; it runs every House `*.test.mjs` file. Updated the
+  Tool Library contract test for its Google Workspace readiness fields.
+- Verified: expanded Python gate **3,579 passed, 3 skipped** (including both
+  deployment trees); focused repaired paths **86 passed**; House Node gate **86
+  passed**; House and Agentic Frontier production builds passed; and the
+  continuity worker typecheck plus **11 tests** passed.
+- Live evidence: Ollama 0.30.7 is listening with `qwen3.5:9b`; protected
+  `/state`, `/cognition/state`, `/house-hq`, `/mindscape`, `/system/status`, and
+  `/system/doctor` returned 200; one server listens on 8765, one F5 worker on
+  8776, and one Discord bridge lock on 8779. `/tts` returned real F5 audio while
+  preserving `af_heart` and identity lock. This proves synthesis, not a
+  sustained House or Discord call.
+- Post-suite F5 selection and Discord fallback repairs passed focused gates of
+  **78** and **60** tests. The reloaded F5 worker reported CUDA ready after a
+  50.101-second cold load, a real tender `/tts` line preserved the locked voice
+  identity, and Discord readiness now reports duplex receive plus TTS `ready`.
+- Do not mark the project globally complete. Remaining gates are explicit:
+  P1 release scans/public-shell rebuild; P6 measured 8K context run; P7
+  creator-approved elevated pagefile execution; P8 real creator-approved RSI
+  trial; P9 provider soak; P10 Discord/voice/acoustic soak; P11 browser/mobile
+  proof; P12 authenticated visual/physics/design-lock soak; P13 deployed
+  failover/failback; and P14 release soak. HolyROG TLS/authenticated compute,
+  HyFusER trained weights, Google OAuth, stable Cloudflare naming, Video
+  Companion production wiring, and approved 4K art remain unproved.
+
+## 2026-07-23 HolyROG dual-SAN TLS rotation handoff
+
+- `scripts/setup_rog_worker.ps1` now has a standalone `-RotateTls` switch that
+  invokes the runner's `--rotate-tls` operation. It does not stop, start, or
+  restart the `Alpecca ROG Compute Server` scheduled task.
+- The controlled deployment order is documented in
+  `docs/ROG_COMPUTE_WORKER.md`: stop the task, rotate with backup, copy only the
+  public certificate to the primary, start the task, and verify authenticated
+  health through `https://jason-holyrog.tailda0108.ts.net:8788`.
+- The replacement certificate must contain both `Jason_HOLYROG` and
+  `jason-holyrog.tailda0108.ts.net`. The private key never leaves HolyROG.
+- This is **not live-deployed**. The wrapper and runner contract are present in
+  the current shared worktree, but neither the primary nor the dedicated
+  HolyROG checkout has completed the stop/rotate/copy/start/verify sequence.
+  Python and tests were outside this documentation/wrapper work order and were
+  not edited as part of it.
+- Latest live evidence: Tailscale resolves
+  `jason-holyrog.tailda0108.ts.net` to `100.92.250.12` and TCP port 8788 accepts
+  a connection, but the HTTPS health handshake times out. TeamViewer reconnects
+  only to a black remote framebuffer and its free session then closes. The
+  scheduled worker and current certificate were deliberately left untouched.
+  Do not report HolyROG as healthy until the controlled rotation and an
+  authenticated health receipt both succeed.
+
+## 2026-07-23 HolyROG isolated HyFusER runtime checkpoint
+
+- The dedicated compute checkout at
+  `C:\Users\Jason\Documents\Alpecca_duel computer local server setup\alpaccaai-rog-latest`
+  was clean for tracked files and fast-forwarded to `81ad1e3`. Its two stashes
+  and one untracked item were preserved. The everyday HolyROG development
+  checkout under `Documents\GitHub\alpaccaai` was left untouched.
+- HolyROG now has a separate CPython 3.11.9 environment at
+  `%LOCALAPPDATA%\Alpecca\rog-worker\venvs\hyfuser-py311` with
+  `torch 2.7.0+cu128`. A direct import check reported CUDA 12.8 available on
+  the NVIDIA GeForce RTX 4060 Laptop GPU with 8 GB VRAM.
+- `scripts/preflight_rog_hyfuser_runtime.py` passed all 10 host, Python, GPU,
+  driver, and VRAM checks. The report deliberately remains `shadow_only=true`
+  and `authorizes_activation=false`; no HyFusER or Emotion-LLaMA checkpoint or
+  dataset was downloaded.
+- The existing compute-only HTTPS worker remained untouched and listening on
+  port 8788 as PID 45496. Remote SSH administration is now opt-in instead of
+  enabled by default.
+- Focused verification on the primary checkout: 31 tests passed across the
+  runtime preflight and launcher/singleton coverage.
+- Current operational gate: RygenART does not presently have the shared ROG
+  credential in its Windows Credential Manager, so an authenticated primary-
+  to-worker receipt cannot yet be reproduced from a fresh local process. Do
+  not expose the secret in source, logs, or chat. Restore the credential through
+  the existing secure install flow, then prove health and one bounded reasoning
+  request before restarting the full stack with the ROG deep route loaded.
+
+## 2026-07-23 activation and seven-transformer checkpoint
+
+- Added a real optional seven-transformer Soul research architecture: one
+  shared dual-cross-modal HyFusER-style backbone and seven distinct lightweight
+  perspective heads. Canonical affect order is `neutral, joy, sadness, fear,
+  anger, surprise, disgust`; every worker request and response binds that exact
+  order. The model is shadow-only and fail-closed without verified weights.
+- Added authenticated ROG health/scoring transport and Brain Garden evidence.
+  The current ROG must pull this branch and receive a trained, evaluated
+  checkpoint before it can report ready. Follow
+  `docs/FOR_CLAUDE_HOLYROG_SOUL_SETUP.md` on `Jason_HOLYROG`.
+- Added an opt-in Emotion-LLaMA research teacher/evaluator. Code is
+  BSD-3-Clause; MER data remains under its research EULA and stays external.
+  No model or dataset was downloaded in this checkpoint.
+- Activated bounded temporal derivation, safe internal routine bootstrap, and
+  sealed committed-evidence RSI candidate creation. None can authorize an
+  external act or source edit.
+- Repaired Discord listener/turn fencing, sticky voice/vision inference health,
+  V4 grounded locomotion constraints, protected notification acknowledgement
+  continuity, and Hugging Face sparse-standby health.
+- Fixed Vault file retention and removed 197 orphan archives (18,050,231,376
+  bytes). Two indexed archives remain; free disk rose from about 1.07 GB to
+  about 56.2 GB.
+- Verification at this checkpoint: canonical `tests/test_core.py` 372 passed;
+  seven-transformer/fusion/ROG 139 passed; notification 125 passed; House
+  production build passed. Live ROG model deployment, Discord duplex soak,
+  browser embodiment inspection, and cloud failover/failback remain required.
+
+## 2026-07-23 Clock, initiative, and Google Workspace assistance
+
+- Every CoreMind prompt now receives an authoritative local wall clock. Compact
+  chat uses a short second-accurate form so the fixed prompt remains below its
+  4,800-character regression budget; living ticks retain the full timezone and
+  UTC offset as evidence.
+- The background House living loop now suppresses recently carried questions,
+  includes measured time in its observation, and reaches House as an Alpecca
+  conversation turn with optional voice playback. It no longer appears only as
+  a system/profile bubble. Claimed Discord rooms may make one grounded
+  empty-room check-in after 20 minutes by default; unanswered outreach still
+  uses the existing exponential backoff and cannot become a recursive monologue.
+- `self_status` now reports the authenticated creator turn plus Alpecca's live
+  clock, room, mood, trends, memory count, senses, host pressure, and Google
+  Workspace readiness. House Tools renders the same Google readiness evidence.
+- `alpecca/google_workspace.py` adds a real Google Drive/Docs REST adapter for
+  status, additive private-folder creation, and additive Google Doc creation.
+  It cannot share, overwrite, move, or delete. Every server operation records a
+  content-free cognition receipt; success requires a Google file ID and link.
+- `scripts/connect_google_workspace.py` performs one Microsoft Edge OAuth
+  desktop flow, creates the app-owned `Alpecca Assistance` root, and stores the
+  client secret plus refresh token only in Windows Credential Manager. Runtime
+  support is source-complete but operationally **SETUP REQUIRED** until a Google
+  OAuth desktop client JSON is authorized once on the primary machine.
+- TeamViewer is installed locally and its service was observed running with
+  automatic startup. The Codex Windows-control runtime failed before capture,
+  so account assignment, Easy Access, and `Jason_HOLYROG` remote control were
+  not verified or changed in this checkpoint.
+- Verification: 15 focused Python tests passed; Python compilation passed; the
+  House TypeScript/Vite production build passed. Discord-focused collection was
+  unavailable in the slim Codex runtime because `discord.py` is not installed.
+
+## 2026-07-22 Verified research-wave status
+
+- Receipt-language false positives are fixed: conversational phrases such as
+  `I finished listening` and `I opened up` no longer claim an external action.
+  Direct upload/download completion claims still require a successful receipt.
+  The hosted/Hugging Face tool loop also preserves an honest partial-execution
+  report when a valid tool ran before a later malformed, unknown, or over-limit
+  call was rejected.
+- Temporal shadow comparison is now wired into creator and scoped Discord
+  recall as evaluation-only evidence. Legacy SQLite/Mindpage recall remains the
+  returned authority, comparison failure cannot break chat, and temporal fact
+  application is transaction-atomic. The stale claim that shadow comparison is
+  unwired is superseded.
+- Cloud Kokoro readiness now requires a structurally coherent, playable PCM
+  RIFF/WAVE with at least one audio frame; missing readiness evidence fails
+  closed. The earlier authenticated deployment synthesis smoke remains valid
+  historical evidence, but the stricter source has not received a new sustained
+  House/Discord voice soak.
+- Configured cross-host startup now requires the complete inherited singleton
+  tuple: lease ID, holder, positive fencing epoch, and the same-process launcher
+  PID. Explicit offline-isolated mode remains the only unfenced exception.
+- Speaker readiness now requires a bounded successful inference probe and fails
+  closed on missing, malformed, failed, or timed-out extraction. `sherpa_onnx`
+  and its speaker model are not installed because the selected model's upstream
+  license remains unresolved.
+- The verified YuNet and SFace assets are installed outside Git under
+  `%LOCALAPPDATA%\Alpecca\models\face\`. Their SHA-256 hashes match the approved
+  files and the OpenCV CPU backend completed a load smoke. They remain optional,
+  are not production-wired, and have no personal enrollment/camera corpus.
+- Broad verification reached **3,197 passed, 3 skipped, 0 failed**, and the
+  House production build passed. Subsequent receipt, tool-loop, WAV-readiness,
+  speaker-readiness, temporal, and singleton changes passed their focused gates;
+  the broad suite was not rerun after every final focused patch.
+- No post-restart live Discord voice proof was performed for this checkpoint.
+  Current external gates are real shadow-recall corpus evidence, face/speaker
+  qualification and wiring, sustained voice quality, and singleton
+  failover/failback soak. Do not turn source presence or a bounded smoke into
+  release proof.
+- The single supported entry point is
+  [`ALPECCA_LAUNCHER.bat`](ALPECCA_LAUNCHER.bat).
 
 ## 2026-07-22 ASUS ROG remote-host evaluation
 
@@ -15,6 +303,10 @@
 
 ## 2026-07-22 Continuous House and duplex voice checkpoint
 
+This implementation checkpoint is retained as historical evidence. Its earlier
+deployment-proof boundary is superseded by the verified research-wave status
+above; sustained quality soaks are still open.
+
 - During an active user-started live call, House HQ keeps one microphone stream
   open, endpoints bounded PCM16 WAV turns with adaptive voice activity, and
   releases raw audio after delivery. Spoken replies are sentence-segmented,
@@ -26,9 +318,8 @@
 - Discord duplex voice now fences transcription, reply, and segmented playback
   by generation so newer speech or interruption suppresses stale output.
 - The complete House voice Node suite passed (29 tests) and the House production
-  build passed. Live browser microphone/playback, live Discord duplex, and
-  deployed authenticated cloud-voice soaks remain pending; this is not live or
-  deployment proof.
+  build passed. At this checkpoint, live browser microphone/playback, live
+  Discord duplex, and deployed authenticated cloud voice were still pending.
 
 ## 2026-07-22 Silero Discord voice stage
 
@@ -2268,3 +2559,53 @@ free) · `scripts/` (doctor, run_full, run_talkinghead, import_rig, build_manife
 - House push-to-talk now requests WebM/Opus or Ogg/Opus explicitly. A live
   Faster-Whisper probe loaded successfully and transcribed a reference in 19.38s.
 - Storage findings are recorded in `docs/LOCAL_STORAGE_AUDIT_2026-07-22.md`.
+
+## 2026-07-22 Jason_HOLYROG compute worker
+
+- Added an isolated compute-only worker for `Jason_HOLYROG`. It exposes only
+  HMAC-authenticated `GET /v1/health`, `POST /v1/reason`, and
+  `POST /v1/render/blender`; schemas, bodies, timeouts, models, paths,
+  concurrency, output sizes, timestamps, nonces, and replay IDs are bounded.
+- The worker strips inherited Discord, continuity, tunnel, file, sensor, and
+  CoreMind authority before startup. It owns no memory database and cannot
+  speak. Blender receives a sanitized child environment, `--disable-autoexec`,
+  one approved `.blend` basename, and one frame under configured roots.
+- Private-LAN use requires certificate-validated HTTPS for the exact
+  `Jason_HOLYROG` hostname plus per-request HMAC. The TLS private key stays on
+  the ROG; only its public certificate is copied to the primary. Content-free
+  replay records persist across worker restarts and never evict a live nonce.
+- The ROG hostname is fail-closed at the GUI, full-stack launcher, server
+  lifespan, and Discord bridge, so continuity loss cannot turn the worker into
+  a second Alpecca instance.
+- Primary deep background work now tries `rog-worker`, then `gemma4:cloud`, then
+  local `qwen3.5:9b`. Normal chat and voice are unchanged. Missing credentials,
+  worker errors, or timeouts fall through instead of breaking Alpecca.
+- Added creator-only `/system/rog-worker` status and render routes, capability
+  audit receipts, launcher controls, a read-only host qualifier, and
+  `docs/ROG_COMPUTE_WORKER.md`.
+- Focused integration gate: 156 passed; the complete core regression then
+  passed 371 tests. A real read-only qualification on this machine reported
+  `RygenART`, not `Jason_HOLYROG`, and started no services.
+- Deployment is not complete. `Jason_HOLYROG` resolved on the LAN, but port
+  8788 and the checked remote-management ports were unreachable. Run the setup
+  directly on the ROG, limit its firewall rule to the primary laptop, then keep
+  authenticated health, reasoning, and Blender receipts before calling it live.
+
+## 2026-07-23 live state diagnostic and ROG measurements
+
+- The compute worker is now reachable over authenticated HTTPS on port 8788 and
+  reports compute-only Qwen 3.5 9B reasoning ready. It still reports Blender
+  unavailable and owns no speaking, Discord, memory, or continuity role.
+- Three ROG probes completed in 0.62-1.84 seconds. A matched 37-token local Qwen
+  response took 36.92 seconds; a four-token local retry took 35.36 seconds, with
+  31.88 seconds spent loading the model. The ROG is therefore a substantial,
+  measured reasoning improvement under current primary-host pressure.
+- The active primary process reports `deep_route_loaded=false` because it
+  predates the latest route configuration. Restart only after storage recovery,
+  then require a primary-originated job receipt naming `rog-worker`.
+- Primary resources were critical during measurement: 94.05% physical memory,
+  91.23% committed memory, 92.05% CPU, and about 76 MB system-drive space free.
+  Do not perform a broad restart or full regression run until storage is safely
+  recovered. No data was deleted by the diagnostic.
+- Full measured results, current subsystem status, and the required acceptance
+  gates are in `docs/ALPECCA_STATE_DIAGNOSTIC_2026-07-23.md`.

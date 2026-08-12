@@ -2555,6 +2555,77 @@ body.alpecca-chat-open #touchInteract {
   line-height: 1.4;
 }
 
+.remote-development-console {
+  display: grid;
+  gap: 10px;
+}
+
+.remote-development-console label {
+  display: grid;
+  gap: 5px;
+  color: var(--alpecca-ui-muted);
+  font-size: 0.62rem;
+  font-weight: 800;
+}
+
+.remote-development-console input,
+.remote-development-console textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(142, 238, 255, 0.24);
+  border-radius: 6px;
+  color: #f4fbff;
+  background: rgba(3, 9, 12, 0.92);
+  font: 0.72rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 0;
+}
+
+.remote-development-console textarea {
+  min-height: 116px;
+  resize: vertical;
+}
+
+.remote-development-controls {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.35fr) minmax(140px, 0.65fr);
+  align-items: end;
+  gap: 9px;
+}
+
+.remote-development-controls button {
+  min-height: 38px;
+  border: 1px solid #8eeeff;
+  border-radius: 6px;
+  color: #061113;
+  background: #8eeeff;
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.remote-development-controls button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#alpeccaRemoteOutput {
+  min-height: 112px;
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid rgba(240, 189, 89, 0.24);
+  border-radius: 6px;
+  color: #dff8e8;
+  background: #05090b;
+  font: 0.67rem/1.48 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .brain-garden {
   min-height: 520px;
   display: grid;
@@ -2830,7 +2901,7 @@ body.alpecca-chat-open #touchInteract {
   }
 
   .systems-nav-group:last-child {
-    grid-template-columns: repeat(2, minmax(68px, auto));
+    grid-template-columns: repeat(3, minmax(68px, auto));
   }
 
   .systems-nav button {

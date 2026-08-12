@@ -1,0 +1,511 @@
+[CmdletBinding(SupportsShouldProcess)]
+param(
+    [switch]$Install,
+    [switch]$Remove,
+    [switch]$Start,
+    [switch]$Stop,
+    [switch]$Status,
+    [switch]$RunWorker,
+    [switch]$RunOllama,
+    [switch]$EnableBlender
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$ExpectedHost = 'Jason_HOLYROG'
+$TaskName = 'Alpecca ROG Compute Server'
+$OllamaTaskName = 'Alpecca ROG Ollama Runtime'
+$PrimaryTailscaleAddress = '100.96.54.97'
+$FirewallRulePrefix = 'Alpecca ROG worker 8788'
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$SetupScript = Join-Path $PSScriptRoot 'setup_rog_worker.ps1'
+$Runner = Join-Path $PSScriptRoot 'run_rog_compute_worker.py'
+$ServiceDataDir = Join-Path $env:ProgramData 'Alpecca\rog-worker'
+$ServiceTlsDir = Join-Path $ServiceDataDir 'tls'
+$ServiceSecretPath = Join-Path $ServiceDataDir 'worker.secret'
+$ServiceCertPath = Join-Path $ServiceTlsDir 'jason-holyrog.crt'
+$ServiceKeyPath = Join-Path $ServiceTlsDir 'jason-holyrog.key'
+$ServiceReplayPath = Join-Path $ServiceDataDir 'worker-ops.sqlite3'
+$ServiceToolPathFile = Join-Path $ServiceDataDir 'tool-paths.txt'
+$OllamaRuntimeConfigPath = Join-Path $ServiceDataDir 'ollama-runtime.json'
+$ServiceVenv = Join-Path $ServiceDataDir 'venv'
+$ServicePython = Join-Path $ServiceVenv 'Scripts\python.exe'
+$LogDir = Join-Path $ServiceDataDir 'logs'
+$LogPath = Join-Path $LogDir 'dedicated-server.log'
+$OllamaLogPath = Join-Path $LogDir 'ollama-runtime.log'
+$BlenderMarker = Join-Path $ServiceDataDir 'blender-enabled'
+$BlendRoot = Join-Path $ServiceDataDir 'blend-input'
+$OutputRoot = Join-Path $ServiceDataDir 'render-output'
+$LegacyWorkerDataDir = Join-Path $env:LOCALAPPDATA 'Alpecca\rog-worker'
+$LegacyBlenderMarker = Join-Path $LegacyWorkerDataDir 'blender-enabled'
+$LegacyTlsDir = Join-Path $LegacyWorkerDataDir 'tls'
+$ObservedHost = [System.Net.Dns]::GetHostName()
+
+function Find-BlenderExecutable {
+    $command = Get-Command blender -ErrorAction SilentlyContinue
+    if ($null -ne $command) {
+        return $command.Source
+    }
+    $foundation = Join-Path $env:ProgramFiles 'Blender Foundation'
+    if (-not (Test-Path -LiteralPath $foundation -PathType Container)) {
+        return $null
+    }
+    return Get-ChildItem -LiteralPath $foundation -Filter blender.exe -File -Recurse -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending |
+        Select-Object -First 1 -ExpandProperty FullName
+}
+
+function Protect-ServiceDataDirectory {
+    New-Item -ItemType Directory -Path $ServiceDataDir -Force | Out-Null
+    & icacls.exe $ServiceDataDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not restrict the dedicated worker service-data directory.'
+    }
+}
+
+function Sync-ServiceTlsIdentity {
+    $legacyCert = Join-Path $LegacyTlsDir 'jason-holyrog.crt'
+    $legacyKey = Join-Path $LegacyTlsDir 'jason-holyrog.key'
+    if (-not (Test-Path -LiteralPath $legacyCert -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $legacyKey -PathType Leaf)) {
+        throw 'LAN startup requires the existing ROG TLS identity; run setup_rog_worker.ps1 -InstallTls first.'
+    }
+    New-Item -ItemType Directory -Path $ServiceTlsDir -Force | Out-Null
+    Copy-Item -LiteralPath $legacyCert -Destination $ServiceCertPath -Force
+    Copy-Item -LiteralPath $legacyKey -Destination $ServiceKeyPath -Force
+}
+
+function Write-ServiceToolPaths {
+    $directories = @()
+    foreach ($toolName in @('git', 'node', 'npm', 'ffmpeg', 'ollama', 'python')) {
+        $tool = Get-Command $toolName -ErrorAction SilentlyContinue
+        if ($null -ne $tool -and -not [string]::IsNullOrWhiteSpace($tool.Source)) {
+            $directories += Split-Path -Parent $tool.Source
+        }
+    }
+    $directories = @($directories | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_ -PathType Container)
+    } | Select-Object -Unique)
+    if ($directories.Count -eq 0) {
+        throw 'Could not determine the local executable directories required by the ROG worker.'
+    }
+    Set-Content -LiteralPath $ServiceToolPathFile -Value $directories -Encoding utf8
+}
+
+function Add-ServiceToolPaths {
+    if (-not (Test-Path -LiteralPath $ServiceToolPathFile -PathType Leaf)) {
+        throw 'The dedicated worker tool-path configuration is missing.'
+    }
+    $directories = @(
+        Get-Content -LiteralPath $ServiceToolPathFile | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_) -and
+            [System.IO.Path]::IsPathRooted($_) -and
+            (Test-Path -LiteralPath $_ -PathType Container)
+        } | Select-Object -Unique
+    )
+    if ($directories.Count -eq 0) {
+        throw 'The dedicated worker tool-path configuration is invalid.'
+    }
+    $env:PATH = ($directories + @($env:PATH)) -join [System.IO.Path]::PathSeparator
+}
+
+function Install-ServicePython {
+    param([Parameter(Mandatory = $true)][string]$BootstrapPython)
+
+    if (-not (Test-Path -LiteralPath $ServicePython -PathType Leaf)) {
+        & $BootstrapPython -m venv $ServiceVenv
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Could not create the dedicated ROG worker Python environment.'
+        }
+    }
+    & $ServicePython -m ensurepip --upgrade *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not prepare pip in the dedicated ROG worker Python environment.'
+    }
+    Write-Host 'Installing dedicated ROG worker Python dependencies...' -ForegroundColor Cyan
+    $env:PIP_DISABLE_PIP_VERSION_CHECK = '1'
+    & $ServicePython -m pip install --no-input `
+        'cryptography>=43.0' 'fastapi>=0.110' 'uvicorn>=0.29' 'pillow>=10.0'
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not install the dedicated ROG worker Python dependencies.'
+    }
+    & $ServicePython -c "import cryptography, fastapi, uvicorn, PIL" *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The dedicated ROG worker Python environment is incomplete.'
+    }
+}
+
+function Set-WorkerFirewallRule {
+    # The worker binds 0.0.0.0 only so its one trusted primary can reach it
+    # over the tailnet. Replace only rules owned by this installer; never
+    # create a general LAN or public inbound exception for the worker port.
+    $existing = @(Get-NetFirewallRule -DisplayName "$FirewallRulePrefix*" -ErrorAction SilentlyContinue)
+    if ($existing.Count -gt 0) {
+        $existing | Remove-NetFirewallRule
+    }
+    New-NetFirewallRule `
+        -DisplayName "$FirewallRulePrefix (primary only)" `
+        -Description "Allow TCP 8788 only from the RygenART Tailscale address ($PrimaryTailscaleAddress)." `
+        -Direction Inbound `
+        -Action Allow `
+        -Protocol TCP `
+        -LocalPort 8788 `
+        -RemoteAddress $PrimaryTailscaleAddress `
+        -InterfaceAlias 'Tailscale' `
+        -Profile Any | Out-Null
+}
+
+function Write-OllamaRuntimeConfig {
+    param([Parameter(Mandatory = $true)][string]$Executable)
+
+    $models = Join-Path $env:USERPROFILE '.ollama\models'
+    if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
+        throw 'The Ollama executable was not found.'
+    }
+    if (-not (Test-Path -LiteralPath $models -PathType Container)) {
+        throw 'The current user Ollama model directory was not found.'
+    }
+    [pscustomobject]@{
+        executable = $Executable
+        models = $models
+    } | ConvertTo-Json -Compress | Set-Content -LiteralPath $OllamaRuntimeConfigPath -Encoding utf8
+}
+
+function Wait-OllamaRuntime {
+    param([Parameter(Mandatory = $true)][string]$Model)
+
+    $deadline = (Get-Date).AddSeconds(30)
+    do {
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing `
+                -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 2
+            $models = @((($response.Content | ConvertFrom-Json).models | ForEach-Object { [string]$_.name }))
+            if ($response.StatusCode -eq 200 -and $models -contains $Model) {
+                return
+            }
+        } catch {
+            # The new boot-time process is still starting.
+        }
+        Start-Sleep -Seconds 1
+    } while ((Get-Date) -lt $deadline)
+    throw "The boot-time Ollama runtime did not become ready with $Model on 127.0.0.1:11434."
+}
+
+if (-not [string]::Equals($ObservedHost, $ExpectedHost, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "The dedicated compute server is assigned to $ExpectedHost; this machine is $ObservedHost."
+}
+
+if ($RunOllama) {
+    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+    "`n=== Dedicated ROG Ollama start $(Get-Date -Format o) ===" | Add-Content -LiteralPath $OllamaLogPath
+    $ollamaExitCode = 1
+    try {
+        if (-not (Test-Path -LiteralPath $OllamaRuntimeConfigPath -PathType Leaf)) {
+            throw 'The dedicated Ollama runtime configuration is missing.'
+        }
+        $runtime = Get-Content -LiteralPath $OllamaRuntimeConfigPath -Raw | ConvertFrom-Json
+        $executable = [string]$runtime.executable
+        $models = [string]$runtime.models
+        $executablePresent = Test-Path -LiteralPath $executable -PathType Leaf
+        $modelsPresent = Test-Path -LiteralPath $models -PathType Container
+        [pscustomobject]@{
+            Identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            ExecutablePresent = $executablePresent
+            ModelsPresent = $modelsPresent
+            ModelManifestPresent = Test-Path -LiteralPath (Join-Path $models 'manifests') -PathType Container
+            BindAddress = '127.0.0.1:11434'
+        } | ConvertTo-Json -Compress | Add-Content -LiteralPath $OllamaLogPath
+        if (-not $executablePresent -or -not $modelsPresent) {
+            throw 'The dedicated Ollama runtime configuration is invalid.'
+        }
+        $env:OLLAMA_MODELS = $models
+        $env:OLLAMA_HOST = '127.0.0.1:11434'
+        $env:OLLAMA_KEEP_ALIVE = '30m'
+        # This isolated runtime never downloads models. Do not inherit proxy
+        # credentials into it or allow them to be included in Ollama's own
+        # startup configuration log.
+        foreach ($proxyVariable in @('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy')) {
+            Remove-Item -LiteralPath "Env:$proxyVariable" -ErrorAction SilentlyContinue
+        }
+        $priorErrorActionPreference = $ErrorActionPreference
+        try {
+            # Ollama emits ordinary startup information on stderr. In Windows
+            # PowerShell, ErrorActionPreference=Stop would otherwise turn that
+            # diagnostic output into a terminating NativeCommandError.
+            $ErrorActionPreference = 'Continue'
+            & $executable serve *>> $OllamaLogPath
+            $ollamaExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+        } finally {
+            $ErrorActionPreference = $priorErrorActionPreference
+        }
+    } catch {
+        "Dedicated ROG Ollama failed: $($_.Exception.Message)" | Add-Content -LiteralPath $OllamaLogPath
+    } finally {
+        "Dedicated ROG Ollama exited with code $ollamaExitCode." | Add-Content -LiteralPath $OllamaLogPath
+    }
+    exit $ollamaExitCode
+}
+
+if ($RunWorker) {
+    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+    Add-ServiceToolPaths
+    $env:ALPECCA_ROG_WORKER_LAN = '1'
+    $env:ALPECCA_ROG_WORKER_MODEL = 'qwen3.5:9b'
+    $env:ALPECCA_ROG_WORKER_SECRET_FILE = $ServiceSecretPath
+    $env:ALPECCA_ROG_WORKER_TLS_CERT = $ServiceCertPath
+    $env:ALPECCA_ROG_WORKER_TLS_KEY = $ServiceKeyPath
+    $env:ALPECCA_ROG_WORKER_REPLAY_DB = $ServiceReplayPath
+    $env:ALPECCA_ROG_WORKER_PYTHON = $ServicePython
+    # The task runs as SYSTEM while this checkout is owned by Jason. Scope the
+    # Git trust exception to this worker process so qualification can verify
+    # clean committed source without changing machine-wide Git settings.
+    $env:GIT_CONFIG_COUNT = '1'
+    $env:GIT_CONFIG_KEY_0 = 'safe.directory'
+    $env:GIT_CONFIG_VALUE_0 = $RepoRoot
+    if (Test-Path -LiteralPath $BlenderMarker -PathType Leaf) {
+        $blender = Find-BlenderExecutable
+        if ([string]::IsNullOrWhiteSpace($blender)) {
+            throw 'Blender rendering is enabled, but blender.exe could not be found.'
+        }
+        $env:ALPECCA_ROG_WORKER_BLENDER_EXE = $blender
+        $env:ALPECCA_ROG_WORKER_BLEND_ROOT = $BlendRoot
+        $env:ALPECCA_ROG_WORKER_OUTPUT_ROOT = $OutputRoot
+    }
+    "`n=== Dedicated ROG worker start $(Get-Date -Format o) ===" | Add-Content -LiteralPath $LogPath
+    $priorErrorActionPreference = $ErrorActionPreference
+    $workerExitCode = 2
+    try {
+        # Native stderr is an ErrorRecord in Windows PowerShell.  Keep it
+        # non-terminating here so the log retains the actual Python refusal.
+        $ErrorActionPreference = 'Continue'
+        & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+            -File $SetupScript -CheckWorker -StartWorker *>> $LogPath
+        $workerExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $priorErrorActionPreference
+    }
+    if ($workerExitCode -ne 0) {
+        "Dedicated worker exited with code $workerExitCode." | Add-Content -LiteralPath $LogPath
+    }
+    exit $workerExitCode
+}
+
+$selected = @($Install, $Remove, $Start, $Stop, $Status | Where-Object { $_ }).Count
+if ($selected -gt 1) {
+    throw 'Choose exactly one of -Install, -Remove, -Start, -Stop, or -Status.'
+}
+if ($selected -eq 0) {
+    $Status = $true
+}
+
+if ($Install) {
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $isAdmin = ([System.Security.Principal.WindowsPrincipal] `
+        [System.Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+            [System.Security.Principal.WindowsBuiltInRole]::Administrator
+        )
+    if (-not $isAdmin) {
+        throw 'Run this installer from an Administrator PowerShell window on Jason_HOLYROG.'
+    }
+    $VenvPython = Join-Path $RepoRoot '.venv\Scripts\python.exe'
+    if (Test-Path -LiteralPath $VenvPython -PathType Leaf) {
+        $Python = $VenvPython
+    } else {
+        $PythonCommand = Get-Command python -ErrorAction SilentlyContinue
+        if ($null -eq $PythonCommand) {
+            throw 'Python was not found. Install Python 3.11 or newer, then rerun this setup.'
+        }
+        $Python = $PythonCommand.Source
+    }
+    $OllamaCommand = Get-Command ollama -ErrorAction SilentlyContinue
+    if ($null -eq $OllamaCommand -or -not (Test-Path -LiteralPath $OllamaCommand.Source -PathType Leaf)) {
+        throw 'Ollama was not found. Repair the Ollama Windows installation, then rerun this setup.'
+    }
+
+    if ($EnableBlender) {
+        $blender = Find-BlenderExecutable
+        if ([string]::IsNullOrWhiteSpace($blender)) {
+            throw 'Blender was not found. Install Blender for all users or add blender.exe to PATH.'
+        }
+        New-Item -ItemType Directory -Path $BlendRoot -Force | Out-Null
+        New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
+        New-Item -ItemType File -Path $BlenderMarker -Force | Out-Null
+        Write-Host "Blender worker enabled: $blender" -ForegroundColor Green
+        Write-Host "Approved input root: $BlendRoot"
+        Write-Host "Approved output root: $OutputRoot"
+    }
+
+    Protect-ServiceDataDirectory
+    Sync-ServiceTlsIdentity
+    Write-ServiceToolPaths
+    Write-OllamaRuntimeConfig -Executable $OllamaCommand.Source
+    Install-ServicePython -BootstrapPython $Python
+    $env:ALPECCA_ROG_WORKER_PYTHON = $ServicePython
+
+    $env:ALPECCA_ROG_WORKER_LAN = '1'
+    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+        -File $SetupScript -CheckWorker -SkipModelCheck
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Worker qualification failed; the dedicated task was not installed.'
+    }
+    $existingServiceSecret = Get-Item -LiteralPath $ServiceSecretPath -ErrorAction SilentlyContinue
+    if ($null -ne $existingServiceSecret -and $existingServiceSecret.Length -ge 32) {
+        # A running dedicated worker has already authenticated with this
+        # restricted file.  Keep it through a reinstall rather than needlessly
+        # re-opening Credential Manager, which can be unavailable while a
+        # user-session credential operation is in progress.
+        Write-Host 'Existing ROG worker service secret retained without printing its value.'
+    } else {
+        & $Python $Runner --stage-secret-file $ServiceSecretPath
+        if ($LASTEXITCODE -ne 0) {
+            throw 'The dedicated ROG worker service secret could not be staged.'
+        }
+    }
+    Set-WorkerFirewallRule
+
+    $arguments = @(
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy', 'Bypass',
+        '-WindowStyle', 'Hidden',
+        '-File', ('"{0}"' -f $PSCommandPath),
+        '-RunWorker'
+    ) -join ' '
+    $action = New-ScheduledTaskAction `
+        -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -Argument $arguments `
+        -WorkingDirectory $RepoRoot
+    $ollamaArguments = @(
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy', 'Bypass',
+        '-WindowStyle', 'Hidden',
+        '-File', ('"{0}"' -f $PSCommandPath),
+        '-RunOllama'
+    ) -join ' '
+    $ollamaAction = New-ScheduledTaskAction `
+        -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -Argument $ollamaArguments `
+        -WorkingDirectory $RepoRoot
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId 'SYSTEM' `
+        -LogonType ServiceAccount `
+        -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable `
+        -RestartCount 999 `
+        -RestartInterval (New-TimeSpan -Minutes 1) `
+        -ExecutionTimeLimit ([TimeSpan]::Zero) `
+        -MultipleInstances IgnoreNew
+
+    if ($PSCmdlet.ShouldProcess("$OllamaTaskName and $TaskName", 'install dedicated compute-server tasks')) {
+        $existingOllamaTask = Get-ScheduledTask -TaskName $OllamaTaskName -ErrorAction SilentlyContinue
+        if ($null -ne $existingOllamaTask -and $existingOllamaTask.State -eq 'Running') {
+            Stop-ScheduledTask -TaskName $OllamaTaskName
+        }
+        Get-Process -Name ollama -ErrorAction SilentlyContinue | Stop-Process -Force
+        $ollamaDeadline = (Get-Date).AddSeconds(15)
+        do {
+            $ollamaListener = Get-NetTCPConnection -LocalPort 11434 -State Listen -ErrorAction SilentlyContinue
+            if ($null -eq $ollamaListener) {
+                break
+            }
+            Start-Sleep -Seconds 1
+        } while ((Get-Date) -lt $ollamaDeadline)
+        if ($null -ne $ollamaListener) {
+            throw 'The existing Ollama runtime did not release TCP port 11434; it was not replaced.'
+        }
+        Register-ScheduledTask `
+            -TaskName $OllamaTaskName `
+            -Action $ollamaAction `
+            -Trigger $trigger `
+            -Principal $principal `
+            -Settings $settings `
+            -Description 'Boot-time local Ollama runtime for the compute-only Alpecca ROG worker.' `
+            -Force | Out-Null
+        Start-ScheduledTask -TaskName $OllamaTaskName
+        Wait-OllamaRuntime -Model 'qwen3.5:9b'
+        $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        if ($null -ne $existingTask -and $existingTask.State -eq 'Running') {
+            Stop-ScheduledTask -TaskName $TaskName
+            $deadline = (Get-Date).AddSeconds(15)
+            do {
+                $listener = Get-NetTCPConnection -LocalPort 8788 -State Listen -ErrorAction SilentlyContinue
+                if ($null -eq $listener) {
+                    break
+                }
+                Start-Sleep -Seconds 1
+            } while ((Get-Date) -lt $deadline)
+            if ($null -ne $listener) {
+                throw 'The existing ROG worker did not release TCP port 8788; it was not replaced.'
+            }
+        }
+        Register-ScheduledTask `
+            -TaskName $TaskName `
+            -Action $action `
+            -Trigger $trigger `
+            -Principal $principal `
+            -Settings $settings `
+        -Description 'Boot-time compute-only Alpecca worker; no CoreMind, Discord, memory, or continuity authority.' `
+            -Force | Out-Null
+        Start-ScheduledTask -TaskName $TaskName
+    }
+    Write-Host "Dedicated compute server installed and started: $TaskName" -ForegroundColor Green
+    Write-Host "Boot-time Ollama runtime installed and started: $OllamaTaskName"
+    Write-Host "TCP 8788 is restricted to $PrimaryTailscaleAddress on the Tailscale interface."
+    Write-Host 'It starts at system boot, survives user logout, and restarts after bounded failures.'
+    Write-Host "Log: $LogPath"
+    exit 0
+}
+
+if ($Remove) {
+    if ($PSCmdlet.ShouldProcess("$OllamaTaskName and $TaskName", 'stop and unregister dedicated compute-server tasks')) {
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Stop-ScheduledTask -TaskName $OllamaTaskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $OllamaTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    }
+    Write-Host 'Dedicated task removed. Credentials, TLS keys, models, and Alpecca data were not changed.'
+    exit 0
+}
+
+if ($Start) {
+    Start-ScheduledTask -TaskName $OllamaTaskName
+    Start-ScheduledTask -TaskName $TaskName
+    Write-Host "Dedicated compute server and Ollama runtime start requested."
+    exit 0
+}
+
+if ($Stop) {
+    Stop-ScheduledTask -TaskName $TaskName
+    Stop-ScheduledTask -TaskName $OllamaTaskName -ErrorAction SilentlyContinue
+    Write-Host 'Dedicated compute server and Ollama runtime stopped.'
+    exit 0
+}
+
+$task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($null -eq $task) {
+    Write-Host 'Dedicated compute server is not installed.' -ForegroundColor Yellow
+    exit 1
+}
+$info = Get-ScheduledTaskInfo -TaskName $TaskName
+$ollamaTask = Get-ScheduledTask -TaskName $OllamaTaskName -ErrorAction SilentlyContinue
+$ollamaInfo = if ($null -ne $ollamaTask) { Get-ScheduledTaskInfo -TaskName $OllamaTaskName } else { $null }
+[PSCustomObject]@{
+    TaskName = $TaskName
+    State = $task.State
+    LastRunTime = $info.LastRunTime
+    LastTaskResult = $info.LastTaskResult
+    NextRunTime = $info.NextRunTime
+    LogPath = $LogPath
+    BlenderEnabled = Test-Path -LiteralPath $BlenderMarker -PathType Leaf
+    BlendRoot = $BlendRoot
+    OutputRoot = $OutputRoot
+    OllamaTaskName = if ($null -ne $ollamaTask) { $OllamaTaskName } else { 'not installed' }
+    OllamaState = if ($null -ne $ollamaTask) { $ollamaTask.State } else { 'not installed' }
+    OllamaLastTaskResult = if ($null -ne $ollamaInfo) { $ollamaInfo.LastTaskResult } else { $null }
+} | Format-List

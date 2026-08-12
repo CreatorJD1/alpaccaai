@@ -7,24 +7,26 @@
 # scripts/sync_remote_design_assets.py restores them on approved workstations.
 data/
 
-# Extracted third-party handoff material (ComfyClaw / OpenClaw zips).
-.handoff/
-
 # Python
 __pycache__/
 *.pyc
+.pytest_cache/
+.pytest_tmp/
+.pytest_codex_rog_worker/
 
 # Frontend app build/cache output.
 node_modules/
-apps/*/node_modules/
 apps/*/dist/
 apps/*/build/
-output/
 *.log
-.wrangler/
 # Dedicated Python 3.12 venv for talk mode (pyaudio has no 3.14 wheels).
 .venv-talk/
 .venv-f5-tts/
+# Redundant local ROG probe venv (cu124/torch2.6.0); canonical HyFusER runtime
+# lives outside the repo under %LOCALAPPDATA%\Alpecca\rog-worker\venvs.
+.venv-rog311/
+# XTTS (Coqui TTS) voice synthesis venv -- heavy deps, machine-local only.
+.venv-xtts/
 
 # Alpecca source/generated/runtime art blobs live in Hugging Face datasets.
 # Keep code and JSON manifests in GitHub, but do not commit large image/audio/video
@@ -62,3 +64,12 @@ vendor/
 # Session scratch: rendered PDF/PNG artifacts and remote-attachment photo drops.
 tmp/
 .codex-remote-attachments/
+
+# Alpecca voice renders dropped in the repo root by
+# scripts/synth_alpecca_natural.py. Audio payloads belong in Hugging Face, not
+# GitHub -- same rule as the art blobs above. Also the one-off audio diagnostic
+# output and the scratch quarantine folder.
+alpecca_life_natural*.wav
+alpecca_life_natural*.mp3
+audio_diag*.txt
+_to_delete/

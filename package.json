@@ -4,6 +4,7 @@
     "house:install": "npm --prefix apps/house-hq install",
     "house:dev": "npm --prefix apps/house-hq run dev",
     "house:build": "npm --prefix apps/house-hq run build",
+    "house:test": "npm --prefix apps/house-hq test",
     "house:test:embodiment": "node --test apps/house-hq/src/vrmEmbodiment.test.mjs",
     "house:preview": "npm --prefix apps/house-hq run preview"
   }

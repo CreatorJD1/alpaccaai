@@ -1357,6 +1357,39 @@ def test_next_cycle_candidate_uses_only_fresh_profile_epoch_baseline(monkeypatch
     }
 
 
+def test_next_cycle_prefers_committed_evidence_activation(monkeypatch):
+    class _Profile:
+        def active_profile(self, fallback):
+            return {"updated_at": 725.0}
+
+    class _Evidence:
+        def baseline_summary(self, *, since):
+            raise AssertionError("production activation must read its own SQLite evidence")
+
+    class _Candidates:
+        def activate_from_committed_evidence(self, *, preimage_value, since):
+            assert preimage_value == 0.19
+            assert since == 725.0
+            return {"issued": False, "reason": "committed_evidence_checked"}
+
+    monkeypatch.setattr(
+        server, "behavior_trial_controller",
+        SimpleNamespace(default_chatter_chance=0.19),
+    )
+    monkeypatch.setattr(server, "behavior_trial_profile_store", _Profile())
+    monkeypatch.setattr(server, "qualified_response_ledger", _Evidence())
+    monkeypatch.setattr(server, "behavior_trial_candidate_store", _Candidates())
+    monkeypatch.setattr(
+        server, "_behavior_trial_profile_ready", SimpleNamespace(is_set=lambda: True),
+    )
+    monkeypatch.setattr(server, "_behavior_trial_candidate_public_summary", lambda: None)
+
+    assert server._issue_behavior_trial_candidate_from_baseline() == {
+        "issued": False,
+        "reason": "committed_evidence_checked",
+    }
+
+
 def test_successor_reconciliation_retries_idempotent_candidate_issue(monkeypatch):
     calls: list[str] = []
     server._behavior_trial_recovery_ready.set()

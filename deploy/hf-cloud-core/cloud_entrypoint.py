@@ -38,6 +38,12 @@ REQUIRED_URLS = (
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 STANDBY_SERVICE = "alpecca-continuity-standby"
 STANDBY_POLL_SECONDS = 10.0
+STANDBY_STATES = frozenset({
+    "disabled",
+    "configuration-required",
+    "lease-unavailable",
+    "waiting-for-singleton-lease",
+})
 VOICE_AUTHORIZATION_HEADER = "X-Alpecca-Authorization"
 VOICE_SERVICE = "alpecca-cloud-kokoro-voice"
 VOICE_PORT = 7861
@@ -294,7 +300,7 @@ class _StandbyHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "service": STANDBY_SERVICE,
                 "version": 1,
-                "state": "waiting-for-singleton-lease",
+                "state": self.server.standby_state,  # type: ignore[attr-defined]
                 "coreMind": False,
             })
             return
@@ -365,8 +371,16 @@ class _StandbyHttpServer(ThreadingHTTPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, address, handler, *, voice_backend: VoiceBackend) -> None:
+    def __init__(
+        self,
+        address,
+        handler,
+        *,
+        voice_backend: VoiceBackend,
+        standby_state: str,
+    ) -> None:
         self.voice_backend = voice_backend
+        self.standby_state = standby_state
         super().__init__(address, handler)
 
 
@@ -379,10 +393,16 @@ class StandbyServer:
         *,
         voice_backend: VoiceBackend | None = None,
         environ: Mapping[str, str] | None = None,
+        state: str = "waiting-for-singleton-lease",
     ) -> None:
+        if state not in STANDBY_STATES:
+            raise ValueError("invalid standby state")
         backend = voice_backend or _voice_backend_from_environment(environ or os.environ)
         self._server = _StandbyHttpServer(
-            ("0.0.0.0", port), _StandbyHandler, voice_backend=backend
+            ("0.0.0.0", port),
+            _StandbyHandler,
+            voice_backend=backend,
+            standby_state=state,
         )
         self._thread = threading.Thread(
             target=self._server.serve_forever,
@@ -401,6 +421,26 @@ class StandbyServer:
         self._server.shutdown()
         self._server.server_close()
         self._thread.join(timeout=3.0)
+
+    def set_state(self, state: str) -> None:
+        if state not in STANDBY_STATES:
+            raise ValueError("invalid standby state")
+        self._server.standby_state = state
+
+
+def standby_state(environ: dict[str, str]) -> str:
+    """Describe sparse readiness without granting CoreMind authority."""
+    if not cloud_core_enabled(environ):
+        return "disabled"
+    if validate_configuration(environ):
+        return "configuration-required"
+    return "waiting-for-singleton-lease"
+
+
+def wait_in_sparse_standby(*, sleep=time.sleep) -> None:
+    """Keep the public non-speaking health listener alive until shutdown."""
+    while True:
+        sleep(60.0)
 
 
 def wait_until_promotion_eligible(client, *, sleep=time.sleep) -> None:
@@ -431,44 +471,54 @@ def install_vrm(home: Path, opener=urllib.request.urlopen) -> Path:
 
 
 def main() -> int:
-    if not cloud_core_enabled(os.environ):
+    configure_environment(os.environ)
+    port = int(os.environ.get("PORT", "7860"))
+    state = standby_state(os.environ)
+    standby = StandbyServer(port, state=state)
+    standby.start()
+    print(
+        f"Cloud continuity sparse standby is healthy ({state}); "
+        "CoreMind is not active.",
+        flush=True,
+    )
+    if state == "disabled":
         print(
             "Cloud continuity core is installed but disabled; no restore, lease, "
             "model, or CoreMind was started.",
             flush=True,
         )
-        return 0
-    configure_environment(os.environ)
+        wait_in_sparse_standby()
     missing = validate_configuration(os.environ)
     if missing:
         print("Cloud continuity configuration is incomplete: " + ", ".join(missing), flush=True)
-        return 2
-    from alpecca.continuity_lease import client_from_env
-
-    status_client = client_from_env(role="cloud-standby")
-    if status_client is None:
-        print("Cloud continuity lease client is unavailable.", flush=True)
-        return 2
-
-    port = int(os.environ.get("PORT", "7860"))
+        wait_in_sparse_standby()
     while True:
-        standby = StandbyServer(port)
-        standby.start()
-        print(
-            "Cloud continuity standby is healthy; no CoreMind or model is active.",
-            flush=True,
-        )
+        try:
+            from alpecca.continuity_lease import client_from_env
+            status_client = client_from_env(role="cloud-standby")
+        except Exception:
+            status_client = None
+        if status_client is None:
+            standby.set_state("lease-unavailable")
+            time.sleep(STANDBY_POLL_SECONDS)
+            continue
+        standby.set_state("waiting-for-singleton-lease")
         wait_until_promotion_eligible(status_client)
         begin_promotion_health_grace()
         standby.stop()
         try:
-            result, shutdown_requested = supervisor.run_supervisor_once(
-                vrm_installer=install_vrm,
-            )
+            try:
+                result, shutdown_requested = supervisor.run_supervisor_once(
+                    vrm_installer=install_vrm,
+                )
+            except Exception:
+                result, shutdown_requested = 1, False
         finally:
             end_promotion_health_grace()
         if shutdown_requested:
             return result
+        standby = StandbyServer(port, state="waiting-for-singleton-lease")
+        standby.start()
         print(
             f"Cloud promotion ended with code {result}; returning to fenced standby.",
             flush=True,

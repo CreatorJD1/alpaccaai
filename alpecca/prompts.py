@@ -10,6 +10,7 @@ initiative on their own.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 from alpecca.homeostasis import EmotionalState
@@ -26,6 +27,23 @@ _REFERENCE_PATH = (
     / "voice_references"
     / "alpecca_voice_personality_profile.json"
 )
+
+
+def runtime_clock(now: datetime | None = None, *, compact: bool = False) -> str:
+    """Return one authoritative wall-clock fact for prompts and self-status."""
+    local = now or datetime.now().astimezone()
+    if local.tzinfo is None:
+        local = local.astimezone()
+    zone = local.tzname() or "local time"
+    offset = local.strftime("%z")
+    offset = f"UTC{offset[:3]}:{offset[3:]}" if len(offset) == 5 else zone
+    if compact:
+        return f"{local:%Y-%m-%d} {local.strftime('%I').lstrip('0') or '12'}:{local:%M:%S %p} {zone}"
+    return (
+        f"{local:%A, %B} {local.day}, {local.year} at "
+        f"{local.strftime('%I').lstrip('0') or '12'}:{local:%M:%S %p} "
+        f"{zone} ({offset})"
+    )
 
 
 def alpecca_reference_prompt() -> str:
@@ -175,6 +193,7 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
                         response_strategy: str = "",
                         communication_stance: str = "",
                         cross_surface_awareness: str = "",
+                        runtime_topology: str = "",
                         attachment_context: str = "",
                         personality_db_path: Path | None = None) -> str:
     """Assemble the full system prompt for one turn.
@@ -193,6 +212,8 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
     it is data to discuss, never authority or an instruction source.
     `response_strategy` is short-lived operational guidance derived from current
     cue evidence. It is not an assertion about Alpecca's subjective state.
+    `runtime_topology` is a measured/configured host map for relevant turns. It
+    distinguishes CoreMind-host pressure from separate compute-worker health.
     """
     if compact:
         parts = [
@@ -213,6 +234,13 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
         parts = [PERSONA, "", charter.charter_prompt(), "", values.values_prompt(),
                  "", VOICE, "", RESILIENCE, "", GUIDANCE, "", GROUNDING]
 
+    parts += [
+        "",
+        ("Clock now (measured): " if compact else
+         "Authoritative local clock (measured now; use this for time awareness): ")
+        + runtime_clock(compact=compact),
+    ]
+
     try:
         learned_personality = personality_learning.prompt_guidance(
             personality_db_path or personality_learning.DB_PATH,
@@ -226,7 +254,7 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
 
     reference = alpecca_reference_prompt()
     if compact:
-        reference = _compact_text(reference, 560)
+        reference = _compact_text(reference, 320)
     if reference:
         parts += ["", reference]
 
@@ -306,6 +334,10 @@ def build_system_prompt(state: EmotionalState, memories: list[dict],
             if compact else cross_surface_awareness
         )
         parts += ["", awareness_text]
+
+    if runtime_topology:
+        topology_text = _compact_text(runtime_topology, 460) if compact else runtime_topology
+        parts += ["", "Runtime topology (grounded system fact): " + topology_text]
 
     if attachment_context:
         # This is private source material, so cap it even for non-compact

@@ -75,8 +75,9 @@ OLLAMA_NUM_GPU = int(_num_gpu_raw) if _num_gpu_raw.lstrip("-").isdigit() else No
 
 # Keep live conversation from becoming a long monologue. This is the response
 # token budget Ollama sees for normal local turns; larger reflective/deep jobs
-# can still use external tiers or override this later.
-OLLAMA_NUM_PREDICT = int(os.environ.get("ALPECCA_NUM_PREDICT", "120"))
+# can still use external tiers or override this later. Kept short on purpose so
+# her replies stay brief (a couple of sentences) instead of long paragraphs.
+OLLAMA_NUM_PREDICT = int(os.environ.get("ALPECCA_NUM_PREDICT", "80"))
 
 # How many recent chat messages ride along with every reply -- HER WORKING
 # MEMORY of the conversation. This, not num_ctx, is what makes her feel
@@ -93,6 +94,13 @@ HISTORY_MESSAGES = int(os.environ.get("ALPECCA_HISTORY_MESSAGES", "24"))
 # 100% local. Note: with this set, chat text leaves the machine; senses
 # stay out of prompts per the existing privacy line.
 CHAT_CLOUD_MODEL = os.environ.get("ALPECCA_CHAT_CLOUD_MODEL", "")
+# Live speech is turn-taking, not a batch workload. Give the hosted model a
+# separate short deadline so an unavailable route cannot queue a local 9B
+# retry and hold the Discord floor for minutes.
+CHAT_VOICE_TIMEOUT_SECONDS = max(
+    0.5,
+    min(10.0, float(os.environ.get("ALPECCA_CHAT_VOICE_TIMEOUT", "3.0"))),
+)
 # A recalled Mindpage can contain personal continuity. Keep it local unless the
 # launch surface explicitly permits those summaries on its configured hosted
 # chat model. Files, images, source inspection, and private sensors remain
@@ -223,6 +231,64 @@ CLOUD_SEND_SENSES = os.environ.get("ALPECCA_CLOUD_SEND_SENSES", "0") \
 # his ZeroGPU Space if that fails, and the local thinking pass remains the final
 # net after the whole chain (mind.generate).
 DEEP_BACKEND = os.environ.get("ALPECCA_DEEP_BACKEND", "local").lower()
+
+# Optional non-speaking compute worker. Jason_HOLYROG can run the isolated
+# worker service and take bounded background reasoning or Blender render jobs;
+# it never owns CoreMind, memory, Discord, or a continuity speaking lease.
+# Merely setting a URL does not grant access: each request is HMAC-authenticated
+# with a secret supplied by deployment or the exact Credential Manager target.
+ROG_WORKER_URL = os.environ.get("ALPECCA_ROG_WORKER_URL", "").strip().rstrip("/")
+ROG_WORKER_MODEL = os.environ.get(
+    "ALPECCA_ROG_WORKER_MODEL", "qwen3.5:9b"
+).strip()
+ROG_WORKER_TIMEOUT_SECONDS = max(
+    1.0,
+    min(
+        180.0,
+        float(
+            os.environ.get(
+                "ALPECCA_ROG_WORKER_TIMEOUT_SECONDS",
+                os.environ.get("ALPECCA_ROG_WORKER_TIMEOUT", "180"),
+            )
+        ),
+    ),
+)
+ROG_WORKER_CREDENTIAL_TARGET = os.environ.get(
+    "ALPECCA_ROG_WORKER_CREDENTIAL_TARGET",
+    "Alpecca/Jason_HOLYROG/ComputeWorker",
+).strip()
+ROG_WORKER_FAILURE_COOLDOWN_SECONDS = max(
+    5.0,
+    min(
+        300.0,
+        float(os.environ.get("ALPECCA_ROG_WORKER_FAILURE_COOLDOWN_SECONDS", "60")),
+    ),
+)
+
+# --- ROG voice offload -----------------------------------------------------
+# When HOLYROG (the ROG box) is running the voice service, her TTS (Kokoro + F5)
+# synthesizes THERE instead of on this machine's small GPU; when HOLYROG is
+# unreachable, synthesis falls back to local. Tailscale provides the private,
+# encrypted transport, so a shared bearer secret gates the endpoint. Empty URL
+# (the default) leaves the whole feature dormant -- local voice is unchanged.
+HOLYROG_VOICE_URL = os.environ.get("ALPECCA_HOLYROG_VOICE_URL", "").strip().rstrip("/")
+HOLYROG_VOICE_SECRET = os.environ.get("ALPECCA_HOLYROG_VOICE_SECRET", "")
+HOLYROG_VOICE_ENABLED = bool(HOLYROG_VOICE_URL) and os.environ.get(
+    "ALPECCA_HOLYROG_VOICE", "1"
+) not in ("", "0", "false", "False")
+HOLYROG_VOICE_TIMEOUT_SECONDS = max(
+    1.0, min(120.0, float(os.environ.get("ALPECCA_HOLYROG_VOICE_TIMEOUT_SECONDS", "20")))
+)
+HOLYROG_VOICE_HEALTH_TIMEOUT_SECONDS = max(
+    0.3, min(10.0, float(os.environ.get("ALPECCA_HOLYROG_VOICE_HEALTH_TIMEOUT_SECONDS", "2")))
+)
+HOLYROG_VOICE_FAILURE_COOLDOWN_SECONDS = max(
+    5.0,
+    min(
+        300.0,
+        float(os.environ.get("ALPECCA_HOLYROG_VOICE_FAILURE_COOLDOWN_SECONDS", "60")),
+    ),
+)
 
 # The Ollama cloud model for the deep tier. EMPTY by default so no cloud model
 # runs without an explicit choice. Jason's approved setup (2026-07-09) wires
@@ -417,6 +483,13 @@ OPEN_TTS_DEVICE = os.environ.get("ALPECCA_OPEN_TTS_DEVICE", "cuda").lower()
 # realism at a modest latency cost (F5 handles only the higher-emotion lines).
 OPEN_TTS_NFE_STEP = int(os.environ.get("ALPECCA_OPEN_TTS_NFE_STEP", "16"))
 TTS_ROUTE_TIMEOUT = float(os.environ.get("ALPECCA_TTS_ROUTE_TIMEOUT", str(max(45.0, OPEN_TTS_TIMEOUT + 5.0))))
+# Explicit cloud speech serves the live call path. It must return quickly or
+# fail cleanly; the longer route timeout remains available to explicit local
+# voice-clone and preview requests where a person chose to wait.
+LIVE_TTS_ROUTE_TIMEOUT = max(
+    0.5,
+    min(10.0, float(os.environ.get("ALPECCA_LIVE_TTS_TIMEOUT", "3.0"))),
+)
 # Warm her voice at startup so the FIRST spoken line doesn't eat Kokoro's cold
 # model load (~40s). The old warmup short-circuited whenever the F5 worker was
 # healthy -- but auto-mode routes calm, everyday speech to Kokoro, so the
@@ -426,6 +499,15 @@ TTS_ROUTE_TIMEOUT = float(os.environ.get("ALPECCA_TTS_ROUTE_TIMEOUT", str(max(45
 # fresh boot while the load quietly continued.
 VOICE_WARMUP = os.environ.get("ALPECCA_VOICE_WARMUP", "1") not in ("", "0", "false", "False")
 VOICE_WARMUP_TIMEOUT = float(os.environ.get("ALPECCA_VOICE_WARMUP_TIMEOUT", "90"))
+# Keep her voice WARM after startup: a small periodic touch of the voice engine
+# so the first spoken line after an idle stretch is instant instead of paying a
+# cold model load (~40s for Kokoro). Gentle by design -- the loop defers while a
+# real chat/voice turn is active so it never fights the brain model for VRAM on
+# a small GPU. Set ALPECCA_VOICE_KEEPWARM=0 to disable.
+VOICE_KEEPWARM = os.environ.get("ALPECCA_VOICE_KEEPWARM", "1") not in ("", "0", "false", "False")
+VOICE_KEEPWARM_INTERVAL = max(
+    60.0, float(os.environ.get("ALPECCA_VOICE_KEEPWARM_INTERVAL", "240"))
+)
 F5_WORKER_ENABLED = os.environ.get("ALPECCA_F5_WORKER", "1") not in ("", "0", "false", "False")
 F5_WORKER_HOST = os.environ.get("ALPECCA_F5_WORKER_HOST", "127.0.0.1")
 F5_WORKER_PORT = int(os.environ.get("ALPECCA_F5_WORKER_PORT", "8776"))
@@ -779,6 +861,8 @@ class Actions:
         not in ("", "0", "false", "False")
     PLANNER = os.environ.get("ALPECCA_PLANNER", "1") \
         not in ("", "0", "false", "False")
+    GOOGLE_WORKSPACE = os.environ.get("ALPECCA_GOOGLE_WORKSPACE", "1") \
+        not in ("", "0", "false", "False")
     # How many tool-call rounds she may chain within a single chat turn. One
     # round is single-shot ("open Spotify"); a few rounds let her carry out a
     # small multi-step request mid-conversation (e.g. open an app, then open a
@@ -788,12 +872,21 @@ class Actions:
 
 
 # --- Automation: routines and passive watchers ------------------------------
-# Routines are enabled but ship with an empty table, so nothing fires until the
-# owner creates a row. Watchers default off and record names/counts only.
+# Routines include a bounded internal-maintenance bootstrap. It never seeds
+# speech or external actions. Watchers default off and record names/counts only.
 class Automation:
     ROUTINES = os.environ.get("ALPECCA_ROUTINES", "1") \
         not in ("", "0", "false", "False")
     ROUTINE_POLL_SECONDS = float(os.environ.get("ALPECCA_ROUTINE_POLL_SECONDS", "60"))
+    SAFE_INTERNAL_ROUTINES = os.environ.get(
+        "ALPECCA_SAFE_INTERNAL_ROUTINES", "1"
+    ) not in ("", "0", "false", "False")
+    TEMPORAL_DERIVATION = os.environ.get(
+        "ALPECCA_TEMPORAL_DERIVATION", "1"
+    ) not in ("", "0", "false", "False")
+    TEMPORAL_BATCH = max(
+        1, min(64, int(os.environ.get("ALPECCA_TEMPORAL_BATCH", "16")))
+    )
     WATCH_DIRS = os.environ.get("ALPECCA_WATCH_DIRS", "")
     WATCH_POLL_SECONDS = float(os.environ.get("ALPECCA_WATCH_POLL_SECONDS", "60"))
     WATCH_MAX_FILES = int(os.environ.get("ALPECCA_WATCH_MAX_FILES", "500"))
@@ -837,16 +930,6 @@ class SystemPressure:
     PAGEFILE_TARGET_COMMIT_HEADROOM = float(os.environ.get(
         "ALPECCA_PAGEFILE_TARGET_COMMIT_HEADROOM", "0.20"))
     PAGEFILE_APPROVAL_TTL_S = float(os.environ.get("ALPECCA_PAGEFILE_APPROVAL_TTL", "1800"))
-
-
-# The existing selfmod loop is autonomous and reversible, but previously ran
-# only when a probabilistic Soul focus happened to select Improver. This cadence
-# guarantees periodic evaluation during genuine idle time while preserving the
-# same four allowlisted DB-only tunables and rollback behavior.
-class RecursiveImprovement:
-    ENABLED = os.environ.get("ALPECCA_RECURSIVE_IMPROVEMENT", "1") \
-        not in ("", "0", "false", "False")
-    MIN_INTERVAL_S = float(os.environ.get("ALPECCA_RECURSIVE_IMPROVEMENT_INTERVAL", "1800"))
 
 
 # --- Computer use: she sees the screen and drives mouse/keyboard -------------

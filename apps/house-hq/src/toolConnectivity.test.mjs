@@ -33,6 +33,9 @@ test("tool library reports backend executable tools and Parlor honestly", () => 
     parlorCurrent: true,
     actuatorEnabled: true,
     executableTools: ["memory_search", "self_status"],
+    googleWorkspaceReady: false,
+    googleWorkspaceState: "unavailable",
+    googleWorkspaceCapabilities: [],
   });
 });
 

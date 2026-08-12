@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT))
 # lock must be held before config can touch persistent state or any helper can
 # start a sidecar service.
 from alpecca import instance as instance_mod      # noqa: E402
+from alpecca import host_roles as host_roles_mod  # noqa: E402
 from alpecca.continuity_lease import (             # noqa: E402
     ContinuityLeaseError,
     ContinuityLeaseGuard,
@@ -74,18 +75,42 @@ os.environ.setdefault("OLLAMA_NUM_PARALLEL", "1")
 os.environ.setdefault("ALPECCA_CHAT_CLOUD_MODEL", "gemma4:cloud")
 os.environ.setdefault("ALPECCA_CHAT_CLOUD_PAGED_MEMORY", "1")
 os.environ.setdefault("ALPECCA_CHAT_ZEROGPU", "0")
-os.environ.setdefault("ALPECCA_DEEP_BACKEND", "ollama-cloud")
+# Prefer the separate non-speaking ROG worker for background deep work. If its
+# exact shared credential is absent or the host is unavailable, CoreMind walks
+# straight on to hosted Gemma and then the existing local Qwen fallback.
+_ROG_WORKER_LEGACY_URL = "https://Jason_HOLYROG:8788"
+_ROG_WORKER_MAGICDNS_URL = "https://jason-holyrog.tailda0108.ts.net:8788"
+_configured_rog_worker_url = os.environ.get("ALPECCA_ROG_WORKER_URL", "")
+if _configured_rog_worker_url.casefold() == _ROG_WORKER_LEGACY_URL.casefold():
+    # Older launchers still supply the NetBIOS-style name. Route that known
+    # default through Tailscale MagicDNS so Windows cannot select a LAN record.
+    os.environ["ALPECCA_ROG_WORKER_URL"] = _ROG_WORKER_MAGICDNS_URL
+else:
+    os.environ.setdefault("ALPECCA_ROG_WORKER_URL", _ROG_WORKER_MAGICDNS_URL)
+os.environ.setdefault(
+    "ALPECCA_ROG_WORKER_CA_CERT",
+    str(Path(os.environ.get("LOCALAPPDATA", Path.home()))
+        / "Alpecca" / "rog-worker" / "tls" / "jason-holyrog.crt"),
+)
+os.environ.setdefault("ALPECCA_ROG_WORKER_MODEL", "qwen3.5:9b")
+os.environ.setdefault("ALPECCA_DEEP_BACKEND", "rog-worker,ollama-cloud")
+# Remote administration is separate from the bounded compute route. Keep it
+# disabled unless the operator explicitly opts in for this launch.
+os.environ.setdefault("ALPECCA_ROG_SSH_ENABLED", "0")
+os.environ.setdefault("ALPECCA_ROG_SSH_HOST", "Jason_HOLYROG")
+os.environ.setdefault("ALPECCA_ROG_SSH_USER", "Jason")
 os.environ.setdefault("ALPECCA_OLLAMA_CLOUD_MODEL", "gemma4:cloud")
 os.environ.setdefault("ALPECCA_REFLECT_MODEL", "qwen3.5:9b")
 os.environ.setdefault("ALPECCA_VISION_BACKEND", "local")
 os.environ.setdefault("ALPECCA_VISION_CLOUD_MODEL", "gemma4:cloud")
-os.environ.setdefault("ALPECCA_DISCORD_CREATOR_CLOUD_VISION", "1")
+os.environ.setdefault("ALPECCA_DISCORD_CREATOR_CLOUD_VISION", "0")
 os.environ.setdefault("ALPECCA_VISION_CLOUD_TRANSPORT_ROUTE", "https://ollama.com/api/chat")
 os.environ.setdefault("ALPECCA_VISION_CLOUD_DEPLOYMENT", "ollama-cloud")
 os.environ.setdefault("ALPECCA_VISION_CLOUD_PROCESSING_LOCATION", "provider-managed")
 os.environ.setdefault("ALPECCA_VISION_MODEL", "qwen3.5:4b")
 os.environ.setdefault("ALPECCA_VISION_NUM_GPU", "99")
-os.environ.setdefault("ALPECCA_VISION_TIMEOUT", "60")
+os.environ.setdefault("ALPECCA_VISION_TIMEOUT", "120")
+os.environ.setdefault("ALPECCA_VISION_KEEP_ALIVE", "30m")
 os.environ.setdefault("ALPECCA_CLOUD_STANDBY_URL", "https://creatorjd-alpecca-survival-core.hf.space")
 os.environ.setdefault(
     "ALPECCA_CLOUD_TTS_ENDPOINT",
@@ -108,7 +133,35 @@ os.environ.setdefault("ALPECCA_DISCORD_MEDIA", "1")
 # explicit ALPECCA_DISCORD_VOICE=0 or ALPECCA_DISCORD_VOICE_RECEIVE=0 still wins.
 os.environ.setdefault("ALPECCA_DISCORD_VOICE", "1")
 os.environ.setdefault("ALPECCA_DISCORD_VOICE_RECEIVE", "1")
-os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "auto")
+os.environ.setdefault("ALPECCA_CHAT_VOICE_TIMEOUT", "3.0")
+os.environ.setdefault("ALPECCA_CLOUD_TTS_TIMEOUT_SECONDS", "2.5")
+os.environ.setdefault("ALPECCA_LIVE_TTS_TIMEOUT", "3.0")
+os.environ.setdefault("ALPECCA_DISCORD_VOICE_TIMEOUT", "10.0")
+os.environ.setdefault("ALPECCA_DISCORD_TRANSCRIBE_TIMEOUT", "30.0")
+# Her voice is her LOCAL Kokoro af_heart "original voice" on BOTH House HQ and
+# Discord. It is verified-clean (proper WAV, no clipping), carries emotion via
+# her naturalize + mood modulation, and -- unlike the F5 clone -- never morphs,
+# never needs the network, and stays warm via the keep-warm loop.
+os.environ.setdefault("ALPECCA_TTS_BACKEND", "kokoro")
+os.environ.setdefault("ALPECCA_DISCORD_TTS_ENGINE", "kokoro")
+
+def _lan_access_point(port: int) -> str:
+    """The URL another device on this network uses to reach THIS computer.
+    Best-effort local IP via the standard UDP-socket route trick (no packets
+    are actually sent); falls back to the hostname form if it can't be found."""
+    import socket
+    ip = ""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
+    except Exception:
+        ip = ""
+    return f"http://{ip or socket.gethostname()}:{port}"
+
 
 def _f5_worker_health(timeout: float = 0.4) -> bool:
     try:
@@ -138,6 +191,29 @@ def _f5_worker_port_taken() -> bool:
         return False
 
 
+def _voice_python_supports_device(executable: Path, device: str) -> bool:
+    """Require the selected worker runtime to have F5 and its requested Torch device."""
+    if not executable.is_file():
+        return False
+    requires_cuda = str(device or "cuda").strip().lower().startswith("cuda")
+    probe = (
+        "import f5_tts, torch, sys; "
+        f"sys.exit(0 if ({'torch.cuda.is_available()' if requires_cuda else 'True'}) else 1)"
+    )
+    try:
+        result = subprocess.run(
+            [str(executable), "-c", probe],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+            check=False,
+            creationflags=_background_creationflags(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def _start_f5_worker() -> None:
     if not F5_WORKER_ENABLED or _f5_worker_health() or _f5_worker_port_taken():
         return
@@ -150,7 +226,31 @@ def _start_f5_worker() -> None:
     }
     if os.name == "nt":
         kwargs["creationflags"] = _background_creationflags()
-    process = subprocess.Popen([sys.executable, "scripts\\f5_tts_worker.py"], **kwargs)
+    configured_python = str(OPEN_TTS_PYTHON or "").strip()
+    default_voice_python = (
+        Path(__file__).resolve().parent.parent
+        / ".venv-f5-tts" / "Scripts" / "python.exe"
+    )
+    requested_device = os.environ.get("ALPECCA_OPEN_TTS_DEVICE", "cuda")
+    if configured_python:
+        candidates = [Path(configured_python).expanduser()]
+    else:
+        # Prefer the isolated environment when it can serve the configured
+        # device, then fall back to the already-qualified CoreMind runtime.
+        candidates = [default_voice_python, Path(sys.executable)]
+    voice_python = next(
+        (candidate for candidate in candidates
+         if _voice_python_supports_device(candidate, requested_device)),
+        None,
+    )
+    if voice_python is None:
+        print(
+            "Alpecca F5 worker was not started: no Python runtime has F5-TTS "
+            f"with device {requested_device!r}; Kokoro remains available."
+        )
+        return
+    worker_python = str(voice_python)
+    process = subprocess.Popen([worker_python, "scripts\\f5_tts_worker.py"], **kwargs)
     _CONTINUITY_CHILDREN.append(process)
     print(f"Alpecca F5 voice worker is warming at http://{F5_WORKER_HOST}:{F5_WORKER_PORT} ...")
     print("Kokoro remains available while F5 finishes warming in the background.")
@@ -341,6 +441,8 @@ def _enter_offline_isolated_mode(reason: str) -> None:
     os.environ["ALPECCA_CONTINUITY_OFFLINE_ISOLATED"] = "1"
     os.environ.pop("ALPECCA_CONTINUITY_LEASE_ID", None)
     os.environ.pop("ALPECCA_CONTINUITY_FENCING_EPOCH", None)
+    os.environ.pop("ALPECCA_CONTINUITY_LEASE_HOLDER", None)
+    os.environ.pop("ALPECCA_CONTINUITY_LAUNCHER_PID", None)
     os.environ["ALPECCA_REMOTE"] = "0"
     os.environ["ALPECCA_PUBLIC_URL"] = ""
     os.environ["ALPECCA_CONTINUITY_PUBLIC_ENDPOINT"] = ""
@@ -405,6 +507,10 @@ def _start_continuity_guard() -> ContinuityLeaseGuard | None:
             os.environ["ALPECCA_CONTINUITY_LEASE_ID"] = grant.lease_id
             os.environ["ALPECCA_CONTINUITY_FENCING_EPOCH"] = str(grant.fencing_epoch)
             os.environ["ALPECCA_CONTINUITY_LEASE_HOLDER"] = grant.holder
+            # server.py is imported in this same process. Binding the inherited
+            # lease tuple to this PID prevents an accidental direct ASGI launch
+            # or a stale copied environment from constructing another CoreMind.
+            os.environ["ALPECCA_CONTINUITY_LAUNCHER_PID"] = str(os.getpid())
             print(
                 "Alpecca continuity lease acquired "
                 f"(local-primary, epoch {grant.fencing_epoch})."
@@ -448,13 +554,18 @@ def _merge_continuity_before_start() -> None:
 
 def _run() -> int:
     """Start the stack after the process-wide instance lock is held."""
-    global F5_WORKER_ENABLED, F5_WORKER_HOST, F5_WORKER_PORT, HOST, PORT
+    global F5_WORKER_ENABLED, F5_WORKER_HOST, F5_WORKER_PORT, OPEN_TTS_PYTHON, HOST, PORT
 
     # Import AFTER the env is set and the lock is acquired: config.py creates
     # the home directory and can migrate persistent state at import time.
     import uvicorn
-    from config import F5_WORKER_ENABLED, F5_WORKER_HOST, F5_WORKER_PORT
-    from config import HOST, PORT
+    from config import (
+        F5_WORKER_ENABLED,
+        F5_WORKER_HOST,
+        F5_WORKER_PORT,
+        OPEN_TTS_PYTHON,
+    )
+    from config import HOST, PORT, BIND_HOST, REMOTE_ACCESS
 
     existing = instance_mod.existing_server_url(PORT)
     if existing:
@@ -473,18 +584,40 @@ def _run() -> int:
 
     print(f"Alpecca is waking up (safe capability defaults) at http://{HOST}:{PORT}")
     print(f"  LLM online: {mind.llm.online}")
+    # LOCAL SERVER ACCESS POINT: when ALPECCA_REMOTE=1 she binds every interface
+    # (BIND_HOST=0.0.0.0), so the phone/desktop app on your network reaches THIS
+    # computer and offloads all the heavy processing (LLM, TTS, vision) here.
+    # Still behind her authorization -- binding wider doesn't open the door,
+    # alpecca.auth does. Off by default (localhost only) so nothing is exposed
+    # until you ask. We print the address other devices connect to.
+    if REMOTE_ACCESS:
+        lan = _lan_access_point(PORT)
+        print("  ACCESS POINT (this computer does the processing):")
+        print(f"    On your network:  {lan}")
+        print("    Open that on the phone/other PC, or install the app from it.")
+        print("    Anywhere (behind her token, needs cloudflared):")
+        print("      python scripts/share.py --tunnel")
+    else:
+        print("  Local only. To let your phone/other devices use THIS computer "
+              "for processing, relaunch with ALPECCA_REMOTE=1 (or the launcher's "
+              "'Local access point' button).")
     threading.Thread(
         target=_open_local_app_when_ready,
         args=(server_mod,),
         daemon=True,
         name="LocalBootstrap",
     ).start()
-    uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
+    uvicorn.run(app, host=BIND_HOST, port=PORT, log_level="warning")
     return 0
 
 
 def main() -> int:
     """Run one full stack, refusing a concurrent CoreMind/database writer."""
+    try:
+        host_roles_mod.require_primary_runtime_host()
+    except host_roles_mod.ComputeOnlyHostError as exc:
+        print(f"Alpecca full-stack startup refused: {exc}.", file=sys.stderr)
+        return 2
     lock = instance_mod.LocalInstanceLock(_instance_lock_path())
     try:
         lock.acquire()

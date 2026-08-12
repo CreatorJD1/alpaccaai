@@ -9,7 +9,11 @@ SELF_AFFECTING = frozenset({
 
 PRIVATE_READ = frozenset({
     "memory_search", "journal_read", "self_status", "source_inspect",
-    "recall_page", "find_file", "screen_read", "camera_read",
+    "recall_page", "find_file", "screen_read", "camera_read", "google_status",
+})
+
+CREATOR_EXTERNAL_EFFECT = frozenset({
+    "google_create_folder", "google_create_document",
 })
 
 EXTERNAL_EFFECT = frozenset({
@@ -33,6 +37,9 @@ def classify(tool_name: str) -> dict:
         creator_required = True
     elif name in PRIVATE_READ:
         category = "private_read"
+        creator_required = True
+    elif name in CREATOR_EXTERNAL_EFFECT:
+        category = "external_effect"
         creator_required = True
     elif name in EXTERNAL_EFFECT:
         category = "external_effect"

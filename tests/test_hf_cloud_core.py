@@ -50,6 +50,16 @@ def test_cloud_core_requires_explicit_enable_switch():
     assert cloud.cloud_core_enabled({"ALPECCA_CLOUD_CORE_ENABLED": "true"}) is True
 
 
+def test_sparse_standby_state_does_not_claim_coremind_readiness():
+    disabled = {"PORT": "7860"}
+    cloud.configure_environment(disabled)
+    assert cloud.standby_state(disabled) == "disabled"
+
+    incomplete = {"PORT": "7860", "ALPECCA_CLOUD_CORE_ENABLED": "1"}
+    cloud.configure_environment(incomplete)
+    assert cloud.standby_state(incomplete) == "configuration-required"
+
+
 def test_promotion_health_grace_marker_is_atomic_and_removable(
     tmp_path, monkeypatch
 ):

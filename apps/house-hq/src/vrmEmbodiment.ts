@@ -329,7 +329,28 @@ export function resolveVrmFootSwing(phase: number, side: "left" | "right"): VrmF
 // treadmill effect where a pose cycles independently of how far the body moves.
 export function strideDistanceForMotion(speed: number, angularSpeed: number): number {
   if (!Number.isFinite(speed) || !Number.isFinite(angularSpeed) || speed <= 0 || angularSpeed <= 0) return 0;
-  return THREE.MathUtils.clamp(speed * (Math.PI * 2) / angularSpeed, 0.14, 0.5);
+  return THREE.MathUtils.clamp(speed * (Math.PI * 2) / angularSpeed, 0.14, 0.64);
+}
+
+const VRM_WALK_STRIDE_METRES = 0.42;
+const VRM_RUN_STRIDE_METRES = 0.62;
+
+// Keep the procedural contact solve on the same distance clock as admitted
+// locomotion VRMA. A cadence chosen only from "walk"/"run" plays too quickly
+// when House collision resolution advances the body slowly, producing sliding.
+export function resolveVrmGaitAngularSpeed(speed: number, running: boolean): number {
+  const measured = Number.isFinite(speed) ? Math.max(0, speed) : 0;
+  const stride = running ? VRM_RUN_STRIDE_METRES : VRM_WALK_STRIDE_METRES;
+  if (measured <= 1e-4) return running ? 3.2 : 2.2;
+  return THREE.MathUtils.clamp(
+    measured * Math.PI * 2 / stride,
+    running ? 2.8 : 1.8,
+    running ? 7.2 : 4.8,
+  );
+}
+
+export function shouldApplyVrmGroundedGait(moving: boolean, poseClip: string): boolean {
+  return moving && (poseClip === "walk" || poseClip === "run");
 }
 
 // A zero horizontal stride is valid for the in-app walk reference. It still
@@ -1381,9 +1402,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       return;
     }
     const run = clipName === "run";
-    const base = run ? 5.1 : 2.45;
-    const speedContribution = THREE.MathUtils.clamp(locomotionSpeed, 0, 0.65) * (run ? 2.8 : 3.2);
-    const target = base + speedContribution;
+    const target = resolveVrmGaitAngularSpeed(locomotionSpeed, run);
     gaitAngularSpeed = THREE.MathUtils.damp(gaitAngularSpeed, target, 8, Math.max(0, dt));
     gaitPhase += Math.max(0, dt) * gaitAngularSpeed;
   }
@@ -1892,8 +1911,33 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
     }
   }
 
-  function applyPlantedFootGait(): void {
-    if (!footPlantsReady && !initializeFootPlants()) return;
+  const LOWER_BODY_BONES = [
+    "leftUpperLeg", "leftLowerLeg", "leftFoot",
+    "rightUpperLeg", "rightLowerLeg", "rightFoot",
+  ] as const satisfies readonly VRMHumanBoneName[];
+
+  function snapshotLowerBodyPose(): Map<VRMHumanBoneName, THREE.Quaternion> {
+    const snapshot = new Map<VRMHumanBoneName, THREE.Quaternion>();
+    for (const name of LOWER_BODY_BONES) {
+      const joint = bone(name);
+      if (joint) snapshot.set(name, joint.quaternion.clone());
+    }
+    return snapshot;
+  }
+
+  function restoreLowerBodyPose(snapshot: ReadonlyMap<VRMHumanBoneName, THREE.Quaternion>): void {
+    for (const [name, quaternion] of snapshot) {
+      const joint = bone(name);
+      if (!joint) continue;
+      joint.quaternion.copy(quaternion);
+      joint.updateMatrix();
+    }
+    vrm?.scene.updateWorldMatrix(true, true);
+  }
+
+  function applyPlantedFootGait(): boolean {
+    if (!footPlantsReady && !initializeFootPlants()) return false;
+    const poseBeforeIk = snapshotLowerBodyPose();
     const stride = strideDistanceForMotion(locomotionSpeed, gaitAngularSpeed);
 
     for (const side of ["left", "right"] as const) {
@@ -1918,8 +1962,9 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
         state.target.copy(state.plant);
       }
       if (!plantBaselineWorld(state, footBaseWorld)) {
+        restoreLowerBodyPose(poseBeforeIk);
         resetFootPlants();
-        return;
+        return false;
       }
       const horizontalReach = Math.hypot(
         state.target.x - footBaseWorld.x,
@@ -1929,18 +1974,21 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
         // A frame hitch, collision correction, or sharp route turn can leave a
         // world-space plant behind the moving body. Reacquire instead of
         // stretching the leg into a split or allowing the knee to flip.
+        restoreLowerBodyPose(poseBeforeIk);
         resetFootPlants();
-        return;
+        return false;
       }
       if (!applyLegPlantIk(side, state.target)) {
         // Ground/contact data or a sharp turn invalidated this world-space
         // plant. Rebuild both targets from the current measured soles next frame.
+        restoreLowerBodyPose(poseBeforeIk);
         resetFootPlants();
-        return;
+        return false;
       }
       applyGaitFootRoll(side, swing);
     }
     constrainLowerBodyPose();
+    return true;
   }
 
   /* ---- the studio's clip engine (ported from web/vrm.html) ---- */
@@ -2794,7 +2842,7 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
         const previous = clipName;
         if (shouldResetVrmGaitPhase(previous, next)) {
           gaitPhase = 0;
-          gaitAngularSpeed = next === "run" ? 5.1 : 2.45;
+          gaitAngularSpeed = resolveVrmGaitAngularSpeed(locomotionSpeed, next === "run");
           resetFootPlants();
         }
         if (shouldBlendVrmProceduralTransition(previous, next)) beginProceduralTransition();
@@ -2916,7 +2964,10 @@ export function createVrmEmbodiment(deps: VrmEmbodimentDeps): VrmEmbodiment {
       // projection before any contact solve. This keeps imported full-body
       // clips from introducing knee twist or ankle roll outside the V4 rig.
       constrainLowerBodyPose();
-      if (!vrmaDriven && (poseClip === "walk" || poseClip === "run")) applyPlantedFootGait();
+      // Collision-grounded contact is a final locomotion constraint, not a
+      // procedural-animation feature. Apply it after either source so admitted
+      // VRMA cannot bypass sole clearance, foot planting, or knee-plane limits.
+      if (shouldApplyVrmGroundedGait(spriteMoving, poseClip)) applyPlantedFootGait();
       // Terminal contact owns only the right arm. Gaze is layered afterward,
       // from this frame's final animated head pose, so neither solve drifts.
       if (interactionActive) applyInteractionReach();

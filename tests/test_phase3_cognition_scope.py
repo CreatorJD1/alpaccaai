@@ -84,3 +84,36 @@ def test_old_cognition_rows_migrate_to_shared_scope(tmp_path):
 
     assert cognition.recent_observations(db_path=db_path)[0]["scope"] == "shared"
     assert cognition.recent_chat_turns(db_path=db_path)[0]["scope"] == "shared"
+
+
+def test_recent_chat_turns_filters_surface_before_applying_limit(tmp_path):
+    db_path = tmp_path / "surfaces.db"
+    cognition.init_db(db_path)
+    cognition.record_chat_turn(
+        cognition.ChatTurn(
+            user_text="older house message",
+            reply="house reply",
+            scope="creator-personal",
+            model_use={"turn": {"surface": "house-hq"}},
+        ),
+        db_path=db_path,
+    )
+    for index in range(60):
+        cognition.record_chat_turn(
+            cognition.ChatTurn(
+                user_text=f"discord message {index}",
+                reply="discord reply",
+                scope="creator-personal",
+                model_use={"turn": {"surface": "discord"}},
+            ),
+            db_path=db_path,
+        )
+
+    turns = cognition.recent_chat_turns(
+        limit=4,
+        scope="creator-personal",
+        surface="house-hq",
+        db_path=db_path,
+    )
+
+    assert [turn["user_text"] for turn in turns] == ["older house message"]

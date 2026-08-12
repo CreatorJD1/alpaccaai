@@ -5,7 +5,7 @@
   "nodes": [
     {"id":"alpecca","label":"Alpecca","probe":"server","system":"overview","group":"Core","detail":"One authoritative Alpecca runtime and its current evidence snapshot."},
     {"id":"cognition","label":"Cognition","parent":"alpecca","probe":"model","system":"self","group":"Mind","detail":"Local model routing, response loop, grounded state, and bounded decisions."},
-    {"id":"soul","label":"Seven-perspective Soul","parent":"cognition","probe":"soul","system":"soul","group":"Mind","detail":"Feeler, Expressor, Carer, Doer, Wanderer, Reflector, and Improver expose one live bounded advisory vector feeding the existing arbitration path; model_calls=0 and they are not independent transformer instances."},
+    {"id":"soul","label":"Seven-perspective Soul","parent":"cognition","probe":"soul","system":"soul","group":"Mind","detail":"Feeler, Expressor, Carer, Doer, Wanderer, Reflector, and Improver retain deterministic arbitration while seven distinct ROG transformer heads evaluate one shared HyFusER-style multimodal representation in shadow mode."},
     {"id":"memory","label":"Memory","parent":"cognition","probe":"memory","system":"memory","group":"Mind","detail":"Persistent recall, observations, continuity, and context evidence."},
     {"id":"mindpage","label":"Mindpage","parent":"memory","probe":"mindpage","system":"memory","group":"Mind","detail":"Measured context budgeting, paging, eviction writeback, and pressure telemetry."},
     {"id":"temporal-memory-shadow","label":"Temporal Memory Shadow","parent":"memory","probe":"research.temporal_memory_shadow","system":"memory","group":"Research Runtime","detail":"Additive source-provenanced temporal facts and shadow recall comparison while legacy recall remains authoritative."},

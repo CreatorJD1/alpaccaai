@@ -42,10 +42,14 @@ def _turn(phase: str) -> turn_context.TurnContext:
 
 def test_decision_parser_is_strict_and_accepts_think_wrappers():
     decision = discord_autonomy.parse_decision(
-        '<think>private</think>{"speak":true,"pick":3}'
+        '<think>private</think>{"speak":true,"pick":3,"revisit_minutes":17}'
     )
 
-    assert decision == discord_autonomy.Decision(speak=True, pick=2)
+    assert decision == discord_autonomy.Decision(
+        speak=True,
+        pick=2,
+        revisit_minutes=17,
+    )
     assert decision.intent == discord_autonomy.INTENTS[2]
     assert discord_autonomy.parse_decision('{"speak":true,"pick":1}') is None
     assert discord_autonomy.parse_decision('{"speak":false,"pick":2}') is None
@@ -87,6 +91,19 @@ def test_autonomous_draft_rejects_generic_assistant_self_descriptions():
     assert discord_autonomy.publishable_draft("[pass]") is False
 
 
+def test_autonomous_media_draft_accepts_only_the_approved_portrait_marker():
+    assert discord_autonomy.split_media_draft(
+        "[attach:approved-portrait] This is my approved portrait."
+    ) == ("This is my approved portrait.", "portrait")
+    assert discord_autonomy.split_media_draft("A normal thought.") == (
+        "A normal thought.",
+        None,
+    )
+    assert discord_autonomy.split_media_draft(
+        "[attach:approved-portrait]"
+    ) == ("", None)
+
+
 def test_decision_context_keeps_recent_tail_under_hard_bound():
     context = "old-marker " + ("x" * 9_000) + " latest-human-cue"
     prompt = discord_autonomy.decision_prompt(context)
@@ -98,7 +115,9 @@ def test_decision_context_keeps_recent_tail_under_hard_bound():
 
 
 def test_hidden_decision_and_composition_use_distinct_local_prompts():
-    decision_mind, decision_calls = _guest_mind(['{"speak":true,"pick":4}'])
+    decision_mind, decision_calls = _guest_mind(
+        ['{"speak":true,"pick":4,"revisit_minutes":9}']
+    )
     decision_result = decision_mind._conversation_only_chat(
         "bounded room context",
         turn=_turn("discord-autonomy-deliberation"),
@@ -110,7 +129,9 @@ def test_hidden_decision_and_composition_use_distinct_local_prompts():
         turn=_turn("discord-autonomy-composition"),
     )
 
-    assert decision_result["reply"] == '{"speak":true,"pick":4}'
+    assert decision_result["reply"] == (
+        '{"speak":true,"pick":4,"revisit_minutes":9}'
+    )
     assert decision_calls[0]["system_prompt"] == discord_autonomy.DECISION_SYSTEM_PROMPT
     assert decision_calls[0]["kwargs"] == {
         "tools": None,
@@ -123,7 +144,7 @@ def test_hidden_decision_and_composition_use_distinct_local_prompts():
     assert composition_calls[0]["kwargs"] == {
         "tools": None,
         "on_tool": None,
-        "tier": "reason",
+        "tier": "fast",
         "local_only": True,
     }
 
@@ -133,7 +154,7 @@ def test_server_deliberation_passes_without_composition(monkeypatch):
 
     async def chat(text: str, **kwargs):
         calls.append({"text": text, **kwargs})
-        return {"reply": '{"speak":false,"pick":1}'}
+        return {"reply": '{"speak":false,"pick":1,"revisit_minutes":23}'}
 
     outcomes: list[str] = []
     monkeypatch.setattr(server, "_ws_chat_turn_with_timeout", chat)
@@ -145,7 +166,7 @@ def test_server_deliberation_passes_without_composition(monkeypatch):
 
     reply = asyncio.run(server._deliberated_discord_autonomy("room context", "a" * 64))
 
-    assert reply == "[pass]"
+    assert reply == ("[pass]", 23 * 60)
     assert len(calls) == 1
     assert calls[0]["turn"].portal_epoch == "discord-autonomy-deliberation"
     assert outcomes == ["deliberate-pass"]
@@ -153,7 +174,7 @@ def test_server_deliberation_passes_without_composition(monkeypatch):
 
 def test_server_composes_only_after_valid_decision_and_audit(monkeypatch):
     replies = [
-        {"reply": '{"speak":true,"pick":3}'},
+        {"reply": '{"speak":true,"pick":3,"revisit_minutes":7}'},
         {"reply": "Which part of the motion still feels least natural to you?"},
     ]
     calls: list[dict[str, object]] = []
@@ -172,7 +193,10 @@ def test_server_composes_only_after_valid_decision_and_audit(monkeypatch):
 
     reply = asyncio.run(server._deliberated_discord_autonomy("room context", "b" * 64))
 
-    assert reply == "Which part of the motion still feels least natural to you?"
+    assert reply == (
+        "Which part of the motion still feels least natural to you?",
+        7 * 60,
+    )
     assert len(calls) == 2
     assert calls[0]["turn"].portal_epoch == "discord-autonomy-deliberation"
     assert calls[1]["turn"].portal_epoch == "discord-autonomy-composition"
@@ -183,33 +207,33 @@ def test_server_composes_only_after_valid_decision_and_audit(monkeypatch):
 def test_server_rejects_generic_draft_and_fails_closed_without_audit(monkeypatch):
     async def generic_chat(_text: str, **kwargs):
         if kwargs["turn"].portal_epoch == "discord-autonomy-deliberation":
-            return {"reply": '{"speak":true,"pick":2}'}
+            return {"reply": '{"speak":true,"pick":2,"revisit_minutes":11}'}
         return {"reply": "I'm here and ready to help. How can I assist?"}
 
     monkeypatch.setattr(server, "_ws_chat_turn_with_timeout", generic_chat)
     monkeypatch.setattr(server, "_record_discord_autonomy_outcome", lambda *_a, **_k: True)
     assert asyncio.run(
         server._deliberated_discord_autonomy("room context", "c" * 64)
-    ) == "[pass]"
+    ) == ("[pass]", 11 * 60)
 
     async def grounded_chat(_text: str, **kwargs):
         if kwargs["turn"].portal_epoch == "discord-autonomy-deliberation":
-            return {"reply": '{"speak":true,"pick":2}'}
+            return {"reply": '{"speak":true,"pick":2,"revisit_minutes":13}'}
         return {"reply": "That answers the unresolved point from earlier."}
 
     monkeypatch.setattr(server, "_ws_chat_turn_with_timeout", grounded_chat)
     monkeypatch.setattr(server, "_record_discord_autonomy_outcome", lambda *_a, **_k: False)
     assert asyncio.run(
         server._deliberated_discord_autonomy("room context", "d" * 64)
-    ) == "[pass]"
+    ) == ("[pass]", 13 * 60)
 
 
 def test_autonomy_route_requires_bridge_auth_and_uses_deliberation(monkeypatch):
     calls: list[tuple[str, str]] = []
 
-    async def deliberate(text: str, room_scope: str) -> str:
+    async def deliberate(text: str, room_scope: str) -> tuple[str, int]:
         calls.append((text, room_scope))
-        return "One reviewed message."
+        return "One reviewed message.", 17 * 60
 
     monkeypatch.setattr(server, "_deliberated_discord_autonomy", deliberate)
     payload = {"text": "bounded context", "room_scope": "e" * 64}
@@ -226,5 +250,8 @@ def test_autonomy_route_requires_bridge_auth_and_uses_deliberation(monkeypatch):
 
     assert anonymous.status_code in {401, 403}
     assert authorized.status_code == 200
-    assert authorized.json() == {"reply": "One reviewed message."}
+    assert authorized.json() == {
+        "reply": "One reviewed message.",
+        "revisit_seconds": 17 * 60,
+    }
     assert calls == [("bounded context", "e" * 64)]

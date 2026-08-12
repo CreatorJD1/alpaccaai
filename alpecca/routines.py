@@ -55,6 +55,12 @@ DEFAULT_LEASE_SECONDS = _ledger.DEFAULT_LEASE_SECONDS
 
 LocalTime = Callable[[float], time.struct_time]
 
+SAFE_BOOTSTRAP_ROUTINES = (
+    ("Consolidate observations", 2, "consolidate_observations"),
+    ("Backfill memory embeddings", 3, "embed_backfill"),
+    ("Maintain memory database", 4, "vacuum"),
+)
+
 
 def _connect(db_path: Path = DB_PATH):
     from alpecca.db import connect as _db_connect
@@ -136,6 +142,36 @@ def list_all(db_path: Path = DB_PATH) -> list[dict]:
     with _connect(db_path) as conn:
         rows = conn.execute("SELECT * FROM routines ORDER BY hour, weekday, id").fetchall()
     return [dict(r) for r in rows]
+
+
+def bootstrap_safe_internal(
+    *,
+    db_path: Path = DB_PATH,
+    cancelled: Callable[[], bool] | None = None,
+) -> list[dict]:
+    """Atomically seed an empty catalog with internal maintenance only."""
+
+    if cancelled is not None and not callable(cancelled):
+        raise TypeError("cancelled must be callable")
+    is_cancelled = cancelled or (lambda: False)
+    if is_cancelled():
+        return []
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if is_cancelled() or conn.execute(
+            "SELECT 1 FROM routines LIMIT 1"
+        ).fetchone() is not None:
+            return []
+        stamp = time.time()
+        conn.executemany(
+            "INSERT INTO routines "
+            "(name, hour, weekday, kind, enabled, created_ts) "
+            "VALUES (?, ?, -1, ?, 1, ?)",
+            ((name, hour, kind, stamp) for name, hour, kind in SAFE_BOOTSTRAP_ROUTINES),
+        )
+        rows = conn.execute("SELECT * FROM routines ORDER BY id").fetchall()
+    return [dict(row) for row in rows]
 
 
 def set_enabled(routine_id: int, enabled: bool, db_path: Path = DB_PATH) -> dict:

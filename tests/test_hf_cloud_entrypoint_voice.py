@@ -89,6 +89,28 @@ def test_existing_standby_health_routes_are_unchanged(voice_server) -> None:
     assert backend.synthesis_calls == []
 
 
+def test_sparse_configuration_health_does_not_probe_voice() -> None:
+    backend = FakeVoiceBackend()
+    server = cloud.StandbyServer(
+        0,
+        voice_backend=backend,
+        state="configuration-required",
+    )
+    server.start()
+    try:
+        payload = _get_json(f"http://127.0.0.1:{server.port}/healthz")
+    finally:
+        server.stop()
+
+    assert payload == {
+        "service": "alpecca-continuity-standby",
+        "version": 1,
+        "state": "configuration-required",
+        "coreMind": False,
+    }
+    assert backend.health_calls == 0
+
+
 def test_voice_health_is_public_content_free_and_denies_authority(voice_server) -> None:
     server, backend = voice_server
     payload = _get_json(f"http://127.0.0.1:{server.port}/voice/health")

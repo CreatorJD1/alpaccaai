@@ -677,15 +677,27 @@ def test_pre_reservation_receipt_row_is_upgraded_when_reserved(tmp_path: Path):
     assert store.consume_ack_receipt(event_id=EVENT_ID, receipt=receipt) is True
 
 
-def test_ack_anchor_must_be_a_distinct_failure_domain(tmp_path: Path):
+def test_ack_anchor_must_use_a_distinct_storage_record(tmp_path: Path):
     shared = outbox_mod.InMemoryMonotonicAnchor()
-    with pytest.raises(ValueError, match="distinct failure domain"):
+    with pytest.raises(ValueError, match="distinct storage record"):
         runtime_mod.WebPushPrivateStore(
             tmp_path / "ack-distinct.db",
             subscription_record=FakeCredentialRecord(),
             seal_key=SEAL_KEY,
             subscription_anchor=shared,
             ack_anchor=shared,
+        )
+
+    class StoredAnchor(outbox_mod.InMemoryMonotonicAnchor):
+        storage_domain = "windows-credential-manager:alpecca/shared-anchor"
+
+    with pytest.raises(ValueError, match="distinct storage record"):
+        runtime_mod.WebPushPrivateStore(
+            tmp_path / "ack-aliased-record.db",
+            subscription_record=FakeCredentialRecord(),
+            seal_key=SEAL_KEY,
+            subscription_anchor=StoredAnchor(),
+            ack_anchor=StoredAnchor(),
         )
 
 
@@ -714,6 +726,75 @@ def test_ack_consumption_anchor_advances_and_reopen_is_idempotent(tmp_path: Path
     assert reopened.verify_ack_receipt(event_id=EVENT_ID, receipt=receipt) is False
     assert reopened.consume_ack_receipt(event_id=EVENT_ID, receipt=receipt) is False
     assert anchor.snapshot().current.sequence == 1
+
+
+def test_ack_consumption_journal_rejects_selective_receipt_rollback(
+    tmp_path: Path,
+):
+    anchor = outbox_mod.InMemoryMonotonicAnchor()
+    store = _store(tmp_path, ack_anchor=anchor, name="ack-selective-rollback.db")
+    receipt = store.issue_ack_receipt(
+        event_id=EVENT_ID,
+        subscription_id="wps_" + "1" * 32,
+        transport_idempotency_key=TRANSPORT_KEY,
+    )
+    assert store.reserve_ack_receipt(event_id=EVENT_ID, receipt=receipt) is True
+    with sqlite3.connect(store.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        before = conn.execute(
+            "SELECT receipt_hmac,reserved_at,row_seal "
+            "FROM notification_push_ack_receipts"
+        ).fetchone()
+    assert before is not None
+    assert store.consume_ack_receipt(event_id=EVENT_ID, receipt=receipt) is True
+
+    # Restore only the earlier valid receipt row while keeping the newer
+    # checkpoint and immutable consumption journal. This used to replay.
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE notification_push_ack_receipts "
+            "SET reserved_at=?,consumed_at=NULL,row_seal=? WHERE receipt_hmac=?",
+            (before["reserved_at"], before["row_seal"], before["receipt_hmac"]),
+        )
+
+    with pytest.raises(
+        runtime_mod.WebPushRuntimeError,
+        match="does not match its consumption journal",
+    ):
+        store.verify_ack_receipt(event_id=EVENT_ID, receipt=receipt)
+
+
+def test_ack_anchor_enablement_invalidates_legacy_receipts_and_blocks_downgrade(
+    tmp_path: Path,
+):
+    name = "ack-enable.db"
+    legacy = _store(tmp_path, name=name)
+    receipt = legacy.issue_ack_receipt(
+        event_id=EVENT_ID,
+        subscription_id="wps_" + "2" * 32,
+        transport_idempotency_key=TRANSPORT_KEY,
+    )
+    assert legacy.reserve_ack_receipt(event_id=EVENT_ID, receipt=receipt) is True
+
+    anchor = outbox_mod.InMemoryMonotonicAnchor()
+    protected = _store(tmp_path, ack_anchor=anchor, name=name)
+    assert protected.verify_ack_receipt(event_id=EVENT_ID, receipt=receipt) is False
+    assert anchor.snapshot().current is not None
+    assert anchor.snapshot().current.sequence == 0
+    with sqlite3.connect(protected.db_path) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM notification_push_ack_receipts"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT consume_sequence FROM notification_push_ack_meta "
+            "WHERE singleton=1"
+        ).fetchone()[0] == 0
+
+    with pytest.raises(
+        runtime_mod.WebPushRuntimeError,
+        match="requires its monotonic anchor",
+    ):
+        _store(tmp_path, name=name)
 
 
 def test_ack_consumption_anchor_rejects_receipt_db_rollback(tmp_path: Path):
@@ -793,6 +874,23 @@ def test_ack_consumption_anchor_rolls_forward_after_interrupted_commit(
     assert reopened.consume_ack_receipt(event_id=EVENT_ID, receipt=receipt) is False
     assert anchor.snapshot().current.sequence == 1
     assert anchor.snapshot().pending is None
+
+
+def test_ack_consumption_anchor_rolls_back_uncommitted_pending_on_reopen(
+    tmp_path: Path,
+):
+    anchor = outbox_mod.InMemoryMonotonicAnchor()
+    store = _store(tmp_path, ack_anchor=anchor, name="ack-pending-abort.db")
+    current = anchor.snapshot().current
+    assert current is not None and current.sequence == 0
+    uncommitted = store._ack_checkpoint(1, "a" * 64)
+    anchor.prepare(current, uncommitted)
+    assert anchor.snapshot().pending == uncommitted
+
+    _store(tmp_path, ack_anchor=anchor, name="ack-pending-abort.db")
+    snapshot = anchor.snapshot()
+    assert snapshot.current == current
+    assert snapshot.pending is None
 
 
 @pytest.mark.parametrize(

@@ -162,6 +162,61 @@ def test_archive_queue_encrypts_sqlite_and_flushes_it_without_plaintext():
         assert b"full database private marker" not in captured["body"]
 
 
+def test_archive_queue_removes_files_evicted_from_bounded_outbox():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        source = root / "source.sqlite3"
+        state = root / "state.sqlite3"
+        conn = sqlite3.connect(source)
+        try:
+            conn.execute("CREATE TABLE memories (content TEXT NOT NULL)")
+            conn.execute("INSERT INTO memories VALUES ('bounded archive')")
+            conn.commit()
+        finally:
+            conn.close()
+
+        for _ in range(vault.DEFAULT_ARCHIVE_OUTBOX_LIMIT + 2):
+            vault.queue_database_archive(
+                _SECRET,
+                source_db=source,
+                state_db=state,
+                outbox_dir=root / "outbox",
+                max_bytes=4 * 1024 * 1024,
+            )
+
+        assert vault.local_status(state)["pending_archives"] == vault.DEFAULT_ARCHIVE_OUTBOX_LIMIT
+        assert len(tuple((root / "outbox").glob("archive-*.bin"))) == vault.DEFAULT_ARCHIVE_OUTBOX_LIMIT
+
+
+def test_archive_orphan_prune_is_strict_and_dry_run_by_default():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        state = root / "state.sqlite3"
+        outbox = root / "outbox"
+        outbox.mkdir()
+        vault.init_db(state)
+        orphan = outbox / "archive-00000000000000000001-0123456789abcdef.bin"
+        unrelated = outbox / "notes.bin"
+        orphan.write_bytes(b"orphan ciphertext")
+        unrelated.write_bytes(b"keep me")
+
+        preview = vault.prune_local_archive_files(state_db=state, outbox_dir=outbox)
+        assert preview["dry_run"] is True
+        assert preview["eligible"] == 1
+        assert preview["removed"] == 0
+        assert orphan.exists()
+
+        result = vault.prune_local_archive_files(
+            state_db=state,
+            outbox_dir=outbox,
+            dry_run=False,
+        )
+        assert result["ok"] is True
+        assert result["removed"] == 1
+        assert not orphan.exists()
+        assert unrelated.read_bytes() == b"keep me"
+
+
 def test_archive_recovery_writes_a_verified_new_sqlite_file():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)

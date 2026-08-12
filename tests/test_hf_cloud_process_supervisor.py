@@ -52,23 +52,59 @@ def factory_for(*processes: Process):
     return factory, commands
 
 
-def test_voice_exit_fails_container_and_stops_gateway() -> None:
-    voice = Process(0)
+def test_voice_exit_keeps_sparse_gateway_alive() -> None:
     gateway = Process(None)
-    factory, commands = factory_for(voice, gateway)
+    voice = Process(0)
+    factory, commands = factory_for(gateway, voice)
+    stopped = threading.Event()
 
-    result = supervisor.supervise(process_factory=factory, sleep=lambda _: None)
+    def sleep(_seconds: float) -> None:
+        stopped.set()
 
-    assert result == 1
+    result = supervisor.supervise(
+        process_factory=factory,
+        sleep=sleep,
+        stop_event=stopped,
+    )
+
+    assert result == 143
     assert gateway.terminate_calls == 1
-    assert commands[0][-1].endswith("cloud_voice.py")
-    assert commands[1][-1].endswith("cloud_entrypoint.py")
+    assert commands[0][-1].endswith("cloud_entrypoint.py")
+    assert commands[1][-1].endswith("cloud_voice.py")
+
+
+def test_voice_start_failure_keeps_sparse_gateway_alive() -> None:
+    gateway = Process(None)
+    stopped = threading.Event()
+    calls = 0
+
+    def factory(command):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert command[-1].endswith("cloud_entrypoint.py")
+            return gateway
+        assert command[-1].endswith("cloud_voice.py")
+        raise RuntimeError("optional voice dependency unavailable")
+
+    def sleep(_seconds: float) -> None:
+        stopped.set()
+
+    result = supervisor.supervise(
+        process_factory=factory,
+        sleep=sleep,
+        stop_event=stopped,
+    )
+
+    assert result == 143
+    assert calls == 2
+    assert gateway.terminate_calls == 1
 
 
 def test_gateway_exit_preserves_status_and_stops_voice() -> None:
-    voice = Process(None)
     gateway = Process(7)
-    factory, _commands = factory_for(voice, gateway)
+    voice = Process(None)
+    factory, _commands = factory_for(gateway, voice)
 
     result = supervisor.supervise(process_factory=factory, sleep=lambda _: None)
 
@@ -90,9 +126,9 @@ def test_stop_child_escalates_after_bounded_grace() -> None:
 
 
 def test_requested_shutdown_stops_both_children() -> None:
-    voice = Process(None)
     gateway = Process(None)
-    factory, _commands = factory_for(voice, gateway)
+    voice = Process(None)
+    factory, _commands = factory_for(gateway, voice)
     stopped = threading.Event()
     stopped.set()
 

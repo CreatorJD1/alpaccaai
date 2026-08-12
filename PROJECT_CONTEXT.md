@@ -3,9 +3,147 @@
 This is the canonical project context for coding agents working on Alpecca.
 Read this before `AGENTS.md`, `CLAUDE.md`, `HANDOFF.md`, or implementation files.
 
-## Current Implementation Checkpoint (2026-07-22)
+## Current Implementation Checkpoint (2026-07-24)
 
 This checkpoint supersedes older route, access, model, and phase-status text.
+
+### 2026-07-24 HolyROG authenticated compute activation
+
+- HolyROG now presents the dual-SAN TLS identity for `Jason_HOLYROG` and
+  `jason-holyrog.tailda0108.ts.net`; RygenART trusts only its public
+  certificate. The TLS private key remains on HolyROG and the shared secret
+  remains in Windows Credential Manager.
+- An authenticated worker health receipt reports the compute-only role ready
+  for reasoning and Blender, with speaking and Discord disabled. After the
+  stale Ollama runtime was updated, a real bounded `qwen3.5:9b` reasoning job
+  completed successfully instead of returning the former upstream HTTP 502.
+- Alpecca's production deep chain was reloaded and verified as
+  `rog-worker,ollama-cloud`. A real `_LLM.generate(..., tier="deep")` routing
+  check returned through `backend=rog-worker`, `model=qwen3.5:9b`, with no
+  fallback. Gemma cloud remains the next link when HolyROG is unavailable.
+- This proves authenticated compute and fail-open routing to the existing
+  cloud fallback. It does not prove the still-gated seven-head HyFusER model,
+  cloud continuity failover, or a sustained production workload soak.
+
+### 2026-07-24 source review and live-runtime repair
+
+- The supported Windows Python 3.12.10 runtime was repaired. The master BAT
+  and desktop launcher now resolve an explicit interpreter, the repo virtual
+  environment, the standard per-user Python install, or `PATH` in that order;
+  they no longer assume that the `python` alias exists.
+- Natural future commitments such as inspecting requested source files are now
+  classified and rewritten when execution has not occurred. Kokoro/F5 busy
+  state is reported before package availability so an active synthesis is not
+  falsely labeled unavailable.
+- Discord remains cloud-preferred for latency, but cloud failure now falls back
+  to the locked local Kokoro voice instead of becoming silent. Its normal
+  transcription deadline is 30 seconds, which covers the previously measured
+  19.38-second local Faster-Whisper path. This prevents dropped turns; it does
+  not yet satisfy the desired three-second live latency target.
+- Local vision now targets the dedicated `qwen3.5:4b` multimodal path while
+  `qwen3.5:9b` remains the reasoning model. The same Discord screenshot measured
+  30.69 seconds cold and 3.56 seconds warm on RygenART, so sight stays resident
+  for 30 minutes. Automatic creator-image cloud egress is off by default; local
+  vision remains available without uploading pixels. Cross-surface creator recall filters the requested surface
+  in SQLite before applying its result limit, so newer traffic on another
+  surface cannot hide the requested House or Discord turn.
+- The GUI no longer races `run_full.py` to launch duplicate cloud and Discord
+  sidecars, and importing the GUI no longer imports stateful project config
+  before the singleton owner is established. The F5 worker now uses its
+  dedicated `.venv-f5-tts` interpreter only when it supports F5-TTS and the
+  requested Torch device; this laptop's CPU-only voice environment is rejected
+  in favor of the CUDA-qualified production interpreter.
+- Verification completed on this checkpoint: the expanded Python suite passed
+  **3,579 tests with 3 skips**, including both deployment test trees; the
+  complete House Node suite passed **86 tests**; protected live routes
+  returned 200 through Alpecca's diagnostic client; and a real `/tts` preview
+  returned F5 audio with `af_heart` and identity lock enabled. The standard
+  pytest configuration now includes deployment tests, `npm run house:test`
+  runs all House test files rather than only embodiment tests, both production
+  web builds passed, and the continuity worker typecheck plus **11 tests**
+  passed.
+- One local server, one F5 worker, and one Discord bridge lock are active. A
+  sustained Discord gateway/voice conversation, browser microphone session,
+  stable named Cloudflare URL, HolyROG authenticated job, and cloud failback
+  remain external operational gates. Source presence is not proof of those
+  live outcomes.
+- After the expanded suite, focused launcher/voice gates passed **78** and
+  **60** tests. The reloaded F5 worker selected CUDA successfully, reported
+  ready after a 50.101-second cold load, produced a real identity-locked tender
+  preview, and made Discord's local TTS fallback report `ready`.
+- The verified phase matrix remains P0/P2-P5 bounded-complete; P1/P6/P8-P13
+  operationally partial; P7 and P14 blocked. P13 has source-complete fenced
+  reconciliation but not deployment/failback proof. The Stage 4 art contract
+  also remains in progress: no approved 4K production strip or runtime sprite
+  candidate exists yet.
+
+### 2026-07-23 HolyROG runtime qualification update
+
+- The dedicated HolyROG compute checkout is at `81ad1e3`. Its isolated
+  CPython 3.11.9 environment has `torch 2.7.0+cu128`; CUDA 12.8 is available
+  on the RTX 4060 Laptop GPU with 8 GB VRAM, and all 10 compatibility preflight
+  checks pass.
+- This qualifies only the host runtime. The seven-head HyFusER service remains
+  shadow-only and fail-closed because no trained, evaluated, hash-pinned
+  checkpoint exists. No Emotion-LLaMA weights or dataset were downloaded.
+- HolyROG TLS is moving to one self-signed identity containing both the local
+  hostname and Tailscale MagicDNS name: `Jason_HOLYROG` and
+  `jason-holyrog.tailda0108.ts.net`. The user-facing setup wrapper exposes a
+  manual `-RotateTls` operation, but it never stops or starts the scheduled
+  worker. The controlled order is stop, rotate with backup, copy only the
+  public certificate, start, then verify authenticated MagicDNS health.
+- This dual-SAN rotation is source-prepared, not live-deployed. The TLS private
+  key must remain only on HolyROG. Do not describe MagicDNS health as verified
+  until the rotated worker returns an authenticated, certificate-validated
+  health receipt from the primary.
+- The current tailnet endpoint is reachable at TCP level, but its HTTPS health
+  handshake times out. TeamViewer currently returns a black HolyROG framebuffer,
+  so no blind worker restart or certificate rotation was attempted.
+- The existing compute-only HTTPS worker stayed live on port 8788. A fresh
+  RygenART process still needs its Windows Credential Manager record restored
+  before authenticated health/reasoning and fallback receipts can be rerun.
+- Remote SSH administration is disabled by default and requires an explicit
+  operator opt-in. It is not part of Alpecca's normal compute route.
+
+### 2026-07-23 activation and seven-transformer research update
+
+- The Soul still uses one deterministic Good Person Principle arbitration path.
+  A new optional ROG research model now implements one shared HyFusER-style
+  text/speech fusion backbone plus seven distinct lightweight TransformerEncoder
+  heads, one for each Soul perspective. Untrained or unqualified checkpoints
+  remain shadow-only and cannot alter focus, emotion, speech, or actions.
+- Emotion-LLaMA has an opt-in research-teacher adapter and qualification
+  manifest for `Jason_HOLYROG`. Its external weights and MER research data stay
+  outside Git; no checkpoint or dataset has been downloaded by this checkout.
+- Committed chat/memory evidence now advances the temporal shadow ledger in
+  bounded background batches. An empty routine catalog receives only three
+  safe internal maintenance routines; no speech or external-action routine is
+  seeded.
+- RSI candidate activation now reads sealed committed SQLite outcomes instead
+  of accepting a caller-constructed baseline. It can create a review proposal,
+  but cannot approve, start, retain, apply, or edit source autonomously.
+- Discord voice and event-vision readiness now require transport/inference
+  evidence and reject stale generations. Cloud standby health remains available
+  when optional voice or model startup fails. These source repairs still need
+  live deployment and sustained voice/failover soaks before release claims.
+- Mindscape Vault retention now removes evicted archive files as well as rows.
+  The one-time repair removed 197 unindexed archives (about 18.05 GB) while
+  retaining the two indexed archives. Machine-generated observation duplicates
+  are coalesced; human chat is never coalesced.
+
+### 2026-07-23 time, initiative, and assistance update
+
+- CoreMind receives an authoritative local clock on every turn. House living
+  ticks surface as Alpecca-authored, optionally spoken initiative and suppress
+  recently repeated questions instead of remaining hidden system activity.
+- A bounded Google Workspace adapter can report readiness and create only new
+  private folders or Google Docs under one configured app-owned Drive root.
+  Sharing, overwrite, move, and delete are absent. The integration is source-
+  complete but operationally setup-required until its one-time Microsoft Edge
+  OAuth desktop flow stores authorization in Windows Credential Manager.
+- Creator `self_status` now includes measured clock, room, affect trends,
+  memory/sense state, host pressure, and Google readiness. House Tools renders
+  the Google readiness state rather than inferring it from source presence.
 
 ### 2026-07-22 behavior and connectivity update
 
@@ -51,10 +189,18 @@ This checkpoint supersedes older route, access, model, and phase-status text.
 - The configured local model family is `qwen3.5:9b`; do not reintroduce
   `qwen3:8b` defaults or describe it as the current model.
 - The supported full-stack workload split uses `gemma4:cloud` for hosted chat
-  and deep reflection, while `qwen3.5:9b` owns local reasoning, local vision,
-  short local choices, and every offline fallback. Supported launchers apply
+  and deep reflection. `qwen3.5:9b` owns local reasoning, short local choices,
+  and offline language fallback; `qwen3.5:4b` owns temporary local vision on
+  the 4 GB primary GPU. Supported launchers apply
   this split with override-preserving defaults rather than treating the two
   models as interchangeable.
+- A source-complete, deployment-pending compute worker is assigned to
+  `Jason_HOLYROG`. It exposes only authenticated, bounded local
+  `qwen3.5:9b` reasoning and one-frame Blender rendering. Deep background work
+  may try that worker before `gemma4:cloud` and the primary laptop's local
+  fallback. The worker cannot start CoreMind, Discord, memory writers, tunnels,
+  tools, or a continuity speaking lease. It is not live-verified until the ROG
+  passes qualification and an authenticated health/job smoke on port 8788.
 - The seven Soul roles remain deterministic perspectives feeding one
   arbitration path, not seven independent transformer instances. The Soul now
   emits a bounded seven-score perspective vector and contradiction/pressure
@@ -347,6 +493,17 @@ Important current priorities:
 - The local host remains authoritative for identity, policy, memory, approvals,
   presence, and continuity. Remote compute may return bounded inference results;
   it never becomes another CoreMind or owns canonical state.
+- `Jason_HOLYROG` is the designated private-LAN compute worker. Its first
+  approved workload is background deep reflection; optional Blender work is
+  restricted to a configured input root, a `.blend` basename, one numeric
+  frame, and a configured output root. Live chat and voice stay on the primary
+  route until measured latency and interruption tests justify any change.
+- Worker requests use certificate-validated HTTPS on the private LAN plus an
+  exact HMAC-signed body, timestamp, nonce, request ID, bounded schemas, and
+  persistent replay rejection. The shared secret belongs in Windows Credential
+  Manager on both machines; the TLS private key stays only on the ROG. The
+  worker binds loopback by default. Private-LAN binding is an explicit setup
+  choice and must be firewall-limited to the primary laptop.
 
 ## Alpecca Design Lock
 
