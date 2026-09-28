@@ -1,3 +1,5 @@
+--no-build-isolation
+numpy>=1.26.0
 gradio>=5.0
 spaces>=0.30
 torch
@@ -10,4 +12,4 @@ huggingface_hub>=0.24.0
 pillow>=10.0.0
 qwen-vl-utils
 torchvision
-chatterbox-tts==0.1.7
+chatterbox-tts==0.1.3
