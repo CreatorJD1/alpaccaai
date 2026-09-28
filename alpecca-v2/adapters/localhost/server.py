@@ -290,7 +290,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
+        # NOTE: no "Connection: keep-alive" here. BaseHTTPRequestHandler.send_header
+        # flips close_connection=False on a keep-alive *response* header, which
+        # would leave the socket open forever after `event: done`. The frontend
+        # (backend.ts) only exits its read loop on stream close, so the adapter
+        # must close the connection to terminate the finite SSE stream.
         self._cors()
         self.end_headers()
 
@@ -335,6 +339,7 @@ class Handler(BaseHTTPRequestHandler):
 
         Raises on any failure so the caller can fall back to the stub.
         """
+        global _OLLAMA_MODEL  # must precede first use in this scope
         # Quick liveness probe so we fail fast with a clear message.
         import urllib.request
 
@@ -354,7 +359,6 @@ class Handler(BaseHTTPRequestHandler):
             print(f"[localhost] {_OLLAMA_MODEL} not found; using {model}")
 
         # Swap in the resolved model for this call.
-        global _OLLAMA_MODEL
         _OLLAMA_MODEL, saved = model, _OLLAMA_MODEL
         try:
             acc = ""
