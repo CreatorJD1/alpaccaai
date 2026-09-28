@@ -747,6 +747,100 @@ def vision_json(image_b64: str, system: str = "", prompt: str = "Describe this i
     return json.dumps(_parse_json_object(decoded[0] if decoded else ""))
 
 
+# --- Cloud voice: Chatterbox Aria clone on the Space GPU -----------------------------
+# Jason's directive (2026-09-27): Kokoro/af_heart completely removed. The voice
+# is now Chatterbox (MIT) cloning ALPECCA's real Aria voice from Jason's
+# reference recordings. Lazy-loaded like every other model above: the
+# chat/art/vision paths pay nothing until /tts is actually called.
+VOICE_REF_PATH = os.environ.get(
+    "ALPECCA_ZEROGPU_VOICE_REF",
+    os.path.join(os.path.dirname(__file__), "voice_refs", "alpecca_aria_ref.wav"),
+)
+TTS_SAMPLE_RATE = 24000
+TTS_MAX_CHARS = int(os.environ.get("ALPECCA_ZEROGPU_TTS_MAX_CHARS", "400"))
+
+_chatterbox_model = None
+
+
+def load_chatterbox():
+    global _chatterbox_model
+    if _chatterbox_model is None:
+        from chatterbox.tts import ChatterboxTTS
+        _chatterbox_model = ChatterboxTTS.from_pretrained(device="cuda")
+    return _chatterbox_model
+
+
+def _wav_b64(samples) -> str:
+    import wave
+    import numpy as np
+    pcm = np.asarray(samples)
+    if pcm.ndim > 1:
+        pcm = pcm.mean(axis=-1)
+    pcm = np.clip(pcm, -1.0, 1.0)
+    pcm16 = (pcm * 32767).astype(np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(TTS_SAMPLE_RATE)
+        wf.writeframes(pcm16.tobytes())
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+@spaces.GPU(duration=120)
+def synthesize_speech(text: str, speed: float = 1.0) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return json.dumps({"ok": False, "error": "empty_text"})
+    if len(cleaned) > TTS_MAX_CHARS:
+        return json.dumps({"ok": False, "error": f"text_too_long:{len(cleaned)}"})
+    speed_f = min(2.0, max(0.5, float(speed or 1.0)))
+    try:
+        model = load_chatterbox()
+        # Chatterbox clones ALPECCA's Aria voice from Jason's reference recording.
+        wav = model.generate(cleaned, audio_prompt_path=VOICE_REF_PATH)
+        import numpy as np
+        import torch
+        if isinstance(wav, torch.Tensor):
+            wav = wav.detach().cpu().numpy()
+        full = np.asarray(wav).ravel()
+        if full.size == 0:
+            return json.dumps({"ok": False, "error": "empty_audio"})
+        # Resample to TTS_SAMPLE_RATE if the model output differs.
+        model_sr = getattr(model, "sr", TTS_SAMPLE_RATE)
+        if model_sr != TTS_SAMPLE_RATE:
+            import torchaudio
+            import torch as _torch
+            tensor = _torch.from_numpy(full).unsqueeze(0)
+            resampler = torchaudio.transforms.Resample(
+                orig_freq=model_sr, new_freq=TTS_SAMPLE_RATE
+            )
+            full = resampler(tensor).squeeze(0).numpy()
+        # Speed adjustment via simple resampling when requested.
+        if abs(speed_f - 1.0) > 0.01:
+            import torchaudio
+            import torch as _torch
+            tensor = _torch.from_numpy(full).unsqueeze(0)
+            # Naive tempo: resample by inverse factor (changes pitch slightly;
+            # acceptable for the 0.5-2.0 bounded range).
+            indices = np.round(
+                np.arange(0, len(full), speed_f)
+            ).astype(int)
+            indices = indices[indices < len(full)]
+            full = full[indices]
+        return json.dumps({
+            "ok": True,
+            "audio_b64": _wav_b64(full),
+            "mime": "audio/wav",
+            "sample_rate": TTS_SAMPLE_RATE,
+            "voice": "aria",
+            "engine": "chatterbox",
+            "chars": len(cleaned),
+        })
+    except Exception as error:
+        return json.dumps({"ok": False, "error": f"synth_failed:{type(error).__name__}"})
+
+
 with gr.Blocks(title="Alpecca ZeroGPU") as demo:
     gr.Markdown("# Alpecca ZeroGPU")
     with gr.Tab("Deep thought"):
@@ -821,6 +915,17 @@ with gr.Blocks(title="Alpecca ZeroGPU") as demo:
             inputs=[vj_img, vj_sys, vj_prompt],
             outputs=vj_out,
             api_name="vision_json",
+        )
+    with gr.Tab("Voice"):
+        gr.Markdown("Alpecca's cloud voice: Chatterbox (Aria voice clone). Text in, WAV out.")
+        tts_text = gr.Textbox(label="text", lines=3, value="Hi Jason! It's me.")
+        tts_speed = gr.Slider(0.5, 2.0, value=1.0, step=0.05, label="speed")
+        tts_out = gr.Textbox(label="result_json", lines=6)
+        gr.Button("Speak", variant="primary").click(
+            fn=synthesize_speech,
+            inputs=[tts_text, tts_speed],
+            outputs=tts_out,
+            api_name="tts",
         )
 
 

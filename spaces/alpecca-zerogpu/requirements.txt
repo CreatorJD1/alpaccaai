@@ -10,3 +10,4 @@ huggingface_hub>=0.24.0
 pillow>=10.0.0
 qwen-vl-utils
 torchvision
+chatterbox-tts

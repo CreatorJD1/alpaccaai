@@ -30,6 +30,19 @@ The Gradio API accepts:
 
 and returns one text reply.
 
+## Cloud Voice (TTS)
+
+The Space exposes a `Voice` tab and `/tts` API for Alpecca's cloud voice.
+Text in → JSON out with base64 WAV (24kHz mono PCM16, Chatterbox cloning
+Alpecca's real Aria voice from Jason's reference recordings).
+
+```text
+inputs:  text (≤400 chars), speed (0.5–2.0, default 1.0)
+output:  {"ok": true, "audio_b64": "<wav>", "mime": "audio/wav",
+          "sample_rate": 24000, "voice": "aria", "engine": "chatterbox"}
+         {"ok": false, "error": "<reason>"} on failure
+```
+
 ## Stage 4 Tile Worker
 
 The Space also exposes a `Stage 4 tile worker` tab and `/generate_stage4_tile`
