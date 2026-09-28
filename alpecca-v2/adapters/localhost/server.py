@@ -72,10 +72,10 @@ STUB_REPLY = (
 # ── Ollama wiring (local private brain) ──────────────────────────
 # Env overrides so Jason can point at his own Ollama without editing code:
 #   OLLAMA_URL    e.g. http://localhost:11434  (default)
-#   OLLAMA_MODEL  e.g. qwen2.5:14b             (default)
+#   OLLAMA_MODEL  e.g. qwen3:32b             (default)
 #   ALPECCA_SYSTEM_PROMPT  override the persona prompt (optional)
 _OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:14b")
+_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:32b")
 
 ALPECCA_SYSTEM_PROMPT = os.environ.get(
     "ALPECCA_SYSTEM_PROMPT",
