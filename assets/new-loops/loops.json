@@ -1,7 +1,7 @@
 {
-  "version": 4,
-  "updated": "2026-09-29T05:16:11Z",
-  "base": "https://raw.githubusercontent.com/CreatorJD1/alpaccaai/beta/alpecca/assets/new-loops",
+  "version": 5,
+  "updated": "2026-09-29T07:45:08Z",
+  "base": "https://huggingface.co/datasets/CREATORJD/alpecca-animation-loops/resolve/main",
   "layout": "<mode>/<action>_<variant>_<view>/frame_N.png (keyed RGBA; chroma originals in local staging + HF)",
   "modes": {
     "01_companion": {
