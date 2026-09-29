@@ -1,43 +1,60 @@
 {
-  "version": 1,
-  "updated": "2026-09-29T04:01:18Z",
+  "version": 2,
+  "updated": "2026-09-29T04:04:45Z",
   "base": "https://raw.githubusercontent.com/CreatorJD1/alpaccaai/beta/alpecca/assets/new-loops",
-  "loops": {
-    "talk_b": {
-      "frames": 4,
-      "fps": 10,
-      "ext": "png",
-      "alpha": false
-    },
-    "listen_nod": {
-      "frames": 4,
-      "fps": 8,
-      "ext": "png",
-      "alpha": false
-    },
-    "thinking": {
-      "frames": 4,
-      "fps": 6,
-      "ext": "png",
-      "alpha": false
-    },
-    "laugh": {
-      "frames": 4,
-      "fps": 10,
-      "ext": "png",
-      "alpha": false
-    },
-    "excited": {
-      "frames": 4,
-      "fps": 12,
-      "ext": "png",
-      "alpha": false
-    },
-    "greet_wave": {
-      "frames": 4,
-      "fps": 8,
-      "ext": "png",
-      "alpha": false
+  "modes": {
+    "01_companion": {
+      "label": "01 Companion Mode",
+      "loops": {
+        "talk_b": {
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": false,
+          "framing": "full",
+          "tags": []
+        },
+        "listen_nod": {
+          "frames": 4,
+          "fps": 8,
+          "ext": "png",
+          "alpha": false,
+          "framing": "full",
+          "tags": []
+        },
+        "thinking": {
+          "frames": 4,
+          "fps": 6,
+          "ext": "png",
+          "alpha": false,
+          "framing": "full",
+          "tags": []
+        },
+        "laugh": {
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": false,
+          "framing": "full",
+          "tags": []
+        },
+        "excited": {
+          "frames": 4,
+          "fps": 12,
+          "ext": "png",
+          "alpha": false,
+          "framing": "full",
+          "tags": []
+        },
+        "greet_wave": {
+          "frames": 4,
+          "fps": 8,
+          "ext": "png",
+          "alpha": false,
+          "framing": "full",
+          "tags": []
+        }
+      }
     }
   }
 }
