@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "updated": "2026-09-29T03:48:57Z",
+  "base": "https://raw.githubusercontent.com/CreatorJD1/alpaccaai/beta/alpecca/assets/new-loops",
+  "loops": {
+    "talk_b":     { "frames": 4, "fps": 10, "ext": "png" },
+    "listen_nod": { "frames": 4, "fps": 8,  "ext": "png" },
+    "thinking":   { "frames": 4, "fps": 6,  "ext": "png" },
+    "laugh":      { "frames": 4, "fps": 10, "ext": "png" },
+    "excited":    { "frames": 4, "fps": 12, "ext": "png" },
+    "greet_wave": { "frames": 4, "fps": 8,  "ext": "png" }
+  }
+}
