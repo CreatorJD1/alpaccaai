@@ -1,74 +1,1034 @@
 {
-  "version": 3,
-  "updated": "2026-09-29T04:11:37Z",
+  "version": 4,
+  "updated": "2026-09-29T05:16:11Z",
   "base": "https://raw.githubusercontent.com/CreatorJD1/alpaccaai/beta/alpecca/assets/new-loops",
+  "layout": "<mode>/<action>_<variant>_<view>/frame_N.png (keyed RGBA; chroma originals in local staging + HF)",
   "modes": {
     "01_companion": {
       "label": "01 Companion Mode",
       "loops": {
-        "talk_b_1_front": {
-          "action": "talk_b",
+        "bow_b_front": {
+          "action": "bow",
+          "variant": "b",
           "view": "front",
-          "variant": 1,
           "frames": 4,
           "fps": 10,
           "ext": "png",
-          "alpha": false,
+          "alpha": true,
           "framing": "full",
           "tags": []
         },
-        "listen_nod_1_front": {
-          "action": "listen_nod",
-          "view": "front",
-          "variant": 1,
-          "frames": 4,
-          "fps": 8,
-          "ext": "png",
-          "alpha": false,
-          "framing": "full",
-          "tags": []
-        },
-        "thinking_1_front": {
-          "action": "thinking",
-          "view": "front",
-          "variant": 1,
-          "frames": 4,
-          "fps": 6,
-          "ext": "png",
-          "alpha": false,
-          "framing": "full",
-          "tags": []
-        },
-        "laugh_1_front": {
-          "action": "laugh",
-          "view": "front",
-          "variant": 1,
-          "frames": 4,
-          "fps": 10,
-          "ext": "png",
-          "alpha": false,
-          "framing": "full",
-          "tags": []
-        },
-        "excited_1_front": {
-          "action": "excited",
-          "view": "front",
-          "variant": 1,
-          "frames": 4,
-          "fps": 12,
-          "ext": "png",
-          "alpha": false,
-          "framing": "full",
-          "tags": []
-        },
-        "greet_wave_1_front": {
+        "greet_wave_a_back": {
           "action": "greet_wave",
-          "view": "front",
-          "variant": 1,
+          "variant": "a",
+          "view": "back",
           "frames": 4,
-          "fps": 8,
+          "fps": 10,
           "ext": "png",
-          "alpha": false,
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "greet_wave_b_front": {
+          "action": "greet_wave",
+          "variant": "b",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "happy_b_front": {
+          "action": "happy",
+          "variant": "b",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "happy_closeup": {
+          "action": "happy",
+          "variant": "closeup",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "closeup",
+          "tags": []
+        },
+        "idle_a_back": {
+          "action": "idle",
+          "variant": "a",
+          "view": "back",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "idle_a_left": {
+          "action": "idle",
+          "variant": "a",
+          "view": "left",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "idle_a_right": {
+          "action": "idle",
+          "variant": "a",
+          "view": "right",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "idle_d_front": {
+          "action": "idle",
+          "variant": "d",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "listen_nod_b_front": {
+          "action": "listen_nod",
+          "variant": "b",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "surprised_closeup": {
+          "action": "surprised",
+          "variant": "closeup",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "closeup",
+          "tags": []
+        },
+        "talk_a_back": {
+          "action": "talk",
+          "variant": "a",
+          "view": "back",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "talk_a_front": {
+          "action": "talk",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "talk_a_left": {
+          "action": "talk",
+          "variant": "a",
+          "view": "left",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "talk_a_right": {
+          "action": "talk",
+          "variant": "a",
+          "view": "right",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "talk_b_back": {
+          "action": "talk",
+          "variant": "b",
+          "view": "back",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "talk_c_front": {
+          "action": "talk",
+          "variant": "c",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "talk_closeup": {
+          "action": "talk",
+          "variant": "closeup",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "closeup",
+          "tags": []
+        },
+        "talk_d_front": {
+          "action": "talk",
+          "variant": "d",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "thinking_profile": {
+          "action": "thinking",
+          "variant": "profile",
+          "view": "left",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "closeup",
+          "tags": []
+        }
+      }
+    },
+    "02_colearning": {
+      "label": "02 Co-Learning Mode",
+      "loops": {
+        "bow_a_front": {
+          "action": "bow",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "greet_wave_a_front": {
+          "action": "greet_wave",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "happy_a_front": {
+          "action": "happy",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "idle_breath_a_front": {
+          "action": "idle_breath",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "listen_nod_a_front": {
+          "action": "listen_nod",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "present_a_front": {
+          "action": "present",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "surprised_a_front": {
+          "action": "surprised",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "talk_b_a_front": {
+          "action": "talk_b",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "thumbs_up_a_front": {
+          "action": "thumbs_up",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "wave_both_a_front": {
+          "action": "wave_both",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        }
+      }
+    },
+    "03_workstation": {
+      "label": "03 Workstation Mode",
+      "loops": {
+        "bow_a_front": {
+          "action": "bow",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "greet_wave_a_front": {
+          "action": "greet_wave",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "happy_a_front": {
+          "action": "happy",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "idle_breath_a_front": {
+          "action": "idle_breath",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "listen_nod_a_front": {
+          "action": "listen_nod",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "present_a_front": {
+          "action": "present",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "surprised_a_front": {
+          "action": "surprised",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "talk_b_a_front": {
+          "action": "talk_b",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "thumbs_up_a_front": {
+          "action": "thumbs_up",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "wave_both_a_front": {
+          "action": "wave_both",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        }
+      }
+    },
+    "04_compassion": {
+      "label": "04 Compassion Mode",
+      "loops": {
+        "bow_a_front": {
+          "action": "bow",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "greet_wave_a_front": {
+          "action": "greet_wave",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "happy_a_front": {
+          "action": "happy",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "idle_breath_a_front": {
+          "action": "idle_breath",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "listen_nod_a_front": {
+          "action": "listen_nod",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "present_a_front": {
+          "action": "present",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "surprised_a_front": {
+          "action": "surprised",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "talk_b_a_front": {
+          "action": "talk_b",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "thumbs_up_a_front": {
+          "action": "thumbs_up",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "wave_both_a_front": {
+          "action": "wave_both",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        }
+      }
+    },
+    "05_protection": {
+      "label": "05 Protection Mode",
+      "loops": {
+        "bow_a_front": {
+          "action": "bow",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "greet_wave_a_front": {
+          "action": "greet_wave",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "happy_a_front": {
+          "action": "happy",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "idle_breath_a_front": {
+          "action": "idle_breath",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "listen_nod_a_front": {
+          "action": "listen_nod",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "present_a_front": {
+          "action": "present",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "surprised_a_front": {
+          "action": "surprised",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "talk_b_a_front": {
+          "action": "talk_b",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "thumbs_up_a_front": {
+          "action": "thumbs_up",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "wave_both_a_front": {
+          "action": "wave_both",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        }
+      }
+    },
+    "06_lowpower": {
+      "label": "06 Low-Power Mode",
+      "loops": {
+        "bow_a_front": {
+          "action": "bow",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "greet_wave_a_front": {
+          "action": "greet_wave",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "happy_a_front": {
+          "action": "happy",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "idle_breath_a_front": {
+          "action": "idle_breath",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "listen_nod_a_front": {
+          "action": "listen_nod",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "present_a_front": {
+          "action": "present",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "surprised_a_front": {
+          "action": "surprised",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "talk_b_a_front": {
+          "action": "talk_b",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "thumbs_up_a_front": {
+          "action": "thumbs_up",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "wave_both_a_front": {
+          "action": "wave_both",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        }
+      }
+    },
+    "07_casual": {
+      "label": "07 Casual Mode",
+      "loops": {
+        "bow_a_front": {
+          "action": "bow",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "greet_wave_a_front": {
+          "action": "greet_wave",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "happy_a_front": {
+          "action": "happy",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "idle_breath_a_front": {
+          "action": "idle_breath",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "listen_nod_a_front": {
+          "action": "listen_nod",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "present_a_front": {
+          "action": "present",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "surprised_a_front": {
+          "action": "surprised",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "talk_b_a_front": {
+          "action": "talk_b",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "thumbs_up_a_front": {
+          "action": "thumbs_up",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "wave_both_a_front": {
+          "action": "wave_both",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        }
+      }
+    },
+    "08_nightlounge": {
+      "label": "08 Night Lounge Mode",
+      "loops": {
+        "bow_a_front": {
+          "action": "bow",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "greet_wave_a_front": {
+          "action": "greet_wave",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "happy_a_front": {
+          "action": "happy",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "idle_breath_a_front": {
+          "action": "idle_breath",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "listen_nod_a_front": {
+          "action": "listen_nod",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "present_a_front": {
+          "action": "present",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "surprised_a_front": {
+          "action": "surprised",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "talk_b_a_front": {
+          "action": "talk_b",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "thumbs_up_a_front": {
+          "action": "thumbs_up",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
+          "framing": "full",
+          "tags": []
+        },
+        "wave_both_a_front": {
+          "action": "wave_both",
+          "variant": "a",
+          "view": "front",
+          "frames": 4,
+          "fps": 10,
+          "ext": "png",
+          "alpha": true,
           "framing": "full",
           "tags": []
         }
