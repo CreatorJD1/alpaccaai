@@ -1,12 +1,12 @@
 {
   "version": 3,
-  "updated": "2026-09-29T04:11:10Z",
+  "updated": "2026-09-29T04:11:37Z",
   "base": "https://raw.githubusercontent.com/CreatorJD1/alpaccaai/beta/alpecca/assets/new-loops",
   "modes": {
     "01_companion": {
       "label": "01 Companion Mode",
       "loops": {
-        "talk_b__front__v1": {
+        "talk_b_1_front": {
           "action": "talk_b",
           "view": "front",
           "variant": 1,
@@ -17,7 +17,7 @@
           "framing": "full",
           "tags": []
         },
-        "listen_nod__front__v1": {
+        "listen_nod_1_front": {
           "action": "listen_nod",
           "view": "front",
           "variant": 1,
@@ -28,7 +28,7 @@
           "framing": "full",
           "tags": []
         },
-        "thinking__front__v1": {
+        "thinking_1_front": {
           "action": "thinking",
           "view": "front",
           "variant": 1,
@@ -39,7 +39,7 @@
           "framing": "full",
           "tags": []
         },
-        "laugh__front__v1": {
+        "laugh_1_front": {
           "action": "laugh",
           "view": "front",
           "variant": 1,
@@ -50,7 +50,7 @@
           "framing": "full",
           "tags": []
         },
-        "excited__front__v1": {
+        "excited_1_front": {
           "action": "excited",
           "view": "front",
           "variant": 1,
@@ -61,7 +61,7 @@
           "framing": "full",
           "tags": []
         },
-        "greet_wave__front__v1": {
+        "greet_wave_1_front": {
           "action": "greet_wave",
           "view": "front",
           "variant": 1,
