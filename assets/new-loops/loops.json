@@ -1,12 +1,15 @@
 {
-  "version": 2,
-  "updated": "2026-09-29T04:04:45Z",
+  "version": 3,
+  "updated": "2026-09-29T04:11:10Z",
   "base": "https://raw.githubusercontent.com/CreatorJD1/alpaccaai/beta/alpecca/assets/new-loops",
   "modes": {
     "01_companion": {
       "label": "01 Companion Mode",
       "loops": {
-        "talk_b": {
+        "talk_b__front__v1": {
+          "action": "talk_b",
+          "view": "front",
+          "variant": 1,
           "frames": 4,
           "fps": 10,
           "ext": "png",
@@ -14,7 +17,10 @@
           "framing": "full",
           "tags": []
         },
-        "listen_nod": {
+        "listen_nod__front__v1": {
+          "action": "listen_nod",
+          "view": "front",
+          "variant": 1,
           "frames": 4,
           "fps": 8,
           "ext": "png",
@@ -22,7 +28,10 @@
           "framing": "full",
           "tags": []
         },
-        "thinking": {
+        "thinking__front__v1": {
+          "action": "thinking",
+          "view": "front",
+          "variant": 1,
           "frames": 4,
           "fps": 6,
           "ext": "png",
@@ -30,7 +39,10 @@
           "framing": "full",
           "tags": []
         },
-        "laugh": {
+        "laugh__front__v1": {
+          "action": "laugh",
+          "view": "front",
+          "variant": 1,
           "frames": 4,
           "fps": 10,
           "ext": "png",
@@ -38,7 +50,10 @@
           "framing": "full",
           "tags": []
         },
-        "excited": {
+        "excited__front__v1": {
+          "action": "excited",
+          "view": "front",
+          "variant": 1,
           "frames": 4,
           "fps": 12,
           "ext": "png",
@@ -46,7 +61,10 @@
           "framing": "full",
           "tags": []
         },
-        "greet_wave": {
+        "greet_wave__front__v1": {
+          "action": "greet_wave",
+          "view": "front",
+          "variant": 1,
           "frames": 4,
           "fps": 8,
           "ext": "png",
